@@ -4,7 +4,7 @@
 import { Router } from 'express';
 import Joi from 'joi';
 import { AnomalyController } from '../controllers/anomaly.controller';
-import { validateOptional } from '../middleware/validation.middleware';
+import { validateOptional, validateRequest } from '../middleware/validation.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 
 export const anomalyRoutes = Router();
@@ -23,10 +23,13 @@ const ciAnomaliesSchema = Joi.object({
   limit: Joi.number().integer().min(1).max(500).default(50),
 });
 
+const anomalyIdParamSchema = Joi.object({ id: Joi.string().uuid().required() });
+
 const updateStatusSchema = Joi.object({
   status: Joi.string()
     .valid('investigating', 'resolved', 'false_positive', 'confirmed', 'ignored')
     .required(),
+  // Accepted for older clients and ignored: the authenticated user is recorded (HAP-613).
   resolved_by: Joi.string().optional(),
 });
 
@@ -55,6 +58,7 @@ anomalyRoutes.get('/stats', controller.getAnomalyStats.bind(controller));
 anomalyRoutes.patch(
   '/:id/status',
   authMiddleware.requirePermission('write'),
+  validateRequest(anomalyIdParamSchema, 'params'),
   validateOptional(updateStatusSchema, 'body'),
   controller.updateAnomalyStatus.bind(controller)
 );

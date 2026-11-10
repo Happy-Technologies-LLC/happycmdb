@@ -333,12 +333,13 @@ import { ciRoutes } from '../ci.routes';
 import { itilRoutes } from '../itil.routes';
 import { driftRoutes, impactRoutes } from '../drift-impact.routes';
 import { analyticsRoutes } from '../analytics.routes';
+import { anomalyRoutes } from '../anomaly.routes';
 
 const BACKFILL = join(__dirname, '../../../../../database/src/neo4j/migrations/001_ci_organization_backfill.cypher');
 const NOT_FOUND = { success: false, error: 'Not Found', message: 'CI not found' };
 const derivedTables = [
   'baseline_snapshots', 'drift_detection_results', 'impact_analyses',
-  'ci_criticality_scores', 'ci_change_history',
+  'ci_criticality_scores', 'ci_change_history', 'anomalies',
 ];
 const provenanceDdl = readFileSync(
   join(__dirname, '../../../../../database/src/postgres/migrations/028_change_history_reconciliation_org_provenance.sql'), 'utf8');
@@ -360,6 +361,10 @@ beforeAll(async () => {
   for (const statement of readFileSync(
     join(__dirname, '../../../../../database/src/postgres/migrations/025_ci_derived_incarnation.sql'), 'utf8'
   ).split(';').map(part => part.trim()).filter(Boolean)) await sql(statement);
+  // 026's two provenance columns (its SET LOCAL timeouts need the migrator's transaction).
+  for (const statement of readFileSync(
+    join(__dirname, '../../../../../database/src/postgres/migrations/026_anomaly_provenance.sql'), 'utf8'
+  ).match(/^ALTER TABLE anomalies ADD COLUMN .+;$/gm) ?? []) await sql(statement);
 });
 afterAll(() => { host.kill(); });
 
@@ -381,6 +386,7 @@ app.use('/api/v1/itil', itilRoutes);
 app.use('/api/v1/drift', driftRoutes);
 app.use('/api/v1/impact', impactRoutes);
 app.use('/api/v1/analytics', analyticsRoutes);
+app.use('/api/v1/anomalies', anomalyRoutes);
 
 function seedCI(id: string, organizationId: string | undefined, extra: Props = {}): void {
   const props: Props = {
@@ -436,6 +442,71 @@ it('bounds simultaneous incarnation reads independently of incoming request conc
     resolve();
     holdIncarnationRead = undefined;
   }
+});
+
+it('HAP-613: anomaly pages take an analytics read slot per Neo4j page, never while the consumer is paused', async () => {
+  // `activeCIAnalyticsReads` is private: this unchecked view observes the process-wide slot counter.
+  const slots = neo4jClient as unknown as { activeCIAnalyticsReads: number };
+  seedCI('ci-a-current', ORG_A, { incarnation_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+  // Eight consumers (the slot cap) each receive their first page, then stop pulling, as a
+  // request does while its per-page SQL runs or after its 12 s deadline has answered 503.
+  const consumers = Array.from({ length: 8 }, () => neo4jClient.iterateScopedAnomalyIncarnationPages(ORG_A));
+  try {
+    for (const consumer of consumers) {
+      expect(await consumer.next()).toEqual({ done: false, value: [{ ciId: 'ci-a-current',
+        incarnationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }] });
+    }
+    expect(slots.activeCIAnalyticsReads).toBe(0);
+    await expect(neo4jClient.listCIIncarnations(ORG_B)).resolves.toEqual([]);
+  } finally {
+    for (const consumer of consumers) await consumer.return(undefined);
+  }
+  // The page read itself still counts against the cap.
+  const { promise, resolve } = Promise.withResolvers<void>();
+  holdIncarnationRead = () => promise;
+  try {
+    const reads = Array.from({ length: 8 }, () => neo4jClient.listCIIncarnations(ORG_B));
+    expect(slots.activeCIAnalyticsReads).toBe(8);
+    await expect(neo4jClient.iterateScopedAnomalyIncarnationPages(ORG_A).next())
+      .rejects.toMatchObject({ name: 'CIAnalyticsLimitError' });
+    resolve();
+    await Promise.all(reads);
+    expect(slots.activeCIAnalyticsReads).toBe(0);
+  } finally {
+    resolve();
+    holdIncarnationRead = undefined;
+  }
+});
+
+describe('HAP-613 PATCH /anomalies/:id/status', () => {
+  const ANOMALY = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  const INCARNATION = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  beforeEach(async () => {
+    seedCI('ci-a-anomalous', ORG_A, { incarnation_id: INCARNATION });
+    await sql('DELETE FROM anomalies');
+    await sql(`INSERT INTO anomalies (id, ci_id, anomaly_type, severity, confidence_score, detected_at,
+      status, organization_id, ci_incarnation_id) VALUES ($1, 'ci-a-anomalous', 'test', 'high', 90, now(),
+      'detected', $2, $3)`, [ANOMALY, ORG_A, INCARNATION]);
+  });
+  const stored = async () => (await sql('SELECT status, resolved_by FROM anomalies WHERE id = $1', [ANOMALY]))[0];
+
+  it('answers a non-UUID id with the validation 400 before any graph or SQL work', async () => {
+    const res = await request(app).patch('/api/v1/anomalies/not-a-uuid/status').set(AS_A).send({ status: 'resolved' });
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      _success: false, _error: 'Validation Error', _message: '"id" must be a valid GUID',
+      _details: [{ _field: 'id', _message: '"id" must be a valid GUID', _type: 'string.guid' }],
+    });
+    expect(queryCount).toBe(0);
+    expect(await stored()).toEqual({ status: 'detected', resolved_by: null });
+  });
+
+  it("records the authenticated caller as resolver even when the body names another user", async () => {
+    const res = await request(app).patch(`/api/v1/anomalies/${ANOMALY}/status`).set(AS_A)
+      .send({ status: 'resolved', resolved_by: 'user-b' });
+    expect([res.status, res.body.data?.resolved_by]).toEqual([200, 'user-a']);
+    expect(await stored()).toEqual({ status: 'resolved', resolved_by: 'user-a' });
+  });
 });
 
 it('pages all organizations beyond 512 graph CIs without request admission or an unbounded result', async () => {

@@ -2868,7 +2868,10 @@ paths:
     patch:
       tags: [Anomalies]
       summary: Update anomaly status
-      description: Update only a proven anomaly of a current CI owned by the verified token organization. Foreign and missing anomaly IDs return the same 404.
+      description: >-
+        Update only a proven anomaly of a current CI owned by the verified token organization. Foreign and
+        missing anomaly IDs return the same 404. Setting `resolved` or `false_positive` records the
+        authenticated user's id as `resolved_by`.
       operationId: updateAnomalyStatus
       parameters:
         - name: id
@@ -2890,13 +2893,34 @@ paths:
                   enum: [investigating, resolved, false_positive, confirmed, ignored]
                 resolved_by:
                   type: string
+                  deprecated: true
+                  description: Ignored. The server records the authenticated user's id.
       responses:
         '200':
           description: Status updated
+        '400':
+          description: >-
+            `id` is not a UUID, or the body fails validation. Rejected before any database query.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MiddlewareError'
+              example:
+                _success: false
+                _error: Validation Error
+                _message: '"id" must be a valid GUID'
+                _details:
+                  - _field: id
+                    _message: '"id" must be a valid GUID'
+                    _type: string.guid
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          description: >-
+            Unexpected failure. The body is the fixed `{success: false, error: 'Failed to update anomaly
+            status', message: 'Internal error'}`; the error itself is only logged server-side.
 
   /anomalies/detect:
     post:

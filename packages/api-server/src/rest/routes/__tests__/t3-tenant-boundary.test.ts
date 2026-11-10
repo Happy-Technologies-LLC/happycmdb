@@ -46,6 +46,7 @@ let sqlCount = 0;
 let graphCount = 0;
 const record = (fields: Record<string, unknown>) => ({ get: (key: string) => fields[key] });
 const integer = (n: number) => ({ toNumber: () => n });
+let incarnationGate: (() => Promise<void>) | undefined;
 const graph = {
   // Journaled direct write of an owned CI (the journal itself runs in tests/integration).
   updateCIProperties: async (id: string, props: Record<string, unknown>, org: string) => {
@@ -68,6 +69,7 @@ const graph = {
   },
   listCIIncarnations: async (org: string) => {
     graphCount++;
+    await incarnationGate?.();
     const matches = [...nodes.values()].filter(ci => ci.organization_id === org);
     if (matches.length > MAX_CI_ANALYTICS_NODES) throw new CIAnalyticsLimitError();
     return matches.filter(ci => ci.incarnation_id)
@@ -604,6 +606,43 @@ it('rejects oversized tenant analytics without serializing all graph CIs into SQ
     }
   } finally {
     for (const id of ids) nodes.delete(id);
+  }
+});
+
+it('HAP-613: GraphQL change frequency takes the REST analytics per-tenant slots; another tenant still runs', async () => {
+  const gqlApp = express();
+  const { server } = await createGraphQLServer(gqlApp);
+  const frequency = (id: string) => request(gqlApp).post('/graphql').set(auth(id))
+    .send({ query: '{ analytics { getChangeFrequencyByType { _ciType _changeCount } } }' });
+  const { promise: proceed, resolve } = Promise.withResolvers<void>();
+  const { promise: bothHeld, resolve: held } = Promise.withResolvers<void>();
+  let entered = 0;
+  incarnationGate = async () => {
+    if (++entered === 2) held();
+    await proceed;
+  };
+  try {
+    // Two B principals fill tenant B's two analytics slots and stay inside the graph read.
+    const running = ['bb', 'bc'].map(id => frequency(id).then(response => response));
+    await bothHeld;
+    incarnationGate = undefined;
+    const before = graphCount;
+    const refused = await frequency('bd');
+    expect(refused.body.errors).toMatchObject([{
+      message: 'Analytics analysis rate limit exceeded', extensions: { code: 'TOO_MANY_REQUESTS' },
+    }]);
+    expect(graphCount).toBe(before);
+    const otherTenant = await frequency('aa');
+    expect(otherTenant.body.errors).toBeUndefined();
+    expect(otherTenant.body.data.analytics.getChangeFrequencyByType).toContainEqual({ _ciType: 'server', _changeCount: 1 });
+    resolve();
+    for (const response of await Promise.all(running)) expect(response.body.errors).toBeUndefined();
+    // Completed calls release their slots.
+    expect((await frequency('bd')).body.errors).toBeUndefined();
+  } finally {
+    resolve();
+    incarnationGate = undefined;
+    await server.stop();
   }
 });
 

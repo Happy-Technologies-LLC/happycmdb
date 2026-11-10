@@ -523,14 +523,26 @@ export class Neo4jClient {
     }), () => this.getCIProperties(id, organizationId));
   }
 
+  /**
+   * Bound concurrent request-scoped CI analytics reads process-wide. The slot
+   * covers only the Neo4j round trip; callers never hold it while they consume a result.
+   */
+  private async withCIAnalyticsRead<T>(read: () => Promise<T>): Promise<T> {
+    if (this.activeCIAnalyticsReads >= 8) throw new CIAnalyticsLimitError();
+    this.activeCIAnalyticsReads++;
+    try {
+      return await read();
+    } finally {
+      this.activeCIAnalyticsReads--;
+    }
+  }
+
   /** Enumerate at most one bounded page; never serialize an entire tenant graph into SQL. */
   async listCIIncarnations(scope: CIOrganizationScope): Promise<Array<{
     ciId: string; incarnationId: string; organizationId: string; ciType: string | null
   }>> {
-    if (this.activeCIAnalyticsReads >= 8) throw new CIAnalyticsLimitError();
-    this.activeCIAnalyticsReads++;
     const organizationId = organizationIdParam(scope);
-    try {
+    return this.withCIAnalyticsRead(async () => {
       const session = this.getSession();
       try {
         const result = await session.run(
@@ -555,57 +567,51 @@ export class Neo4jClient {
       } finally {
         await session.close();
       }
-    } finally {
-      this.activeCIAnalyticsReads--;
-    }
+    });
   }
 
   /**
    * Tenant-only keyset pages for anomaly aggregates. Never return a partial
    * aggregate after the work budget is exhausted, even if some rows are NULL.
    * Single-CI mutations use getCI instead and are independent of tenant size.
+   * HAP-613: each page acquires and releases its own analytics read slot before
+   * yielding, so a slow or abandoned consumer never holds one.
    */
   async *iterateScopedAnomalyIncarnationPages(scope: CIOrganizationScope): AsyncGenerator<Array<{
     ciId: string; incarnationId: string
   }>> {
     const organizationId = organizationIdParam(scope);
     if (!organizationId) throw new CIAnalyticsLimitError();
-    if (this.activeCIAnalyticsReads >= 8) throw new CIAnalyticsLimitError();
-    this.activeCIAnalyticsReads++;
     let afterId = '';
-    try {
-      for (let page = 0; page < 8; page++) {
+    for (let page = 0; page < 8; page++) {
+      const records = await this.withCIAnalyticsRead(async () => {
         const session = this.getSession();
-        let records: Array<{ get(key: string): unknown }>;
         try {
-          const result = await session.run(
+          return (await session.run(
             `MATCH (ci:CI)
              WHERE ci.organization_id = $organizationId AND ci.id > $afterId
              RETURN ci.id AS ciId, ci.incarnation_id AS incarnationId
              ORDER BY ci.id LIMIT $rowLimit`,
             { organizationId, afterId, rowLimit: neo4j.int(MAX_CI_ANALYTICS_NODES + 1) },
             { timeout: 5000 }
-          );
-          records = result.records;
+          )).records;
         } finally {
           await session.close();
         }
-        const count = Math.min(records.length, MAX_CI_ANALYTICS_NODES);
-        if (count === 0) return;
-        const incarnations: Array<{ ciId: string; incarnationId: string }> = [];
-        for (let i = 0; i < count; i++) {
-          const record = records[i]!;
-          const incarnationId = ciIncarnationId(record.get('incarnationId') as string | null);
-          if (incarnationId) incarnations.push({ ciId: record.get('ciId') as string, incarnationId });
-        }
-        afterId = records[count - 1]!.get('ciId') as string;
-        if (incarnations.length > 0) yield incarnations;
-        if (records.length <= MAX_CI_ANALYTICS_NODES) return;
+      });
+      const count = Math.min(records.length, MAX_CI_ANALYTICS_NODES);
+      if (count === 0) return;
+      const incarnations: Array<{ ciId: string; incarnationId: string }> = [];
+      for (let i = 0; i < count; i++) {
+        const record = records[i]!;
+        const incarnationId = ciIncarnationId(record.get('incarnationId') as string | null);
+        if (incarnationId) incarnations.push({ ciId: record.get('ciId') as string, incarnationId });
       }
-      throw new CIAnalyticsLimitError();
-    } finally {
-      this.activeCIAnalyticsReads--;
+      afterId = records[count - 1]!.get('ciId') as string;
+      if (incarnations.length > 0) yield incarnations;
+      if (records.length <= MAX_CI_ANALYTICS_NODES) return;
     }
+    throw new CIAnalyticsLimitError();
   }
 
   /**

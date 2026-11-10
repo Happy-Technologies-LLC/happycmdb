@@ -35,7 +35,7 @@ export const AnomalyDetectionView: React.FC = () => {
 
   const updateStatusMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: 'investigating' | 'resolved' | 'false_positive' }) =>
-      anomaliesApi.updateStatus(id, status, 'current_user'),
+      anomaliesApi.updateStatus(id, status),
     onSuccess: () => {
       toast.success('Anomaly status updated');
       queryClient.invalidateQueries({ queryKey: ['anomalies'] });

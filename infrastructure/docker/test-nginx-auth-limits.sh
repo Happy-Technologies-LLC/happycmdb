@@ -5,8 +5,9 @@
 # api-server that answers 200 to every request, then asserts:
 #   1. refresh and me, alternated 6 times in a row, are never refused (a page load, a reload, a second tab);
 #   2. login is 429 once its burst is spent, and password plus the spellings Express also routes to login
-#      (trailing slash, other letter case) are refused from the same bucket; 1.5 s later login is still refused
-#      (at 5r/m no request refills in that time, at 5r/s several would);
+#      (trailing slash, other letter case) are refused from the same bucket; login is still refused 1.5 s and
+#      9 s later (no refill yet at 5r/m; 5r/s would admit at 1.5 s, 10r/m or looser at 9 s) and admitted 14 s
+#      later (the bucket refills at about 5r/m);
 #   3. refresh and me still answer once the login bucket is spent;
 #   4. the session zone still refuses a flood.
 #
@@ -110,10 +111,17 @@ expect "login request 4 (burst spent)" POST /api/v1/auth/login 429
 expect "password change, login bucket spent" PUT /api/v1/auth/password 429
 expect "login with trailing slash" POST /api/v1/auth/login/ 429
 expect "login in other letter case" POST /api/v1/AUTH/Login 429
-# The bucket refills at the zone rate from the last admitted login (refusals spend nothing): at 5r/m 1.5 s refills
-# an eighth of a request, so login stays refused; a per-second rate would admit it.
+# The bucket refills at the zone rate from the last admitted login (refusals spend nothing), so the elapsed time
+# since the third admit separates rates. Probe 1 (~1.5 s) catches a per-second rate (5r/s refills 7 requests).
+# Probe 2 (~9 s) must still be refused: one refill takes 12 s at 5r/m, 6 s at 10r/m and 2 s at 30r/m, so any rate
+# of 10r/m or looser admits it. Probe 3 (~14 s) must be admitted: it proves the bucket refills at all (a zone
+# tightened to, say, 1r/m would pass probes 1 and 2) and bounds the rate from below at about 5r/m.
 sleep 1.5
 expect "login 1.5 s after the burst (no refill at 5r/m)" POST /api/v1/auth/login 429
+sleep 7.5
+expect "login 9 s after the burst (one refill needs 12 s at 5r/m; 10r/m would admit it)" POST /api/v1/auth/login 429
+sleep 5
+expect "login 14 s after the burst (one refill has accrued at 5r/m)" POST /api/v1/auth/login 200
 
 echo "== 3. session endpoints after the login bucket is spent"
 expect "refresh after login refusals" POST /api/v1/auth/refresh 200

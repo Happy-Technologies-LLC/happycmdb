@@ -13,7 +13,7 @@ RUN corepack enable && corepack prepare pnpm@8.0.0 --activate
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
+    adduser -S -G nodejs -u 1001 nodejs
 
 # Set working directory
 WORKDIR /app

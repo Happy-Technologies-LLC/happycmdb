@@ -7,7 +7,7 @@ RUN apk add --no-cache dumb-init curl
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
+    adduser -S -G nodejs -u 1001 nodejs
 
 # Set working directory
 WORKDIR /app
@@ -18,7 +18,7 @@ COPY packages/common/package.json ./packages/common/
 COPY packages/database/package.json ./packages/database/
 COPY packages/etl-processor/package.json ./packages/etl-processor/
 
-RUN npm install --production --workspace=packages/common --workspace=packages/database --workspace=packages/etl-processor --ignore-scripts
+RUN npm ci --omit=dev --workspace=packages/common --workspace=packages/database --workspace=packages/etl-processor --ignore-scripts
 
 # Copy pre-built dist folders
 COPY --chown=nodejs:nodejs packages/common/dist ./packages/common/dist

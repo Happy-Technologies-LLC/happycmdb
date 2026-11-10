@@ -1,11 +1,13 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
-/** HAP-1800: POST /credentials/:id/validate never echoes decrypt or PostgreSQL driver error text; the server log keeps the error class/code, never decrypted plaintext. */
+/**
+ * HAP-1800: POST /credentials/:id/validate never echoes decrypt or PostgreSQL driver error text; the server log keeps the error class/code, never decrypted plaintext.
+ * GET and PUT /credentials/:id never carry a stored credential's decrypted plaintext into the body or the serialized log.
+ */
 import { fork } from 'child_process';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { inspect } from 'util';
 import express from 'express';
 import request from 'supertest';
 
@@ -140,4 +142,35 @@ it('(f) an authentic envelope whose plaintext is not JSON never reaches the body
   expect(generic(res)).toEqual([200, false, GENERIC]);
   expect([JSON.stringify(res.body).includes(plain), logged.includes(plain)]).toEqual([false, false]);
   expect(logged).toContain('"error":{"errorClass":"Error"}');
+});
+
+// Each plaintext is short enough that V8 quotes all of it; the second would steer the update catch into its 409 echo.
+const nonJson = () => [`h${randomBytes(8).toString('hex')}`, `already exists ${randomBytes(2).toString('hex')}`];
+const insertNonJson = async (plain: string) => {
+  const id = randomUUID();
+  await insert(id, getEncryptionService().encrypt(plain));
+  return id;
+};
+const leaks = async (plain: string, send: () => request.Test) => {
+  const logs = capture();
+  const res = await send();
+  const logged = logs();
+  return { res, leaked: [JSON.stringify(res.body).includes(plain), logged.includes(plain)] };
+};
+
+it.each(nonJson())('(g) GET on an authentic envelope with non-JSON plaintext %#: fixed 500, the plaintext reaches no sink', async (plain) => {
+  const id = await insertNonJson(plain);
+  const { res, leaked } = await leaks(plain, () => request(app).get(`/api/v1/credentials/${id}`).set(auth));
+  expect([res.status, res.body]).toEqual([500, { success: false, error: 'Failed to get credential', message: 'Internal error' }]);
+  expect(leaked).toEqual([false, false]);
+});
+
+// An empty update re-reads the row through getById; a rename decodes the updated row directly.
+describe.each([['an empty update', () => ({})], ['a rename', () => ({ name: rnd() })]])('(h) PUT with %s', (_label, body) => {
+  it.each(nonJson())('on an authentic envelope with non-JSON plaintext %#: fixed 500, the plaintext reaches no sink', async (plain) => {
+    const id = await insertNonJson(plain);
+    const { res, leaked } = await leaks(plain, () => request(app).put(`/api/v1/credentials/${id}`).set(auth).send(body()));
+    expect([res.status, res.body]).toEqual([500, { success: false, error: 'Failed to update credential', message: 'Internal error' }]);
+    expect(leaked).toEqual([false, false]);
+  });
 });

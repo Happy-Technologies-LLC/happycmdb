@@ -70,10 +70,6 @@ YoY Change:          +12.8% ↑
 - **Licenses**: Software subscriptions
 - **Labor**: IT staff costs (if configured)
 
-**Example**:
-
-![Cost Trends](../assets/cost-trends-example.png)
-
 **How to interpret**:
 - **Steady growth**: Normal business expansion
 - **Sudden spikes**: Investigate via FinOps Dashboard

@@ -1090,14 +1090,14 @@ Returns singleton instance of CriticalityCalculatorService.
 - **Parameters**:
   - `businessService`: BusinessService object
   - `options?`: CriticalityCalculationOptions
-- **Returns**: Promise<CriticalityCalculation>
+- **Returns**: `Promise<CriticalityCalculation>`
 - **Description**: Calculates business criticality tier (0-4)
 
 **batchCalculateCriticality(businessServices, options?)**
 - **Parameters**:
   - `businessServices`: BusinessService[]
   - `options?`: CriticalityCalculationOptions
-- **Returns**: Promise<CriticalityCalculation[]>
+- **Returns**: `Promise<CriticalityCalculation[]>`
 - **Description**: Batch calculates criticality for multiple services
 
 ### getImpactScoringService()
@@ -1139,7 +1139,7 @@ Returns singleton instance of RiskRatingService.
 
 **calculateRiskAssessment(businessService)**
 - **Parameters**: `businessService`: BusinessService
-- **Returns**: Promise<RiskAssessment>
+- **Returns**: `Promise<RiskAssessment>`
 - **Description**: Calculates comprehensive risk assessment with factors
 
 ### getBlastRadiusService()
@@ -1152,14 +1152,14 @@ Returns singleton instance of BlastRadiusService.
 - **Parameters**:
   - `ciId`: string
   - `options?`: BlastRadiusOptions
-- **Returns**: Promise<BlastRadiusAnalysis>
+- **Returns**: `Promise<BlastRadiusAnalysis>`
 - **Description**: Analyzes blast radius for a CI
 
 **analyzeMultipleCIBlastRadius(ciIds, options?)**
 - **Parameters**:
   - `ciIds`: string[]
   - `options?`: BlastRadiusOptions
-- **Returns**: Promise<BlastRadiusAnalysis>
+- **Returns**: `Promise<BlastRadiusAnalysis>`
 - **Description**: Analyzes combined blast radius for multiple CIs
 
 **generateBlastRadiusReport(analysis)**
@@ -1169,7 +1169,7 @@ Returns singleton instance of BlastRadiusService.
 
 **findSinglePointsOfFailure(businessServiceId)**
 - **Parameters**: `businessServiceId`: string
-- **Returns**: Promise<Array<{ciId, ciName, ciType, criticalityReason}>>
+- **Returns**: `Promise<Array<{ciId, ciName, ciType, criticalityReason}>>`
 - **Description**: Identifies single points of failure for a service
 
 ### getRevenueImpactCalculator()

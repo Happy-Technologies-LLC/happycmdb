@@ -72,7 +72,7 @@ YoY Change:          +12.8% ↑
 
 **Example**:
 
-![Cost Trends](../assets/cost-trends-example.png)
+<!-- Cost Trends screenshot not yet committed: ../assets/cost-trends-example.png (HAP-1832) -->
 
 **How to interpret**:
 - **Steady growth**: Normal business expansion

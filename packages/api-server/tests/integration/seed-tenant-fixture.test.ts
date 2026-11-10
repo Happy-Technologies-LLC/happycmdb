@@ -166,6 +166,7 @@ beforeAll(async () => {
   process.env.POSTGRES_DB = SCRATCH_DB;
   process.env.RATE_LIMIT_AUTH_MAX = '1000';
   process.env.RATE_LIMIT_AUTH_ACCOUNT_MAX = '1000';
+  process.env.RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_MAX = '1000';
   const { authRoutes } = await import('../../src/rest/routes/auth.routes');
   const { getAuthMiddleware } = await import('../../src/auth/auth-bootstrap');
   const { businessServiceRoutes } = await import('../../src/rest/routes/business-service.routes');
@@ -187,6 +188,7 @@ afterAll(async () => {
   process.env.POSTGRES_DB = harnessDb;
   delete process.env.RATE_LIMIT_AUTH_MAX;
   delete process.env.RATE_LIMIT_AUTH_ACCOUNT_MAX;
+  delete process.env.RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_MAX;
 
   const client = admin();
   await client.connect();

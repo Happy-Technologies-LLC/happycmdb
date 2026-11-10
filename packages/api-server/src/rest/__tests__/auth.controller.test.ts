@@ -1155,6 +1155,7 @@ describe('HAP-1211 H2 ruling A: refresh has its own rate-limit bucket at the RES
       endpoints: {
         auth: { max: authMax, windowMs: 60_000 },
         authAccount: { max: authMax, windowMs: 60_000 }, // HAP-1091: login's account+client bucket (schema default 5)
+        authAccountGlobal: { max: authMax, windowMs: 60_000 }, // HAP-1764: login's per-account bucket (default 20)
         rest: { max: restMax, windowMs: 60_000 },
       },
       monitoring: { enabled: false, logRateLimitHits: false },

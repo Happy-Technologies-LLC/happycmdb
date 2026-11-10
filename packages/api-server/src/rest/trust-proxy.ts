@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { logger } from '@cmdb/common';
+import { errorClassFields } from '../utils/log-error';
 import type { Express } from 'express';
 
 /**
@@ -35,7 +36,7 @@ export function applyTrustProxy(app: Express, value: unknown): void {
     app.set('trust proxy', false);
     logger.error('TRUST_PROXY is invalid; trusting no proxy (req.ip = socket address)', {
       value: String(value),
-      reason: (error as Error).message,
+      ...errorClassFields(error),
     });
   }
 }

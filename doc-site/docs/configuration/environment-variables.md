@@ -195,6 +195,36 @@ RATE_LIMIT_MAX=1000
 BCRYPT_ROUNDS=12
 ```
 
+## Proxy Trust & Login Rate Limiting
+
+Every rate-limit key uses the client address Express derives as `req.ip`. Which `X-Forwarded-For` hops count is
+set only by `TRUST_PROXY` (config file: `server.trustProxy`); a raw `X-Forwarded-For` or `X-Real-IP` header is
+never read.
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `TRUST_PROXY` | Behind a proxy | unset (trust none) | Express `trust proxy`: a hop count `N` (the `N` proxies nearest the API that append `X-Forwarded-For`) or a comma list of trusted proxy IP/CIDR/`loopback`/`linklocal`/`uniquelocal`. Unset, empty, `0` or `false` trusts none: `X-Forwarded-For` is ignored and every client behind a proxy shares the proxy's bucket. `true` and invalid values are logged and treated as unset. |
+| `RATE_LIMIT_AUTH_MAX` | No | `20` | `POST /api/v1/auth/login` (and `PUT /auth/password`) per client address |
+| `RATE_LIMIT_AUTH_WINDOW_MS` | No | `3600000` | Window of the per-client login limit (1 hour) |
+| `RATE_LIMIT_AUTH_ACCOUNT_MAX` | No | `5` | Login per account (trimmed, lowercased username) + client address; also password changes per user |
+| `RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS` | No | `900000` | Window of the per-account+client limit (15 minutes) |
+| `RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_MAX` | No | `20` | Login per account across all client addresses; `0` turns it off |
+| `RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_WINDOW_MS` | No | `900000` | Window of the per-account limit (15 minutes) |
+
+**Deployed value:** the shipped nginx (`web-ui/nginx.conf`, `infrastructure/docker/nginx.conf`) and ingress-nginx
+append the connecting address (`$remote_addr`) to `X-Forwarded-For`, so with nginx as the only proxy in front of the
+API set `TRUST_PROXY=1` (docker-compose, Kubernetes manifest and the staging/production config templates do). Add 1
+for each further L7 proxy that appends to or sets `X-Forwarded-For` before nginx: the build01 staging stack runs
+tailscale serve in front of nginx and uses `TRUST_PROXY=2` (`deploy/build01-staging.compose.yml`,
+`HAPPYCMDB_TRUST_PROXY`). Callers that reach the API port directly, bypassing nginx, can forge that hop: do not
+expose it.
+
+**Login limiter keys and failures:** a login is refused with `429` once any of its three buckets is spent (client,
+account+client, account across clients). The account-wide bucket means that many attempts from anywhere refuse
+that account's logins until the window passes, the real user's included. When the limiter store (Redis) fails,
+login and password change fail closed with a fixed `503` (`Cache-Control: no-store`) before any credential check;
+the refresh limiter fails open. Store errors are logged by error class and code only.
+
 ## Monitoring & Telemetry
 
 | Variable | Required | Default | Description |

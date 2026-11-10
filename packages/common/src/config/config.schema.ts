@@ -200,6 +200,13 @@ export const configSchema = Joi.object({
         windowMs: Joi.number().default(900000), // 15 minutes
       }).default(),
 
+      // HAP-1764: POST /auth/login per account (normalized username) across ALL client addresses: 20 per 15 min, so
+      // one account cannot be guessed at from many addresses. 0 turns this bucket off.
+      authAccountGlobal: Joi.object({
+        max: Joi.number().default(20),
+        windowMs: Joi.number().default(900000), // 15 minutes
+      }).default(),
+
       // Discovery endpoints
       discovery: Joi.object({
         max: Joi.number().default(100),
@@ -434,6 +441,7 @@ export type ConfigSchema = {
       health: { max: number; windowMs: number };
       auth: { max: number; windowMs: number };
       authAccount: { max: number; windowMs: number };
+      authAccountGlobal: { max: number; windowMs: number };
       discovery: { max: number; windowMs: number };
       admin: { max: number; windowMs: number };
     };

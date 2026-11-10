@@ -11,8 +11,10 @@
  * - Internal service bypass mechanism
  * - Comprehensive rate limit headers (X-RateLimit-*)
  * - Monitoring and metrics for rate limit hits
- * - Graceful degradation if Redis is unavailable (fail-closed limiters, POST /auth/login and PUT /auth/password, answer 503 instead)
+ * - Graceful degradation if Redis is unavailable (fail-closed limiters, POST /auth/login and PUT /auth/password, answer
+ *   a fixed 503 with Cache-Control: no-store instead; the refresh limiter and other fail-open limiters let it through)
  * - Client identity is req.ip only: Express `trust proxy` (TRUST_PROXY) decides which forwarded hops count
+ * - A store error is logged by class and code only, never its message (HAP-1764, the HAP-1382 pattern)
  */
 
 import { createHash } from 'crypto';
@@ -21,8 +23,15 @@ import { Redis } from 'ioredis';
 import type { ConfigSchema } from '@cmdb/common';
 import { getLogger } from '@cmdb/common';
 import { AuthenticatedRequest } from './auth.middleware';
+import { errorClassFields } from '../utils/log-error';
 
 const logger = getLogger();
+
+/** HAP-1764: the fixed body of a fail-closed limiter whose store failed; never the store's error text. */
+const RATE_LIMIT_UNAVAILABLE = Object.freeze({
+  _error: 'Service Unavailable',
+  _message: 'Rate limiting is unavailable. Try again later',
+});
 
 export interface RateLimitConfig {
   _max: number;
@@ -37,9 +46,12 @@ export interface RateLimitResult {
 }
 
 export interface LimitOptions {
-  /** Also limits per account + client at endpoints.authAccount; returns the raw account name (HAP-1091). */
+  /**
+   * Also limits per account + client at endpoints.authAccount (HAP-1091) and per account across all clients at
+   * endpoints.authAccountGlobal (HAP-1764); returns the raw account name, normalized here (trimmed, lowercased).
+   */
   account?: (req: Request) => unknown;
-  /** A limiter store error answers 503 instead of passing the request through. */
+  /** A limiter store error answers a fixed 503 (no-store) instead of passing the request through. */
   failClosed?: boolean;
   /**
    * HAP-1368 (authenticated credential checks): the client bucket keys on req.ip even for a signed-in caller, plus
@@ -100,17 +112,24 @@ export class RateLimitMiddleware {
           next();
         }
       } catch (error) {
-        const cause = error instanceof Error ? error : new Error(String(error));
         if (options.failClosed === true) {
-          logger.error('Rate limit check failed - refusing request (fail closed)', cause);
-          res.status(503).json({
-            _error: 'Service Unavailable',
-            _message: 'Rate limiting is unavailable. Try again later',
+          // A fixed refusal: nothing from an earlier bucket's headers or the store error reaches the client.
+          logger.error('Rate limit check failed - refusing request (fail closed)', undefined, {
+            endpoint: endpointType,
+            ...errorClassFields(error),
           });
+          for (const header of ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset']) {
+            res.removeHeader(header);
+          }
+          res.set('Cache-Control', 'no-store');
+          res.status(503).json(RATE_LIMIT_UNAVAILABLE);
           return;
         }
         // If Redis fails, allow request but log error (graceful degradation)
-        logger.error('Rate limit check failed - allowing request', cause);
+        logger.error('Rate limit check failed - allowing request', undefined, {
+          endpoint: endpointType,
+          ...errorClassFields(error),
+        });
         next();
       }
     };
@@ -162,10 +181,10 @@ export class RateLimitMiddleware {
 
         next();
       } catch (error) {
-        logger.error(
-          'Rate limit check failed - allowing request',
-          error instanceof Error ? error : new Error(String(error))
-        );
+        logger.error('Rate limit check failed - allowing request', undefined, {
+          endpoint: keyPrefix,
+          ...errorClassFields(error),
+        });
         next();
       }
     };
@@ -283,9 +302,9 @@ export class RateLimitMiddleware {
   }
 
   /**
-   * Checks the client bucket, then (with options.account) the account+client bucket or (with options.perUser) the
-   * user bucket; answers 429 and returns false on the first one exhausted. A denied client bucket leaves the other
-   * untouched.
+   * Checks the client bucket, then (with options.account) the account+client and account-across-clients buckets, or
+   * (with options.perUser) the user bucket; answers 429 and returns false on the first one exhausted. A denied
+   * bucket leaves the later ones untouched.
    */
   private async admit(
     req: AuthenticatedRequest,
@@ -300,13 +319,24 @@ export class RateLimitMiddleware {
     const { max, windowMs } = this.config.endpoints.authAccount;
     if (typeof account === 'string' && account.trim() !== '') {
       // HAP-1091: the username is stored only as an unsalted sha256 (not plain text in keys or logs); keyed with the
-      // client, so nobody can lock another client's login out of an account.
+      // client, so one client exhausts its own tries at an account long before the account-wide bucket below.
       const digest = createHash('sha256').update(account.trim().toLowerCase()).digest('hex');
       buckets.push({
         key: `rate-limit:${endpointType}-account:${digest}:${identifier}`,
         identifier: `account:${digest}:${identifier}`,
         budget: { _max: max, _windowMs: windowMs },
       });
+      // HAP-1764: the account across every client address, so many addresses cannot each spend a full account+client
+      // budget on one account. Its cost: that many attempts from anywhere refuse the account's logins (429) for the
+      // window, the legitimate user's included. max 0 turns it off.
+      const global = this.config.endpoints.authAccountGlobal;
+      if (global.max > 0) {
+        buckets.push({
+          key: `rate-limit:${endpointType}-account-global:${digest}`,
+          identifier: `account-global:${digest}`,
+          budget: { _max: global.max, _windowMs: global.windowMs },
+        });
+      }
     }
     if (options.perUser === true) {
       // HAP-1368: not keyed by client, so another address cannot reset it; only a holder of the user's verified

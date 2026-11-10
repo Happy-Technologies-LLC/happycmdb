@@ -481,6 +481,20 @@ Already configured in `infrastructure/docker/nginx.conf`:
 - X-XSS-Protection: 1; mode=block
 - Referrer-Policy: strict-origin-when-cross-origin
 
+#### Rate Limiting (Nginx)
+
+`infrastructure/docker/nginx.conf` also rate-limits per client address in front of the application limits above:
+
+| Zone | Applies to | Limit | Why |
+|------|------------|-------|-----|
+| `auth_limit` | `POST /api/v1/auth/login`, `PUT /api/v1/auth/password` (any letter case, optional trailing slash) | 5r/m, burst 2 | Password guessing. Only these two endpoints check a password. |
+| `auth_session_limit` | Every other `/api/v1/auth/` path (`refresh`, `me`, `logout`, `profile`, `api-key(s)`, `account`) | 2r/s, burst 20 | Flood damping only. A page load sends `refresh` + `me`, and the web UI signs the user out on a 429 from `refresh`, so this zone admits 10 tabs restored at once. |
+| `api_limit` / `graphql_limit` | Remaining `/api/` paths, `/graphql` | 100r/s burst 50, 50r/s burst 20 | General flood protection. |
+
+**Behind a load balancer, CDN or NAT**, nginx sees the proxy's address, so every client shares one bucket and a few failed logins lock everyone out of `auth_limit`. Uncomment the `set_real_ip_from` / `real_ip_header` lines at the top of `nginx.conf` and set `set_real_ip_from` to your proxy's address range only (never `0.0.0.0/0`, which lets any client pick its own bucket by sending the header). nginx then appends that client address to `X-Forwarded-For`, so the api-server's own limits keep `TRUST_PROXY=1`; see [Proxy Trust & Login Rate Limiting](/configuration/environment-variables#proxy-trust-login-rate-limiting).
+
+`bash infrastructure/docker/test-nginx-auth-limits.sh` (needs Docker) runs the config against a stub upstream and checks these limits.
+
 ### Secrets Management
 
 #### AWS Secrets Manager

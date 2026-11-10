@@ -35,7 +35,7 @@ info:
     Rate limit headers included in responses:
     - `X-RateLimit-Limit`: Maximum requests per window
     - `X-RateLimit-Remaining`: Remaining requests
-    - `X-RateLimit-Reset`: Unix timestamp when limit resets
+    - `X-RateLimit-Reset`: Unix epoch milliseconds when limit resets
 
     ## Errors
 
@@ -4604,7 +4604,7 @@ components:
         X-RateLimit-Reset:
           schema:
             type: integer
-          description: Unix timestamp when limit resets
+          description: Unix epoch milliseconds when limit resets
       content:
         application/json:
           schema:

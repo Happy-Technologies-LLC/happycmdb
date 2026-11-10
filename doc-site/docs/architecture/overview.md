@@ -214,7 +214,7 @@ Each component can be scaled independently:
 ### Health Checks
 - **Liveness**: `/api/v1/cmdb-health/alive` - Is the service running?
 - **Readiness**: `/api/v1/cmdb-health/ready` - Can the service accept traffic?
-- **Startup**: `/health/startup` - Has the service finished initialization?
+- **Startup**: no dedicated startup route exists. The Docker Compose `api-server` healthcheck polls `/api/v1/cmdb-health` with `start_period: 40s`, so failures during the first 40 seconds are not counted (`infrastructure/docker/docker-compose.yml:317-322`). The Kubernetes api-server deployment defines no `startupProbe`; its liveness and readiness probes use `initialDelaySeconds` instead (`infrastructure/kubernetes/deployments/api-server-deployment.yaml:122-137`).
 
 ## Deployment Models
 

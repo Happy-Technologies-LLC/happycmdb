@@ -410,7 +410,7 @@ cypher-shell -a bolt+s://localhost:7687 -u neo4j \
 curl -k https://localhost/api/v1/cmdb-health
 
 # Expected output:
-# {"status":"healthy","database":{"neo4j":"connected","postgres":"connected"}}
+# {"_status":"healthy"}
 ```
 
 ---

@@ -162,8 +162,9 @@ scrape_configs:
       module: [http_2xx]
     static_configs:
       - targets:
+          # One api-server target: the root and /ready share one cached dependency
+          # snapshot (health-check.service.ts), so a second target adds no signal.
           - 'http://api-server:3000/api/v1/cmdb-health'
-          - 'http://api-server:3000/api/v1/cmdb-health/ready'
           - 'http://discovery-engine:3001/health'
           - 'http://etl-processor:3002/health'
           - 'http://metabase:3000/api/health'

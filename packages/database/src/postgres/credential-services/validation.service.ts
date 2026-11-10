@@ -13,6 +13,19 @@ import {
 } from '@cmdb/common';
 import { logger, CredentialProtocolAdapter } from '@cmdb/common';
 
+/**
+ * Loggable fields of a caught value. Error's message/stack are non-enumerable, so logging `{ error }` serializes as
+ * `"error":{}` (HAP-1733). A thrown value with a string `code` is a driver error (pg SQLSTATE, Node errno): log its
+ * class and code only, because a driver message can quote SQL fragments, row values or a connection target (HAP-1382).
+ * Anything else (the decrypt failure, a TypeError from the structure check) logs name and message; neither carries
+ * decrypted material. Never the stack, `cause` or pg's `detail`/`where`/`parameters`.
+ */
+function errorLogFields(error: unknown): { name?: string; message?: string; errorClass?: string; code?: string } {
+  if (!(error instanceof Error)) return { errorClass: typeof error };
+  if ('code' in error && typeof error.code === 'string') return { errorClass: error.constructor.name, code: error.code };
+  return { name: error.name, message: error.message };
+}
+
 export class CredentialValidationService {
   constructor(private pool: Pool) {}
 
@@ -40,7 +53,7 @@ export class CredentialValidationService {
 
       return validationResult;
     } catch (error) {
-      logger.error('Failed to validate credential', { error, id });
+      logger.error('Failed to validate credential', { error: errorLogFields(error), id });
       return {
         valid: false,
         message: 'Credential validation failed',
@@ -237,7 +250,7 @@ export class CredentialValidationService {
         },
       };
     } catch (error) {
-      logger.error('Credential structure validation threw', { error, id: credential.id });
+      logger.error('Credential structure validation threw', { error: errorLogFields(error), id: credential.id });
       return {
         valid: false,
         message: 'Validation failed',

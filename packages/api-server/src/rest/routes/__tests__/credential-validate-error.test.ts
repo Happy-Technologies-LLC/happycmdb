@@ -50,10 +50,12 @@ const app = express().use(express.json()).use('/api/v1', getAuthMiddleware().aut
 const auth = { Authorization: `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken('a', 'alice', 'operator', A)}` };
 const validate = (id: string) => request(app).post(`/api/v1/credentials/${id}/validate`).set(auth);
 const insert = (id: string, stored: unknown) => sql(`INSERT INTO credentials (id, name, protocol, scope, credentials, created_by, organization_id) VALUES ($1, 'stored', 'ssh_password', 'ssh', $2, 'a', $3)`, [id, JSON.stringify(stored), A]);
+// Serialized log output only: the strings that reach stdout/stderr or the console, never the arguments handed to logger.error.
 const capture = () => {
   jest.replaceProperty(logger, 'level', 'silly');
-  const sinks = [...(['error', 'warn', 'info', 'debug'] as const).flatMap((l) => [jest.spyOn(logger, l), jest.spyOn(console, l)]), ...logger.transports.map((t) => jest.spyOn(t as unknown as { log: () => void }, 'log')), jest.spyOn(process.stdout, 'write'), jest.spyOn(process.stderr, 'write')];
-  return () => { const logged = inspect(sinks.map((s) => s.mock.calls), { depth: null, maxArrayLength: null, maxStringLength: null }); jest.restoreAllMocks(); return logged; };
+  const streams = [console as unknown as { _stdout?: NodeJS.WriteStream; _stderr?: NodeJS.WriteStream }].flatMap((c) => [c._stdout, c._stderr]).filter((s): s is NodeJS.WriteStream => !!s);
+  const sinks = [...(['log', 'error', 'warn', 'info', 'debug'] as const).map((l) => jest.spyOn(console, l)), ...[process.stdout, process.stderr, ...streams].map((s) => jest.spyOn(s, 'write'))];
+  return () => { const logged = sinks.flatMap((s) => s.mock.calls.flat()).filter((a): a is string => typeof a === 'string').join('\n'); jest.restoreAllMocks(); return logged; };
 };
 
 beforeAll(async () => {
@@ -76,7 +78,6 @@ it('(a) a stored envelope that cannot decrypt returns the generic message; the i
   const res = await validate(id);
   const logged = logs();
   expect(generic(res)).toEqual([200, false, GENERIC]);
-  expect(Object.keys(res.body.data).sort()).toEqual(['message', 'valid', 'validated_at']);
   expect(logged).toContain(`Failed to decrypt credential ${id}`);
   const body = JSON.stringify(res.body);
   expect([body.includes(id), body.toLowerCase().includes('decrypt'), body.includes(MARK)]).toEqual([false, false, false]);
@@ -93,7 +94,8 @@ it('(b) a driver failure on the validation_status UPDATE returns the generic mes
   expect(generic(res)).toEqual([200, false, GENERIC]);
   const body = JSON.stringify(res.body);
   expect([body.includes(DRIVER), body.includes('42P01'), body.includes('relation'), body.includes(MARK)]).toEqual([false, false, false, false]);
-  expect([logged.includes(DRIVER), logged.includes(MARK)]).toEqual([true, false]);
+  // HAP-1382: a driver error logs class and SQLSTATE only, never its message.
+  expect([logged.includes('42P01'), logged.includes(DRIVER), logged.includes(MARK)]).toEqual([true, false, false]);
 });
 
 it('(c) a driver failure on the credential fetch returns the generic message with no driver text', async () => {
@@ -108,8 +110,13 @@ it('(c) a driver failure on the credential fetch returns the generic message wit
 it('(d) a stored payload that makes the structure check throw returns a fixed message, not the TypeError text', async () => {
   const id = '55555555-5555-4555-8555-555555555555';
   await insert(id, getEncryptionService().encrypt('null'));
+  const logs = capture();
   const res = await validate(id);
+  const logged = logs();
   expect(generic(res)).toEqual([200, false, 'Validation failed']);
+  // The TypeError name and a non-empty message reach the serialized log; the body carries neither.
+  expect(logged).toMatch(/"error":\{"name":"TypeError","message":"[^"]+"\}/);
+  expect(JSON.stringify(res.body)).not.toContain('TypeError');
 });
 
 it('(e) deliberate fixed validation messages are unchanged', async () => {

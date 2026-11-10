@@ -64,7 +64,7 @@ NEO4J_ENCRYPTED=true
 | `POSTGRES_IDLE_TIMEOUT` | No | `30000` | Idle connection timeout (ms) |
 | `POSTGRES_CONNECTION_TIMEOUT` | No | `5000` | Connection timeout (ms) |
 | `POSTGRES_SSL_MODE` | Yes in production | unset (cleartext) | `disable`, `require` (TLS, certificate not verified), `prefer` (same as `require`; no cleartext fallback), or `verify-full` (certificate chain and host name). Any other value refuses to start. With `NODE_ENV=production` and a non-local host, setting neither `POSTGRES_SSL_MODE` nor `POSTGRES_SSL_ENABLED` refuses to start. |
-| `POSTGRES_SSL_ENABLED` | No | - | `on` (= `require`) or `off` (= `disable`); used only when `POSTGRES_SSL_MODE` is unset |
+| `POSTGRES_SSL_ENABLED` | No | - | Used only when `POSTGRES_SSL_MODE` is unset: `on` (= `require`), or any other value taken as the mode itself (`off`, `false`, `disable`, `require`, `prefer`, `verify-full`); an unsupported value such as `true` refuses to start. The shipped compose always sets `POSTGRES_SSL_MODE` for the api-server, so there it only drives the postgres server's `-c ssl=` flag |
 | `POSTGRES_SSL_CA_FILE` | No | Node.js trust store | Path to the CA bundle that `verify-full` trusts |
 
 `POSTGRES_SSL_CA_FILE` only takes effect in a process that receives it. The shipped `infrastructure/docker/docker-compose.yml` does not forward it to the api-server or mount a CA, so `verify-full` needs the additions described in [Production Configuration](../deployment/PRODUCTION_CONFIGURATION.md).

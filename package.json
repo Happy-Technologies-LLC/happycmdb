@@ -28,6 +28,7 @@
     "clean": "npm run clean --workspaces && rm -rf node_modules",
     "clean:dist": "npm exec --workspaces -- rm -rf dist",
     "typecheck": "tsc --noEmit",
+    "typecheck:e2e": "tsc -p tests/e2e/tsconfig.json",
     "prepare": "husky install || true"
   },
   "devDependencies": {

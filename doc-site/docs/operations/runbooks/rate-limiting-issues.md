@@ -113,16 +113,20 @@ docker exec cmdb-redis redis-cli set "rate_limit:blocked:$ABUSIVE_IP" "1" EX 360
 
 ### Step 2: Adjust Internal Rate Limits
 
-Only the `rateLimit.endpoints` budgets that a route mounts have an effect: `auth` (login and password change, per client address), `authAccount` and `authAccountGlobal` (login and password change, per account), and `rest` (`POST /api/v1/auth/refresh` only). `endpoints.graphql`, `endpoints.health`, `endpoints.discovery` and `endpoints.admin` are not mounted by any route. Edit the `.env` file to adjust them:
+Only the `rateLimit.endpoints` budgets that a route mounts have an effect: `auth` (login and password change, per client address), `authAccount` (login: per account + client address; password change: per verified user across all clients) and `authAccountGlobal` (login only: per account across all clients; `max: 0` turns it off), and `rest` (`POST /api/v1/auth/refresh` only). `endpoints.graphql`, `endpoints.health`, `endpoints.discovery` and `endpoints.admin` are not mounted by any route. Edit the `.env` file to adjust them:
 
 ```bash
 # Login and password change, per client address (defaults: 20 per 3600000 ms)
 RATE_LIMIT_AUTH_MAX=20
 RATE_LIMIT_AUTH_WINDOW_MS=3600000
 
-# Login and password change, per account (defaults: 5 per 900000 ms; account across all clients: 20 per 900000 ms)
+# Login: per account + client address; password change: per verified user across all clients (defaults: 5 per 900000 ms)
 RATE_LIMIT_AUTH_ACCOUNT_MAX=5
+RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS=900000
+
+# Login only: per account across all clients (defaults: 20 per 900000 ms; 0 = bucket off)
 RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_MAX=20
+RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_WINDOW_MS=900000
 
 # POST /api/v1/auth/refresh only (defaults: 1000 per 3600000 ms; 0 = no limiter)
 RATE_LIMIT_REST_MAX=1000

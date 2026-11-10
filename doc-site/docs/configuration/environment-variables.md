@@ -180,8 +180,7 @@ ETL_FULL_SYNC_SCHEDULE="0 3 * * *"  # 3 AM daily
 | `API_KEY` | No | - | Static API key (for backward compatibility) |
 | `API_KEY_HEADER` | No | `X-API-Key` | Header name for API key |
 | `SESSION_SECRET` | No | - | Session secret for cookie-based auth |
-| `RATE_LIMIT_WINDOW` | No | `60000` | Rate limit window (ms) - 1 minute |
-| `RATE_LIMIT_MAX` | No | `1000` | Max requests per window |
+| `RATE_LIMIT_REST_MAX` | No | `1000` | `POST /api/v1/auth/refresh` only (per client address, `rateLimit.endpoints.rest`); `0` mounts no limiter. Window: `RATE_LIMIT_REST_WINDOW_MS` (default `3600000`). The login and password-change variables are under [Proxy Trust & Login Rate Limiting](#proxy-trust-login-rate-limiting) |
 | `BCRYPT_ROUNDS` | No | `10` | Bcrypt hashing rounds |
 
 **Example:**
@@ -190,8 +189,8 @@ ETL_FULL_SYNC_SCHEDULE="0 3 * * *"  # 3 AM daily
 JWT_SECRET=${JWT_SECRET}  # From secrets - minimum 32 characters
 JWT_EXPIRES_IN=7200       # 2 hours
 API_KEY=${API_KEY}        # From secrets
-RATE_LIMIT_WINDOW=60000
-RATE_LIMIT_MAX=1000
+RATE_LIMIT_AUTH_MAX=20    # login and password change, per client address
+RATE_LIMIT_REST_MAX=1000  # POST /api/v1/auth/refresh only
 BCRYPT_ROUNDS=12
 ```
 

@@ -210,10 +210,11 @@ kubectl rollout restart deployment/api-server -n cmdb
 **Solutions:**
 
 ```bash
-# Solution 1: Increase rate limits
+# Solution 1: Increase the limits of the routes that mount a limiter (login and password change: RATE_LIMIT_AUTH_*;
+# POST /api/v1/auth/refresh: RATE_LIMIT_REST_*; see operations/runbooks/rate-limiting-issues, Step 2)
 kubectl set env deployment/api-server -n cmdb \
-  API_RATE_LIMIT_WINDOW=60000 \
-  API_RATE_LIMIT_MAX=1000
+  RATE_LIMIT_AUTH_MAX=40 \
+  RATE_LIMIT_REST_MAX=2000
 
 # Solution 2: Add more API server replicas
 kubectl scale deployment/api-server --replicas=5 -n cmdb

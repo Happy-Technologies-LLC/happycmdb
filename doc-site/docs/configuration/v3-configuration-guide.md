@@ -68,9 +68,11 @@ API_KEY_PREFIX=cmdb_                   # Prefix for generated keys
 SESSION_SECRET=your-session-secret-minimum-32-characters
 SESSION_MAX_AGE=86400000               # Session lifetime in ms (24 hours)
 
-# Rate Limiting
-RATE_LIMIT_WINDOW_MS=60000             # Rate limit window (1 minute)
-RATE_LIMIT_MAX_REQUESTS=100            # Max requests per window per IP
+# Rate Limiting: only the routes that mount a limiter are limited (login, password change, refresh).
+# Variables are read in packages/common/src/config/config.loader.ts; defaults and routes: see .env.example and
+# /operations/runbooks/rate-limiting-issues (Step 2).
+RATE_LIMIT_AUTH_MAX=20                 # Login and password change, per client address (per 3600000 ms)
+RATE_LIMIT_REST_MAX=1000               # POST /api/v1/auth/refresh only (per 3600000 ms; 0 = no limiter)
 ```
 
 **Security Best Practices**:
@@ -579,7 +581,6 @@ REDIS_HOST=localhost
 
 # Relaxed security (dev only!)
 JWT_EXPIRATION=7d
-RATE_LIMIT_MAX_REQUESTS=1000
 
 # Discovery (lower frequency)
 DISCOVERY_DEFAULT_INTERVAL=3600000
@@ -604,7 +605,6 @@ REDIS_HOST=redis-staging
 
 # Moderate security
 JWT_EXPIRATION=24h
-RATE_LIMIT_MAX_REQUESTS=500
 
 # Discovery (production-like)
 DISCOVERY_DEFAULT_INTERVAL=3600000
@@ -636,7 +636,6 @@ JWT_SECRET=$(openssl rand -base64 64)
 JWT_EXPIRATION=1h
 JWT_REFRESH_EXPIRATION=7d
 ENCRYPTION_KEY=$(openssl rand -base64 64)
-RATE_LIMIT_MAX_REQUESTS=100
 
 # Discovery (high concurrency)
 DISCOVERY_WORKER_CONCURRENCY=10

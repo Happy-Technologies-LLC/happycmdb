@@ -9,7 +9,12 @@
 #      9 s later (no refill yet at 5r/m; 5r/s would admit at 1.5 s, 10r/m or looser at 9 s) and admitted 14 s
 #      later (the bucket refills at about 5r/m);
 #   3. refresh and me still answer once the login bucket is spent;
-#   4. the session zone still refuses a flood.
+#   4. the session zone still refuses a flood;
+#   5. (HAP-1844) a client cannot pick its own auth_limit bucket: 4 logins, each with a different X-Forwarded-For,
+#      still get 429 on the 4th, because the config as shipped keeps set_real_ip_from commented out. Run against a
+#      second, fresh nginx so it does not spend the login bucket that section 2 measures. With
+#      `set_real_ip_from 0.0.0.0/0; real_ip_header X-Forwarded-For;` enabled each request lands in its own bucket
+#      and this section fails.
 #
 # Usage: test-nginx-auth-limits.sh [path/to/nginx.conf]   (default: the nginx.conf next to this script)
 # Needs docker, curl and openssl. NGINX_IMAGE overrides the image (default: the Dockerfile.web tag).
@@ -22,10 +27,11 @@ run_id="hap1818-$$-$RANDOM"
 net="$run_id-net"
 stub="$run_id-stub"
 proxy="$run_id-proxy"
+proxy2="$run_id-proxy2"
 work=$(mktemp -d)
 
 cleanup() {
-  docker rm -f "$stub" "$proxy" >/dev/null 2>&1 || true
+  docker rm -f "$stub" "$proxy" "$proxy2" >/dev/null 2>&1 || true
   docker network rm "$net" >/dev/null 2>&1 || true
   rm -rf "$work"
 }
@@ -61,31 +67,41 @@ EOF
 docker network create "$net" >/dev/null || setup_failed "docker network create"
 docker run -d --name "$stub" --network "$net" --network-alias api-server \
   -v "$work/stub.conf:/etc/nginx/conf.d/default.conf:ro" "$image" >/dev/null || setup_failed "start stub"
-docker run -d --name "$proxy" --network "$net" -p 127.0.0.1::443 \
-  -v "$work/ssl:/etc/nginx/ssl:ro" \
-  -v "$conf:/etc/nginx/conf.d/default.conf:ro" "$image" >/dev/null || setup_failed "start nginx"
-
-port=""
-for _ in $(seq 1 60); do
-  port=$(docker port "$proxy" 443/tcp 2>/dev/null | sed -n 's/^127\.0\.0\.1://p' | head -n 1) || true
-  # /health is a plain `return 200` with no limit_req, so polling it spends no rate-limit budget.
-  if [ -n "$port" ] && [ "$(curl -sk -o /dev/null -w '%{http_code}' --max-time 2 "https://127.0.0.1:$port/health")" = 200 ]; then
-    break
-  fi
-  [ "$(docker inspect -f '{{.State.Running}}' "$proxy" 2>/dev/null)" = true ] || setup_failed "nginx exited"
+start_proxy() { # $1 container name; sets $port to its published https port
+  local name=$1
+  docker run -d --name "$name" --network "$net" -p 127.0.0.1::443 \
+    -v "$work/ssl:/etc/nginx/ssl:ro" \
+    -v "$conf:/etc/nginx/conf.d/default.conf:ro" "$image" >/dev/null || setup_failed "start nginx $name"
   port=""
-  sleep 0.5
-done
-[ -n "$port" ] || setup_failed "nginx did not answer /health"
+  for _ in $(seq 1 60); do
+    port=$(docker port "$name" 443/tcp 2>/dev/null | sed -n 's/^127\.0\.0\.1://p' | head -n 1) || true
+    # /health is a plain `return 200` with no limit_req, so polling it spends no rate-limit budget.
+    if [ -n "$port" ] && [ "$(curl -sk -o /dev/null -w '%{http_code}' --max-time 2 "https://127.0.0.1:$port/health")" = 200 ]; then
+      break
+    fi
+    [ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null)" = true ] || { docker logs "$name" >&2 2>&1 || true; setup_failed "nginx $name exited"; }
+    port=""
+    sleep 0.5
+  done
+  [ -n "$port" ] || { docker logs "$name" >&2 2>&1 || true; setup_failed "nginx $name did not answer /health"; }
+}
 
-status() { # $1 method, $2 path; prints 000 when the request itself fails
-  curl -sk -o /dev/null -w '%{http_code}' --max-time 5 -X "$1" "https://127.0.0.1:$port$2" || true
+start_proxy "$proxy"
+port1=$port
+start_proxy "$proxy2"
+port2=$port
+port=$port1
+
+status() { # $1 method, $2 path, rest: extra curl args; prints 000 when the request itself fails
+  local method=$1 path=$2
+  shift 2
+  curl -sk -o /dev/null -w '%{http_code}' --max-time 5 -X "$method" "$@" "https://127.0.0.1:$port$path" || true
 }
 
 failures=0
-expect() { # $1 label, $2 method, $3 path, $4 wanted status
+expect() { # $1 label, $2 method, $3 path, $4 wanted status, rest: extra curl args
   local got
-  got=$(status "$2" "$3")
+  got=$(status "$2" "$3" "${@:5}")
   if [ "$got" = "$4" ]; then
     echo "ok: $1 ($2 $3): $got"
   else
@@ -138,6 +154,13 @@ else
   echo "FAIL: 40 back-to-back refreshes, none refused (session zone not applied)"
   failures=$((failures + 1))
 fi
+
+echo "== 5. a client cannot choose its auth_limit bucket with X-Forwarded-For (fresh nginx, untouched login bucket)"
+port=$port2
+for i in 1 2 3; do
+  expect "login with forged X-Forwarded-For $i" POST /api/v1/auth/login 200 -H "X-Forwarded-For: 198.51.100.$i"
+done
+expect "login 4 with a fourth forged X-Forwarded-For (same bucket, burst spent)" POST /api/v1/auth/login 429 -H "X-Forwarded-For: 198.51.100.4"
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures assertion(s) failed against $conf"

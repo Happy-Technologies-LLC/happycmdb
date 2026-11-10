@@ -133,7 +133,7 @@ COPY --chown=nodejs:nodejs --from=builder /app/packages ./packages
 # Non-recursive: every file below it was already chowned by the COPYs above.
 RUN chown nodejs:nodejs /app
 
-# nmap gets no file caps (HAP-1755): it decides "privileged" from euid/--privileged, never from file caps, so they were dead weight and +eip NET_RAW/NET_ADMIN fails exec (rc 126) under cap_drop ALL / Pod Security restricted.
+# nmap gets no file caps (HAP-1755). It chooses privileged mode from euid, or when forced with --privileged / NMAP_PRIVILEGED, never from file caps, so they were dead weight. A +eip cap_net_admin,cap_net_raw file cap made the kernel refuse the exec whenever the container's bounding set lacked either cap: Docker's default set has NET_RAW but no NET_ADMIN (the real failure under default caps), and --cap-drop ALL / Pod Security restricted drop both. Through the dumb-init ENTRYPOINT that refusal surfaced as rc 2 ("[dumb-init] nmap: Operation not permitted"); only a direct `--entrypoint nmap` gives rc 255.
 
 # Switch to non-root user
 USER nodejs

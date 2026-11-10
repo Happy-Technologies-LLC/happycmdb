@@ -699,6 +699,22 @@ jobs:
           name: e2e-test-results
           path: test-results/e2e/junit.xml
 
+  api-image-nmap:
+    name: API image runs nmap as nodejs (HAP-1755, HAP-1759)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the API image
+        run: docker build -f infrastructure/docker/Dockerfile.api -t api-image-nmap:ci .
+      - name: Run nmap as nodejs under default caps and --cap-drop ALL
+        run: deploy/test-api-image-nmap.sh api-image-nmap:ci
+
   test-report:
     name: Generate Test Report
     runs-on: ubuntu-latest
@@ -762,7 +778,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   ci-rollup:
-    needs: [unit-tests, integration-tests, e2e-tests, staging-migrations, web-ui-build, nginx-config-test, hap630-real-store, hap644-real-store, hap668-real-store, hap835-real-store, hap1422-real-store, hap1562-real-store]
+    needs: [unit-tests, integration-tests, e2e-tests, staging-migrations, web-ui-build, nginx-config-test, api-image-nmap, hap630-real-store, hap644-real-store, hap668-real-store, hap835-real-store, hap1422-real-store, hap1562-real-store]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -779,6 +795,7 @@ jobs:
           E2E_TESTS_RESULT: ${{ needs.e2e-tests.result }}
           WEB_UI_BUILD_RESULT: ${{ needs.web-ui-build.result }}
           NGINX_CONFIG_TEST_RESULT: ${{ needs.nginx-config-test.result }}
+          API_IMAGE_NMAP_RESULT: ${{ needs.api-image-nmap.result }}
           HAP630_RESULT: ${{ needs.hap630-real-store.result }}
           HAP644_RESULT: ${{ needs.hap644-real-store.result }}
           HAP668_RESULT: ${{ needs.hap668-real-store.result }}
@@ -797,6 +814,7 @@ jobs:
              [ "$STAGING_MIGRATIONS_RESULT" = "success" ] &&
              [ "$WEB_UI_BUILD_RESULT" = "success" ] &&
              [ "$NGINX_CONFIG_TEST_RESULT" = "success" ] &&
+             [ "$API_IMAGE_NMAP_RESULT" = "success" ] &&
              { [ "$HAP630_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP630_RESULT" = "skipped" ]; }; } &&
              { [ "$HAP644_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP644_RESULT" = "skipped" ]; }; } &&
              { [ "$HAP668_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP668_RESULT" = "skipped" ]; }; } &&
@@ -814,6 +832,7 @@ jobs:
             [ "$STAGING_MIGRATIONS_RESULT" = "success" ] || failures+=("staging-migrations=$STAGING_MIGRATIONS_RESULT")
             [ "$WEB_UI_BUILD_RESULT" = "success" ] || failures+=("web-ui-build=$WEB_UI_BUILD_RESULT")
             [ "$NGINX_CONFIG_TEST_RESULT" = "success" ] || failures+=("nginx-config-test=$NGINX_CONFIG_TEST_RESULT")
+            [ "$API_IMAGE_NMAP_RESULT" = "success" ] || failures+=("api-image-nmap=$API_IMAGE_NMAP_RESULT")
             if [ "$HAP630_RESULT" != "success" ] && [ "${{ github.event_name }}" != "push" ]; then
               failures+=("hap630-real-store=$HAP630_RESULT")
             fi

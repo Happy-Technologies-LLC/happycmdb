@@ -189,7 +189,7 @@ This architecture provides:
 - Network devices
 - Open ports
 - Service versions
-- OS detection
+- OS detection: unsupported (`nmap -O` needs root; the worker runs as `nodejs`, so results report `metadata.os.detection: 'unsupported'`)
 
 **Discovery Flow**:
 1. Job queued in `discovery:{provider}` queue

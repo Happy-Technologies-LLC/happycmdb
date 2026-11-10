@@ -4226,9 +4226,10 @@ paths:
         '409':
           description: >-
             A CI is mid-write, a record the plan named is gone
-            (`code: target_missing`) or another import of the same records ran
-            concurrently (`code: concurrent_import`). Records already written
-            stay; re-running the file resumes.
+            (`code: target_missing`), or another import of the same records ran
+            concurrently or bound a name-matched service to a different source
+            record after this run planned (`code: concurrent_import`). Records
+            already written stay; re-running the file resumes.
           content:
             application/json:
               schema:

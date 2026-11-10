@@ -502,7 +502,7 @@ export interface CredentialMatchResult {
   /** The credential that matched */
   credential: UnifiedCredential;
 
-  /** Match score (0-100, higher = better match) */
+  /** Match score: sum of matched affinity rule points plus priority × 2 (1 when nothing matched; max 140). Not 0-100. */
   score: number;
 
   /** Reasons for the match */

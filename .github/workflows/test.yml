@@ -593,6 +593,8 @@ jobs:
     name: Staging Migration Contract
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

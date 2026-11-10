@@ -210,6 +210,8 @@ never read.
 | `RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_MAX` | No | `20` | Login per account across all client addresses; `0` turns it off |
 | `RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_WINDOW_MS` | No | `900000` | Window of the per-account limit (15 minutes) |
 
+**Docker:** `infrastructure/docker/docker-compose.yml` and `deploy/build01-staging.compose.yml` forward every `RATE_LIMIT_*` variable that `config.schema.ts` (`rateLimit`) defines to `api-server` as `RATE_LIMIT_X=${RATE_LIMIT_X:-<schema default>}`. Set the value in the shell or `--env-file` that runs Compose, then recreate the container (`docker compose -f infrastructure/docker/docker-compose.yml up -d --force-recreate api-server`); `docker restart` keeps the old environment, and a `.env` inside the image is not read (`.dockerignore`: `**/.env*`).
+
 **Deployed value:** the shipped nginx (`web-ui/nginx.conf`, `infrastructure/docker/nginx.conf`) and ingress-nginx
 append the connecting address (`$remote_addr`) to `X-Forwarded-For`, so with nginx as the only proxy in front of the
 API set `TRUST_PROXY=1` (docker-compose, Kubernetes manifest and the staging/production config templates do). Add 1

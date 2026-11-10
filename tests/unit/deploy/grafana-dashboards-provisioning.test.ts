@@ -114,14 +114,24 @@ describe('Grafana dashboard provisioning (HAP-1822)', () => {
     });
   });
 
-  it('uses a unique uid per file', () => {
+  // Grafana keys file-provisioned dashboards on uid, and refuses to write any dashboard whose
+  // title is shared inside a folder ("dashboard title is not unique in folder"). The provider
+  // has foldersFromFilesStructure: false, so every file lands in the same folder.
+  const duplicatesOf = (key: 'uid' | 'title'): [string, string[]][] => {
     const owners = new Map<string, string[]>();
     for (const file of files) {
-      const uid = (JSON.parse(readFileSync(file, 'utf8')) as Node).uid;
-      if (typeof uid !== 'string') continue;
-      owners.set(uid, [...(owners.get(uid) ?? []), rel(file)]);
+      const value = (JSON.parse(readFileSync(file, 'utf8')) as Node)[key];
+      if (typeof value !== 'string') continue;
+      owners.set(value, [...(owners.get(value) ?? []), rel(file)]);
     }
-    const duplicates = [...owners].filter(([, owned]) => owned.length > 1);
-    expect(duplicates).toEqual([]);
+    return [...owners].filter(([, owned]) => owned.length > 1);
+  };
+
+  it('uses a unique uid per file', () => {
+    expect(duplicatesOf('uid')).toEqual([]);
+  });
+
+  it('uses a unique title per file (single provisioned folder)', () => {
+    expect(duplicatesOf('title')).toEqual([]);
   });
 });

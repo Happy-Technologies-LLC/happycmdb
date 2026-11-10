@@ -296,6 +296,8 @@ Find the best matching credential for a given context using affinity scoring.
 
 **Endpoint**: `POST /api/v1/credentials/match`
 
+**Permission**: `write`. It decrypts the caller's credentials server-side to score them; a `viewer` gets `403` before any lookup.
+
 **Request Body**:
 ```json
 {
@@ -351,6 +353,8 @@ Find the best matching credential for a given context using affinity scoring.
 Rank all credentials by match score for a given context.
 
 **Endpoint**: `POST /api/v1/credentials/rank`
+
+**Permission**: `write`. It decrypts the caller's credentials server-side to score them; a `viewer` gets `403` before any lookup.
 
 **Request Body**:
 ```json
@@ -425,14 +429,14 @@ curl -X POST "http://localhost:3000/api/v1/credentials/550e8400-e29b-41d4-a716-4
 }
 ```
 
-**Error Response** (400 Bad Request):
+**Failure Response** (200 OK): a credential that fails validation is still a `200`; `valid` is `false` and the message is fixed text.
 ```json
 {
-  "success": false,
+  "success": true,
   "data": {
     "valid": false,
-    "message": "Authentication failed: Permission denied (publickey)",
-    "validatedAt": "2025-11-15T16:00:00Z"
+    "message": "Credential validation failed",
+    "validated_at": "2025-11-15T16:00:00.000Z"
   }
 }
 ```
@@ -611,26 +615,27 @@ Select credentials from a set using the configured strategy and context.
 }
 ```
 
-**Response** (200 OK):
+**Response** (200 OK): secrets are never returned; `credentials` is always `***REDACTED***`.
 ```json
 {
   "success": true,
-  "data": {
-    "selectedCredentials": [
-      {
-        "_id": "550e8400-e29b-41d4-a716-446655440000",
-        "_name": "AWS Production SSH Key",
-        "_protocol": "ssh_key",
-        "_matchScore": 95,
-        "_credentials": {
-          "username": "ec2-user",
-          "privateKey": "-----BEGIN RSA PRIVATE KEY-----\n..."
-        }
-      }
-    ],
-    "strategy": "adaptive",
-    "executionOrder": "sequential"
-  }
+  "data": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "name": "AWS Production SSH Key",
+      "protocol": "ssh_key",
+      "scope": "cloud_provider",
+      "credentials": "***REDACTED***",
+      "affinity": {},
+      "tags": ["production"],
+      "created_by": "user-id",
+      "created_at": "2025-11-15T14:30:00.000Z",
+      "updated_at": "2025-11-15T14:30:00.000Z",
+      "last_validated_at": null,
+      "validation_status": null
+    }
+  ],
+  "count": 1
 }
 ```
 

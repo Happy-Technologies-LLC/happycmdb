@@ -26,6 +26,15 @@
 -- 013 down first: it also restores the global unique name index, which is what a
 -- pre-012 writer relies on. Nothing else references itil_baselines.organization_id.
 --
+-- Operator: stop or drain baseline writes (or take the API out of service) BEFORE
+-- running the 013 down, run the 013 down and this file back-to-back, and replace
+-- the API image right after. Reason: between the 013 down and this file, a running
+-- 012/013-aware API still serves POST /itil/baselines (its 503 gate only checks
+-- that organization_id exists). A name held by another organization or a NULL-owner
+-- row then hits the restored global UNIQUE(name), which the API reports as 409
+-- "Baseline name already exists": a cross-tenant name-existence oracle, the one
+-- 013 closed.
+--
 -- Run: psql -v ON_ERROR_STOP=1 -f 012_itil_baseline_organization_scope.down.sql
 
 BEGIN;

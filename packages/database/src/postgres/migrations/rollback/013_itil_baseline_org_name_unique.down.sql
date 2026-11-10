@@ -28,6 +28,15 @@
 -- references itil_baselines.organization_id or its name indexes: 045 grants only
 -- table privileges, and the baseline_snapshots tables of 025/030/038 are separate.
 --
+-- Operator: stop or drain baseline writes (or take the API out of service) BEFORE
+-- running this file, run this file and rollback/012 back-to-back, and replace the
+-- API image right after. Reason: between this file and the 012 down, a running
+-- 012/013-aware API still serves POST /itil/baselines (its 503 gate only checks
+-- that organization_id exists). A name held by another organization or a NULL-owner
+-- row then hits the restored global UNIQUE(name), which the API reports as 409
+-- "Baseline name already exists": a cross-tenant name-existence oracle, the one
+-- 013 closed.
+--
 -- Run: psql -v ON_ERROR_STOP=1 -f 013_itil_baseline_org_name_unique.down.sql
 
 BEGIN;

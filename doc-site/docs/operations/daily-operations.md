@@ -26,7 +26,7 @@ kubectl get pods -n cmdb
 # redis-*             1/1   Running
 
 # Quick health check all services
-curl -f https://cmdb.example.com/health || echo "API Server DOWN"
+curl -f https://cmdb.example.com/api/v1/cmdb-health || echo "API Server DOWN"
 ```
 
 ### 2. Review Monitoring Dashboards
@@ -173,7 +173,7 @@ kubectl rollout restart deployment/api-server -n cmdb
 kubectl rollout status deployment/api-server -n cmdb
 
 # Verify health
-curl -f https://cmdb.example.com/health
+curl -f https://cmdb.example.com/api/v1/cmdb-health
 ```
 
 #### Restart Discovery Engine

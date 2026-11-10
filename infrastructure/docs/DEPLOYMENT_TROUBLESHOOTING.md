@@ -654,7 +654,7 @@ HTTP 503 Service Unavailable
 docker logs cmdb-api-server --tail 100 | grep -i error
 
 # Test health endpoint directly
-curl -v http://localhost:3000/api/v1/health
+curl -v http://localhost:3000/api/v1/cmdb-health
 
 # Check dependencies
 docker exec cmdb-api-server curl -s http://cmdb-neo4j:7687
@@ -665,7 +665,7 @@ docker exec cmdb-api-server curl -s http://cmdb-postgres:5432
 ```bash
 # Wait longer (containers may still be initializing)
 sleep 60
-curl http://localhost:3000/api/v1/health
+curl http://localhost:3000/api/v1/cmdb-health
 
 # Check database connections
 docker exec -e NEO4J_PASSWORD cmdb-neo4j cypher-shell -u neo4j "RETURN 1"
@@ -674,7 +674,7 @@ docker exec cmdb-postgres psql -U cmdb_user -d cmdb -c "SELECT 1"
 # Restart API server
 docker restart cmdb-api-server
 sleep 30
-curl http://localhost:3000/api/v1/health
+curl http://localhost:3000/api/v1/cmdb-health
 ```
 
 ---
@@ -693,7 +693,7 @@ Health check timed out after 60 seconds
 # Increase health check timeout in deployment script
 # Or wait longer manually
 for i in {1..60}; do
-  if curl -sf http://localhost:3000/api/v1/health; then
+  if curl -sf http://localhost:3000/api/v1/cmdb-health; then
     echo "Health check passed"
     break
   fi
@@ -896,7 +896,7 @@ docker-compose -f infrastructure/docker/docker-compose.yml up -d web-ui
 docker logs cmdb-api-server-green --tail 100
 
 # Diagnose green environment issue
-docker exec cmdb-api-server-green curl http://localhost:3000/api/v1/health
+docker exec cmdb-api-server-green curl http://localhost:3000/api/v1/cmdb-health
 
 # If fixable - fix and retry
 # If not fixable - abort deployment and rollback

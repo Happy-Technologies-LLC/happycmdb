@@ -121,7 +121,7 @@ spec:
               memory: "4Gi"
           livenessProbe:
             httpGet:
-              path: /api/v1/health
+              path: /api/v1/cmdb-health/alive
               port: 3000
             initialDelaySeconds: 60
             periodSeconds: 30
@@ -129,7 +129,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /api/v1/health
+              path: /api/v1/cmdb-health/ready
               port: 3000
             initialDelaySeconds: 30
             periodSeconds: 10

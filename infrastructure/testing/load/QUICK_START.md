@@ -134,7 +134,7 @@ Database:
 
 ```bash
 # Check health
-curl http://localhost:3000/health
+curl http://localhost:3000/api/v1/cmdb-health
 
 # Restart HappyCMDB
 cd /Users/nczitzer/WebstormProjects/happycmdb

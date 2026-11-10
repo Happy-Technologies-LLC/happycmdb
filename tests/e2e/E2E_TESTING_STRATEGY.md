@@ -401,7 +401,7 @@ docker exec -it cmdb-postgres-e2e psql -U test_user -d cmdb_test
 docker exec -it cmdb-redis-e2e redis-cli ping
 
 # Test API health
-curl http://localhost:3001/health
+curl http://localhost:3001/api/v1/cmdb-health
 ```
 
 ## Future Enhancements

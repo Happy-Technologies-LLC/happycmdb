@@ -16,7 +16,7 @@ docker-compose up -d
 docker-compose ps
 
 # Verify health
-curl http://localhost:3000/api/v1/health
+curl http://localhost:3000/api/v1/cmdb-health
 
 # Access services
 # - API: http://localhost:3000
@@ -45,7 +45,7 @@ docker exec cmdb-neo4j-core-1 /infrastructure/scripts/init-neo4j-cluster.sh
 docker exec cmdb-kafka-1 /infrastructure/scripts/init-kafka-topics.sh
 
 # Verify cluster health
-curl http://localhost:3000/api/v1/health | jq
+curl http://localhost:3000/api/v1/cmdb-health | jq
 ```
 
 ### 3. Kubernetes Production Deployment (30 minutes)
@@ -94,7 +94,7 @@ kubectl get ingress -n happycmdb-cmdb
 
 # Check health
 kubectl port-forward svc/api-server 3000:3000 -n happycmdb-cmdb
-curl http://localhost:3000/api/v1/health
+curl http://localhost:3000/api/v1/cmdb-health
 ```
 
 ### 4. AWS Terraform Deployment (45 minutes)
@@ -373,7 +373,7 @@ kubectl get hpa -n happycmdb-cmdb
 
 # Test health endpoint
 kubectl port-forward svc/api-server 3000:3000 -n happycmdb-cmdb
-curl http://localhost:3000/api/v1/health | jq
+curl http://localhost:3000/api/v1/cmdb-health | jq
 ```
 
 ### Phase 4: Networking and Security (Day 2-3)
@@ -452,7 +452,7 @@ kubectl port-forward svc/prometheus-grafana 3000:80 -n monitoring
 
 ```bash
 # Test API endpoints
-curl https://api.happycmdb.yourdomain.com/api/v1/health
+curl https://api.happycmdb.yourdomain.com/api/v1/cmdb-health
 
 # Test discovery
 curl -X POST https://api.happycmdb.yourdomain.com/api/v1/discovery/aws \
@@ -490,7 +490,7 @@ export let options = {
 };
 
 export default function () {
-  let res = http.get('https://api.happycmdb.yourdomain.com/api/v1/health');
+  let res = http.get('https://api.happycmdb.yourdomain.com/api/v1/cmdb-health');
   check(res, { 'status was 200': (r) => r.status == 200 });
 }
 EOF
@@ -596,7 +596,7 @@ kubectl set image deployment/api-server api-server=happycmdb/api-server:v1.1.0 -
 kubectl rollout status deployment/api-server -n happycmdb-cmdb
 
 # 4. Verify health
-curl https://api.happycmdb.yourdomain.com/api/v1/health
+curl https://api.happycmdb.yourdomain.com/api/v1/cmdb-health
 
 # 5. Proceed with next service
 ```

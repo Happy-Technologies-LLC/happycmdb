@@ -20,7 +20,7 @@ As a System Administrator, you're responsible for the operational health, securi
 |------|------------------|-----------|
 | User Management | Admin Panel → Users | As needed |
 | Backup Database | `./infrastructure/scripts/backup-all.sh` | Daily (automated) |
-| Check System Health | `curl http://localhost:3000/api/health` | Continuous |
+| Check System Health | `curl http://localhost:3000/api/v1/cmdb-health` | Continuous |
 | View Logs | `docker-compose logs -f api-server` | As needed |
 | Update Credentials | Admin Panel → Credentials | As needed |
 | Run Discovery | Admin Panel → Discovery → Run Job | Scheduled |
@@ -243,7 +243,7 @@ curl -X POST http://localhost:3000/api/v1/jobs/{job-id}/retry \
 
 **API Server**:
 ```bash
-curl http://localhost:3000/api/health
+curl http://localhost:3000/api/v1/cmdb-health
 ```
 
 **Expected Response**:
@@ -410,7 +410,7 @@ NGINX_SSL_KEY_PATH=/etc/nginx/ssl/key.pem
 
 ### Daily
 
-- [ ] Check system health (`/api/health`)
+- [ ] Check system health (`/api/v1/cmdb-health`)
 - [ ] Review failed jobs
 - [ ] Check disk space (`df -h`)
 - [ ] Scan error logs

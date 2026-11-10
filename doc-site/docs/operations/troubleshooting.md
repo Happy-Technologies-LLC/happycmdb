@@ -27,7 +27,7 @@ echo -e "\n=== Recent Events ==="
 kubectl get events -n cmdb --sort-by='.lastTimestamp' | tail -20
 
 echo -e "\n=== API Health ==="
-curl -f https://cmdb.example.com/health || echo "API UNHEALTHY"
+curl -f https://cmdb.example.com/api/v1/cmdb-health || echo "API UNHEALTHY"
 
 echo -e "\n=== Database Connectivity ==="
 kubectl exec -n cmdb neo4j-0 -- sh -c 'NEO4J_PASSWORD="${NEO4J_AUTH#*/}" exec cypher-shell -u neo4j "$@"' _ "RETURN 1" 2>&1 | grep -q "1" && echo "Neo4j: OK" || echo "Neo4j: FAILED"
@@ -63,7 +63,7 @@ Is the API responding?
 ### Issue 1: API Server Not Responding
 
 **Symptoms:**
-- `curl https://cmdb.example.com/health` returns error
+- `curl https://cmdb.example.com/api/v1/cmdb-health` returns error
 - No response or timeout
 - 502 Bad Gateway errors
 
@@ -1652,7 +1652,7 @@ kubectl top pods -n cmdb
 kubectl run -it --rm debug --image=nicolaka/netshoot --restart=Never -- /bin/bash
 # From inside pod:
 nslookup neo4j
-curl http://api-server:3000/health
+curl http://api-server:3000/api/v1/cmdb-health
 nc -zv postgresql 5433
 
 # Check DNS resolution

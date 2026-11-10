@@ -561,7 +561,7 @@ Test these workflows manually:
 
 ```bash
 # API response time (should be <200ms)
-curl -w "%{time_total}\n" -o /dev/null -s http://localhost:3000/api/v1/health
+curl -w "%{time_total}\n" -o /dev/null -s http://localhost:3000/api/v1/cmdb-health
 
 # GraphQL query time
 time curl -X POST http://localhost:3000/graphql \
@@ -870,7 +870,7 @@ docker exec -it cmdb-api-server bash
 open http://localhost:7474
 
 # Check API health
-curl http://localhost:3000/api/v1/health | jq
+curl http://localhost:3000/api/v1/cmdb-health | jq
 
 # View deployment history
 cat DEPLOYMENT_HISTORY.txt

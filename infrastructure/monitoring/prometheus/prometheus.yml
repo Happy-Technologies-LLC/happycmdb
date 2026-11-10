@@ -162,8 +162,8 @@ scrape_configs:
       module: [http_2xx]
     static_configs:
       - targets:
-          - 'http://api-server:3000/health'
-          - 'http://api-server:3000/ready'
+          - 'http://api-server:3000/api/v1/cmdb-health'
+          - 'http://api-server:3000/api/v1/cmdb-health/ready'
           - 'http://discovery-engine:3001/health'
           - 'http://etl-processor:3002/health'
           - 'http://metabase:3000/api/health'

@@ -280,7 +280,7 @@ await waitForNeo4j({
 // Wait for HTTP service
 await waitForService({
   name: 'API Server',
-  url: 'http://localhost:3001/health',
+  url: 'http://localhost:3001/api/v1/cmdb-health',
   timeout: 60000,
 });
 ```
@@ -308,7 +308,7 @@ All services have healthchecks configured:
 - **Neo4j**: Cypher query `RETURN 1`
 - **PostgreSQL**: `pg_isready` check
 - **Redis**: `redis-cli ping`
-- **API Server**: HTTP GET `/health`
+- **API Server**: HTTP GET `/api/v1/cmdb-health`
 - **Workers**: Process check
 
 ### Volumes
@@ -421,7 +421,7 @@ node --inspect-brk node_modules/.bin/jest tests/e2e/full-discovery-flow.test.ts
 
 ```bash
 # Check API health
-curl http://localhost:3001/health
+curl http://localhost:3001/api/v1/cmdb-health
 
 # Query Neo4j
 docker exec -it -e NEO4J_PASSWORD cmdb-neo4j-e2e cypher-shell -u neo4j "MATCH (n) RETURN count(n)"

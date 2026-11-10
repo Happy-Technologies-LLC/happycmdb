@@ -582,7 +582,7 @@ Cloud Migration Project:
 ### Dashboard not loading
 
 **Check**:
-1. API server is running: `curl http://localhost:3000/api/health`
+1. API server is running: `curl http://localhost:3000/api/v1/cmdb-health`
 2. You're logged in (JWT token not expired)
 3. Your user has `viewer` role or higher
 

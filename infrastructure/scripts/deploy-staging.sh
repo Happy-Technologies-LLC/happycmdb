@@ -314,7 +314,7 @@ check_service_health() {
 }
 
 # Check API server health
-check_service_health "API Server" "http://localhost:3000/api/v1/health"
+check_service_health "API Server" "http://localhost:3000/api/v1/cmdb-health"
 
 # Check Web UI
 check_service_health "Web UI" "http://localhost:3001"
@@ -371,7 +371,7 @@ SMOKE_TESTS_PASSED=true
 
 # Test 1: API health endpoint
 run_smoke_test "API Health Endpoint" \
-    "curl -sf http://localhost:3000/api/v1/health | grep -q '\"status\":\"healthy\"'" \
+    "curl -sf http://localhost:3000/api/v1/cmdb-health | grep -q '\"_status\":\"healthy\"'" \
     || SMOKE_TESTS_PASSED=false
 
 # Test 2: GraphQL endpoint

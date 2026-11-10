@@ -109,7 +109,7 @@ services:
     networks:
       - cmdb_e2e_network
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/v1/cmdb-health/alive"]
       interval: 5s
       timeout: 3s
       retries: 10

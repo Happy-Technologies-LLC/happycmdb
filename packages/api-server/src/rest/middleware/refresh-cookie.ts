@@ -15,6 +15,7 @@
 
 import type { NextFunction, Request, Response } from 'express';
 import * as jwt from 'jsonwebtoken';
+import { SESSION_ABSOLUTE_CAP_SECONDS } from '../../auth/auth.service';
 
 /** HAP-1211 H2: the __Secure- prefix makes browsers refuse this name from a non-https origin (no plain-http fixation). */
 export const REFRESH_COOKIE = '__Secure-cmdb_rt';
@@ -46,12 +47,21 @@ export function readRefreshCookie(req: Request): string | null {
   return value !== null && COMPACT_JWS.test(value) ? value : null;
 }
 
-/** Sets __Secure-cmdb_rt to a freshly issued refresh JWT; Max-Age is that token's lifetime (exp − iat, the refresh TTL). */
+/**
+ * Sets __Secure-cmdb_rt to a freshly issued refresh JWT. Max-Age is that token's lifetime (exp − iat, the refresh TTL),
+ * clamped (HAP-1382 L4) to what is left at issue of the 7-day absolute cap from `_authTime` (never below 0): the cookie
+ * never outlives the session /auth/refresh still accepts, whatever the refresh TTL or how often it was renewed.
+ */
 export function setRefreshCookie(res: Response, refreshJwt: string): void {
   const claims = jwt.decode(refreshJwt);
-  const lifetime = claims !== null && typeof claims === 'object' ? Number(claims.exp) - Number(claims.iat) : Number.NaN;
-  if (!Number.isSafeInteger(lifetime) || lifetime <= 0) throw new Error('Refresh lifetime unavailable');
-  res.append('Set-Cookie', `${REFRESH_COOKIE}=${refreshJwt}; Max-Age=${lifetime}; ${ATTRIBUTES}`);
+  const [exp, iat, authTime] = claims !== null && typeof claims === 'object'
+    ? [Number(claims.exp), Number(claims.iat), Number(claims['_authTime'])] : [Number.NaN, Number.NaN, Number.NaN];
+  const lifetime = exp - iat;
+  const capLeft = authTime + SESSION_ABSOLUTE_CAP_SECONDS - iat;
+  if (!Number.isSafeInteger(lifetime) || lifetime <= 0 || !Number.isSafeInteger(capLeft)) {
+    throw new Error('Refresh lifetime unavailable');
+  }
+  res.append('Set-Cookie', `${REFRESH_COOKIE}=${refreshJwt}; Max-Age=${Math.max(0, Math.min(lifetime, capLeft))}; ${ATTRIBUTES}`);
 }
 
 /** Expires __Secure-cmdb_rt with the same attributes it was set with. */

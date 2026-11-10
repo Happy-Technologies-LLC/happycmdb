@@ -16,3 +16,14 @@ export function errorLogFields(error: unknown): { name?: string; message: string
   const code = 'code' in error && typeof error.code === 'string' ? error.code : undefined;
   return { name: error.name, message: error.message, code, stack: error.stack };
 }
+
+/**
+ * Type-only loggable fields of a caught value: its class name and, when it has one, its string `code` (a SQLSTATE,
+ * Neo4j status or errno). Never the message, stack or cause: a store or driver message can quote a connection URL
+ * with credentials, a Cypher or SQL fragment, or row values (HAP-1382).
+ */
+export function errorClassFields(error: unknown): { errorClass: string; code?: string } {
+  if (!(error instanceof Error)) return { errorClass: typeof error };
+  const code = 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+  return code === undefined ? { errorClass: error.constructor.name } : { errorClass: error.constructor.name, code };
+}

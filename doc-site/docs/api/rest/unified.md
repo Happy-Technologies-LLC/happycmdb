@@ -33,24 +33,24 @@ Create a new credential with affinity matching rules.
 **Request Body**:
 ```json
 {
-  "_name": "AWS Production SSH Key",
-  "_description": "SSH key for production EC2 instances",
-  "_protocol": "ssh_key",
-  "_scope": "cloud_provider",
-  "_credentials": {
+  "name": "AWS Production SSH Key",
+  "description": "SSH key for production EC2 instances",
+  "protocol": "ssh_key",
+  "scope": "cloud_provider",
+  "credentials": {
     "username": "ec2-user",
     "privateKey": "-----BEGIN RSA PRIVATE KEY-----\n...",
     "passphrase": "optional-passphrase"
   },
-  "_affinity": {
-    "_networks": ["10.0.0.0/8"],
-    "_hostname_patterns": ["*-prod-*", "*.example.com"],
-    "_os_types": ["linux"],
-    "_cloud_providers": ["aws"],
-    "_environments": ["production"],
-    "_priority": 8
+  "affinity": {
+    "networks": ["10.0.0.0/8"],
+    "hostname_patterns": ["*-prod-*", "*.example.com"],
+    "os_types": ["linux"],
+    "cloud_providers": ["aws"],
+    "environments": ["production"],
+    "priority": 8
   },
-  "_tags": ["production", "aws", "ec2"]
+  "tags": ["production", "aws", "ec2"]
 }
 ```
 
@@ -119,50 +119,48 @@ Create a new credential with affinity matching rules.
 
 ### List Credentials
 
-Retrieve all credentials (summary only, no sensitive data).
+Retrieve the caller's credentials in their organization (summaries only, no secret material).
 
 **Endpoint**: `GET /api/v1/credentials`
 
 **Query Parameters**:
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `_protocol` | string | No | Filter by protocol (ssh_key, aws_iam, etc.) |
-| `_scope` | string | No | Filter by scope (cloud_provider, ssh, etc.) |
-| `_tags` | string | No | Comma-separated tags to filter by |
-| `_created_by` | string | No | Filter by creator email |
-| `_limit` | number | No | Results per page (default: 100, max: 1000) |
-| `_offset` | number | No | Pagination offset (default: 0) |
+| `protocol` | string | No | Filter by protocol (ssh_key, aws_iam, etc.) |
+| `scope` | string | No | Filter by scope (cloud_provider, ssh, etc.) |
+| `tags` | string | No | Comma-separated tags; a credential matches if it has any of them |
+| `created_by` | string | No | Only your own credentials are listed; any other value returns an empty list |
+| `limit` | number | No | Results per page (default: 100, max: 1000) |
+| `offset` | number | No | Pagination offset (default: 0) |
 
 **Example Request**:
 ```bash
-curl "http://localhost:3000/api/v1/credentials?_protocol=ssh_key&_limit=20" \
+curl "http://localhost:3000/api/v1/credentials?protocol=ssh_key&limit=20" \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
-**Response** (200 OK):
+**Response** (200 OK): newest first; `count` is the number of rows in this page.
 ```json
 {
   "success": true,
-  "data": {
-    "credentials": [
-      {
-        "_id": "550e8400-e29b-41d4-a716-446655440000",
-        "_name": "AWS Production SSH Key",
-        "_protocol": "ssh_key",
-        "_scope": "cloud_provider",
-        "_tags": ["production", "aws", "ec2"],
-        "_createdBy": "admin@example.com",
-        "_createdAt": "2025-11-15T10:00:00Z",
-        "_lastUsedAt": "2025-11-15T14:30:00Z",
-        "_usageCount": 42
-      }
-    ],
-    "pagination": {
-      "total": 1,
-      "limit": 20,
-      "offset": 0
+  "data": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "name": "AWS Production SSH Key",
+      "description": "SSH key for production EC2 instances",
+      "protocol": "ssh_key",
+      "scope": "cloud_provider",
+      "affinity": { "networks": ["10.0.0.0/8"], "priority": 8 },
+      "tags": ["production", "aws", "ec2"],
+      "created_at": "2025-11-15T10:00:00.000Z",
+      "updated_at": "2025-11-15T10:00:00.000Z",
+      "last_validated_at": null,
+      "validation_status": null,
+      "usage_count": 2,
+      "connector_usage_count": 0
     }
-  }
+  ],
+  "count": 1
 }
 ```
 
@@ -212,6 +210,7 @@ curl "http://localhost:3000/api/v1/credentials/550e8400-e29b-41d4-a716-446655440
 **Error Responses**:
 - `404 Not Found` - Credential does not exist
 - `401 Unauthorized` - Missing or invalid JWT token
+- `500 Internal Server Error` - The stored credential cannot be decrypted or decoded: `{"success": false, "error": "Failed to get credential", "message": "Internal error"}`. The server log names the error class only, never its message.
 
 ---
 
@@ -224,32 +223,41 @@ Update credential properties (name, affinity, tags, or credentials).
 **Request Body**:
 ```json
 {
-  "_name": "AWS Production SSH Key (Updated)",
-  "_affinity": {
-    "_networks": ["10.0.0.0/8", "172.16.0.0/12"],
-    "_priority": 9
+  "name": "AWS Production SSH Key (Updated)",
+  "affinity": {
+    "networks": ["10.0.0.0/8", "172.16.0.0/12"],
+    "priority": 9
   },
-  "_tags": ["production", "aws", "ec2", "high-priority"]
+  "tags": ["production", "aws", "ec2", "high-priority"]
 }
 ```
 
-**Response** (200 OK):
+**Response** (200 OK): the updated credential, same shape as [Get Credential by ID](#get-credential-by-id); `credentials` is always `***REDACTED***`.
 ```json
 {
   "success": true,
   "data": {
-    "_id": "550e8400-e29b-41d4-a716-446655440000",
-    "_name": "AWS Production SSH Key (Updated)",
-    "_updatedAt": "2025-11-15T15:00:00Z"
-  }
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "AWS Production SSH Key (Updated)",
+    "credentials": "***REDACTED***",
+    "affinity": {
+      "networks": ["10.0.0.0/8", "172.16.0.0/12"],
+      "priority": 9
+    },
+    "tags": ["production", "aws", "ec2", "high-priority"],
+    "updated_at": "2025-11-15T15:00:00.000Z"
+  },
+  "message": "Credential updated successfully"
 }
 ```
 
 **Error Responses**:
 - `404 Not Found` - Credential does not exist
 - `400 Bad Request` - Invalid update data
+- `409 Conflict` - Another of your credentials already has the new name
 - `401 Unauthorized` - Missing or invalid JWT token
 - `403 Forbidden` (`code: c4_principal_admin_required`) - Non-admin added the `happylab-c4` tag or edited a credential that carries it
+- `500 Internal Server Error` - The updated credential cannot be decrypted or decoded (a stored value that is not valid JSON, or a damaged envelope): `{"success": false, "error": "Failed to update credential", "message": "Internal error"}`. The update is rolled back, so nothing is changed (HAP-1814). Sending a new `credentials` object replaces the stored value and avoids this.
 
 ---
 
@@ -265,13 +273,7 @@ curl -X DELETE "http://localhost:3000/api/v1/credentials/550e8400-e29b-41d4-a716
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
-**Response** (200 OK):
-```json
-{
-  "success": true,
-  "message": "Credential deleted successfully"
-}
-```
+**Response** (204 No Content): empty body.
 
 **Error Responses**:
 - `404 Not Found` - Credential does not exist
@@ -345,7 +347,7 @@ Find the best matching credential for a given context using affinity scoring.
 ```
 
 **Error Responses**:
-- `404 Not Found` - No credential of the caller has the required protocol/scope
+- `404 Not Found` - No credential of the caller passes the protocol/scope filters, or every one that does fails to decrypt or decode (each such candidate is skipped; the server log names its error class only)
 - `400 Bad Request` - Invalid context data
 - `401 Unauthorized` - Missing or invalid JWT token
 - `403 Forbidden` - Caller lacks the `write` permission: `{"_error": "Forbidden", "_message": "Permission 'write' required"}`
@@ -371,7 +373,7 @@ Rank all credentials by match score for a given context.
 }
 ```
 
-**Response** (200 OK): every credential of the caller that has the required protocol/scope, sorted by `score` descending; none is excluded for a low score. Secrets are never returned; `credential.credentials` is always `***REDACTED***`. Against the request above: the first scores 30 + 25 + 20 + 10 + 10 (priority 5 × 2) = 95, the second 20 (OS only), the third has no affinity rules and gets the base score 1.
+**Response** (200 OK): every credential of the caller that has the required protocol/scope, sorted by `score` descending; none is excluded for a low score. A credential that fails to decrypt or decode is left out (the server log names its error class only), so the list can be empty. Secrets are never returned; `credential.credentials` is always `***REDACTED***`. Against the request above: the first scores 30 + 25 + 20 + 10 + 10 (priority 5 × 2) = 95, the second 20 (OS only), the third has no affinity rules and gets the base score 1.
 ```json
 {
   "success": true,
@@ -514,40 +516,51 @@ Credential sets allow trying multiple credentials in sequence with configurable 
 **Request Body**:
 ```json
 {
-  "_name": "Production Linux Servers",
-  "_description": "Fallback credentials for production Linux servers",
-  "_credential_ids": [
+  "name": "Production Linux Servers",
+  "description": "Fallback credentials for production Linux servers",
+  "credential_ids": [
     "550e8400-e29b-41d4-a716-446655440000",
     "660f9511-f3ac-52e5-b827-557766551111"
   ],
-  "_strategy": "sequential",
-  "_stop_on_success": true,
-  "_tags": ["production", "linux"]
+  "strategy": "sequential",
+  "stop_on_success": true,
+  "tags": ["production", "linux"]
 }
 ```
 
-**Strategies**:
-- `sequential` - Try credentials one by one in order
-- `parallel` - Try all credentials simultaneously
-- `adaptive` - Start sequential, switch to parallel on failure
+`name` and `credential_ids` (at least one; each must be one of your credentials in this organization) are required; `strategy` defaults to `sequential` and `stop_on_success` to `true`. The server stores `stop_on_success` for the caller; select does not act on it.
+
+**Strategies** (applied by [Select Credentials from Set](#select-credentials-from-set)):
+- `sequential` - Return the credentials in `credential_ids` order
+- `parallel` - Same order as `sequential`, as a hint for a caller that tries them concurrently
+- `adaptive` - Rank the credentials by affinity score against the select `context` (highest first); ties keep `credential_ids` order
 
 **Response** (201 Created):
 ```json
 {
   "success": true,
   "data": {
-    "_id": "770g0622-g4bd-63f6-c938-668877662222",
-    "_name": "Production Linux Servers",
-    "_credential_ids": [
+    "id": "770e0622-e4bd-43f6-a938-668877662222",
+    "name": "Production Linux Servers",
+    "description": "Fallback credentials for production Linux servers",
+    "credential_ids": [
       "550e8400-e29b-41d4-a716-446655440000",
       "660f9511-f3ac-52e5-b827-557766551111"
     ],
-    "_strategy": "sequential",
-    "_stop_on_success": true,
-    "_createdAt": "2025-11-15T10:00:00Z"
-  }
+    "strategy": "sequential",
+    "stop_on_success": true,
+    "tags": ["production", "linux"],
+    "created_by": "user-id",
+    "created_at": "2025-11-15T10:00:00.000Z",
+    "updated_at": "2025-11-15T10:00:00.000Z"
+  },
+  "message": "Credential set created successfully"
 }
 ```
+
+**Error Responses**:
+- `400 Bad Request` - Invalid body, or one or more `credential_ids` are not your credentials
+- `409 Conflict` - You already have a credential set with this name
 
 ---
 
@@ -555,22 +568,28 @@ Credential sets allow trying multiple credentials in sequence with configurable 
 
 **Endpoint**: `GET /api/v1/credential-sets`
 
-**Response** (200 OK):
+**Response** (200 OK): each set with its member credentials as summaries (no secrets), newest first.
 ```json
 {
   "success": true,
-  "data": {
-    "credentialSets": [
-      {
-        "_id": "770g0622-g4bd-63f6-c938-668877662222",
-        "_name": "Production Linux Servers",
-        "_credential_count": 2,
-        "_strategy": "sequential",
-        "_createdAt": "2025-11-15T10:00:00Z"
-      }
-    ],
-    "total": 1
-  }
+  "data": [
+    {
+      "id": "770e0622-e4bd-43f6-a938-668877662222",
+      "name": "Production Linux Servers",
+      "description": "Fallback credentials for production Linux servers",
+      "credentials": [
+        { "id": "550e8400-e29b-41d4-a716-446655440000", "name": "AWS Production SSH Key", "protocol": "ssh_key", "scope": "cloud_provider", "affinity": { "priority": 8 }, "priority": 8 },
+        { "id": "660f9511-f3ac-52e5-b827-557766551111", "name": "Generic Linux SSH Key", "protocol": "ssh_key", "scope": "ssh", "affinity": {}, "priority": 5 }
+      ],
+      "strategy": "sequential",
+      "stop_on_success": true,
+      "tags": ["production", "linux"],
+      "created_at": "2025-11-15T10:00:00.000Z",
+      "updated_at": "2025-11-15T10:00:00.000Z",
+      "usage_count": 0
+    }
+  ],
+  "count": 1
 }
 ```
 
@@ -580,33 +599,30 @@ Credential sets allow trying multiple credentials in sequence with configurable 
 
 **Endpoint**: `GET /api/v1/credential-sets/:id`
 
-**Response** (200 OK):
+**Response** (200 OK): one set in the [List Credential Sets](#list-credential-sets) item shape; `credentials` lists the members in `credential_ids` order and `priority` is the member's `affinity.priority` (5 when unset).
 ```json
 {
   "success": true,
   "data": {
-    "_id": "770g0622-g4bd-63f6-c938-668877662222",
-    "_name": "Production Linux Servers",
-    "_description": "Fallback credentials for production Linux servers",
-    "_credentials": [
-      {
-        "_id": "550e8400-e29b-41d4-a716-446655440000",
-        "_name": "AWS Production SSH Key",
-        "_protocol": "ssh_key"
-      },
-      {
-        "_id": "660f9511-f3ac-52e5-b827-557766551111",
-        "_name": "Generic Linux SSH Key",
-        "_protocol": "ssh_key"
-      }
+    "id": "770e0622-e4bd-43f6-a938-668877662222",
+    "name": "Production Linux Servers",
+    "description": "Fallback credentials for production Linux servers",
+    "credentials": [
+      { "id": "550e8400-e29b-41d4-a716-446655440000", "name": "AWS Production SSH Key", "protocol": "ssh_key", "scope": "cloud_provider", "affinity": { "priority": 8 }, "priority": 8 },
+      { "id": "660f9511-f3ac-52e5-b827-557766551111", "name": "Generic Linux SSH Key", "protocol": "ssh_key", "scope": "ssh", "affinity": {}, "priority": 5 }
     ],
-    "_strategy": "sequential",
-    "_stop_on_success": true,
-    "_tags": ["production", "linux"],
-    "_createdAt": "2025-11-15T10:00:00Z"
+    "strategy": "sequential",
+    "stop_on_success": true,
+    "tags": ["production", "linux"],
+    "created_at": "2025-11-15T10:00:00.000Z",
+    "updated_at": "2025-11-15T10:00:00.000Z",
+    "usage_count": 0
   }
 }
 ```
+
+**Error Responses**:
+- `404 Not Found` - The set does not exist
 
 ---
 
@@ -614,30 +630,46 @@ Credential sets allow trying multiple credentials in sequence with configurable 
 
 **Endpoint**: `PUT /api/v1/credential-sets/:id`
 
-**Request Body**:
+**Request Body** (every field optional; same fields as create):
 ```json
 {
-  "_strategy": "adaptive",
-  "_credential_ids": [
+  "strategy": "adaptive",
+  "credential_ids": [
     "550e8400-e29b-41d4-a716-446655440000",
     "660f9511-f3ac-52e5-b827-557766551111",
-    "880h1733-h5ce-74g7-d049-779988773333"
+    "880a1733-a5ce-44a7-8049-779988773333"
   ]
 }
 ```
 
-**Response** (200 OK):
+**Response** (200 OK): the updated set, same shape as the create response.
 ```json
 {
   "success": true,
   "data": {
-    "_id": "770g0622-g4bd-63f6-c938-668877662222",
-    "_strategy": "adaptive",
-    "_credential_count": 3,
-    "_updatedAt": "2025-11-15T15:00:00Z"
-  }
+    "id": "770e0622-e4bd-43f6-a938-668877662222",
+    "name": "Production Linux Servers",
+    "description": "Fallback credentials for production Linux servers",
+    "credential_ids": [
+      "550e8400-e29b-41d4-a716-446655440000",
+      "660f9511-f3ac-52e5-b827-557766551111",
+      "880a1733-a5ce-44a7-8049-779988773333"
+    ],
+    "strategy": "adaptive",
+    "stop_on_success": true,
+    "tags": ["production", "linux"],
+    "created_by": "user-id",
+    "created_at": "2025-11-15T10:00:00.000Z",
+    "updated_at": "2025-11-15T15:00:00.000Z"
+  },
+  "message": "Credential set updated successfully"
 }
 ```
+
+**Error Responses**:
+- `400 Bad Request` - Invalid body, or one or more `credential_ids` are not your credentials
+- `404 Not Found` - The set does not exist
+- `409 Conflict` - You already have a credential set with the new name
 
 ---
 
@@ -645,13 +677,11 @@ Credential sets allow trying multiple credentials in sequence with configurable 
 
 **Endpoint**: `DELETE /api/v1/credential-sets/:id`
 
-**Response** (200 OK):
-```json
-{
-  "success": true,
-  "message": "Credential set deleted successfully"
-}
-```
+**Response** (204 No Content): empty body.
+
+**Error Responses**:
+- `404 Not Found` - The set does not exist
+- `409 Conflict` - The set is used by a discovery definition
 
 ---
 
@@ -663,7 +693,7 @@ Select credentials from a set using the configured strategy and context.
 
 **Permission**: `write`. It reads the set's member secrets server-side; a `viewer` gets `403` before any lookup.
 
-**Request Body** (field names per the route's `selectCredentialsSchema`; both optional):
+**Request Body** (field names per the route's `selectCredentialsSchema`: `context` and `strategy`, both optional; the legacy underscore-prefixed `_context` / `_strategy` are not accepted and are stripped, so a body that uses them selects with an empty context and the set's own strategy):
 ```json
 {
   "context": {
@@ -675,7 +705,7 @@ Select credentials from a set using the configured strategy and context.
 }
 ```
 
-**Response** (200 OK): secrets are never returned; `credentials` is always `***REDACTED***`.
+**Response** (200 OK): the set's member credentials ordered by `strategy` (default: the set's stored strategy; see [Strategies](#create-credential-set)); `context` is used only by `adaptive`. Secrets are never returned; `credentials` is always `***REDACTED***`.
 ```json
 {
   "success": true,
@@ -699,6 +729,13 @@ Select credentials from a set using the configured strategy and context.
   "count": 1
 }
 ```
+
+**Error Responses**:
+- `400 Bad Request` - Invalid `context` or `strategy`
+- `401 Unauthorized` - Missing or invalid JWT token
+- `403 Forbidden` - Caller lacks the `write` permission: `{"_error": "Forbidden", "_message": "Permission 'write' required"}`
+- `404 Not Found` - The set does not exist
+- `500 Internal Server Error` - A member credential cannot be decrypted or decoded: `{"success": false, "error": "Failed to select credentials", "message": "Internal error"}`. The whole select fails (no partial list); the server log names the error class only, never its message (HAP-1814).
 
 ---
 
@@ -725,7 +762,8 @@ The unified credentials system uses intelligent affinity matching to automatical
 - The score is the sum of the points above; each rule counts at most once.
 - A credential with no matching rule and no `priority` gets the base score 1 (reason `Default match (no affinity specified)`).
 - There is no 0-100 scale: the maximum is 30 + 25 + 20 + 15 + 10 + 20 + 20 = 140.
-- No credential is excluded for a low score. Rank returns every considered credential sorted by score (highest first); Match returns the first of that list, and `404` only when no credential passes the protocol/scope filters.
+- No credential is excluded for a low score. Rank returns every considered credential sorted by score (highest first); Match returns the first of that list.
+- A considered credential that fails to decrypt or decode is skipped, not scored; the server log records its id and error class only. Match returns `404` when no credential passes the protocol/scope filters or when every one that does is skipped this way.
 
 ### Example Affinity Configuration
 
@@ -786,17 +824,17 @@ AWS_REGION=us-east-1
 **After (v3.0 unified credential)**:
 ```json
 {
-  "_name": "AWS Production Account",
-  "_protocol": "aws_iam",
-  "_scope": "cloud_provider",
-  "_credentials": {
+  "name": "AWS Production Account",
+  "protocol": "aws_iam",
+  "scope": "cloud_provider",
+  "credentials": {
     "accessKeyId": "AKIAIOSFODNN7EXAMPLE",
     "secretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
     "region": "us-east-1"
   },
-  "_affinity": {
-    "_cloud_providers": ["aws"],
-    "_environments": ["production"]
+  "affinity": {
+    "cloud_providers": ["aws"],
+    "environments": ["production"]
   }
 }
 ```
@@ -822,7 +860,7 @@ AWS_REGION=us-east-1
 4. **Regular Validation**: Periodically validate credentials using the `/validate` endpoint
 5. **Least Privilege**: Create credentials with minimum required permissions
 6. **Rotation**: Regularly rotate credentials and update via the API
-7. **Monitoring**: Track `_usageCount` and `_lastUsedAt` to identify unused credentials
+7. **Monitoring**: Track `usage_count`, `connector_usage_count` and `last_validated_at` ([List Credentials](#list-credentials)) to identify unused or stale credentials
 
 ---
 

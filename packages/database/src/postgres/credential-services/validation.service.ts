@@ -11,19 +11,7 @@ import {
   UnifiedCredential,
   CredentialValidationResult,
 } from '@cmdb/common';
-import { logger, CredentialProtocolAdapter } from '@cmdb/common';
-
-/**
- * Type-only loggable fields of a caught value: its class and, when it has one, its string `code` (pg SQLSTATE, errno).
- * Never the message, stack or `cause` (HAP-1382; mirrors api-server `errorClassFields`): a driver message can quote SQL
- * or row values, and a decrypt failure's message can quote decrypted plaintext (a JSON.parse snippet). Logging the raw
- * `{ error }` instead serializes as `"error":{}` (HAP-1733).
- */
-function credentialErrorLogFields(error: unknown): { errorClass: string; code?: string } {
-  if (!(error instanceof Error)) return { errorClass: typeof error };
-  const code = 'code' in error && typeof error.code === 'string' ? error.code : undefined;
-  return code === undefined ? { errorClass: error.constructor.name } : { errorClass: error.constructor.name, code };
-}
+import { logger, CredentialProtocolAdapter, errorClassFields } from '@cmdb/common';
 
 export class CredentialValidationService {
   constructor(private pool: Pool) {}
@@ -52,7 +40,7 @@ export class CredentialValidationService {
 
       return validationResult;
     } catch (error) {
-      logger.error('Failed to validate credential', { error: credentialErrorLogFields(error), id });
+      logger.error('Failed to validate credential', { error: errorClassFields(error), id });
       return {
         valid: false,
         message: 'Credential validation failed',
@@ -251,7 +239,7 @@ export class CredentialValidationService {
     } catch (error) {
       // The only throw here is a property read on a null `creds` (decoded JSON or a NULL legacy column), whose V8 TypeError
       // message names the property (`Cannot read properties of null (reading 'port')`), never a stored value.
-      const fields = error instanceof TypeError ? { name: error.name, message: error.message } : credentialErrorLogFields(error);
+      const fields = error instanceof TypeError ? { name: error.name, message: error.message } : errorClassFields(error);
       logger.error('Credential structure validation threw', { error: fields, id: credential.id });
       return {
         valid: false,

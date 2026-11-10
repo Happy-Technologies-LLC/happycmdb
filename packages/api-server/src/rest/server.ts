@@ -38,9 +38,8 @@ import { driftRoutes, impactRoutes } from './routes/drift-impact.routes';
 import { createRateLimitMetricsRoutes } from './routes/rate-limit-metrics.routes';
 import { RateLimitMiddleware } from '../middleware/rate-limit.middleware';
 import { getRedisClient } from '@cmdb/database';
-import { loadConfig } from '@cmdb/common';
+import { loadConfig, errorClassFields } from '@cmdb/common';
 import { applyTrustProxy } from './trust-proxy';
-import { errorClassFields } from '../utils/log-error';
 import { getAuthMiddleware } from '../auth/auth-bootstrap';
 
 /**

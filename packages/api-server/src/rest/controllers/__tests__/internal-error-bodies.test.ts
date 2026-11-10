@@ -112,6 +112,11 @@ const NO_5XX = [
 ];
 /** Two-argument private helpers that discovery picks up; they are not request handlers. */
 const HELPERS = new Set(['TBMController.allocateEqual', 'UnifiedCredentialController.refusedC4']);
+/**
+ * Handlers that log only the error class and code, never the text: auth (HAP-1382; a driver message can quote
+ * credentials) and credential-set select (HAP-1814; a member's decode failure can quote its decrypted plaintext).
+ */
+const classOnly = (name: string, handler: string) => name === 'AuthController' || `${name}.${handler}` === 'CredentialSetController.select';
 const without5xx: string[] = [];
 const with5xx = new Map<string, number>();
 
@@ -138,8 +143,7 @@ describe.each(controllers)('%s', (name, build) => {
     expect(body).not.toContain('ci_fulltext_idx');
     expect(body).not.toMatch(/"stack"|\\n\s+at |\.ts:\d+/);
     const logged = loggedErrors.map(loggedText).join(' ');
-    // HAP-1382: auth handlers log only the error class, code and user id; a driver message can quote credentials.
-    if (name === 'AuthController') {
+    if (classOnly(name, handler)) {
       expect([logged.includes(SECRET), logged.includes('"errorClass":"Error"')]).toEqual([false, true]);
     } else {
       expect(logged).toContain(SECRET);

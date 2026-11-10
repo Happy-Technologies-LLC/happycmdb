@@ -1,8 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { logger } from '@cmdb/common';
-import { errorClassFields } from '../utils/log-error';
+import { logger, errorClassFields } from '@cmdb/common';
 import type { Express } from 'express';
 
 /**

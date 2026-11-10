@@ -26,8 +26,10 @@ COPY packages/itil-service-manager/package.json ./packages/itil-service-manager/
 COPY packages/tbm-cost-engine/package.json ./packages/tbm-cost-engine/
 COPY packages/api-server/package.json ./packages/api-server/
 
-# Install ALL dependencies including devDependencies (needed for TypeScript, prom-client, etc.)
-RUN npm install
+# Install ALL dependencies including devDependencies (needed for tsc and the build). `npm ci` installs
+# exactly package-lock.json and fails if it and the package.json files disagree; `npm install` could
+# resolve newer versions and rewrite the lockfile inside the image build.
+RUN npm ci
 
 # Copy tsconfig files
 COPY tsconfig.base.json ./
@@ -52,6 +54,12 @@ COPY packages/itil-service-manager ./packages/itil-service-manager
 COPY packages/tbm-cost-engine ./packages/tbm-cost-engine
 COPY packages/api-server ./packages/api-server
 COPY packages/connectors ./packages/connectors
+
+# The root .dockerignore keeps packages/*/dist on purpose (Dockerfile.discovery and Dockerfile.etl COPY
+# host-built dist), so untracked host build output arrives with the COPYs above. Remove it so tsc emits
+# into an empty dist (no stale files from deleted sources). Works on any builder, unlike a
+# per-Dockerfile <name>.dockerignore (BuildKit only).
+RUN rm -rf packages/*/dist packages/connectors/*/dist
 
 # Build TypeScript packages in dependency order
 WORKDIR /app/packages/common
@@ -107,6 +115,17 @@ RUN npm run build
 WORKDIR /app/packages/integration-hub
 RUN npm run build
 RUN npm run test:compiled-entry
+
+# Trim the tree the production stage copies: devDependencies (npm prune --omit=dev) and test files. The
+# test:compiled-entry run above is the last step that needs them. src/ stays: packages/database ships its
+# SQL migrations under src/postgres/migrations. packages/connectors keeps its connector.json files, which
+# ConnectorLoader reads at start-up.
+WORKDIR /app
+RUN npm prune --omit=dev && \
+    find packages -name node_modules -prune -o \
+      \( -type d \( -name __tests__ -o -name __mocks__ \) -o -type f \( -name '*.test.*' -o -name '*.spec.*' \) \) \
+      -prune -exec rm -rf {} + && \
+    rm -rf packages/*/tests
 
 # Production stage
 FROM node:20-alpine

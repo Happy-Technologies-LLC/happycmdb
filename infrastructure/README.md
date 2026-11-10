@@ -13,8 +13,7 @@ infrastructure/
 │   ├── Dockerfile.web        # Web UI Dockerfile
 │   ├── Dockerfile.discovery  # Discovery engine Dockerfile
 │   ├── Dockerfile.etl        # ETL processor Dockerfile
-│   ├── Dockerfile.agent      # Discovery agent Dockerfile
-│   └── .dockerignore         # Docker ignore patterns
+│   └── Dockerfile.agent      # Discovery agent Dockerfile
 ├── kubernetes/               # Kubernetes manifests
 │   ├── deployments/         # Deployment configurations
 │   ├── services/            # Service definitions

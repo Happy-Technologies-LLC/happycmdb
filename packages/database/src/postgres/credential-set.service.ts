@@ -317,7 +317,7 @@ export class CredentialSetService {
 
       if (input.description !== undefined) {
         updates.push(`description = $${paramIndex++}`);
-        params.push(input.description);
+        params.push(input.description.trim() || null);
       }
 
       if (input.credential_ids !== undefined) {

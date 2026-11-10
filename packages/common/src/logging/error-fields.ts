@@ -9,7 +9,9 @@
  * and serializes as `"error":{}` (HAP-1733).
  */
 export function errorClassFields(error: unknown): { errorClass: string; code?: string } {
-  if (!(error instanceof Error)) return { errorClass: typeof error };
+  if (!(error instanceof Error)) {
+    return { errorClass: typeof error };
+  }
   const code = 'code' in error && typeof error.code === 'string' ? error.code : undefined;
   return code === undefined ? { errorClass: error.constructor.name } : { errorClass: error.constructor.name, code };
 }

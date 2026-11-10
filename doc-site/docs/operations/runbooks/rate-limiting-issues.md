@@ -116,32 +116,40 @@ docker exec cmdb-redis redis-cli set "rate_limit:blocked:$ABUSIVE_IP" "1" EX 360
 
 Only the `rateLimit.endpoints` budgets that a route mounts have an effect: `auth` (login and password change, per client address), `authAccount` (login: per account + client address; password change: per verified user across all clients) and `authAccountGlobal` (login only: per account across all clients; `max: 0` turns it off), and `rest` (`POST /api/v1/auth/refresh` only). `endpoints.graphql`, `endpoints.health`, `endpoints.discovery` and `endpoints.admin` are not mounted by any route.
 
-`infrastructure/docker/docker-compose.yml` forwards every `RATE_LIMIT_*` variable that `config.schema.ts` (`rateLimit`) defines to the `api-server` service through its `environment:` block, as `RATE_LIMIT_X=${RATE_LIMIT_X:-<schema default>}`. That is the only place the Docker deployment reads them: the image contains no `.env` (`.dockerignore` excludes `**/.env*`, so `dotenv.config` in `config.loader.ts` finds nothing), so editing a `.env` file inside the image or container has no effect. Put the value in the environment of the shell that runs Compose, in the host `.env` that `./deploy.sh` exports (it runs `set -a; source .env`), or pass it with `docker compose --env-file`. For example:
+`infrastructure/docker/docker-compose.yml` forwards every `RATE_LIMIT_*` variable that `config.schema.ts` (`rateLimit`) defines to the `api-server` service through its `environment:` block, as `RATE_LIMIT_X=${RATE_LIMIT_X:-<schema default>}`. That is the only place the Docker deployment reads them: the image contains no `.env` (`.dockerignore` excludes `**/.env*`, so `dotenv.config` in `config.loader.ts` finds nothing), so editing a `.env` file inside the image or container has no effect. Set the value in the repository-root `.env` on the host, the file `./deploy.sh` loads (`set -a; source .env`). For example:
 
 ```bash
+# Repository-root .env on the host
 # Login and password change, per client address (defaults: 20 per 3600000 ms)
-export RATE_LIMIT_AUTH_MAX=40
-export RATE_LIMIT_AUTH_WINDOW_MS=3600000
+RATE_LIMIT_AUTH_MAX=40
+RATE_LIMIT_AUTH_WINDOW_MS=3600000
 
 # Login: per account + client address; password change: per verified user across all clients (defaults: 5 per 900000 ms)
-export RATE_LIMIT_AUTH_ACCOUNT_MAX=5
-export RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS=900000
+RATE_LIMIT_AUTH_ACCOUNT_MAX=5
+RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS=900000
 
 # Login only: per account across all clients (defaults: 20 per 900000 ms; 0 = bucket off)
-export RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_MAX=20
-export RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_WINDOW_MS=900000
+RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_MAX=20
+RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_WINDOW_MS=900000
 
 # POST /api/v1/auth/refresh only (defaults: 1000 per 3600000 ms; 0 = no limiter)
-export RATE_LIMIT_REST_MAX=1000
-export RATE_LIMIT_REST_WINDOW_MS=3600000
+RATE_LIMIT_REST_MAX=1000
+RATE_LIMIT_REST_WINDOW_MS=3600000
 ```
 
 A limit on any other route is an nginx zone in `infrastructure/docker/nginx.conf` (`api_limit`, `auth_limit`, `auth_session_limit`, `graphql_limit`), not an `.env` setting.
 
 Recreate the API server container so Compose re-reads the environment. `docker restart cmdb-api-server` does NOT: it restarts the existing container with the environment it was created with.
 
+Load the whole host `.env` into the shell first, as `./deploy.sh` does. Compose resolves the `api-server` block's other variables (`JWT_SECRET`, `NEO4J_PASSWORD`, `POSTGRES_PASSWORD`, `ENCRYPTION_KEY`) from the same environment and, with `-f infrastructure/docker/docker-compose.yml`, does not read the root `.env` by itself; without it they interpolate as empty in the recreated container.
+
 ```bash
+# From the repository root
+set -a; . ./.env; set +a
 docker compose -f infrastructure/docker/docker-compose.yml up -d --force-recreate api-server
+
+# Or, without changing the shell: docker compose --env-file .env -f infrastructure/docker/docker-compose.yml up -d --force-recreate api-server
+# (a variable already exported in the shell overrides the --env-file value)
 
 # Confirm the container now has the new value
 docker exec cmdb-api-server printenv RATE_LIMIT_AUTH_MAX

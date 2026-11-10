@@ -8,13 +8,22 @@
  *  - a value set in the shell for each knob reaches the loaded `rateLimit` config (an `environment:` entry that is
  *    missing, misspelled or hard-coded fails for that knob);
  *  - every leaf of the schema's `rateLimit` config has such a knob, so a new schema field cannot ship unforwarded.
+ * The forwarded RATE_LIMIT_BYPASS_SECRET skips every limiter, login included: the shipped `.env.example`, sourced the
+ * way `./deploy.sh` does and resolved through each compose file, must not let a known or short secret through the real
+ * `RateLimitMiddleware.limit('auth', ...)` that guards POST /auth/login.
  */
+import { execFileSync } from 'child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
+import { inspect } from 'util';
 import { randomBytes } from 'crypto';
+import express from 'express';
+import request from 'supertest';
 import { parse } from 'yaml';
 import { ConfigurationLoader } from '../../../packages/common/src/config/config.loader';
+import { getLogger } from '../../../packages/common/src/logging/logger';
+import { RateLimitMiddleware } from '../../../packages/api-server/src/middleware/rate-limit.middleware';
 
 const REPO = resolve(__dirname, '../../..');
 const COMPOSE_FILES = ['infrastructure/docker/docker-compose.yml', 'deploy/build01-staging.compose.yml'];
@@ -89,7 +98,7 @@ function loadRateLimit(rateLimitEnv: Record<string, string>): any {
 const KNOBS: Record<string, [string, string, unknown]> = {
   RATE_LIMIT_ENABLED: ['enabled', 'false', false],
   RATE_LIMIT_BYPASS_HEADER: ['bypassHeader', 'X-Hap1842-Bypass', 'X-Hap1842-Bypass'],
-  RATE_LIMIT_BYPASS_SECRET: ['bypassSecret', 'hap1842-bypass-secret', 'hap1842-bypass-secret'],
+  RATE_LIMIT_BYPASS_SECRET: ['bypassSecret', 'hap1842-bypass-secret-0123456789abcdef', 'hap1842-bypass-secret-0123456789abcdef'],
   RATE_LIMIT_TIER_STANDARD_MULTIPLIER: ['tierMultipliers.standard', '7', 7],
   RATE_LIMIT_TIER_PREMIUM_MULTIPLIER: ['tierMultipliers.premium', '11', 11],
   RATE_LIMIT_TIER_ENTERPRISE_MULTIPLIER: ['tierMultipliers.enterprise', '23', 23],
@@ -149,5 +158,115 @@ describe('HAP-1842: compose api-server RATE_LIMIT_* reach the running config', (
         if (p !== path) expect(getPath(loaded, p)).toBe(getPath(rest, p));
       }
     });
+  });
+});
+
+/** The environment `./deploy.sh` runs Compose with: `file` sourced under `set -a` (deploy.sh: `set -a; source .env`). */
+function shellFromEnvFile(file: string): Record<string, string> {
+  const out = execFileSync('bash', ['-c', 'set -a; . "$1"; set +a; env -0', 'bash', file], {
+    env: { PATH: process.env['PATH'] ?? '' },
+    encoding: 'utf8',
+  });
+  return Object.fromEntries(out.split('\0').filter(Boolean).map((e) => [e.slice(0, e.indexOf('=')), e.slice(e.indexOf('=') + 1)]));
+}
+
+/** Sorted sets as the sliding-window limiter uses them: the Redis store, not the code under test. */
+function memoryRedis() {
+  const sets = new Map<string, number[]>();
+  const set = (key: string) => sets.get(key) ?? sets.set(key, []).get(key)!;
+  return {
+    pipeline() {
+      const ops: Array<() => unknown> = [];
+      return {
+        zremrangebyscore: (key: string, _min: string, max: string) => { ops.push(() => sets.set(key, set(key).filter((s) => s > Number(max)))); },
+        zcard: (key: string) => { ops.push(() => set(key).length); },
+        zadd: (key: string, score: string) => { ops.push(() => set(key).push(Number(score))); },
+        expire: () => { ops.push(() => 1); },
+        exec: async () => ops.map((op) => [null, op()]),
+      };
+    },
+  };
+}
+
+/** Loads config from `shell` through `file`'s api-server block; returns it with the loader's bypass WARN calls. */
+function loadThroughCompose(file: string, shell: Record<string, string>): { rateLimit: any; bypassWarns: unknown[][] } {
+  const warn = jest.spyOn(getLogger(), 'warn').mockImplementation(() => undefined);
+  try {
+    const rateLimit = loadRateLimit(apiServerRateLimitEnv(file, shell));
+    return { rateLimit, bypassWarns: warn.mock.calls.filter(([message]) => /bypass/i.test(String(message))) };
+  } finally {
+    warn.mockRestore();
+  }
+}
+
+/**
+ * authAccount.max + 1 logins for one account from one client, each sending `header: value`, through the login
+ * route's limiter (`AuthController`: `limit('auth', { account: req => req.body?.username, failClosed: true })`).
+ */
+async function loginAttempts(rateLimit: any, header: string, value: string) {
+  const limiter = new RateLimitMiddleware(memoryRedis() as never, rateLimit);
+  let reached = 0;
+  const app = express();
+  app.post('/api/v1/auth/login', express.json(),
+    limiter.limit('auth', { account: (req) => req.body?.username, failClosed: true }),
+    (_req, res) => { reached++; res.status(401).json({ error: 'Invalid credentials' }); });
+  const statuses: number[] = [];
+  const limits: Array<string | undefined> = [];
+  for (let i = 0; i <= rateLimit.endpoints.authAccount.max; i++) {
+    const res = await request(app).post('/api/v1/auth/login').set(header, value).send({ username: 'admin', password: 'guess' });
+    statuses.push(res.status);
+    limits.push(res.headers['x-ratelimit-limit']);
+  }
+  return { statuses, limits, reached };
+}
+
+const ENV_EXAMPLE = join(REPO, '.env.example');
+const SHIPPED_PLACEHOLDERS = ['your-internal-service-secret-change-this', 'your-internal-service-secret'];
+
+describe.each(COMPOSE_FILES)('HAP-1842: .env.example through %s cannot bypass the login limiter', (file) => {
+  let timerSpy: jest.SpyInstance;
+  beforeEach(() => {
+    // RATE_LIMIT_MONITORING_ENABLED/LOG_HITS are on in .env.example; the limiter's metrics timer would hold Jest open.
+    timerSpy = jest.spyOn(global, 'setInterval').mockReturnValue(0 as never);
+  });
+  afterEach(() => timerSpy.mockRestore());
+
+  const limited = (rateLimit: any) => ({
+    statuses: [...Array(rateLimit.endpoints.authAccount.max).fill(401), 429],
+    limits: Array(rateLimit.endpoints.authAccount.max + 1).fill(String(rateLimit.endpoints.auth.max)),
+    reached: rateLimit.endpoints.authAccount.max,
+  });
+
+  it('the shipped .env.example: a shipped placeholder header is limited like any client, with no bypass WARN', async () => {
+    const shell = shellFromEnvFile(ENV_EXAMPLE);
+    const { rateLimit, bypassWarns } = loadThroughCompose(file, shell);
+    expect(bypassWarns).toEqual([]);
+    for (const placeholder of SHIPPED_PLACEHOLDERS) {
+      expect(await loginAttempts(rateLimit, shell['RATE_LIMIT_BYPASS_HEADER']!, placeholder)).toEqual(limited(rateLimit));
+    }
+  });
+
+  const short = randomBytes(32).toString('hex').slice(0, 31);
+  it.each([...SHIPPED_PLACEHOLDERS.map((p): [string, string] => [p, p]), ['a 31-character random value', short]])(
+    '.env.example with RATE_LIMIT_BYPASS_SECRET = %s: bypass refused with one WARN that omits the value',
+    async (_label, secret) => {
+      const shell = { ...shellFromEnvFile(ENV_EXAMPLE), RATE_LIMIT_BYPASS_SECRET: secret };
+      const { rateLimit, bypassWarns } = loadThroughCompose(file, shell);
+      expect(bypassWarns).toHaveLength(1);
+      expect(inspect(bypassWarns)).not.toContain(secret);
+      expect(await loginAttempts(rateLimit, shell['RATE_LIMIT_BYPASS_HEADER']!, secret)).toEqual(limited(rateLimit));
+    });
+
+  it('a 32-character random secret still bypasses, only with that exact value', async () => {
+    const secret = randomBytes(24).toString('base64');
+    expect(secret).toHaveLength(32);
+    const shell = { ...shellFromEnvFile(ENV_EXAMPLE), RATE_LIMIT_BYPASS_SECRET: secret };
+    const { rateLimit, bypassWarns } = loadThroughCompose(file, shell);
+    expect(bypassWarns).toEqual([]);
+    const header = shell['RATE_LIMIT_BYPASS_HEADER']!;
+    const n = rateLimit.endpoints.authAccount.max + 1;
+    expect(await loginAttempts(rateLimit, header, secret))
+      .toEqual({ statuses: Array(n).fill(401), limits: Array(n).fill(undefined), reached: n });
+    expect(await loginAttempts(rateLimit, header, `${secret}x`)).toEqual(limited(rateLimit));
   });
 });

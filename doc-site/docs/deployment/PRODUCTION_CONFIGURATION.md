@@ -60,8 +60,9 @@ JWT_EXPIRATION=24h
 # Use: openssl rand -base64 64
 ENCRYPTION_KEY=<64-character-random-string>
 
-# Internal service bypass for service-to-service calls
-# Use: openssl rand -base64 32
+# Optional internal service bypass: a request whose RATE_LIMIT_BYPASS_HEADER equals this skips every rate
+# limiter, login included. Leave empty (bypass off) unless an internal service needs it.
+# Use: openssl rand -base64 32 (ConfigurationLoader refuses values under 32 characters or a shipped placeholder)
 RATE_LIMIT_BYPASS_SECRET=<32-character-random-string>
 
 # API key for internal authentication

@@ -106,10 +106,11 @@ services:
       METRICS_SCRAPE_TOKEN: ${METRICS_SCRAPE_TOKEN:-}
       # HAP-1842: every RATE_LIMIT_* the config loader reads (packages/common/src/config/config.loader.ts, rateLimit block),
       # forwarded so the deployer's environment can tune the limiter. Defaults equal the Joi defaults in
-      # packages/common/src/config/config.schema.ts (rateLimit, lines 151-221), so an unset deployer environment changes nothing.
+      # `configSchema.rateLimit` in packages/common/src/config/config.schema.ts, so an unset deployer environment changes nothing.
       # A changed value needs the api-server container recreated (`up -d --force-recreate api-server`), not restarted.
       RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
       RATE_LIMIT_BYPASS_HEADER: ${RATE_LIMIT_BYPASS_HEADER:-X-Internal-Service}
+      # Empty = bypass off. ConfigurationLoader turns it off (one WARN) for under 32 characters or a shipped placeholder.
       RATE_LIMIT_BYPASS_SECRET: ${RATE_LIMIT_BYPASS_SECRET:-}
       RATE_LIMIT_TIER_STANDARD_MULTIPLIER: ${RATE_LIMIT_TIER_STANDARD_MULTIPLIER:-5}
       RATE_LIMIT_TIER_PREMIUM_MULTIPLIER: ${RATE_LIMIT_TIER_PREMIUM_MULTIPLIER:-10}

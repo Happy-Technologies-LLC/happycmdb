@@ -429,6 +429,9 @@ describe('AuthController profile/password/account routes', () => {
     };
 
     it('login sets __Secure-cmdb_rt (HttpOnly, Secure, SameSite=Strict, /api/v1/auth, refresh TTL) and no body refresh token', async () => {
+      // Pin the clock inside one second: generateRefreshToken reads Date.now twice (the _authTime default and jsonwebtoken's
+      // iat), and Max-Age is min(TTL, authTime + cap - iat), so a wall-clock tick between the two reads yields 604799.
+      spies.push(jest.spyOn(Date, 'now').mockReturnValue(Math.floor(Date.now() / 1000) * 1000));
       const response = await login();
       expect(response.status).toBe(200);
       const cookie = refreshCookieOf(response);
@@ -463,7 +466,7 @@ describe('AuthController profile/password/account routes', () => {
 
     it('refresh reads only one well-formed __Secure-cmdb_rt: none, legacy cmdb_rt, malformed, duplicate, oversized or a body token is 401', async () => {
       // Pin the clock inside one second: the token below carries _authTime = floor(now), and the renewed cookie's
-      // Max-Age is min(TTL, authTime + cap - iat of the renewal), so a wall-clock tick between the two reads 604799.
+      // Max-Age is min(TTL, authTime + cap - iat of the renewal), so a wall-clock tick between the two reads yields 604799.
       spies.push(jest.spyOn(Date, 'now').mockReturnValue(Math.floor(Date.now() / 1000) * 1000));
       const issued = jwtService.generateRefreshToken('user-1', 'alice', 'operator');
       const malformed = `bad-${randomUUID()}`;

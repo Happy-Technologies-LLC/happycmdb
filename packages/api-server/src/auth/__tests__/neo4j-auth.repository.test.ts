@@ -17,7 +17,7 @@ jest.mock('@cmdb/database', () => ({
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import neo4j from 'neo4j-driver';
 import { Neo4jAuthRepository } from '../neo4j-auth.repository';
-import { AmbiguousUserIdentityError } from '../types';
+import { AmbiguousUserIdentityError, UserNotFoundError } from '../types';
 
 type AnyMock = jest.Mock<(...args: any[]) => any>;
 
@@ -60,10 +60,10 @@ describe('Neo4jAuthRepository', () => {
       expect(mockSession.close).toHaveBeenCalled();
     });
 
-    it('throws when the user does not exist', async () => {
+    it('throws the typed not-found error, unwrapped, when the user does not exist', async () => {
       mockSession.run.mockResolvedValue({ records: [{ get: (k: string) => (k === 'matched' ? neo4j.int(0) : null) }] });
 
-      await expect(repository.updateUser('ghost', { name: 'x' })).rejects.toThrow('User not found');
+      await expect(repository.updateUser('ghost', { name: 'x' })).rejects.toBeInstanceOf(UserNotFoundError);
     });
 
     it('refuses an identifier matching more than one node', async () => {

@@ -12,6 +12,7 @@ import {
   ApiKeyNotFoundError, AuthFailureError, AuthService, CredentialsChangedError, CurrentPasswordIncorrectError,
   PasswordNotAllowedError, type PasswordChangeOutcome,
 } from '../auth/auth.service';
+import { UserNotFoundError } from '../auth/types';
 import { ValidationMiddleware } from './middleware/validation.middleware';
 import { clearRefreshCookie, hasAuthHeader, readRefreshCookie, requireAuthHeader, setRefreshCookie } from './middleware/refresh-cookie';
 import { authSchemas } from '../validation/schemas';
@@ -453,7 +454,7 @@ export class AuthController {
         message: 'Profile updated successfully',
       });
     } catch (error: any) {
-      if (error instanceof Error && error.message === 'User not found') {
+      if (error instanceof UserNotFoundError) {
         res.status(404).json({ success: false, error: 'Profile Update Failed', message: 'User not found' });
         return;
       }

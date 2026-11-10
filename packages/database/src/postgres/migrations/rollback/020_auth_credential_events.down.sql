@@ -18,23 +18,36 @@
 -- best-effort and absent before HAP-1368 or for an actor without an
 -- organization claim. A pre-HP1-S6 API build ignores the credential
 -- generation, so after any advance it would accept the user's revoked API
--- keys (stored at an older generation) and pre-change tokens again. This file
--- therefore cannot run until the operator has read, in the same window, the
--- highest generation from Neo4j (read-only):
+-- keys (stored at an older generation) and pre-change tokens again. Reverting
+-- the image is therefore the step that can do harm, so the checks come first.
+-- Manual procedure, in this order:
 --
---   MATCH (u:User) RETURN coalesce(max(u.credentialEpoch), 0) AS maxEpoch
+--   1. With the 020-aware image STILL UP, read from Neo4j (read-only) the
+--      number of users whose generation has advanced:
 --
--- and, only when it is 0, attests it in the psql session that runs this file:
+--        MATCH (u:User) WHERE coalesce(u.credentialEpoch, 0) <> 0 RETURN count(u)
 --
---   PGOPTIONS='-c cmdb.rollback_020_max_credential_epoch=0' \
---     psql -v ON_ERROR_STOP=1 -f 020_auth_credential_events.down.sql
+--      and check that auth_credential_events has no rows and that audit_log
+--      has no successful self-service password change (entity USER, metadata
+--      operation password_change, outcome success). If the count is not 0 or
+--      either table holds such rows, STOP: do not revert the image, and do
+--      not run this file. This file's own guard would refuse, but only after
+--      the old image was live and accepting revoked keys and tokens again.
+--   2. Revert the 020-aware API image (so no generation can advance after the
+--      attestation). If it was reverted after any revocation anyway (an
+--      operator rotation or a self-service password change), the old build
+--      ignores the credential generation: rotate the JWT signing secret in
+--      the same deploy, or it accepts pre-revocation tokens again.
+--   3. Re-read the same Neo4j count in the same window. Only when it is still
+--      0, attest it in the psql session that runs this file:
+--
+--        PGOPTIONS='-c cmdb.rollback_020_max_credential_epoch=0' \
+--          psql -v ON_ERROR_STOP=1 -f 020_auth_credential_events.down.sql
 --
 -- Unset, or any value but 0, refuses. A non-zero generation means the 020-aware
 -- image must stay; there is no rollback of 020 that keeps revoked keys revoked.
---
--- Revert the 020-aware API image BEFORE running this file (so no generation
--- can advance after the attestation). It also removes the 020 ledger row, so
--- the migrator re-applies 020 on a later redeploy.
+-- The file also removes the 020 ledger row, so the migrator re-applies 020 on a
+-- later redeploy.
 
 BEGIN;
 SET LOCAL lock_timeout = '3s';

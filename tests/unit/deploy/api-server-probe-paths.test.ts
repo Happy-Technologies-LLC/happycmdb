@@ -189,42 +189,74 @@ function probesIn(
 type Instruction = { line: number; text: string };
 
 /**
- * A Dockerfile's instructions with backslash continuations joined; `line` is the 1-based line
- * the instruction starts on. Comment lines inside a continuation are dropped, as Docker does.
+ * A Dockerfile's instructions with continuations joined; `line` is the 1-based line the
+ * instruction starts on. Follows BuildKit: a line ending in a backslash and optional trailing
+ * spaces/tabs continues onto the next line (joined verbatim, backslash and trailing blanks
+ * removed), and empty and comment lines are skipped while a continuation is open. A comment
+ * line never continues, whatever it ends with. `source` defaults to the file's contents.
  */
-function dockerfileInstructions(file: string): (keyword: string) => Instruction[] {
+function dockerfileInstructions(
+  file: string,
+  source: string = read(file)
+): (keyword: string) => Instruction[] {
   const all: Instruction[] = [];
   let current: Instruction | undefined;
-  read(file)
-    .split(/\r?\n/)
-    .forEach((raw, index) => {
-      if (current && /^\s*#/.test(raw)) return;
-      const continued = raw.endsWith('\\');
-      const piece = continued ? raw.slice(0, -1) : raw;
-      current = current
-        ? { line: current.line, text: `${current.text} ${piece}` }
-        : { line: index + 1, text: piece };
-      if (!continued) {
-        all.push(current);
-        current = undefined;
-      }
-    });
+  source.split(/\r?\n/).forEach((raw, index) => {
+    if (/^\s*(#.*)?$/.test(raw)) return;
+    const continued = /\\[ \t]*$/.test(raw);
+    const piece = continued ? raw.replace(/\\[ \t]*$/, '') : raw;
+    current = current
+      ? { line: current.line, text: current.text + piece }
+      : { line: index + 1, text: piece };
+    if (!continued) {
+      all.push(current);
+      current = undefined;
+    }
+  });
   if (current) all.push(current);
   return (keyword) => all.filter(({ text }) => new RegExp(`^\\s*${keyword}\\s`, 'i').test(text));
 }
 
-const unquote = (word: string): string => word.replace(/^"(.*)"$|^'(.*)'$/s, '$1$2');
+/** One shell-word: bare characters, `\x` escapes, `"..."` and `'...'` runs. */
+const WORD = /(?:[^\s"'\\]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')+/y;
+
+/** The word with quotes removed and backslash escapes resolved. */
+function unquote(word: string): string {
+  let out = '';
+  for (let i = 0; i < word.length; i++) {
+    const ch = word[i];
+    if (ch === '\\') out += word[++i] ?? '';
+    else if (ch === "'") {
+      const end = word.indexOf("'", i + 1);
+      out += word.slice(i + 1, end);
+      i = end;
+    } else if (ch === '"') {
+      for (i++; word[i] !== '"'; i++) out += word[i] === '\\' ? word[++i] : word[i];
+    } else out += ch;
+  }
+  return out;
+}
 
 /**
  * The key/value pairs of one ENV instruction body: the legacy `ENV key value` (the value is the
- * rest of the line) or `ENV k=v k2="v 2"`. Undefined when the body does not tokenise.
+ * rest of the line) or `ENV k=v k2="v 2" k3=v\ 3`. Undefined when the body does not tokenise:
+ * the matched word spans must cover the whole body except the whitespace between words.
  */
 function envPairs(body: string): [string, string][] | undefined {
   const trimmed = body.trim();
   const legacy = trimmed.match(/^([^\s=]+)\s+(.*)$/s);
   if (legacy) return [[unquote(legacy[1]), unquote(legacy[2].trim())]];
-  const words = trimmed.match(/(?:[^\s"'\\]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')+/g) ?? [];
-  if (words.join('') !== trimmed.replace(/\s+/g, '')) return undefined;
+  const words: string[] = [];
+  for (let pos = 0; pos < trimmed.length; ) {
+    const blanks = trimmed.slice(pos).match(/^\s*/)![0].length;
+    pos += blanks;
+    if (pos >= trimmed.length) break;
+    WORD.lastIndex = pos;
+    const word = WORD.exec(trimmed);
+    if (!word) return undefined;
+    words.push(word[0]);
+    pos += word[0].length;
+  }
   const pairs: [string, string][] = [];
   for (const word of words) {
     const pair = word.match(/^([^=]+)=(.*)$/s);
@@ -240,9 +272,9 @@ function envPairs(body: string): [string, string][] | undefined {
  * not tokenise throws, naming the file and line: the port is not derivable, so it is never
  * treated as unset and defaulted. Other keys (`METRICS_PORT=...`) are not `PORT`.
  */
-function dockerfileEnvPort(file: string): string | undefined {
+function dockerfileEnvPort(file: string, source?: string): string | undefined {
   const found: string[] = [];
-  for (const { line, text } of dockerfileInstructions(file)('ENV')) {
+  for (const { line, text } of dockerfileInstructions(file, source)('ENV')) {
     const body = text.replace(/^\s*ENV\s+/i, '');
     const pairs = envPairs(body);
     if (pairs === undefined) {
@@ -489,5 +521,56 @@ describe('api-server probe definitions', () => {
       ok2xx: true,
       status,
     });
+  });
+});
+
+// Inline Dockerfile bodies run through the real dockerfileInstructions/envPairs/dockerfileEnvPort:
+// the resolved ENV PORT, `undefined` (no ENV line mentions PORT, so the code default applies),
+// or 'throws' (the port is not derivable, which the probe test reports as a failing case).
+const ENV_PORT_FIXTURES: [
+  name: string,
+  lines: string[],
+  expected: string | undefined | 'throws',
+][] = [
+  ['no ENV at all', ['FROM node:20', 'EXPOSE 3001'], undefined],
+  ['plain ENV PORT=', ['ENV PORT=3001'], '3001'],
+  ['multi-key ENV', ['ENV A=1 PORT=3001'], '3001'],
+  ['legacy space form', ['ENV PORT 3001'], '3001'],
+  ['quoted PORT="3001"', ['ENV PORT="3001"'], '3001'],
+  ['$P', ['ENV PORT=$P'], 'throws'],
+  ['${P}', ['ENV PORT=${P}'], 'throws'],
+  ['legacy form with ${P}', ['ENV PORT ${P}'], 'throws'],
+  ['${X} inside a continuation', ['ENV A=1 \\', '    PORT=${X}'], 'throws'],
+  ['comment inside a continuation', ['ENV A=1 \\', '# a note', '    PORT=3001'], '3001'],
+  [
+    'comment line ending in a backslash is not a continuation',
+    ['# note \\', 'ENV PORT=3001'],
+    '3001',
+  ],
+  ['METRICS_PORT only', ['ENV METRICS_PORT=9090'], undefined],
+  ['METRICS_PORT beside PORT', ['ENV METRICS_PORT=9090 PORT=3001'], '3001'],
+  ['L1: backslash then trailing space', ['ENV NODE_ENV=production \\ ', '    PORT=3001'], '3001'],
+  ['L1: backslash then trailing tab', ['ENV NODE_ENV=production \\\t', '    PORT=3001'], '3001'],
+  [
+    'L1: blank line inside a continuation',
+    ['ENV NODE_ENV=production \\', '', '    PORT=3001'],
+    '3001',
+  ],
+  ['L2: double-quoted value with a space', ['ENV PORT=3000 DESC="hello world"'], '3000'],
+  ['L2: single-quoted value with a space', ["ENV PORT=3000 k2='v 2'"], '3000'],
+  ['L2: both quoted forms, PORT last', ['ENV DESC="hello world" k2=\'v 2\' PORT=3001'], '3001'],
+  ['L2: backslash-escaped space', ['ENV DESC=hello\\ world PORT=3001'], '3001'],
+  ['L2: legacy form with a spaced value', ['ENV DESC "hello world"'], undefined],
+  ['unterminated quote mentioning PORT', ['ENV PORT=3000 DESC="hello'], 'throws'],
+  ['unterminated quote not mentioning PORT', ['ENV DESC="hello'], undefined],
+  ['key without a value mentioning PORT', ['ENV A=1 PORT'], 'throws'],
+  ['two ENV PORT lines', ['ENV PORT=3000', 'ENV PORT=3001'], 'throws'],
+];
+
+describe('Dockerfile ENV PORT parsing', () => {
+  it.each(ENV_PORT_FIXTURES)('%s', (_name, lines, expected) => {
+    const resolve = () => dockerfileEnvPort('fixture/Dockerfile', lines.join('\n'));
+    if (expected === 'throws') expect(resolve).toThrow();
+    else expect(resolve()).toBe(expected);
   });
 });

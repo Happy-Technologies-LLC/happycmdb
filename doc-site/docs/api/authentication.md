@@ -489,12 +489,18 @@ X-RateLimit-Reset: 1699642800
 **429 Too Many Requests Response**:
 ```json
 {
-  "success": false,
-  "error": "Rate Limit Exceeded",
-  "message": "Too many login attempts. Please try again in 45 minutes.",
-  "retryAfter": 2700
+  "_error": "Too Many Requests",
+  "_message": "Rate limit exceeded. Try again in 3600 seconds",
+  "_retryAfter": 3600,
+  "_limit": 20,
+  "_resetAt": "2023-11-10T19:00:00.000Z"
 }
 ```
+
+On login and password change, the headers and every `429` report only the per-IP bucket (HAP-1795). The
+per-account, per-account + IP and per-user buckets still refuse with `429`, but their counts, limits and
+windows never appear: a refusal by one of them carries the same headers (`X-RateLimit-Remaining: 0`) and body
+as a per-IP refusal, and `_retryAfter` is the per-IP window.
 
 ---
 

@@ -113,14 +113,11 @@ export class RateLimitMiddleware {
         }
       } catch (error) {
         if (options.failClosed === true) {
-          // A fixed refusal: nothing from an earlier bucket's headers or the store error reaches the client.
+          // A fixed refusal: admit() sets no X-RateLimit-* before every bucket answered, and the store error stays out.
           logger.error('Rate limit check failed - refusing request (fail closed)', undefined, {
             endpoint: endpointType,
             ...errorClassFields(error),
           });
-          for (const header of ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset']) {
-            res.removeHeader(header);
-          }
           res.set('Cache-Control', 'no-store');
           res.status(503).json(RATE_LIMIT_UNAVAILABLE);
           return;
@@ -305,6 +302,12 @@ export class RateLimitMiddleware {
    * Checks the client bucket, then (with options.account) the account+client and account-across-clients buckets, or
    * (with options.perUser) the user bucket; answers 429 and returns false on the first one exhausted. A denied
    * bucket leaves the later ones untouched.
+   *
+   * HAP-1795: only the client bucket (the first) is ever reported. A later bucket counts attempts at an account, the
+   * account-wide ones from every client, so its count, limit or reset must never reach the caller: X-RateLimit-* and
+   * every 429 body come from the client bucket, and a refusal by a later bucket reads exactly like the client
+   * bucket's own (Remaining 0). Headers are set only after every bucket answered, so a store error on a later bucket
+   * leaves none for the fail-closed 503.
    */
   private async admit(
     req: AuthenticatedRequest,
@@ -350,9 +353,10 @@ export class RateLimitMiddleware {
       });
     }
 
+    let client: RateLimitResult | undefined;
     for (const bucket of buckets) {
       const result = await this.checkRateLimit(bucket.key, bucket.budget);
-      this.setRateLimitHeaders(res, result);
+      client ??= result;
       if (result._allowed) {
         continue;
       }
@@ -372,14 +376,19 @@ export class RateLimitMiddleware {
         });
       }
 
+      const reported = { ...client, _remaining: 0 };
+      this.setRateLimitHeaders(res, reported);
       res.status(429).json({
         _error: 'Too Many Requests',
-        _message: `Rate limit exceeded. Try again in ${Math.ceil((result._resetAt - Date.now()) / 1000)} seconds`,
-        _retryAfter: Math.ceil((result._resetAt - Date.now()) / 1000),
-        _limit: result._limit,
-        _resetAt: new Date(result._resetAt).toISOString(),
+        _message: `Rate limit exceeded. Try again in ${Math.ceil((reported._resetAt - Date.now()) / 1000)} seconds`,
+        _retryAfter: Math.ceil((reported._resetAt - Date.now()) / 1000),
+        _limit: reported._limit,
+        _resetAt: new Date(reported._resetAt).toISOString(),
       });
       return false;
+    }
+    if (client !== undefined) {
+      this.setRateLimitHeaders(res, client);
     }
     return true;
   }

@@ -166,13 +166,16 @@ The refresh limiter is not mounted when `rateLimit.endpoints.rest.max` is `0`. `
 
 ### Proxy limits
 
-For a limit on the other routes, use the reverse proxy. The shipped `infrastructure/docker/nginx.conf` declares three `limit_req_zone`s (keyed by `$binary_remote_addr`) and answers a refusal with `limit_req_status 429`:
+For a limit on the other routes, use the reverse proxy. The shipped `infrastructure/docker/nginx.conf` declares four `limit_req_zone`s (keyed by `$binary_remote_addr`) and answers a refusal with `limit_req_status 429`:
 
 | Zone | Rate | Applied to | `burst` |
 |------|------|------------|---------|
-| `api_limit` | 100r/s | `location /api/` | 50 (`nodelay`) |
-| `auth_limit` | 5r/m | `location /api/v1/auth/` (the longest prefix wins, so these routes do not also pass `api_limit`) | 2 (`nodelay`) |
+| `api_limit` | 100r/s | `location /api/`, except the paths the two auth locations below match | 50 (`nodelay`) |
+| `auth_limit` | 5r/m | `location ~* ^/api/v1/auth/(login\|password)/?$` only (`POST /api/v1/auth/login`, `PUT /api/v1/auth/password`; the regex location wins over the prefix locations) | 2 (`nodelay`) |
+| `auth_session_limit` | 2r/s | `location /api/v1/auth/`, i.e. every other `/api/v1/auth/` path (`refresh`, `me`, `logout`, `api-key(s)`, `profile`, `account`) | 20 (`nodelay`) |
 | `graphql_limit` | 50r/s | `location /graphql` | 20 (`nodelay`) |
+
+Auth paths matched by `auth_limit` or `auth_session_limit` do not also pass `api_limit`. See [Rate Limiting (Nginx)](../../../doc-site/docs/deployment/PRODUCTION_CONFIGURATION.md#rate-limiting-nginx) for the reasoning and for running nginx behind a load balancer.
 
 That file is the TLS-terminating configuration; the `web-ui` image that `infrastructure/docker/docker-compose.yml` builds (`Dockerfile.web`) copies `web-ui/nginx.conf`, which has no `limit_req` directive.
 
@@ -209,7 +212,7 @@ This flat body is sent only by the auth rate limiters (`RateLimitMiddleware.cust
 | Analysis gates (`executeBoundedAnalysis`) | `{ "success": false, "error": "<Scope> analysis rate limit exceeded" }` | none |
 | Impact dependency graph (`GET /impact/graph/:rootCiId`, `orgReadGate`) | `{ "success": false, "error": "Impact analysis rate limit exceeded" }` | none |
 | GraphQL concurrency gate (`admitGraphQLRequest`) | `{ "errors": [{ "message": "GraphQL concurrent request limit exceeded", "extensions": { "code": "TOO_MANY_REQUESTS" } }] }` | none |
-| nginx (`limit_req_status 429` in `infrastructure/docker/nginx.conf`, see [Proxy limits](#proxy-limits)) | nginx's own error page, not JSON; no `_retryAfter` | none |
+| nginx (`limit_req_status 429` in `infrastructure/docker/nginx.conf`: `auth_limit` on `location ~* ^/api/v1/auth/(login\|password)/?$`, `auth_session_limit` on the rest of `location /api/v1/auth/`, `api_limit` on `location /api/`, `graphql_limit` on `location /graphql`; see [Proxy limits](#proxy-limits)) | nginx's own error page, not JSON; no `_retryAfter` | none |
 
 **HTTP Status Code:** `429 Too Many Requests`
 

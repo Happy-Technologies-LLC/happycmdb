@@ -589,6 +589,29 @@ jobs:
           HAP1562_ACCEPTANCE=1 ./node_modules/.bin/jest \
             -c jest.config.integration.js "$HARNESS" --runInBand
 
+  e2e-typecheck:
+    # HAP-1212: ts-jest runs e2e with isolatedModules, which never type-checks, so tests/e2e drifted from
+    # the package types unnoticed. tests/e2e/tsconfig.json type-checks it (noEmit).
+    name: E2E Type Check (tsc)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Type-check tests/e2e (HAP-1212)
+        run: npm run typecheck:e2e
+
   staging-migrations:
     name: Staging Migration Contract
     runs-on: ubuntu-latest
@@ -804,7 +827,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   ci-rollup:
-    needs: [unit-tests, integration-tests, e2e-tests, staging-migrations, web-ui-build, nginx-config-test, api-image-nmap, hap630-real-store, hap644-real-store, hap668-real-store, hap835-real-store, hap1422-real-store, hap1562-real-store]
+    needs: [unit-tests, integration-tests, e2e-tests, e2e-typecheck, staging-migrations, web-ui-build, nginx-config-test, api-image-nmap, hap630-real-store, hap644-real-store, hap668-real-store, hap835-real-store, hap1422-real-store, hap1562-real-store]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -820,6 +843,7 @@ jobs:
           STAGING_MIGRATIONS_RESULT: ${{ needs.staging-migrations.result }}
           E2E_TESTS_RESULT: ${{ needs.e2e-tests.result }}
           WEB_UI_BUILD_RESULT: ${{ needs.web-ui-build.result }}
+          E2E_TYPECHECK_RESULT: ${{ needs.e2e-typecheck.result }}
           NGINX_CONFIG_TEST_RESULT: ${{ needs.nginx-config-test.result }}
           API_IMAGE_NMAP_RESULT: ${{ needs.api-image-nmap.result }}
           HAP630_RESULT: ${{ needs.hap630-real-store.result }}
@@ -839,6 +863,7 @@ jobs:
              [ "$E2E_TESTS_RESULT" = "success" ] &&
              [ "$STAGING_MIGRATIONS_RESULT" = "success" ] &&
              [ "$WEB_UI_BUILD_RESULT" = "success" ] &&
+             [ "$E2E_TYPECHECK_RESULT" = "success" ] &&
              [ "$NGINX_CONFIG_TEST_RESULT" = "success" ] &&
              [ "$API_IMAGE_NMAP_RESULT" = "success" ] &&
              { [ "$HAP630_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP630_RESULT" = "skipped" ]; }; } &&
@@ -857,6 +882,7 @@ jobs:
             [ "$E2E_TESTS_RESULT" = "success" ] || failures+=("e2e-tests=$E2E_TESTS_RESULT")
             [ "$STAGING_MIGRATIONS_RESULT" = "success" ] || failures+=("staging-migrations=$STAGING_MIGRATIONS_RESULT")
             [ "$WEB_UI_BUILD_RESULT" = "success" ] || failures+=("web-ui-build=$WEB_UI_BUILD_RESULT")
+            [ "$E2E_TYPECHECK_RESULT" = "success" ] || failures+=("e2e-typecheck=$E2E_TYPECHECK_RESULT")
             [ "$NGINX_CONFIG_TEST_RESULT" = "success" ] || failures+=("nginx-config-test=$NGINX_CONFIG_TEST_RESULT")
             [ "$API_IMAGE_NMAP_RESULT" = "success" ] || failures+=("api-image-nmap=$API_IMAGE_NMAP_RESULT")
             if [ "$HAP630_RESULT" != "success" ] && [ "${{ github.event_name }}" != "push" ]; then

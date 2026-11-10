@@ -55,7 +55,7 @@ async function retry<T>(
       const elapsed = Date.now() - startTime;
       if (elapsed >= timeout) {
         throw new Error(
-          `Timeout waiting for ${options.name} after ${timeout}ms: ${error.message}`
+          `Timeout waiting for ${options.name} after ${timeout}ms: ${error instanceof Error ? error.message : String(error)}`
         );
       }
 

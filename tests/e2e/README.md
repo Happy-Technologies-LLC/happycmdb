@@ -82,6 +82,16 @@ pnpm test:e2e --verbose
 pnpm test:e2e --testNamePattern="Discovery Workflow"
 ```
 
+### Type Check
+
+Jest runs these tests with `isolatedModules`, so it does not type-check them. The `e2e-typecheck` CI job does (required via `ci-rollup`):
+
+```bash
+npm run typecheck:e2e   # tsc -p tests/e2e/tsconfig.json
+```
+
+The fixtures in `utils/test-data-generator.ts` use the REST wire keys (`id`, `type`, `from_id`, `to_id`), not the underscore-prefixed keys on `CIInput`/`Relationship` in `packages/common`.
+
 ### Step-by-Step Execution
 
 ```bash

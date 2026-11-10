@@ -1,0 +1,27 @@
+{
+  // Type-check config for tests/e2e (HAP-1212): `tsc -p tests/e2e/tsconfig.json`.
+  // jest.config.e2e.js runs ts-jest with isolatedModules, which never type-checks, so CI runs this
+  // instead (e2e-typecheck job). It mirrors the ts-jest options (commonjs, node resolution) on top of
+  // the repo base (ES2022, strict, @cmdb/* paths).
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    // Promise.withResolvers (full-discovery-flow.test.ts) is ES2024; CI runs Node 22, which has it.
+    "lib": ["ES2022", "ES2024.Promise"],
+    "composite": false,
+    "incremental": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noEmit": true,
+    "baseUrl": "../..",
+    // The e2e suite reads loosely typed REST/Neo4j records and index signatures; the base's
+    // index-signature switches stay off here (packages/api-server/tsconfig.json also turns off
+    // noPropertyAccessFromIndexSignature). Everything else in the base, strict included, applies.
+    "noPropertyAccessFromIndexSignature": false,
+    "noUncheckedIndexedAccess": false
+  },
+  "include": ["./**/*.ts"],
+  "exclude": []
+}

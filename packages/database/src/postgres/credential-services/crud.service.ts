@@ -69,6 +69,11 @@ export class CredentialCRUDService {
     return raw as Record<string, unknown>;
   }
 
+  /** HAP-1800: a stored-credential decode failure names the inner class only, never its message: a JSON.parse failure quotes the decrypted plaintext. */
+  private decryptFailure(id: string, error: unknown): Error {
+    return new Error(`Failed to decrypt credential ${id} (${error instanceof Error ? error.constructor.name : typeof error})`);
+  }
+
   private isEncryptionEnvelope(
     raw: unknown
   ): raw is { iv: string; encryptedData: string; authTag: string } {
@@ -186,11 +191,7 @@ export class CredentialCRUDService {
         credentialsData = this.decodeStoredCredentials(row.credentials);
       } catch (error) {
         logger.error('Failed to decrypt credential', { id, error });
-        throw new Error(
-          `Failed to decrypt credential ${id}: ${
-            error instanceof Error ? error.message : String(error)
-          }`
-        );
+        throw this.decryptFailure(id, error);
       }
 
       return {
@@ -453,7 +454,12 @@ export class CredentialCRUDService {
         name: row.name,
       });
 
-      const credentialsData = this.decodeStoredCredentials(row.credentials);
+      let credentialsData: Record<string, unknown>;
+      try {
+        credentialsData = this.decodeStoredCredentials(row.credentials);
+      } catch (error) {
+        throw this.decryptFailure(id, error);
+      }
 
       return {
         id: row.id,

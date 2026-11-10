@@ -207,7 +207,8 @@ key, and no other `POSTGRES_SSL_*` variable is honored (there are no client cert
 use `POSTGRES_SSL_CA_FILE` for the CA). The server certificate and key are the postgres `ssl_cert_file` / `ssl_key_file`
 flags shown under Docker Compose Configuration below.
 With `NODE_ENV=production` and a non-local host, leaving both `POSTGRES_SSL_MODE` and `POSTGRES_SSL_ENABLED` unset
-refuses to start. An unsupported `POSTGRES_SSL_MODE` value refuses to start in every environment, not only production.
+refuses to start. An unsupported `POSTGRES_SSL_MODE` value, or a `POSTGRES_SSL_ENABLED` value other than `on`, `off`,
+`false` or `disable` (for example `true`), refuses to start in every environment, not only production.
 See [environment-variables.md](../configuration/environment-variables.md) for the full table.
 
 ::: warning The shipped compose does not support `verify-full`
@@ -217,18 +218,31 @@ See [environment-variables.md](../configuration/environment-variables.md) for th
   `POSTGRES_SSL_CA_FILE` and mounts no `/ssl` volume. With `POSTGRES_SSL_MODE=verify-full` in `.env`, the api-server
   verifies against the Node.js trust store, so a private CA is rejected. A `POSTGRES_SSL_CA_FILE=/ssl/ca.crt` line in
   `.env` has no effect, because the variable never reaches the container.
-- **Grafana**: `GF_DATABASE_SSL_MODE` and the datasource `sslmode` in
-  `infrastructure/monitoring/grafana/provisioning/datasources/postgres.yml` both reuse `POSTGRES_SSL_MODE`, and neither
-  sets a root certificate. `verify-full` therefore also switches Grafana to verify-full against its system roots.
+- **Grafana's own database**: `GF_DATABASE_SSL_MODE` is `${POSTGRES_SSL_MODE:-disable}`, so `verify-full` in `.env`
+  switches it to verify-full, and no root certificate is set for it, so it verifies against the system roots.
+- **Grafana datasources**: `sslmode: ${POSTGRES_SSL_MODE:-prefer}` in
+  `infrastructure/monitoring/grafana/provisioning/datasources/postgres.yml` is expanded from the Grafana container's own
+  environment, which the compose file populates with `GF_*` variables only. The value in `.env` does not reach it, and
+  the file is not mounted today because the compose mount path is wrong (tracked separately as HAP-1820).
 
 To run `verify-full` with this compose file, add these in a compose override file; the shipped file does none of it:
 
-1. api-server: forward `POSTGRES_SSL_CA_FILE` and mount the CA read-only, for example
-   `- ./ssl/postgres:/ssl:ro` (the postgres service already mounts that directory), so the path in
-   `POSTGRES_SSL_CA_FILE` exists inside the api-server container.
-2. Grafana: give it a root certificate (`GF_DATABASE_CA_CERT_PATH` for Grafana's own database, `tlsCACert` in the
-   datasource `secureJsonData` for the datasource), mount the CA into the Grafana container, and set its mode
-   independently of the shared `POSTGRES_SSL_MODE`.
+1. api-server: forward `POSTGRES_SSL_CA_FILE=/ssl/ca.crt` and mount only the CA certificate read-only, for example
+   `- ./ssl/postgres/ca.crt:/ssl/ca.crt:ro`. Never mount the server key (`server.key`) or the whole `ssl/postgres`
+   directory into a client container: the api-server is network-facing, and the key would let a compromised client
+   impersonate Postgres.
+2. Server certificate host name: `verify-full` checks the host the client dials (`POSTGRES_HOST=postgres` for the
+   api-server, `GF_DATABASE_HOST=postgres:5432` for Grafana) against the certificate's subject alternative names, so the
+   server certificate must carry `subjectAltName=DNS:postgres` (or whatever host your clients use). Section 5 of
+   `infrastructure/docker/SSL_CERTIFICATE_SETUP.md` now issues that SAN; a certificate issued from an earlier copy of
+   that section has `CN=cmdb-postgres` and no SAN, fails the host-name check, and must be re-issued, then Postgres
+   restarted.
+3. Grafana's own database: set `GF_DATABASE_CA_CERT_PATH` to a CA file mounted into the Grafana container, and set
+   `GF_DATABASE_SSL_MODE` independently of the shared `POSTGRES_SSL_MODE` if it should differ.
+4. Grafana datasources (once HAP-1820 mounts the provisioning file): set the mode literally in the file rather than
+   from `POSTGRES_SSL_MODE`, and use one CA method: `jsonData.sslRootCertFile` pointing at a mounted CA file, with the
+   default `tlsConfigurationMethod` (`file-path`). Do not mix it with `secureJsonData.tlsCACert`, which applies only to
+   `tlsConfigurationMethod: file-content`.
 :::
 
 #### Docker Compose Configuration

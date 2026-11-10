@@ -384,6 +384,11 @@ deadline `GRAPHQL_RESPONSE_WRITE_DEADLINE_MS = 30_000` begins at Apollo
 30 seconds has its socket destroyed and its slot released. Normal clients
 hold the slot through HTTP finish, not merely resolver completion.
 Disconnects before operation start release the slots without executing resolvers.
+`analytics.getChangeFrequencyByType` additionally reserves the REST `analytics`
+admission scope (`reserveAnalysisSlots` in `middleware/analysis-admission.ts`,
+shared with `GET /analytics/change-timeline`: 1 in flight per principal, 2 per
+organization, 10/40 requests per minute) before its tenant-wide graph read; a
+refusal is `Analytics analysis rate limit exceeded` / `TOO_MANY_REQUESTS`.
 Unauthenticated requests retain HTTP 401; a missing organization claim retains the
 resolver's `FORBIDDEN` response. Recursive CI traversals and one-hop relationship
 DataLoaders (`_relationships`, `_dependents`, and `getCIRelationships`) share one

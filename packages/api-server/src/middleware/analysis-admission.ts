@@ -75,6 +75,14 @@ function reserveWorkSlots(
   };
 }
 
+/**
+ * HAP-613: a GraphQL resolver whose REST twin runs through executeBoundedAnalysis
+ * reserves the same per-tenant/per-principal slots and window counts. Null when refused.
+ */
+export function reserveAnalysisSlots(scope: AnalysisPolicy['scope'], org: string, principal: string): (() => void) | null {
+  return reserveWorkSlots(scope, org, principal, true);
+}
+
 /** Authenticate first; keep resolver-level FORBIDDEN parity for a missing tenant claim. */
 export function admitGraphQLRequest(req: Request, res: Response, next: NextFunction): void {
   // Authentication may finish after the client has already closed the socket.

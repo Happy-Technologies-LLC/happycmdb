@@ -32,15 +32,13 @@ export const anomaliesApi = {
     return response.data;
   },
 
-  // Update anomaly status
+  // Update anomaly status (the server records the authenticated user as resolver)
   updateStatus: async (
     id: string,
-    status: 'investigating' | 'resolved' | 'false_positive',
-    resolvedBy?: string
+    status: 'investigating' | 'resolved' | 'false_positive'
   ): Promise<Anomaly> => {
     const response = await apiClient.patch<ApiResponse<Anomaly>>(`/anomalies/${id}/status`, {
       status,
-      resolved_by: resolvedBy,
     });
     return response.data;
   },

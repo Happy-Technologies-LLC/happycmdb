@@ -4,6 +4,7 @@
 // packages/api-server/src/graphql/resolvers/analytics.resolver.ts
 
 import { GraphQLError } from 'graphql';
+import { reserveAnalysisSlots } from '../../middleware/analysis-admission';
 import { AnalyticsService, DependencyDepthLimitError } from '../../services/analytics.service';
 import { logger, CIAnalyticsLimitError } from '@cmdb/common';
 import { requireGraphQLOrganization } from '../require-organization';
@@ -333,7 +334,9 @@ const AnalyticsQueryResolvers = {
   },
 
   /**
-   * Get change frequency by CI type
+   * Get change frequency by CI type.
+   * HAP-613: admitted through the REST analytics scope (per-tenant and per-principal
+   * concurrency and window counts) before the tenant-wide graph read.
    */
   getChangeFrequencyByType: async (
     _parent: any,
@@ -341,6 +344,12 @@ const AnalyticsQueryResolvers = {
     context: GraphQLContext
   ): Promise<any[]> => {
     const organizationId = requireGraphQLOrganization(context);
+    const release = reserveAnalysisSlots('analytics', organizationId, context.user!._userId);
+    if (release === null) {
+      throw new GraphQLError('Analytics analysis rate limit exceeded', {
+        extensions: { code: 'TOO_MANY_REQUESTS' },
+      });
+    }
     try {
       const service = new AnalyticsService();
       const startDate = parseDate(args.startDate);
@@ -364,6 +373,8 @@ const AnalyticsQueryResolvers = {
       throw new GraphQLError('Failed to retrieve change frequency', {
         extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
+    } finally {
+      release();
     }
   },
 

@@ -4,7 +4,7 @@
 import { Request, Response } from 'express';
 import { getPostgresClient, getNeo4jClient } from '@cmdb/database';
 import { logger, ciIncarnationId, CIAnalyticsLimitError } from '@cmdb/common';
-import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { requestOrganizationId, type AuthenticatedRequest } from '../../middleware/auth.middleware';
 import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
 
 import type { Anomaly, AnomalyStatus } from '@cmdb/ai-ml-engine';
@@ -71,7 +71,9 @@ export class AnomalyController {
   async updateAnomalyStatus(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
-      const { status, resolved_by } = req.body;
+      const { status } = req.body;
+      // HAP-613: the verified caller resolves the anomaly; a body resolved_by is ignored.
+      const resolvedBy = (req as AuthenticatedRequest).user!._userId;
 
       // Validate status
       const validStatuses: AnomalyStatus[] = [
@@ -115,7 +117,7 @@ export class AnomalyController {
          WHERE a.id = $3 AND a.organization_id = $4 AND a.ci_id = $5
            AND a.ci_incarnation_id = $6::uuid
          RETURNING a.*`,
-        [status, resolved_by, id, organizationId, ciId, incarnationId]
+        [status, resolvedBy, id, organizationId, ciId, incarnationId]
       );
 
       if (result.rows.length === 0) {

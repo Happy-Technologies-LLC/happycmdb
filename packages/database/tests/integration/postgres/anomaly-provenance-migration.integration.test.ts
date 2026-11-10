@@ -11,6 +11,14 @@ import { runMigrations } from '../../../src/postgres/migrator';
 const admin = getPostgresClient();
 const migration = readFileSync(resolve(__dirname, '../../../src/postgres/migrations/026_anomaly_provenance.sql'), 'utf8');
 const rollback = readFileSync(resolve(__dirname, '../../../src/postgres/migrations/rollback/026_anomaly_provenance.down.sql'), 'utf8');
+// HAP-613: `psql -v ON_ERROR_STOP=1 -f` sends each statement on its own and stops at the first
+// error. Sending the file as one simple query would wrap it in an implicit transaction and hide
+// a missing BEGIN (SET LOCAL ineffective, partial drops) or COMMIT (ledger change never visible).
+const psqlFile = async (client: { query(sql: string): Promise<unknown> }) => {
+  const statements = rollback.split('\n').filter(line => !line.startsWith('--')).join('\n')
+    .split(';').map(statement => statement.trim()).filter(Boolean);
+  for (const statement of statements) await client.query(statement);
+};
 const database = 'anomaly_026_rollback_probe';
 
 it('bounds migration and manual rollback locks, clearing the ledger so 026 can reapply', async () => {
@@ -49,14 +57,14 @@ it('bounds migration and manual rollback locks, clearing the ledger so 026 can r
     // The 55P03 assertion proves the SET LOCAL inside the file took effect.
     await manual.query("SET statement_timeout = '8s'");
     const started = Date.now();
-    await expect(manual.query(rollback)).rejects.toMatchObject({ code: '55P03' });
+    await expect(psqlFile(manual)).rejects.toMatchObject({ code: '55P03' });
     expect(Date.now() - started).toBeLessThan(7000);
     await manual.query('ROLLBACK');
     expect((await scratch.query(`SELECT migration_name FROM cmdb.schema_migrations`)).rows)
       .toEqual([{ migration_name: '026_anomaly_provenance.sql' }]);
 
     await holder.query('ROLLBACK');
-    await manual.query(rollback); // No wrapper transaction: mirrors psql -v ON_ERROR_STOP=1 -f.
+    await psqlFile(manual);
     expect((await scratch.query(`SELECT migration_name FROM cmdb.schema_migrations`)).rows).toEqual([]);
     expect((await scratch.query(`SELECT column_name FROM information_schema.columns
       WHERE table_schema='public' AND table_name='anomalies'

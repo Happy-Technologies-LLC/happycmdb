@@ -310,7 +310,7 @@ open http://localhost:3001
 
 1. **Check API Health**: Ensure all services are running and healthy
    ```bash
-   curl http://localhost:3000/health
+   curl http://localhost:3000/api/v1/cmdb-health
    ```
 
 2. **Increase Resources**: Allocate more CPU/memory to Docker containers
@@ -404,7 +404,7 @@ brew install k6  # macOS
 
 ```bash
 # Check if API is running
-curl http://localhost:3000/health
+curl http://localhost:3000/api/v1/cmdb-health
 
 # Start HappyCMDB if not running
 cd /Users/nczitzer/WebstormProjects/happycmdb

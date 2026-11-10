@@ -355,7 +355,7 @@ docker-compose -f infrastructure/docker/docker-compose.yml up -d neo4j postgres 
 
 # Wait for API to be ready
 sleep 30
-curl http://localhost:3000/api/health
+curl http://localhost:3000/api/v1/cmdb-health
 ```
 
 #### 6.3 Create Credentials via API
@@ -544,7 +544,7 @@ During discovery, CIs will be automatically enriched with:
 
 ```bash
 # API health
-curl http://localhost:3000/api/health
+curl http://localhost:3000/api/v1/cmdb-health
 
 # Database connections
 docker exec cmdb-postgres psql -U postgres -c "SELECT version();"
@@ -648,7 +648,7 @@ git checkout v2.0-stable  # or your v2.0 branch
 docker-compose up -d
 
 # 6. Verify v2.0 is running
-curl http://localhost:3000/api/health
+curl http://localhost:3000/api/v1/cmdb-health
 ```
 
 ### Partial Rollback (Keep Data, Revert Code)

@@ -558,7 +558,7 @@ check_service_health() {
 HEALTH_CHECK_PASSED=true
 
 # Check API
-check_service_health "API Server" "http://localhost:$API_PORT/api/v1/health" || HEALTH_CHECK_PASSED=false
+check_service_health "API Server" "http://localhost:$API_PORT/api/v1/cmdb-health" || HEALTH_CHECK_PASSED=false
 
 # Check Web UI
 check_service_health "Web UI" "http://localhost:$WEB_UI_PORT" || HEALTH_CHECK_PASSED=false

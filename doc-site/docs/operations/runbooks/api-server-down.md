@@ -30,7 +30,7 @@ docker ps | grep cmdb-api-server
 docker logs cmdb-api-server --tail=100 --follow
 
 # Check service health
-curl -f http://localhost:3000/health || echo "API Server Down"
+curl -f http://localhost:3000/api/v1/cmdb-health || echo "API Server Down"
 ```
 
 ### 2. Check Resource Utilization
@@ -79,7 +79,7 @@ docker restart cmdb-api-server
 
 # Wait 30 seconds and check status
 sleep 30
-curl http://localhost:3000/health
+curl http://localhost:3000/api/v1/cmdb-health
 ```
 
 ### Step 2: Check for Configuration Issues
@@ -147,7 +147,7 @@ lsof -i :3000
 
 After resolution, verify:
 
-1. **Health Check**: `curl http://localhost:3000/health` returns 200 OK
+1. **Health Check**: `curl http://localhost:3000/api/v1/cmdb-health` returns 200 OK
 2. **API Functionality**: Test a basic API call: `curl http://localhost:3000/api/v1/cis?limit=1`
 3. **GraphQL Endpoint**: `curl http://localhost:3000/graphql -d '{"query": "{ __schema { queryType { name } } }"}'`
 4. **Web UI**: Access http://localhost:3000 in browser

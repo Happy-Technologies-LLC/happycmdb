@@ -694,7 +694,7 @@ DISCOVERY_WORKER_REPLICAS=5
 
 ### Reliability
 
-1. **Configure health checks** - Monitor all services via `/api/health`
+1. **Configure health checks** - Monitor all services via `/api/v1/cmdb-health`
 2. **Set up automated backups** - Daily backups with 7-day retention
 3. **Test disaster recovery** - Quarterly restore tests
 4. **Use connection retry logic** - Built into all database clients

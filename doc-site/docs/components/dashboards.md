@@ -1686,7 +1686,7 @@ subscription ITSMRealTime {
 **Solution**:
 ```bash
 # Check API server status
-curl http://localhost:3001/health
+curl http://localhost:3001/api/v1/cmdb-health
 
 # Clear browser cache
 - Press Ctrl+Shift+Delete (Chrome/Firefox)

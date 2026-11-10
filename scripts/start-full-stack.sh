@@ -218,7 +218,7 @@ MAX_RETRIES=30
 RETRY_COUNT=0
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-  if curl -s http://localhost:$API_PORT/api/health > /dev/null 2>&1; then
+  if curl -s http://localhost:$API_PORT/api/v1/cmdb-health > /dev/null 2>&1; then
     echo -e "${GREEN}API server is ready!${NC}"
     break
   fi
@@ -246,7 +246,7 @@ echo ""
 
 echo -e "${BLUE}Service URLs:${NC}"
 echo "  API Server:       http://localhost:$API_PORT"
-echo "  Health Check:     http://localhost:$API_PORT/api/health"
+echo "  Health Check:     http://localhost:$API_PORT/api/v1/cmdb-health"
 echo "  GraphQL:          http://localhost:$API_PORT/graphql"
 echo "  Metrics:          http://localhost:$API_PORT/metrics"
 echo ""

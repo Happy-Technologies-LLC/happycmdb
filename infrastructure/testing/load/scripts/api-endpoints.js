@@ -144,10 +144,10 @@ export function smokeTest() {
 
   group('Smoke Test - Health Checks', () => {
     // Health check
-    let res = http.get(`${BASE_URL}/health`);
+    let res = http.get(`${BASE_URL}${API_VERSION}/cmdb-health`);
     check(res, {
       'health check is 200': (r) => r.status === 200,
-      'health check returns ok': (r) => r.json('status') === 'ok',
+      'health check returns healthy': (r) => r.json('_status') === 'healthy',
     });
 
     // API version

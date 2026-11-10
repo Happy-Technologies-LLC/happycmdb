@@ -167,7 +167,7 @@ Questions? Contact me at: [Contact info]
 **Systems**:
 - Status Page: https://status.happycmdb.com (admin)
 - AWS Console: https://console.aws.amazon.com
-- Production API: https://api.happycmdb.com/health
+- Production API: https://api.happycmdb.com/api/v1/cmdb-health
 
 **Communication**:
 - Slack: https://company.slack.com
@@ -180,7 +180,7 @@ Questions? Contact me at: [Contact info]
 ssh -i ~/.ssh/production.pem ubuntu@api-server-1.happycmdb.com
 
 # Check service health
-curl http://localhost:3000/health | jq
+curl http://localhost:3000/api/v1/cmdb-health | jq
 
 # View logs
 docker logs cmdb-api-server --follow --tail=100
@@ -271,7 +271,7 @@ Escalate to Tier 2 if:
 
 **Quick Actions**:
 1. Acknowledge alert immediately
-2. Verify API is actually down: `curl http://localhost:3000/health`
+2. Verify API is actually down: `curl http://localhost:3000/api/v1/cmdb-health`
 3. Check if container is running: `docker ps | grep cmdb-api-server`
 4. Check logs: `docker logs cmdb-api-server --tail=100`
 5. Try restart: `docker restart cmdb-api-server`

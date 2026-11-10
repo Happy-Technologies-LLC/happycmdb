@@ -93,7 +93,7 @@ bash infrastructure/scripts/rollback.sh <TIMESTAMP> database-only
 
 ```bash
 # API health
-curl http://localhost:3000/api/v1/health | jq
+curl http://localhost:3000/api/v1/cmdb-health | jq
 
 # Web UI
 curl -I http://localhost:3001
@@ -149,7 +149,7 @@ tail -f logs/deployment-*.log
 docker stats --no-stream cmdb-api-server cmdb-neo4j cmdb-postgres
 
 # API response time
-curl -w "Time: %{time_total}s\n" -o /dev/null -s http://localhost:3000/api/v1/health
+curl -w "Time: %{time_total}s\n" -o /dev/null -s http://localhost:3000/api/v1/cmdb-health
 
 # Memory usage
 docker exec cmdb-api-server ps aux --sort=-%mem | head -10

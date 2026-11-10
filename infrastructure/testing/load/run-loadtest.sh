@@ -43,7 +43,7 @@ check_api_health() {
     local attempt=1
 
     while [ $attempt -le $max_attempts ]; do
-        if curl -f -s "${API_URL}/health" > /dev/null 2>&1; then
+        if curl -f -s "${API_URL}/api/v1/cmdb-health" > /dev/null 2>&1; then
             echo -e "${GREEN}✓ API is ready${NC}"
             return 0
         fi

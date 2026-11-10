@@ -433,7 +433,7 @@ check_service_health() {
 }
 
 # Health check green API
-check_service_health "Green API" "http://localhost:$GREEN_PORT/api/v1/health"
+check_service_health "Green API" "http://localhost:$GREEN_PORT/api/v1/cmdb-health"
 
 # Health check green UI
 check_service_health "Green UI" "http://localhost:$GREEN_UI_PORT"
@@ -444,7 +444,7 @@ log_info "Running smoke tests on green environment..."
 SMOKE_TESTS_PASSED=true
 
 # Test API endpoints
-curl -sf "http://localhost:$GREEN_PORT/api/v1/health" | grep -q '"status":"healthy"' || SMOKE_TESTS_PASSED=false
+curl -sf "http://localhost:$GREEN_PORT/api/v1/cmdb-health" | grep -q '"_status":"healthy"' || SMOKE_TESTS_PASSED=false
 curl -sf -X POST "http://localhost:$GREEN_PORT/graphql" \
     -H 'Content-Type: application/json' \
     -d '{"query":"{ __schema { types { name } } }"}' | grep -q 'types' || SMOKE_TESTS_PASSED=false
@@ -486,7 +486,7 @@ for i in "${!SHIFT_PERCENTAGES[@]}"; do
     sleep 30
 
     # Validate green environment is still healthy
-    if ! curl -sf "http://localhost:$GREEN_PORT/api/v1/health" > /dev/null 2>&1; then
+    if ! curl -sf "http://localhost:$GREEN_PORT/api/v1/cmdb-health" > /dev/null 2>&1; then
         log_error "Green environment became unhealthy during traffic shift"
         log_error "Rolling back traffic to blue..."
         # Rollback traffic shift
@@ -513,7 +513,7 @@ DEPLOYMENT_STATE="final_validation"
 print_header "Step 10: Final Validation"
 
 log_info "Monitoring green environment under full production load (5 minutes)..."
-check_service_health "Green API (Full Load)" "http://localhost:$GREEN_PORT/api/v1/health" 300
+check_service_health "Green API (Full Load)" "http://localhost:$GREEN_PORT/api/v1/cmdb-health" 300
 
 # Run post-deployment validation
 if [[ -f "$SCRIPT_DIR/post-deploy-validation.sh" ]]; then
@@ -608,7 +608,7 @@ echo ""
 echo "📡 Production URLs:"
 echo "  🌐 Web UI:    https://happycmdb.example.com"
 echo "  🔌 API:       https://api.happycmdb.example.com"
-echo "  ❤️  Health:   https://api.happycmdb.example.com/api/v1/health"
+echo "  ❤️  Health:   https://api.happycmdb.example.com/api/v1/cmdb-health"
 echo ""
 echo "📊 Monitoring:"
 echo "  View logs:     docker logs -f cmdb-api-server"

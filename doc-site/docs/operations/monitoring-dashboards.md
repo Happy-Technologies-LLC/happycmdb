@@ -19,7 +19,7 @@ This guide provides links to all monitoring dashboards, key metrics to watch, an
 
 | Service | URL | Purpose |
 |---------|-----|---------|
-| **API Health** | http://localhost:3000/health | API health check |
+| **API Health** | http://localhost:3000/api/v1/cmdb-health | API health check |
 | **GraphQL Playground** | http://localhost:3000/graphql | GraphQL API explorer |
 | **Web UI** | http://localhost:3000 | User interface |
 | **API Metrics** | http://localhost:3000/metrics | Prometheus metrics endpoint (`Authorization: Bearer $METRICS_SCRAPE_TOKEN`) |
@@ -745,7 +745,7 @@ Print and keep this handy:
 ╠═══════════════════════════════════════════════════════════╣
 ║ GRAFANA:     http://localhost:3001                       ║
 ║ PROMETHEUS:  http://localhost:9090                       ║
-║ API HEALTH:  http://localhost:3000/health                ║
+║ API HEALTH:  http://localhost:3000/api/v1/cmdb-health    ║
 ║ ALERTS:      http://localhost:9090/alerts                ║
 ╠═══════════════════════════════════════════════════════════╣
 ║ KEY DASHBOARDS                                            ║

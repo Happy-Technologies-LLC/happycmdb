@@ -36,7 +36,7 @@ curl -s http://localhost:9090/api/v1/query?query=rate\(http_requests_total{statu
 curl -s http://localhost:9090/api/v1/query?query=rate\(http_requests_total[5m]\) | jq
 
 # Quick health check
-curl -w "@curl-format.txt" -o /dev/null -s http://localhost:3000/health
+curl -w "@curl-format.txt" -o /dev/null -s http://localhost:3000/api/v1/cmdb-health
 # curl-format.txt:
 # time_namelookup: %{time_namelookup}\n
 # time_connect: %{time_connect}\n
@@ -391,7 +391,7 @@ If issue persists after 1 hour:
 
 ```bash
 # Real-time performance monitoring
-watch -n 2 "curl -w '%{time_total}\n' -o /dev/null -s http://localhost:3000/health"
+watch -n 2 "curl -w '%{time_total}\n' -o /dev/null -s http://localhost:3000/api/v1/cmdb-health"
 
 # Database query performance summary
 docker exec cmdb-postgres psql -U cmdb_user -d cmdb -c \

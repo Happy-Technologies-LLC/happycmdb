@@ -23,7 +23,7 @@
 |--------|-----|
 | **Grafana Dashboards** | http://localhost:3001 |
 | **Prometheus Alerts** | http://localhost:9090/alerts |
-| **API Health Check** | http://localhost:3000/health |
+| **API Health Check** | http://localhost:3000/api/v1/cmdb-health |
 | **Status Page Admin** | https://status.happycmdb.com |
 | **Runbooks** | /docs/operations/runbooks/ |
 
@@ -75,7 +75,7 @@
 
 ```bash
 # Check service health
-curl http://localhost:3000/health
+curl http://localhost:3000/api/v1/cmdb-health
 
 # View all containers
 docker ps
@@ -203,7 +203,7 @@ All services normal
 ### Service Down
 1. `docker ps` - Is container running?
 2. `docker logs <container> --tail=100` - Check logs
-3. `curl http://localhost:3000/health` - Test endpoint
+3. `curl http://localhost:3000/api/v1/cmdb-health` - Test endpoint
 4. Try `docker restart <container>`
 5. Escalate if restart doesn't work
 

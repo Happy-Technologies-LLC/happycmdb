@@ -155,7 +155,7 @@ test_endpoint() {
 }
 
 # Test API health endpoint
-test_endpoint "API Health" "http://$API_HOST:$API_PORT/api/v1/health" '"status":"healthy"'
+test_endpoint "API Health" "http://$API_HOST:$API_PORT/api/v1/cmdb-health" '"_status":"healthy"'
 
 # Test GraphQL endpoint
 test_endpoint "GraphQL" "http://$API_HOST:$API_PORT/graphql"
@@ -294,7 +294,7 @@ print_header "Performance Metrics"
 # API response time
 log_info "Measuring API response times..."
 
-RESPONSE_TIME=$(curl -sf -o /dev/null -w "%{time_total}" "http://$API_HOST:$API_PORT/api/v1/health" 2>/dev/null || echo "999")
+RESPONSE_TIME=$(curl -sf -o /dev/null -w "%{time_total}" "http://$API_HOST:$API_PORT/api/v1/cmdb-health" 2>/dev/null || echo "999")
 RESPONSE_MS=$(echo "$RESPONSE_TIME * 1000" | bc 2>/dev/null || echo "999")
 
 if (( $(echo "$RESPONSE_TIME < 1.0" | bc -l 2>/dev/null || echo "0") )); then

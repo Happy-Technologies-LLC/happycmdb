@@ -261,7 +261,7 @@ echo | openssl s_client -servername happycmdb.example.com -connect happycmdb.exa
 curl -v https://happycmdb.example.com 2>&1 | grep -E "expire|valid"
 
 # Test API
-curl -v https://api.happycmdb.example.com/health 2>&1 | grep -E "expire|valid"
+curl -v https://api.happycmdb.example.com/api/v1/cmdb-health 2>&1 | grep -E "expire|valid"
 ```
 
 ## Escalation

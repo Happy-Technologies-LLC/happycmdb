@@ -1,257 +1,370 @@
 {
-  "dashboard": {
-    "title": "HappyCMDB v3.0 - ITIL Service Management",
-    "uid": "v3-itil-service-mgmt",
-    "tags": ["happycmdb", "v3.0", "itil", "itsm"],
-    "timezone": "browser",
-    "schemaVersion": 38,
-    "version": 1,
-    "refresh": "30s",
-    "panels": [
-      {
-        "id": 1,
-        "title": "Open Incidents by Priority",
-        "type": "bargauge",
-        "gridPos": {"x": 0, "y": 0, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "sum by (priority) (cmdb_itil_incidents_open)",
-            "legendFormat": "{{priority}}"
-          }
-        ],
-        "options": {
-          "orientation": "horizontal",
-          "displayMode": "gradient"
+  "title": "HappyCMDB v3.0 - ITIL Service Management",
+  "uid": "v3-itil-service-mgmt",
+  "tags": [
+    "happycmdb",
+    "v3.0",
+    "itil",
+    "itsm"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Open Incidents by Priority",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (priority) (cmdb_itil_incidents_open)",
+          "legendFormat": "{{priority}}"
         }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Incident Creation Rate (24h)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 8
       },
-      {
-        "id": 2,
-        "title": "Incident Creation Rate (24h)",
-        "type": "timeseries",
-        "gridPos": {"x": 8, "y": 0, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "priority:cmdb_itil_incidents_created:rate5m",
-            "legendFormat": "{{priority}}"
-          }
-        ]
-      },
-      {
-        "id": 3,
-        "title": "Mean Time to Resolution (MTTR)",
-        "type": "stat",
-        "gridPos": {"x": 16, "y": 0, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "avg(cmdb_itil_incident_resolution_minutes)",
-            "legendFormat": "MTTR"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "m",
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "green"},
-                {"value": 60, "color": "yellow"},
-                {"value": 240, "color": "red"}
-              ]
-            }
-          }
+      "targets": [
+        {
+          "expr": "priority:cmdb_itil_incidents_created:rate5m",
+          "legendFormat": "{{priority}}"
         }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Mean Time to Resolution (MTTR)",
+      "type": "stat",
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 8
       },
-      {
-        "id": 4,
-        "title": "Changes by Risk Level",
-        "type": "piechart",
-        "gridPos": {"x": 0, "y": 8, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "sum by (risk_level) (cmdb_itil_changes_total)",
-            "legendFormat": "{{risk_level}}"
-          }
-        ]
-      },
-      {
-        "id": 5,
-        "title": "Change Success Rate",
-        "type": "gauge",
-        "gridPos": {"x": 8, "y": 8, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "sum(rate(cmdb_itil_changes_completed_total{status=\"success\"}[24h])) / sum(rate(cmdb_itil_changes_completed_total[24h])) * 100",
-            "legendFormat": "Success Rate"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percent",
-            "min": 0,
-            "max": 100,
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "red"},
-                {"value": 90, "color": "yellow"},
-                {"value": 98, "color": "green"}
-              ]
-            }
-          }
+      "targets": [
+        {
+          "expr": "avg(cmdb_itil_incident_resolution_minutes)",
+          "legendFormat": "MTTR"
         }
-      },
-      {
-        "id": 6,
-        "title": "Failed Changes (Last 7 Days)",
-        "type": "table",
-        "gridPos": {"x": 16, "y": 8, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "increase(cmdb_itil_changes_completed_total{status=\"failed\"}[7d]) > 0",
-            "legendFormat": "",
-            "format": "table"
-          }
-        ]
-      },
-      {
-        "id": 7,
-        "title": "Configuration Baseline Compliance",
-        "type": "gauge",
-        "gridPos": {"x": 0, "y": 16, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "sum(cmdb_itil_cis_compliant) / sum(cmdb_itil_cis_total) * 100",
-            "legendFormat": "Compliance %"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percent",
-            "min": 0,
-            "max": 100,
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "red"},
-                {"value": 85, "color": "yellow"},
-                {"value": 95, "color": "green"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 8,
-        "title": "Configuration Drift Detection Rate",
-        "type": "timeseries",
-        "gridPos": {"x": 8, "y": 16, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "cmdb_itil_drift_detection_rate:rate5m",
-            "legendFormat": "Drift Detected"
-          }
-        ]
-      },
-      {
-        "id": 9,
-        "title": "CIs by Lifecycle Stage",
-        "type": "piechart",
-        "gridPos": {"x": 16, "y": 16, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "sum by (lifecycle_stage) (cmdb_itil_ci_by_lifecycle)",
-            "legendFormat": "{{lifecycle_stage}}"
-          }
-        ]
-      },
-      {
-        "id": 10,
-        "title": "SLA Compliance by Priority",
-        "type": "bargauge",
-        "gridPos": {"x": 0, "y": 24, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "sum by (priority) (cmdb_itil_sla_met_count) / sum by (priority) (cmdb_itil_sla_total_count) * 100",
-            "legendFormat": "{{priority}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percent",
-            "min": 0,
-            "max": 100,
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "red"},
-                {"value": 90, "color": "yellow"},
-                {"value": 95, "color": "green"}
-              ]
-            }
-          }
-        },
-        "options": {
-          "orientation": "horizontal"
-        }
-      },
-      {
-        "id": 11,
-        "title": "Audit Compliance Status",
-        "type": "stat",
-        "gridPos": {"x": 12, "y": 24, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "sum(cmdb_itil_audit_compliant) / sum(cmdb_itil_audit_total) * 100",
-            "legendFormat": "Audit Compliance"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percent",
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "red"},
-                {"value": 90, "color": "yellow"},
-                {"value": 98, "color": "green"}
-              ]
-            }
-          }
-        },
-        "options": {
-          "graphMode": "area"
-        }
-      },
-      {
-        "id": 12,
-        "title": "Top CIs with Most Incidents",
-        "type": "table",
-        "gridPos": {"x": 0, "y": 32, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "topk(10, cmdb_itil_ci_incident_count)",
-            "legendFormat": "",
-            "format": "table"
-          }
-        ]
-      },
-      {
-        "id": 13,
-        "title": "Change Window Optimization Savings",
-        "type": "stat",
-        "gridPos": {"x": 12, "y": 32, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "sum(cmdb_itil_change_window_savings_hours)",
-            "legendFormat": "Hours Saved"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "h"
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "m",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 60,
+                "color": "yellow"
+              },
+              {
+                "value": 240,
+                "color": "red"
+              }
+            ]
           }
         }
       }
-    ]
-  }
+    },
+    {
+      "id": 4,
+      "title": "Changes by Risk Level",
+      "type": "piechart",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (risk_level) (cmdb_itil_changes_total)",
+          "legendFormat": "{{risk_level}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Change Success Rate",
+      "type": "gauge",
+      "gridPos": {
+        "x": 8,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(cmdb_itil_changes_completed_total{status=\"success\"}[24h])) / sum(rate(cmdb_itil_changes_completed_total[24h])) * 100",
+          "legendFormat": "Success Rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 90,
+                "color": "yellow"
+              },
+              {
+                "value": 98,
+                "color": "green"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Failed Changes (Last 7 Days)",
+      "type": "table",
+      "gridPos": {
+        "x": 16,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "increase(cmdb_itil_changes_completed_total{status=\"failed\"}[7d]) > 0",
+          "legendFormat": "",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Configuration Baseline Compliance",
+      "type": "gauge",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(cmdb_itil_cis_compliant) / sum(cmdb_itil_cis_total) * 100",
+          "legendFormat": "Compliance %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 85,
+                "color": "yellow"
+              },
+              {
+                "value": 95,
+                "color": "green"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Configuration Drift Detection Rate",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 8,
+        "y": 16,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "cmdb_itil_drift_detection_rate:rate5m",
+          "legendFormat": "Drift Detected"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "CIs by Lifecycle Stage",
+      "type": "piechart",
+      "gridPos": {
+        "x": 16,
+        "y": 16,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (lifecycle_stage) (cmdb_itil_ci_by_lifecycle)",
+          "legendFormat": "{{lifecycle_stage}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "SLA Compliance by Priority",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (priority) (cmdb_itil_sla_met_count) / sum by (priority) (cmdb_itil_sla_total_count) * 100",
+          "legendFormat": "{{priority}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 90,
+                "color": "yellow"
+              },
+              {
+                "value": 95,
+                "color": "green"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 11,
+      "title": "Audit Compliance Status",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(cmdb_itil_audit_compliant) / sum(cmdb_itil_audit_total) * 100",
+          "legendFormat": "Audit Compliance"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 90,
+                "color": "yellow"
+              },
+              {
+                "value": 98,
+                "color": "green"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 12,
+      "title": "Top CIs with Most Incidents",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "topk(10, cmdb_itil_ci_incident_count)",
+          "legendFormat": "",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Change Window Optimization Savings",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(cmdb_itil_change_window_savings_hours)",
+          "legendFormat": "Hours Saved"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "h"
+        }
+      }
+    }
+  ]
 }

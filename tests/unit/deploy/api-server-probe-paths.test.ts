@@ -220,18 +220,27 @@ function dockerfileInstructions(
 /** One shell-word: bare characters, `\x` escapes, `"..."` and `'...'` runs. */
 const WORD = /(?:[^\s"'\\]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')+/y;
 
-/** The word with quotes removed and backslash escapes resolved. */
-function unquote(word: string): string {
+/**
+ * The word with quotes removed and backslash escapes resolved. An unterminated quote throws,
+ * naming `where` (`file:line`), instead of reading past the end of the word.
+ */
+function unquote(word: string, where: string): string {
+  const unterminated = (quote: string): Error =>
+    new Error(`${where}: unterminated ${quote} quote in ENV value ${JSON.stringify(word)}`);
   let out = '';
   for (let i = 0; i < word.length; i++) {
     const ch = word[i];
     if (ch === '\\') out += word[++i] ?? '';
     else if (ch === "'") {
       const end = word.indexOf("'", i + 1);
+      if (end === -1) throw unterminated("'");
       out += word.slice(i + 1, end);
       i = end;
     } else if (ch === '"') {
-      for (i++; word[i] !== '"'; i++) out += word[i] === '\\' ? word[++i] : word[i];
+      for (i++; word[i] !== '"'; i++) {
+        if (i >= word.length) throw unterminated('"');
+        out += word[i] === '\\' ? (word[++i] ?? '') : word[i];
+      }
     } else out += ch;
   }
   return out;
@@ -242,10 +251,10 @@ function unquote(word: string): string {
  * rest of the line) or `ENV k=v k2="v 2" k3=v\ 3`. Undefined when the body does not tokenise:
  * the matched word spans must cover the whole body except the whitespace between words.
  */
-function envPairs(body: string): [string, string][] | undefined {
+function envPairs(body: string, where: string): [string, string][] | undefined {
   const trimmed = body.trim();
   const legacy = trimmed.match(/^([^\s=]+)\s+(.*)$/s);
-  if (legacy) return [[unquote(legacy[1]), unquote(legacy[2].trim())]];
+  if (legacy) return [[unquote(legacy[1], where), unquote(legacy[2].trim(), where)]];
   const words: string[] = [];
   for (let pos = 0; pos < trimmed.length; ) {
     const blanks = trimmed.slice(pos).match(/^\s*/)![0].length;
@@ -261,7 +270,7 @@ function envPairs(body: string): [string, string][] | undefined {
   for (const word of words) {
     const pair = word.match(/^([^=]+)=(.*)$/s);
     if (!pair) return undefined;
-    pairs.push([unquote(pair[1]), unquote(pair[2])]);
+    pairs.push([unquote(pair[1], where), unquote(pair[2], where)]);
   }
   return pairs;
 }
@@ -276,7 +285,7 @@ function dockerfileEnvPort(file: string, source?: string): string | undefined {
   const found: string[] = [];
   for (const { line, text } of dockerfileInstructions(file, source)('ENV')) {
     const body = text.replace(/^\s*ENV\s+/i, '');
-    const pairs = envPairs(body);
+    const pairs = envPairs(body, `${file}:${line}`);
     if (pairs === undefined) {
       if (/\bPORT\b/.test(body)) {
         throw new Error(
@@ -526,51 +535,93 @@ describe('api-server probe definitions', () => {
 
 // Inline Dockerfile bodies run through the real dockerfileInstructions/envPairs/dockerfileEnvPort:
 // the resolved ENV PORT, `undefined` (no ENV line mentions PORT, so the code default applies),
-// or 'throws' (the port is not derivable, which the probe test reports as a failing case).
-const ENV_PORT_FIXTURES: [
-  name: string,
-  lines: string[],
-  expected: string | undefined | 'throws',
-][] = [
-  ['no ENV at all', ['FROM node:20', 'EXPOSE 3001'], undefined],
-  ['plain ENV PORT=', ['ENV PORT=3001'], '3001'],
-  ['multi-key ENV', ['ENV A=1 PORT=3001'], '3001'],
-  ['legacy space form', ['ENV PORT 3001'], '3001'],
-  ['quoted PORT="3001"', ['ENV PORT="3001"'], '3001'],
-  ['$P', ['ENV PORT=$P'], 'throws'],
-  ['${P}', ['ENV PORT=${P}'], 'throws'],
-  ['legacy form with ${P}', ['ENV PORT ${P}'], 'throws'],
-  ['${X} inside a continuation', ['ENV A=1 \\', '    PORT=${X}'], 'throws'],
-  ['comment inside a continuation', ['ENV A=1 \\', '# a note', '    PORT=3001'], '3001'],
+// or an error-message pattern (the port is not derivable, which the probe test reports as a
+// failing case); a throw with any other message does not satisfy it.
+const ENV_PORT_FIXTURES: [name: string, lines: string[], expected: string | undefined | RegExp][] =
   [
-    'comment line ending in a backslash is not a continuation',
-    ['# note \\', 'ENV PORT=3001'],
-    '3001',
-  ],
-  ['METRICS_PORT only', ['ENV METRICS_PORT=9090'], undefined],
-  ['METRICS_PORT beside PORT', ['ENV METRICS_PORT=9090 PORT=3001'], '3001'],
-  ['L1: backslash then trailing space', ['ENV NODE_ENV=production \\ ', '    PORT=3001'], '3001'],
-  ['L1: backslash then trailing tab', ['ENV NODE_ENV=production \\\t', '    PORT=3001'], '3001'],
-  [
-    'L1: blank line inside a continuation',
-    ['ENV NODE_ENV=production \\', '', '    PORT=3001'],
-    '3001',
-  ],
-  ['L2: double-quoted value with a space', ['ENV PORT=3000 DESC="hello world"'], '3000'],
-  ['L2: single-quoted value with a space', ["ENV PORT=3000 k2='v 2'"], '3000'],
-  ['L2: both quoted forms, PORT last', ['ENV DESC="hello world" k2=\'v 2\' PORT=3001'], '3001'],
-  ['L2: backslash-escaped space', ['ENV DESC=hello\\ world PORT=3001'], '3001'],
-  ['L2: legacy form with a spaced value', ['ENV DESC "hello world"'], undefined],
-  ['unterminated quote mentioning PORT', ['ENV PORT=3000 DESC="hello'], 'throws'],
-  ['unterminated quote not mentioning PORT', ['ENV DESC="hello'], undefined],
-  ['key without a value mentioning PORT', ['ENV A=1 PORT'], 'throws'],
-  ['two ENV PORT lines', ['ENV PORT=3000', 'ENV PORT=3001'], 'throws'],
-];
+    ['no ENV at all', ['FROM node:20', 'EXPOSE 3001'], undefined],
+    ['plain ENV PORT=', ['ENV PORT=3001'], '3001'],
+    ['multi-key ENV', ['ENV A=1 PORT=3001'], '3001'],
+    ['legacy space form', ['ENV PORT 3001'], '3001'],
+    ['quoted PORT="3001"', ['ENV PORT="3001"'], '3001'],
+    ['$P', ['ENV PORT=$P'], /^fixture\/Dockerfile:1: ENV PORT is "\$P", not a literal port/],
+    [
+      '${P}',
+      ['ENV PORT=${P}'],
+      /^fixture\/Dockerfile:1: ENV PORT is "\$\{P\}", not a literal port/,
+    ],
+    [
+      'legacy form with ${P}',
+      ['ENV PORT ${P}'],
+      /^fixture\/Dockerfile:1: ENV PORT is "\$\{P\}", not a literal port/,
+    ],
+    [
+      '${X} inside a continuation',
+      ['ENV A=1 \\', '    PORT=${X}'],
+      /^fixture\/Dockerfile:1: ENV PORT is "\$\{X\}", not a literal port/,
+    ],
+    ['comment inside a continuation', ['ENV A=1 \\', '# a note', '    PORT=3001'], '3001'],
+    [
+      'comment line ending in a backslash is not a continuation',
+      ['# note \\', 'ENV PORT=3001'],
+      '3001',
+    ],
+    ['METRICS_PORT only', ['ENV METRICS_PORT=9090'], undefined],
+    ['METRICS_PORT beside PORT', ['ENV METRICS_PORT=9090 PORT=3001'], '3001'],
+    ['L1: backslash then trailing space', ['ENV NODE_ENV=production \\ ', '    PORT=3001'], '3001'],
+    ['L1: backslash then trailing tab', ['ENV NODE_ENV=production \\\t', '    PORT=3001'], '3001'],
+    [
+      'L1: blank line inside a continuation',
+      ['ENV NODE_ENV=production \\', '', '    PORT=3001'],
+      '3001',
+    ],
+    ['L2: double-quoted value with a space', ['ENV PORT=3000 DESC="hello world"'], '3000'],
+    ['L2: single-quoted value with a space', ["ENV PORT=3000 k2='v 2'"], '3000'],
+    ['L2: both quoted forms, PORT last', ['ENV DESC="hello world" k2=\'v 2\' PORT=3001'], '3001'],
+    ['L2: backslash-escaped space', ['ENV DESC=hello\\ world PORT=3001'], '3001'],
+    ['L2: legacy form with a spaced value', ['ENV DESC "hello world"'], undefined],
+    [
+      'unterminated quote mentioning PORT',
+      ['ENV PORT=3000 DESC="hello'],
+      /^fixture\/Dockerfile:1: cannot parse ENV "PORT=3000 DESC=\\"hello"/,
+    ],
+    ['unterminated quote not mentioning PORT', ['ENV DESC="hello'], undefined],
+    [
+      'key without a value mentioning PORT',
+      ['ENV A=1 PORT'],
+      /^fixture\/Dockerfile:1: cannot parse ENV "A=1 PORT"/,
+    ],
+    [
+      'two ENV PORT lines',
+      ['ENV PORT=3000', 'ENV PORT=3001'],
+      /^fixture\/Dockerfile: expected at most one ENV PORT/,
+    ],
+    [
+      'legacy form, unterminated double quote: names file and line',
+      ['FROM node:20', 'ENV DESC "hello'],
+      /^fixture\/Dockerfile:2: unterminated " quote in ENV value "\\"hello"/,
+    ],
+    [
+      'legacy form, unterminated single quote: names file and line',
+      ['FROM node:20', "ENV DESC 'hello"],
+      /^fixture\/Dockerfile:2: unterminated ' quote in ENV value "'hello"/,
+    ],
+    [
+      'legacy ENV PORT with an unterminated quote',
+      ['ENV PORT "3000'],
+      /^fixture\/Dockerfile:1: unterminated " quote/,
+    ],
+    [
+      'legacy form, escape at the end of an open quote',
+      ['ENV DESC "hello\\\\'],
+      /^fixture\/Dockerfile:1: unterminated " quote/,
+    ],
+  ];
 
 describe('Dockerfile ENV PORT parsing', () => {
   it.each(ENV_PORT_FIXTURES)('%s', (_name, lines, expected) => {
     const resolve = () => dockerfileEnvPort('fixture/Dockerfile', lines.join('\n'));
-    if (expected === 'throws') expect(resolve).toThrow();
+    if (expected instanceof RegExp) expect(resolve).toThrow(expected);
     else expect(resolve()).toBe(expected);
   });
 });

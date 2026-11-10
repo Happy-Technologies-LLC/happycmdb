@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach } from '@jest/globals';
 import { ApiKeyNotFoundError, AuthService, AuthRepository, UserProfileUpdate } from '../auth.service';
 import type { GuardedPasswordWrite, GuardedUserWrite } from '../auth.service';
-import { AmbiguousUserIdentityError, User, ApiKey } from '../types';
+import { AmbiguousUserIdentityError, User, ApiKey, UserNotFoundError } from '../types';
 import { PasswordService } from '../password.service';
 import { JWTService } from '../jwt.service';
 
@@ -146,7 +146,7 @@ describe('AuthService profile/password/account lifecycle', () => {
     });
 
     it('throws for an unknown user id', async () => {
-      await expect(service.updateProfile('ghost', { name: 'x' })).rejects.toThrow('User not found');
+      await expect(service.updateProfile('ghost', { name: 'x' })).rejects.toBeInstanceOf(UserNotFoundError);
     });
   });
 

@@ -54,8 +54,11 @@ describe('PUT /profile when the user node vanishes mid-update (HAP-1767)', () =>
   let token: string;
   /** What the update statement does: matches 0 nodes, or the driver fails. */
   let onUpdate: () => Promise<unknown>;
+  /** How many FIND_USER_BY_ID reads find the node before it is gone (authentication takes the first). */
+  let readsThatFind: number;
 
   beforeEach(() => {
+    readsThatFind = Number.POSITIVE_INFINITY;
     const alice = {
       elementId: '4:alice',
       properties: {
@@ -64,9 +67,12 @@ describe('PUT /profile when the user node vanishes mid-update (HAP-1767)', () =>
       },
     };
     session = {
-      // The read (and authentication's read) always finds the node; any other statement is the update.
-      run: jest.fn(async (cypher: string) =>
-        cypher === FIND_USER_BY_ID_CYPHER ? { records: [{ get: () => alice }] } : onUpdate()),
+      // By default the read (and authentication's read) always finds the node; any other statement is the update.
+      run: jest.fn(async (cypher: string) => {
+        if (cypher !== FIND_USER_BY_ID_CYPHER) return onUpdate();
+        const found = readsThatFind-- > 0;
+        return { records: found ? [{ get: () => alice }] : [] };
+      }),
       close: jest.fn(async () => undefined),
     };
     (getNeo4jClient as AnyMock).mockReturnValue({ getSession: () => session });
@@ -97,6 +103,19 @@ describe('PUT /profile when the user node vanishes mid-update (HAP-1767)', () =>
     expect(session.run.mock.calls.some(([cypher]) => String(cypher).includes('SET'))).toBe(true);
   });
 
+  it('answers 404 with the not-found body when the service read finds no user after authentication', async () => {
+    readsThatFind = 1; // authentication finds the user; the service's own read then misses
+    onUpdate = async () => { throw new Error('the update must not run after a read-miss'); };
+
+    const res = await put();
+
+    expect([res.status, res.body]).toEqual([
+      404, { success: false, error: 'Profile Update Failed', message: 'User not found' },
+    ]);
+    const calls = session.run.mock.calls.map(([cypher]) => cypher);
+    expect(calls).toEqual([FIND_USER_BY_ID_CYPHER, FIND_USER_BY_ID_CYPHER]);
+  });
+
   it('keeps a genuine driver failure a fixed 500 that never echoes the driver text', async () => {
     const needle = `needle-${randomUUID()}`;
     onUpdate = async () => { throw new Error(`bolt://svc:${needle}@neo4j.internal:7687 connection reset`); };
@@ -109,6 +128,10 @@ describe('PUT /profile when the user node vanishes mid-update (HAP-1767)', () =>
         500, { success: false, error: 'Profile Update Failed', message: 'Internal error' },
       ]);
       expect(JSON.stringify([res.body, res.headers])).not.toContain(needle);
+      const logged = levels.flatMap(spy => spy.mock.calls);
+      expect(logged.length).toBeGreaterThan(0);
+      expect(JSON.stringify(logged, (_k, v) => (v instanceof Error ? { name: v.name, message: v.message, stack: v.stack } : v)))
+        .not.toContain(needle);
     } finally {
       levels.forEach(spy => spy.mockRestore());
     }

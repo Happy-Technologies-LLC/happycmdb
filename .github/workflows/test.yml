@@ -726,6 +726,34 @@ jobs:
           echo "$out" | grep -qF 'FAIL: login 9 s after the burst' \
             || { echo "mutation failed for the wrong reason" >&2; exit 1; }
 
+  docs-build:
+    # HAP-1832: `vitepress build` compiles every page through the Vue SFC compiler and resolves every
+    # local asset, so unclosed tags, bare `<`/`{` and dangling image references fail here instead of silently
+    # leaving main red. Isolated from the monorepo: only doc-site/ is installed.
+    name: Doc site build (vitepress)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: doc-site
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'npm'
+          cache-dependency-path: doc-site/package-lock.json
+      - name: Install doc-site dependencies
+        run: npm ci
+      - name: Build doc site
+        run: npm run docs:build
+
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest
@@ -839,7 +867,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   ci-rollup:
-    needs: [unit-tests, integration-tests, e2e-tests, e2e-typecheck, staging-migrations, web-ui-build, nginx-config-test, api-image-nmap, hap630-real-store, hap644-real-store, hap668-real-store, hap835-real-store, hap1422-real-store, hap1562-real-store]
+    needs: [unit-tests, integration-tests, e2e-tests, e2e-typecheck, staging-migrations, web-ui-build, nginx-config-test, docs-build, api-image-nmap, hap630-real-store, hap644-real-store, hap668-real-store, hap835-real-store, hap1422-real-store, hap1562-real-store]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -857,6 +885,7 @@ jobs:
           WEB_UI_BUILD_RESULT: ${{ needs.web-ui-build.result }}
           E2E_TYPECHECK_RESULT: ${{ needs.e2e-typecheck.result }}
           NGINX_CONFIG_TEST_RESULT: ${{ needs.nginx-config-test.result }}
+          DOCS_BUILD_RESULT: ${{ needs.docs-build.result }}
           API_IMAGE_NMAP_RESULT: ${{ needs.api-image-nmap.result }}
           HAP630_RESULT: ${{ needs.hap630-real-store.result }}
           HAP644_RESULT: ${{ needs.hap644-real-store.result }}
@@ -877,6 +906,7 @@ jobs:
              [ "$WEB_UI_BUILD_RESULT" = "success" ] &&
              [ "$E2E_TYPECHECK_RESULT" = "success" ] &&
              [ "$NGINX_CONFIG_TEST_RESULT" = "success" ] &&
+             [ "$DOCS_BUILD_RESULT" = "success" ] &&
              [ "$API_IMAGE_NMAP_RESULT" = "success" ] &&
              { [ "$HAP630_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP630_RESULT" = "skipped" ]; }; } &&
              { [ "$HAP644_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP644_RESULT" = "skipped" ]; }; } &&
@@ -896,6 +926,7 @@ jobs:
             [ "$WEB_UI_BUILD_RESULT" = "success" ] || failures+=("web-ui-build=$WEB_UI_BUILD_RESULT")
             [ "$E2E_TYPECHECK_RESULT" = "success" ] || failures+=("e2e-typecheck=$E2E_TYPECHECK_RESULT")
             [ "$NGINX_CONFIG_TEST_RESULT" = "success" ] || failures+=("nginx-config-test=$NGINX_CONFIG_TEST_RESULT")
+            [ "$DOCS_BUILD_RESULT" = "success" ] || failures+=("docs-build=$DOCS_BUILD_RESULT")
             [ "$API_IMAGE_NMAP_RESULT" = "success" ] || failures+=("api-image-nmap=$API_IMAGE_NMAP_RESULT")
             if [ "$HAP630_RESULT" != "success" ] && [ "${{ github.event_name }}" != "push" ]; then
               failures+=("hap630-real-store=$HAP630_RESULT")

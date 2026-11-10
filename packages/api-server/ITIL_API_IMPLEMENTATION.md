@@ -28,7 +28,7 @@ Implemented comprehensive REST routes for:
 - `GET /api/v1/itil/configuration-items/:id` - Get single CI
 - `PATCH /api/v1/itil/configuration-items/:id/lifecycle` - Update lifecycle stage
 - `PATCH /api/v1/itil/configuration-items/:id/status` - Update configuration status
-- `GET /api/v1/itil/configuration-items/:id/history` - Get CI change history
+- `GET /api/v1/itil/configuration-items/:id/history?limit=` - Get CI change history (`limit`: integer 1–500, default 100; otherwise 400 via `ciHistoryQuerySchema` in `itil.routes.ts`)
 - `GET /api/v1/itil/configuration-items/audit/due` - Get CIs due for audit
 - `POST /api/v1/itil/configuration-items/:id/audit` - Schedule audit
 - `POST /api/v1/itil/configuration-items/:id/audit/complete` - Complete audit

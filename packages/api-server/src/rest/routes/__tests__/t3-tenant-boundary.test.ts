@@ -407,6 +407,57 @@ it('excludes previous same-org CI incarnations from ITIL history even when their
   expect(noIncarnation.body).toMatchObject({ data: [], count: 0 });
 });
 
+it.each(['abc', '1.5', '0', '-1', '501', '1e9', ''])(
+  'rejects REST ITIL history limit=%j with 400 before any query',
+  async (limit) => {
+    nodes.set('ci-fresh', { id: 'ci-fresh', name: 'A', organization_id: A, incarnation_id: A_INC });
+    const queriesBefore = sqlCount;
+    const res = await request(app)
+      .get(`/api/v1/itil/configuration-items/ci-fresh/history?limit=${limit}`).set(auth('a'));
+    expect(res.status).toBe(400);
+    expect(sqlCount).toBe(queriesBefore);
+  }
+);
+
+it('accepts REST ITIL history limit at the documented maximum of 500', async () => {
+  nodes.set('ci-fresh', { id: 'ci-fresh', name: 'A', organization_id: A, incarnation_id: A_INC });
+  const res = await request(app)
+    .get('/api/v1/itil/configuration-items/ci-fresh/history?limit=500').set(auth('a'));
+  expect(res.status).toBe(200);
+});
+
+it('serializes GraphQL history changedAt as an ISO-8601 timestamp', async () => {
+  nodes.set('ci-fresh', { id: 'ci-fresh', name: 'A', organization_id: A, incarnation_id: A_INC });
+  await db.rows(
+    `INSERT INTO ci_change_history (ci_id, change_type, change_source, metadata, ci_incarnation_id, organization_id, changed_at)
+     VALUES ('ci-fresh', 'A_EVENT', 'reconciliation', $1::jsonb, $2, $3, '2026-03-04T05:06:07.123Z')`,
+    [JSON.stringify({ organization_id: A, event_id: 'iso-1' }), A_INC, A]
+  );
+  const gqlApp = express();
+  const { server } = await createGraphQLServer(gqlApp);
+  const gql = (query: string) => request(gqlApp).post('/graphql').set(auth('aa')).send({ query });
+  try {
+    const history = await gql('{ ciHistory(id: "ci-fresh") { changedAt } }');
+    expect(history.body.data?.ciHistory).toEqual([{ changedAt: '2026-03-04T05:06:07.123Z' }]);
+  } finally {
+    await server.stop();
+  }
+});
+
+it('rejects an unparseable GraphQL scheduleAudit date as BAD_USER_INPUT, not an internal error', async () => {
+  nodes.set('ci-fresh', { id: 'ci-fresh', name: 'A', organization_id: A, incarnation_id: A_INC });
+  const gqlApp = express();
+  const { server } = await createGraphQLServer(gqlApp);
+  try {
+    const audit = await request(gqlApp).post('/graphql').set(auth('aa')).send({
+      query: 'mutation { scheduleAudit(id: "ci-fresh", auditDate: "not-a-date") { _id } }',
+    });
+    expect(audit.body.errors?.[0].extensions.code).toBe('BAD_USER_INPUT');
+  } finally {
+    await server.stop();
+  }
+});
+
 it('fences legacy SQL derivatives across a deleted and re-created CI ID, but reads fresh B rows', async () => {
   const id = 'ci-fresh';
   const old = new Date(Date.now() - 48 * 60 * 60 * 1000);

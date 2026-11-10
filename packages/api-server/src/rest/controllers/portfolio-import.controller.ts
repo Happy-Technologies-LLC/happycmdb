@@ -55,6 +55,11 @@ interface Planned { record: ImportRecord; entry: MappingEntry; pending?: string;
 type Endpoint = { usable: false } | { usable: true; id: string | null; line?: Planned };
 
 class ImportTargetMissingError extends Error {}
+/**
+ * HAP-1652: another import bound the name-matched service to a different source record after this run planned.
+ * HAP-1843: or another import's map row for this record's source id holds a different target.
+ */
+class ImportTargetClaimedError extends Error {}
 
 const MODES = ['dry_run', 'apply'];
 const bad = (res: Response, status: number, code: string, extra: Record<string, unknown> = {}): void => {
@@ -291,11 +296,28 @@ export class PortfolioImportController {
        VALUES ($1, $2, $3, 'apply', $4, $5, $6)`,
       [importId, organizationId, IMPORT_SOURCE, createHash('sha256').update(req.body as string).digest('hex'),
         JSON.stringify(parsed.header.row_counts), actor]);
-    const writeMap = (client: { query(text: string, params: unknown[]): Promise<{ rowCount: number | null }> }, row: Planned,
-      target: string) => client.query(
+    /**
+     * HAP-1843: the record's map row, in `client`'s transaction when it has one. True: this run wrote it. False: a row
+     * holding the same target is there already (a replay). Another import's row with a different target (a source id
+     * race this run lost after it planned) is ImportTargetClaimedError, so the caller's transaction rolls back and the
+     * import is 409 concurrent_import. ON CONFLICT waits out an in-progress conflicting insert, so the conflicting
+     * row is committed and, under READ COMMITTED, visible to the next statement's snapshot. Same tenant key as the
+     * insert.
+     */
+    const writeMap = async (client: { query(text: string, params: unknown[]): Promise<{ rowCount: number | null;
+      rows: { target_id: string }[] }> }, row: Planned, target: string): Promise<boolean> => {
+      const key = [organizationId, IMPORT_SOURCE, row.record.kind, row.record.source_id];
+      const inserted = await client.query(
         `INSERT INTO portfolio_import_map (organization_id, source_system, kind, source_id, target_id, import_id)
          VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (organization_id, source_system, kind, source_id) DO NOTHING`,
-        [organizationId, IMPORT_SOURCE, row.record.kind, row.record.source_id, target, importId]);
+        [...key, target, importId]);
+      if ((inserted.rowCount ?? 0) > 0) return true;
+      const stored = await client.query(
+        `SELECT target_id FROM portfolio_import_map
+         WHERE organization_id = $1 AND source_system = $2 AND kind = $3 AND source_id = $4`, key);
+      if (stored.rows[0]?.target_id !== target) throw new ImportTargetClaimedError();
+      return false;
+    };
     // A line of this file was written before the links naming it (dependency order), so its target id is set.
     const idOf = (end: Endpoint | undefined): string => {
       const id = end?.usable ? end.line?.entry.target_id ?? end.id : null;
@@ -343,9 +365,12 @@ export class PortfolioImportController {
     }
   }
 
-  /** The service, its internal offering, both audit rows and the map row: one transaction. */
+  /**
+   * The service, its internal offering, both audit rows and the map row: one transaction. HAP-1843: a fresh service id
+   * is never another import's map target, so anything but this run writing the map row rolls all of it back (409).
+   */
   private async createService(req: Request, organizationId: string, record: ServiceRecord,
-    audit: Record<string, unknown>, writeMap: (client: PoolClient, serviceId: string) => Promise<unknown>): Promise<string> {
+    audit: Record<string, unknown>, writeMap: (client: PoolClient, serviceId: string) => Promise<boolean>): Promise<string> {
     const serviceId = `bs-${randomUUID()}`;
     const { lifecycle } = serviceLifecycle(record);
     await getPostgresClient().transaction(async client => {
@@ -368,7 +393,7 @@ export class PortfolioImportController {
           IMPORT_SOURCE, record.source_id])).rows[0];
       await appendPortfolioAudit(client, req, organizationId, { type: 'SERVICE_OFFERING', id: offering.offering_id },
         'CREATE', 'import', null, offering, { import_id: audit['import_id'] });
-      await writeMap(client, serviceId);
+      if (!(await writeMap(client, serviceId))) throw new ImportTargetClaimedError();
     });
     return serviceId;
   }
@@ -376,10 +401,17 @@ export class PortfolioImportController {
   /**
    * HAP-1625: a name match binds the file's service to a tenant service it did not create. One transaction: the
    * service row locked FOR UPDATE (gone: ImportTargetMissingError), the map row, and, when this run wrote the map row,
-   * its BUSINESS_SERVICE UPDATE audit row (import_source_id null -> the HappyHive source id).
+   * its BUSINESS_SERVICE UPDATE audit row (import_source_id null -> the HappyHive source id). A map row another run
+   * wrote for this source id to the same service is a replay (no audit row, 201); to another target, writeMap's
+   * ImportTargetClaimedError rolls everything back (HAP-1843).
+   *
+   * HAP-1652: under that lock, the planner's NOT EXISTS again (same tenant scope): a map row binding the service to any
+   * other source id is ImportTargetClaimedError. Every bind of an existing service takes this row's lock before its map
+   * insert and keeps it to COMMIT, so under READ COMMITTED a second binder waits here and its re-check, a new
+   * statement snapshot, sees the first binder's committed map row.
    */
   private async bindService(req: Request, organizationId: string, sourceId: string, serviceId: string, importId: string,
-    writeMap: (client: PoolClient) => Promise<{ rowCount: number | null }>): Promise<void> {
+    writeMap: (client: PoolClient) => Promise<boolean>): Promise<void> {
     const client = await getPostgresClient().pool.connect();
     let broken: Error | undefined;
     try {
@@ -391,7 +423,14 @@ export class PortfolioImportController {
         if (service === undefined) {
           throw new ImportTargetMissingError();
         }
-        if (((await writeMap(client)).rowCount ?? 0) > 0) {
+        const claimed = await client.query(
+          `SELECT 1 FROM portfolio_import_map WHERE organization_id = $1 AND kind = 'service' AND target_id = $2
+             AND source_id <> $3`,
+          [organizationId, serviceId, sourceId]);
+        if (claimed.rows.length > 0) {
+          throw new ImportTargetClaimedError();
+        }
+        if (await writeMap(client)) {
           await appendPortfolioAudit(client, req, organizationId, { type: 'BUSINESS_SERVICE', id: serviceId }, 'UPDATE',
             'import', { version: service.version, import_source_id: null }, { version: service.version, import_source_id: sourceId },
             { import_id: importId, match: 'name_match' });
@@ -430,7 +469,7 @@ export class PortfolioImportController {
    * admission lock), never another tenant's. One transaction: mapping, BUSINESS_SERVICE UPDATE audit row, map row.
    */
   private async mapServiceCI(req: Request, organizationId: string, serviceId: string, ciId: string,
-    audit: Record<string, unknown>, writeMap: (client: PoolClient) => Promise<unknown>): Promise<void> {
+    audit: Record<string, unknown>, writeMap: (client: PoolClient) => Promise<boolean>): Promise<void> {
     if (!(await getNeo4jClient().getCIProperties(ciId, organizationId))) throw new ImportTargetMissingError();
     await writeReferencedCIs(organizationId, [ciId], async client => {
       const service = (await client.query<{ version: number }>(
@@ -456,7 +495,7 @@ export class PortfolioImportController {
       res.status(409).json(CI_GAP_RESPONSE);
     } else if (error instanceof ImportTargetMissingError) {
       res.status(409).json({ success: false, error: 'Conflict', code: 'target_missing' });
-    } else if (code === '23505') {
+    } else if (error instanceof ImportTargetClaimedError || code === '23505') {
       res.status(409).json({ success: false, error: 'Conflict', code: 'concurrent_import' });
     } else if (error instanceof JournalUnavailableError || code === '55P03') {
       res.status(503).json(WRITE_UNAVAILABLE);

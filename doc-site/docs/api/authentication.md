@@ -479,7 +479,7 @@ X-RateLimit-Remaining: 15
 X-RateLimit-Reset: 1699642800000
 ```
 
-`X-RateLimit-Reset` is a Unix timestamp in **milliseconds** (the request time plus the window), not seconds. Divide by 1000 for epoch seconds, or pass it to `new Date(...)`. The `429` body's `_resetAt` is the same instant as an ISO 8601 string, and `_retryAfter` is in seconds.
+`X-RateLimit-Reset` is a Unix timestamp in **milliseconds** (the request time plus the window), not seconds. Divide by 1000 for epoch seconds, or pass it to `new Date(...)`. The `429` body's `_resetAt` is the same instant as an ISO 8601 string, and `_retryAfter` is in seconds. Requests refused before the limiter runs carry no rate-limit headers: `requireAuthHeader` on refresh (a fixed `403` without `X-CMDB-Auth: 1`), and `authenticate()` / `requireJwtSession()` on password (`401`, or `403` for an API key).
 
 **429 Too Many Requests Response**:
 ```json

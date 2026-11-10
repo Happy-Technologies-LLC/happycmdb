@@ -9,6 +9,7 @@ import {
   CredentialMatchContext,
   CredentialSetStrategy,
   logger,
+  errorClassFields,
 } from '@cmdb/common';
 import type { AuthenticatedRequest } from '../../auth/types';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
@@ -295,7 +296,8 @@ export class CredentialSetController {
         count: safeCredentials.length,
       });
     } catch (error) {
-      logger.error('Error selecting credentials from set', { error: errorLogFields(error), id: req.params['id'] });
+      // HAP-1814: class/code only; a member's decrypt or JSON.parse failure message can quote its decrypted plaintext.
+      logger.error('Error selecting credentials from set', { error: errorClassFields(error), id: req.params['id'] });
 
       // Check for not found error
       if (error instanceof Error && error.message.includes('not found')) {

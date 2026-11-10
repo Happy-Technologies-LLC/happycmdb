@@ -21,9 +21,8 @@ import { createHash } from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { Redis } from 'ioredis';
 import type { ConfigSchema } from '@cmdb/common';
-import { getLogger } from '@cmdb/common';
+import { getLogger, errorClassFields } from '@cmdb/common';
 import { AuthenticatedRequest } from './auth.middleware';
-import { errorClassFields } from '../utils/log-error';
 
 const logger = getLogger();
 

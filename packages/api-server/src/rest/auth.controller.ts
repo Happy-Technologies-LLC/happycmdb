@@ -7,7 +7,7 @@
  */
 
 import { NextFunction, Request, Response, Router } from 'express';
-import { logger } from '@cmdb/common';
+import { logger, errorClassFields } from '@cmdb/common';
 import {
   ApiKeyNotFoundError, AuthFailureError, AuthService, CredentialsChangedError, CurrentPasswordIncorrectError,
   PasswordNotAllowedError, type PasswordChangeOutcome,
@@ -18,7 +18,6 @@ import { clearRefreshCookie, hasAuthHeader, readRefreshCookie, requireAuthHeader
 import { authSchemas } from '../validation/schemas';
 import { AuthMiddleware, AuthenticatedRequest, logAuthFailure, optionalRequestOrganizationId } from '../middleware/auth.middleware';
 import { RateLimitMiddleware } from '../middleware/rate-limit.middleware';
-import { errorClassFields } from '../utils/log-error';
 
 const AUTHENTICATION_FAILURE = { success: false, error: 'Authentication failed' };
 /** HAP-1368: a password change that could not be audited is refused before anything changes. */

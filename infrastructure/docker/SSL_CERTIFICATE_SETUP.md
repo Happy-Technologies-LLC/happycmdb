@@ -267,8 +267,10 @@ openssl genrsa -out postgres/server.key 2048
 openssl req -new -key postgres/server.key -out postgres/server.csr \
   -subj "/C=US/ST=State/L=City/O=HappyCMDB/OU=IT/CN=cmdb-postgres"
 
-# Sign certificate. The SAN must match the host clients dial (compose service name `postgres`);
-# `verify-full` ignores the CN and fails without it. Add more DNS:/IP: entries if clients use other hosts.
+# Sign certificate. The SAN must match the host clients dial (compose service name `postgres`, i.e. the api-server's
+# `POSTGRES_HOST` and Grafana's `GF_DATABASE_HOST=postgres:5432`), not the CN `cmdb-postgres` set above: the CN is not
+# the name clients connect to. (Whether the CN is consulted at all depends on the client: Node's TLS check falls back to
+# it when there is no DNS SAN, Go >= 1.15 clients such as Grafana 10.2 ignore it.) Add more DNS:/IP: entries if clients use other hosts.
 openssl x509 -req -in postgres/server.csr -CA ca.crt -CAkey ca.key \
   -CAcreateserial -out postgres/server.crt -days 365 -sha256 \
   -extfile <(printf 'subjectAltName=DNS:postgres,DNS:cmdb-postgres')

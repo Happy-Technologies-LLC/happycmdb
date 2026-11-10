@@ -1123,21 +1123,22 @@ paths:
       description: Get all credentials (summaries only, no secrets)
       operationId: listCredentials
       parameters:
-        - name: _protocol
+        - name: protocol
           in: query
           schema:
             $ref: '#/components/schemas/AuthProtocol'
-        - name: _scope
+        - name: scope
           in: query
           schema:
             $ref: '#/components/schemas/CredentialScope'
-        - name: _tags
+        - name: tags
           in: query
           schema:
             type: string
           description: Comma-separated tags
-        - name: _created_by
+        - name: created_by
           in: query
+          description: Only the caller's own credentials are listed; any other value returns an empty list
           schema:
             type: string
         - $ref: '#/components/parameters/Limit'
@@ -1174,32 +1175,32 @@ paths:
               aws_iam:
                 summary: AWS IAM credentials
                 value:
-                  _name: AWS Production Account
-                  _description: Main AWS account for production
-                  _protocol: aws_iam
-                  _scope: cloud_provider
-                  _credentials:
+                  name: AWS Production Account
+                  description: Main AWS account for production
+                  protocol: aws_iam
+                  scope: cloud_provider
+                  credentials:
                     access_key_id: AKIAIOSFODNN7EXAMPLE
                     secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
                     region: us-east-1
-                  _affinity:
-                    _cloud_providers: [aws]
-                    _environments: [production]
-                    _priority: 10
-                  _tags: [aws, production, primary]
+                  affinity:
+                    cloud_providers: [aws]
+                    environments: [production]
+                    priority: 10
+                  tags: [aws, production, primary]
               ssh_key:
                 summary: SSH key credentials
                 value:
-                  _name: Production Servers SSH Key
-                  _protocol: ssh_key
-                  _scope: ssh
-                  _credentials:
+                  name: Production Servers SSH Key
+                  protocol: ssh_key
+                  scope: ssh
+                  credentials:
                     username: ubuntu
                     private_key: "-----BEGIN RSA PRIVATE KEY-----\n..."
-                  _affinity:
-                    _networks: ["10.0.0.0/8"]
-                    _os_types: [ubuntu, debian]
-                    _priority: 8
+                  affinity:
+                    networks: ["10.0.0.0/8"]
+                    os_types: [ubuntu, debian]
+                    priority: 8
       responses:
         '201':
           description: Credential created
@@ -1236,6 +1237,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          description: >-
+            The stored credential cannot be decrypted or decoded. The body is the
+            fixed `{success: false, error: 'Failed to get credential', message:
+            'Internal error'}`; the server log names the error class only.
 
     put:
       tags: [Credentials]
@@ -1256,19 +1262,19 @@ paths:
             schema:
               type: object
               properties:
-                _name:
+                name:
                   type: string
                   minLength: 1
                   maxLength: 255
-                _description:
+                description:
                   type: string
                   maxLength: 1000
-                _credentials:
+                credentials:
                   type: object
                   additionalProperties: true
-                _affinity:
+                affinity:
                   $ref: '#/components/schemas/CredentialAffinity'
-                _tags:
+                tags:
                   type: array
                   items:
                     type: string
@@ -1285,6 +1291,13 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          description: >-
+            The updated credential cannot be decrypted or decoded (for example a
+            stored value that is not valid JSON). The update is rolled back, so
+            nothing is changed (HAP-1814); the body is the fixed `{success:
+            false, error: 'Failed to update credential', message: 'Internal
+            error'}` and the server log names the error class only.
 
     delete:
       tags: [Credentials]
@@ -1331,19 +1344,22 @@ paths:
               required_scope: cloud_provider
       responses:
         '200':
-          description: Best matching credential
+          description: Best matching credential (the first of the rank list)
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  credential:
-                    $ref: '#/components/schemas/Credential'
-                  match_score:
-                    type: number
-                    description: Match confidence 0-100
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/CredentialMatchResult'
         '404':
-          description: No matching credential found
+          description: >-
+            No credential of the caller passes the `required_protocol` /
+            `required_scope` filters, or every one that does fails to decrypt or
+            decode (each such candidate is skipped and logged by id and error
+            class only).
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1378,18 +1394,24 @@ paths:
               required_protocol: ssh_key
       responses:
         '200':
-          description: Ranked credentials
+          description: >-
+            Every credential of the caller passing the protocol/scope filters,
+            sorted by `score` descending. A credential that fails to decrypt or
+            decode is left out (logged by id and error class only), so `data`
+            can be empty.
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    credential:
-                      $ref: '#/components/schemas/CredentialSummary'
-                    match_score:
-                      type: number
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CredentialMatchResult'
+                  count:
+                    type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -1467,41 +1489,41 @@ paths:
           application/json:
             schema:
               type: object
-              required: [_name, _credential_ids]
+              required: [name, credential_ids]
               properties:
-                _name:
+                name:
                   type: string
                   minLength: 1
                   maxLength: 255
-                _description:
+                description:
                   type: string
                   maxLength: 1000
-                _credential_ids:
+                credential_ids:
                   type: array
                   items:
                     type: string
                     format: uuid
                   minItems: 1
-                _strategy:
+                strategy:
                   type: string
                   enum: [sequential, parallel, adaptive]
                   default: sequential
-                _stop_on_success:
+                stop_on_success:
                   type: boolean
                   default: true
-                _tags:
+                tags:
                   type: array
                   items:
                     type: string
             example:
-              _name: Production SSH Keys
-              _description: Fallback SSH keys for production servers
-              _credential_ids:
+              name: Production SSH Keys
+              description: Fallback SSH keys for production servers
+              credential_ids:
                 - 123e4567-e89b-12d3-a456-426614174000
                 - 223e4567-e89b-12d3-a456-426614174001
-              _strategy: sequential
-              _stop_on_success: true
-              _tags: [ssh, production]
+              strategy: sequential
+              stop_on_success: true
+              tags: [ssh, production]
       responses:
         '201':
           description: Credential set created
@@ -1556,21 +1578,21 @@ paths:
             schema:
               type: object
               properties:
-                _name:
+                name:
                   type: string
-                _description:
+                description:
                   type: string
-                _credential_ids:
+                credential_ids:
                   type: array
                   items:
                     type: string
                     format: uuid
-                _strategy:
+                strategy:
                   type: string
                   enum: [sequential, parallel, adaptive]
-                _stop_on_success:
+                stop_on_success:
                   type: boolean
-                _tags:
+                tags:
                   type: array
                   items:
                     type: string
@@ -1609,7 +1631,12 @@ paths:
     post:
       tags: [Credential Sets]
       summary: Select credentials
-      description: Select credentials from set using strategy
+      description: >-
+        Return the set's member credentials (secrets redacted) ordered by
+        `strategy` (default: the set's stored strategy). `context` is used only
+        by `adaptive`, which ranks by affinity score with ties in set order.
+        Both fields are optional; unknown keys such as the legacy `_context` /
+        `_strategy` are stripped, not honored.
       operationId: selectCredentials
       parameters:
         - name: id
@@ -1625,9 +1652,9 @@ paths:
             schema:
               type: object
               properties:
-                _context:
+                context:
                   $ref: '#/components/schemas/CredentialMatchContext'
-                _strategy:
+                strategy:
                   type: string
                   enum: [sequential, parallel, adaptive]
       responses:
@@ -1636,13 +1663,26 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Credential'
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Credential'
+                  count:
+                    type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '500':
+          description: >-
+            A member credential cannot be decrypted or decoded; the whole select
+            fails. The body is the fixed `{success: false, error: 'Failed to
+            select credentials', message: 'Internal error'}` and the server log
+            names the error class only (HAP-1814).
 
   # =============================================================================
   # DISCOVERY DEFINITIONS
@@ -4908,26 +4948,26 @@ components:
 
     CreateCredentialInput:
       type: object
-      required: [_name, _protocol, _scope, _credentials]
+      required: [name, protocol, scope, credentials]
       properties:
-        _name:
+        name:
           type: string
           minLength: 1
           maxLength: 255
-        _description:
+        description:
           type: string
           maxLength: 1000
-        _protocol:
+        protocol:
           $ref: '#/components/schemas/AuthProtocol'
-        _scope:
+        scope:
           $ref: '#/components/schemas/CredentialScope'
-        _credentials:
+        credentials:
           type: object
           additionalProperties: true
           description: Protocol-specific credentials
-        _affinity:
+        affinity:
           $ref: '#/components/schemas/CredentialAffinity'
-        _tags:
+        tags:
           type: array
           items:
             type: string
@@ -4957,39 +4997,39 @@ components:
     CredentialAffinity:
       type: object
       properties:
-        _networks:
+        networks:
           type: array
           items:
             type: string
           description: CIDR network ranges
           example: ["10.0.0.0/8"]
-        _hostname_patterns:
+        hostname_patterns:
           type: array
           items:
             type: string
-          description: Regex patterns for hostname matching
-          example: [".*\\.prod\\.example\\.com"]
-        _os_types:
+          description: Wildcard patterns (`*`) for hostname matching
+          example: ["*.prod.example.com"]
+        os_types:
           type: array
           items:
             type: string
           example: [ubuntu, debian, centos]
-        _device_types:
+        device_types:
           type: array
           items:
             type: string
           example: [server, virtual-machine]
-        _environments:
+        environments:
           type: array
           items:
             type: string
           example: [production, staging]
-        _cloud_providers:
+        cloud_providers:
           type: array
           items:
             type: string
           example: [aws, azure, gcp]
-        _priority:
+        priority:
           type: integer
           minimum: 1
           maximum: 10
@@ -5014,6 +5054,27 @@ components:
           $ref: '#/components/schemas/AuthProtocol'
         required_scope:
           $ref: '#/components/schemas/CredentialScope'
+
+    CredentialMatchResult:
+      type: object
+      required: [credential, score, reasons]
+      properties:
+        credential:
+          $ref: '#/components/schemas/Credential'
+        score:
+          type: integer
+          minimum: 1
+          maximum: 140
+          description: >-
+            Sum of the matched affinity rules (network +30, hostname +25, OS
+            +20, device type +15, environment +10, cloud provider +20) plus
+            `priority` x 2; 1 when nothing matched and no priority is set. Not
+            a 0-100 confidence.
+        reasons:
+          type: array
+          items:
+            type: string
+          description: One human-readable reason per rule that scored
 
     CredentialSet:
       type: object

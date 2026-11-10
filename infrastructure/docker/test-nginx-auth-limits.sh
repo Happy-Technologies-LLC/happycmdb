@@ -5,7 +5,8 @@
 # api-server that answers 200 to every request, then asserts:
 #   1. refresh and me, alternated 6 times in a row, are never refused (a page load, a reload, a second tab);
 #   2. login is 429 once its burst is spent, and password plus the spellings Express also routes to login
-#      (trailing slash, other letter case) are refused from the same bucket;
+#      (trailing slash, other letter case) are refused from the same bucket; 1.5 s later login is still refused
+#      (at 5r/m no request refills in that time, at 5r/s several would);
 #   3. refresh and me still answer once the login bucket is spent;
 #   4. the session zone still refuses a flood.
 #
@@ -109,6 +110,10 @@ expect "login request 4 (burst spent)" POST /api/v1/auth/login 429
 expect "password change, login bucket spent" PUT /api/v1/auth/password 429
 expect "login with trailing slash" POST /api/v1/auth/login/ 429
 expect "login in other letter case" POST /api/v1/AUTH/Login 429
+# The bucket refills at the zone rate from the last admitted login (refusals spend nothing): at 5r/m 1.5 s refills
+# an eighth of a request, so login stays refused; a per-second rate would admit it.
+sleep 1.5
+expect "login 1.5 s after the burst (no refill at 5r/m)" POST /api/v1/auth/login 429
 
 echo "== 3. session endpoints after the login bucket is spent"
 expect "refresh after login refusals" POST /api/v1/auth/refresh 200

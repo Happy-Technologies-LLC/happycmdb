@@ -72,6 +72,12 @@ it('bounds its api_keys lock, keeps legacy keys at generation 0, refuses a used 
     await scratch.query('DELETE FROM auth_credential_events');
     await scratch.query('ALTER TABLE auth_credential_events ENABLE TRIGGER USER');
 
+    // HAP-1382 S-2: without the operator's attestation of the Neo4j generations it refuses, changing nothing.
+    await expect(manual.query(rollback)).rejects.toThrow('020 down refused: cmdb.rollback_020_max_credential_epoch is not attested as 0');
+    await manual.query('ROLLBACK');
+    expect(await epochColumn()).toEqual([{ column_name: 'credential_epoch' }]);
+    await manual.query("SET cmdb.rollback_020_max_credential_epoch = '0'");
+
     // Rollback is bounded by its own lock timeout too.
     await holder.query('BEGIN');
     await holder.query('SELECT count(*) FROM api_keys');

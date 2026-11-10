@@ -116,8 +116,9 @@ paths:
       summary: Authenticate user
       description: >-
         Login with username and password to receive a JWT access token. With X-CMDB-Auth: 1 (the web UI) the
-        response also sets the __Secure-cmdb_rt refresh cookie; without it (scripts, a cross-site form) there is no
-        cookie (HAP-1211 H2, login CSRF).
+        response also sets the __Secure-cmdb_rt refresh cookie (Max-Age at most the 7-day absolute cap; HAP-1382);
+        without it (scripts, a cross-site form) there is no cookie (HAP-1211 H2, login CSRF). Every /auth response
+        carries Cache-Control: no-store and Pragma: no-cache (HAP-1382).
       operationId: login
       security: []
       parameters:
@@ -181,7 +182,7 @@ paths:
         - { name: __Secure-cmdb_rt, in: cookie, required: true, schema: { type: string } }
       responses:
         '200':
-          description: New access token in the body (no refresh token); Set-Cookie renews __Secure-cmdb_rt with a full TTL (sliding, within the 7-day absolute cap from login; HAP-1285)
+          description: New access token in the body (no refresh token); Set-Cookie renews __Secure-cmdb_rt with a full TTL (sliding, within the 7-day absolute cap from login; HAP-1285), its Max-Age clamped to the time left of that cap (HAP-1382)
         '403':
           description: X-CMDB-Auth missing or not exactly 1 (fixed body, checked first)
         '401':

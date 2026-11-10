@@ -5,7 +5,8 @@
  * HAP-1733: a 5xx body never carries error text. Every handler of the listed
  * controllers runs against dependencies that throw an Error quoting SECRET;
  * whatever it answers with a 5xx must not contain SECRET or a stack, and the
- * detail must still reach logger.error. Handlers are discovered from the
+ * detail must still reach logger.error (AuthController: only its class, never
+ * the text, HAP-1382). Handlers are discovered from the
  * prototype, so a new handler is covered without editing this file.
  */
 
@@ -136,7 +137,13 @@ describe.each(controllers)('%s', (name, build) => {
     expect(body).not.toContain(SECRET);
     expect(body).not.toContain('ci_fulltext_idx');
     expect(body).not.toMatch(/"stack"|\\n\s+at |\.ts:\d+/);
-    expect(loggedErrors.map(loggedText).join(' ')).toContain(SECRET);
+    const logged = loggedErrors.map(loggedText).join(' ');
+    // HAP-1382: auth handlers log only the error class, code and user id; a driver message can quote credentials.
+    if (name === 'AuthController') {
+      expect([logged.includes(SECRET), logged.includes('"errorClass":"Error"')]).toEqual([false, true]);
+    } else {
+      expect(logged).toContain(SECRET);
+    }
   });
 });
 

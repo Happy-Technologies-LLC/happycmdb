@@ -6,7 +6,7 @@
  * Handles login, logout, token refresh, and API key management
  */
 
-import { Request, Response, Router } from 'express';
+import { NextFunction, Request, Response, Router } from 'express';
 import { logger } from '@cmdb/common';
 import {
   ApiKeyNotFoundError, AuthFailureError, AuthService, CredentialsChangedError, CurrentPasswordIncorrectError,
@@ -17,11 +17,21 @@ import { clearRefreshCookie, hasAuthHeader, readRefreshCookie, requireAuthHeader
 import { authSchemas } from '../validation/schemas';
 import { AuthMiddleware, AuthenticatedRequest, logAuthFailure, optionalRequestOrganizationId } from '../middleware/auth.middleware';
 import { RateLimitMiddleware } from '../middleware/rate-limit.middleware';
-import { errorLogFields } from '../utils/log-error';
+import { errorClassFields } from '../utils/log-error';
 
 const AUTHENTICATION_FAILURE = { success: false, error: 'Authentication failed' };
 /** HAP-1368: a password change that could not be audited is refused before anything changes. */
 const PASSWORD_CHANGE_UNAVAILABLE = { success: false, error: 'Service Unavailable', message: 'Password change temporarily unavailable' };
+
+/**
+ * HAP-1382 P-4: every /auth response may carry an access token, an API key, the refresh cookie or account data, so no
+ * browser or shared cache may store it (Pragma for HTTP/1.0 caches, as infrastructure/docker/nginx.conf does).
+ */
+function noStore(_req: Request, res: Response, next: NextFunction): void {
+  res.set('Cache-Control', 'no-store');
+  res.set('Pragma', 'no-cache');
+  next();
+}
 
 /** Credential generation of the credential that authorized this request (HP1-S6); NaN when absent. */
 function authorizingEpoch(req: AuthenticatedRequest): number {
@@ -64,6 +74,9 @@ export class AuthController {
   }
 
   private setupRoutes(): void {
+    // First, so refusals (limiter, CSRF header, validation, authentication) carry it too.
+    this.router.use(noStore);
+
     /**
      * POST /api/auth/login
      * Login with username and password
@@ -264,7 +277,7 @@ export class AuthController {
       });
     } catch (error: any) {
       if (credentialRefusal(res, error)) return;
-      logger.error('Error generating API key', error);
+      logger.error('Error generating API key', { ...errorClassFields(error), userId: req.user?._userId });
       res.status(500).json({
         success: false,
         error: 'API Key Generation Failed',
@@ -294,7 +307,7 @@ export class AuthController {
         data: apiKeys,
       });
     } catch (error: any) {
-      logger.error('Error listing API keys', error);
+      logger.error('Error listing API keys', { ...errorClassFields(error), userId: req.user?._userId });
       res.status(500).json({
         success: false,
         error: 'Failed to List API Keys',
@@ -342,7 +355,7 @@ export class AuthController {
         return;
       }
 
-      logger.error('Error revoking API key', error);
+      logger.error('Error revoking API key', { ...errorClassFields(error), userId: req.user?._userId });
       res.status(500).json({
         success: false,
         error: 'API Key Revocation Failed',
@@ -407,7 +420,7 @@ export class AuthController {
         data: this.toRawUserPayload(profile),
       });
     } catch (error: any) {
-      logger.error('Error loading current user', error);
+      logger.error('Error loading current user', { ...errorClassFields(error), userId: req.user?._userId });
       res.status(500).json({
         success: false,
         error: 'Failed to Load User',
@@ -443,7 +456,7 @@ export class AuthController {
         res.status(404).json({ success: false, error: 'Profile Update Failed', message: 'User not found' });
         return;
       }
-      logger.error('Error updating profile', { error: errorLogFields(error) });
+      logger.error('Error updating profile', { ...errorClassFields(error), userId: req.user?._userId });
       res.status(500).json({ success: false, error: 'Profile Update Failed', message: 'Internal error' });
     }
   }
@@ -490,7 +503,7 @@ export class AuthController {
     } catch (error: any) {
       if (error instanceof CurrentPasswordIncorrectError) {
         await audit('wrong_password');
-        res.status(400).json({ success: false, error: 'Password Change Failed', message: error.message });
+        res.status(400).json({ success: false, error: 'Password Change Failed', message: 'Current password is incorrect' });
         return;
       }
       if (credentialRefusal(res, error)) return;
@@ -498,7 +511,7 @@ export class AuthController {
         res.status(404).json({ success: false, error: 'Password Change Failed', message: 'User not found' });
         return;
       }
-      logger.error('Error changing password', { error: errorLogFields(error) });
+      logger.error('Error changing password', { ...errorClassFields(error), userId });
       res.status(500).json({ success: false, error: 'Password Change Failed', message: 'Internal error' });
     }
   }
@@ -526,7 +539,7 @@ export class AuthController {
     } catch (error: any) {
       if (credentialRefusal(res, error)) return;
       const notFound = error.message === 'User not found';
-      if (!notFound) logger.error('Error deleting account', error);
+      if (!notFound) logger.error('Error deleting account', { ...errorClassFields(error), userId: req.user?._userId });
       res.status(notFound ? 404 : 500).json({
         success: false,
         error: 'Account Deletion Failed',

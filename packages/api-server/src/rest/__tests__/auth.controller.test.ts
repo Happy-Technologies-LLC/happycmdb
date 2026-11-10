@@ -28,7 +28,7 @@ import { logger } from '@cmdb/common';
 import * as jwt from 'jsonwebtoken';
 import { randomUUID } from 'crypto';
 import { inspect } from 'util';
-import { AUTH_HEADER, AUTH_HEADER_VALUE, REFRESH_COOKIE } from '../middleware/refresh-cookie';
+import { AUTH_HEADER, AUTH_HEADER_VALUE, REFRESH_COOKIE, setRefreshCookie } from '../middleware/refresh-cookie';
 
 const authConfig = {
   jwt: {
@@ -619,6 +619,63 @@ describe('AuthController profile/password/account routes', () => {
         expect(renewed.status).toBe(200);
         sensitive.push(refreshCookieOf(renewed).value, renewed.body.data._accessToken);
       });
+
+      it('HAP-1382 L4: the cookie Max-Age never runs past the 7-day cap from login, however late it was renewed', async () => {
+        at(0);
+        let response = await login();
+        expect(refreshCookieOf(response).attributes).toEqual(cookieAttributes(7 * DAY));
+        sensitive.push(refreshCookieOf(response).value, response.body.data._accessToken);
+        for (const [seconds, maxAge] of [[DAY, 6 * DAY], [6 * DAY + 3600, DAY - 3600], [7 * DAY - 30, 30], [7 * DAY, 0]]) {
+          at(seconds!);
+          response = await refresh(refreshCookieOf(response).value);
+          expect(response.status).toBe(200);
+          const renewed = refreshCookieOf(response);
+          sensitive.push(renewed.value, response.body.data._accessToken);
+          expect(renewed.attributes).toEqual(cookieAttributes(maxAge!));
+          expect(jwt.decode(renewed.value)).toMatchObject({ _authTime: T0 / 1000 });
+        }
+      });
+
+      it('HAP-1382 L4: a refresh TTL longer than the cap still gets a cookie that ends at the cap', async () => {
+        at(0);
+        const long = new JWTService({ ...authConfig.jwt, refreshTokenExpiresIn: '30d' } as never);
+        const token = long.generateRefreshToken('user-1', 'alice', 'operator', 0, T0 / 1000 - DAY);
+        sensitive.push(token);
+        const cookies: string[] = [];
+        setRefreshCookie({ append: (_name: string, value: string) => cookies.push(value) } as never, token);
+        expect(cookies).toEqual([`${REFRESH_COOKIE}=${token}; Max-Age=${6 * DAY}; Path=/api/v1/auth; HttpOnly; Secure; SameSite=Strict`]);
+      });
+    });
+
+    describe('HAP-1382 P-4 no-store', () => {
+      const uncached = (response: request.Response) =>
+        [response.headers['cache-control'], response.headers['pragma']];
+
+      it('every token, API-key and cookie response of /auth (and their refusals) is Cache-Control: no-store, Pragma: no-cache', async () => {
+        const loggedIn = await login();
+        const session = { access: loggedIn.body.data._accessToken as string, cookie: refreshCookieOf(loggedIn).value };
+        sensitive.push(session.access, session.cookie);
+        const refreshed = await refresh(session.cookie);
+        sensitive.push(refreshCookieOf(refreshed).value, refreshed.body.data._accessToken);
+        const bearer = (call: request.Test) => call.set('Authorization', `Bearer ${session.access}`);
+        const key = await bearer(request(app).post('/api/v1/auth/api-key')).send({ name: 'ci key' });
+        sensitive.push(key.body.data._apiKey);
+        const me = await bearer(request(app).get('/api/v1/auth/me'));
+        const logout = await request(app).post('/api/v1/auth/logout');
+        const refusedLogin = await request(app).post('/api/v1/auth/login').send({ username: 'alice', password: 'wrong-password' });
+        const csrfRefused = await refresh(session.cookie, null);
+
+        const pass = `pw-${randomUUID()}`;
+        const next = `pw-${randomUUID()}`;
+        repository.users.get('user-1')!._passwordHash = await passwordService.hash(pass);
+        sensitive.push(pass, next);
+        const changed = await bearer(request(app).put('/api/v1/auth/password')).send({ currentPassword: pass, newPassword: next });
+        sensitive.push(refreshCookieOf(changed).value, changed.body.data._accessToken);
+
+        const responses = [loggedIn, refreshed, key, me, logout, refusedLogin, csrfRefused, changed];
+        expect(responses.map(r => r.status)).toEqual([200, 200, 200, 200, 200, 401, 403, 200]);
+        expect(responses.map(uncached)).toEqual(responses.map(() => ['no-store', 'no-cache']));
+      });
     });
   });
 
@@ -854,22 +911,44 @@ describe('AuthController profile/password/account routes', () => {
       expect(stillOldPassword).toBe(true);
     });
 
+    // HAP-1382 B1/P-2/L2: a store/driver message can quote credentials or SQL; it reaches neither the body nor the log.
     it.each([
-      ['/password', { currentPassword: 'correct-horse-battery-staple', newPassword: 'new-password-123' }, 'updatePasswordHashGuarded', 'Password Change Failed'],
-      ['/profile', { name: 'Alice Updated' }, 'updateUser', 'Profile Update Failed'],
-    ])('PUT %s: a repository failure is a generic 500 with the detail only in the log', async (route, body, method, label) => {
-      const rawText = 'Failed to write: bolt://svc:hunter2@neo4j.internal:7687 ECONNREFUSED';
-      (repository as unknown as Record<string, unknown>)[method] = async () => { throw new Error(rawText); };
-      const errors = jest.spyOn(logger, 'error').mockImplementation(() => logger);
-      try {
-        const res = await request(app).put(`/api/v1/auth${route}`).set('Authorization', `Bearer ${victimToken}`).send(body);
+      ['post', '/api-key', { name: 'ci key' }, 'createApiKey', 0, 'API Key Generation Failed'],
+      ['get', '/api-keys', undefined, 'listApiKeys', 0, 'Failed to List API Keys'],
+      ['delete', '/api-key/alice-key', undefined, 'deleteApiKey', 0, 'API Key Revocation Failed'],
+      ['get', '/me', undefined, 'findUserById', 1, 'Failed to Load User'],
+      ['put', '/profile', { name: 'Alice Updated' }, 'updateUser', 0, 'Profile Update Failed'],
+      ['put', '/password', { currentPassword: 'correct-horse-battery-staple', newPassword: 'new-password-123' },
+        'updatePasswordHashGuarded', 0, 'Password Change Failed'],
+      ['delete', '/account', undefined, 'deleteUserAccount', 0, 'Account Deletion Failed'],
+    ] as const)('%s %s: a store failure is a fixed 500; only the error class, code and user id are logged',
+      async (verb, route, body, method, passCalls, label) => {
+        const needle = `needle-${randomUUID()}`;
+        const storeError = Object.assign(new Error(
+          `Failed: bolt://svc:${needle}@neo4j.internal:7687 password authentication failed; SELECT key_hash FROM api_keys`
+        ), { code: '28P01' });
+        const target = repository as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+        const original = target[method]!.bind(repository);
+        let calls = 0;
+        target[method] = async (...args) => {
+          if (calls++ < passCalls) return original(...args); // /me: the authentication read succeeds
+          throw storeError;
+        };
+        const levels = (['error', 'warn', 'info', 'debug'] as const).map(level =>
+          jest.spyOn(logger, level).mockImplementation(() => logger));
+        try {
+          const call = request(app)[verb](`/api/v1/auth${route}`).set('Authorization', `Bearer ${victimToken}`);
+          const res = await (body === undefined ? call : call.send(body));
 
-        expect([res.status, res.body]).toEqual([500, { success: false, error: label, message: 'Internal error' }]);
-        expect(JSON.stringify(errors.mock.calls)).toContain('ECONNREFUSED');
-      } finally {
-        errors.mockRestore();
-      }
-    });
+          expect([res.status, res.body]).toEqual([500, { success: false, error: label, message: 'Internal error' }]);
+          expect(JSON.stringify(res.headers)).not.toContain(needle);
+          expect(levels[0]).toHaveBeenCalledWith(expect.any(String), { errorClass: 'Error', code: '28P01', userId: 'user-1' });
+          const logged = inspect(levels.map(spy => spy.mock.calls), { depth: null, maxStringLength: null });
+          for (const text of [needle, 'SELECT', 'password authentication']) expect(logged).not.toContain(text);
+        } finally {
+          levels.forEach(spy => spy.mockRestore());
+        }
+      });
 
     // HP1-S6 (v16 §1.1): fixed wire contract for the new refusals.
     it('refuses a default-equivalent new password with 400 Password not allowed', async () => {

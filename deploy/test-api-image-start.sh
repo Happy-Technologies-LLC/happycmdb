@@ -14,8 +14,8 @@ marker="Starting HappyCMDB API Server"
 # Placeholders only: nothing here is a credential and nothing listens on these ports.
 cid=$(docker run -d --network none \
   -e NODE_ENV=production -e PORT=3000 \
-  -e NEO4J_URI=bolt://127.0.0.1:1 -e NEO4J_USERNAME=neo4j -e NEO4J_PASSWORD=placeholder-not-a-secret \
-  -e POSTGRES_HOST=127.0.0.1 -e POSTGRES_PORT=1 -e POSTGRES_DATABASE=cmdb -e POSTGRES_USER=placeholder -e POSTGRES_PASSWORD=placeholder-not-a-secret \
+  -e NEO4J_URI=bolt://127.0.0.1:1 -e NEO4J_USERNAME=neo4j -e NEO4J_USER=neo4j -e NEO4J_PASSWORD=placeholder-not-a-secret \
+  -e POSTGRES_HOST=127.0.0.1 -e POSTGRES_PORT=1 -e POSTGRES_DATABASE=cmdb -e POSTGRES_DB=cmdb -e POSTGRES_USER=placeholder -e POSTGRES_PASSWORD=placeholder-not-a-secret \
   -e REDIS_HOST=127.0.0.1 -e REDIS_PORT=1 \
   -e KAFKA_BROKERS=127.0.0.1:1 -e KAFKA_CLIENT_ID=image-start-test -e KAFKA_GROUP_ID=image-start-test \
   -e JWT_SECRET=placeholder-not-a-secret-placeholder-not-a-secret \

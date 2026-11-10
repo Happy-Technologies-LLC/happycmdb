@@ -204,6 +204,7 @@ const selectCredentialsSchema = Joi.object({
  */
 unifiedCredentialRoutes.post(
   '/credentials/match',
+  authMiddleware.requirePermission('write'),
   validateRequest(credentialMatchContextSchema, 'body'),
   credentialController.match.bind(credentialController)
 );
@@ -213,6 +214,7 @@ unifiedCredentialRoutes.post(
  */
 unifiedCredentialRoutes.post(
   '/credentials/rank',
+  authMiddleware.requirePermission('write'),
   validateRequest(credentialMatchContextSchema, 'body'),
   credentialController.rank.bind(credentialController)
 );

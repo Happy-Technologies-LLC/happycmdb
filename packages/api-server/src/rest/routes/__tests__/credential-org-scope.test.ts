@@ -236,8 +236,8 @@ type Verb = 'get' | 'post' | 'put' | 'delete';
 const routeTable: { verb: Verb; path: string; kind: 'read' | 'write' | 'oauth' }[] = [
   { verb: 'post', path: '/credentials/:id/oauth/authorize', kind: 'oauth' },
   { verb: 'get', path: '/credentials/oauth/callback', kind: 'oauth' },
-  { verb: 'post', path: '/credentials/match', kind: 'read' },
-  { verb: 'post', path: '/credentials/rank', kind: 'read' },
+  { verb: 'post', path: '/credentials/match', kind: 'write' },
+  { verb: 'post', path: '/credentials/rank', kind: 'write' },
   { verb: 'get', path: '/credentials', kind: 'read' },
   { verb: 'post', path: '/credentials', kind: 'write' },
   { verb: 'get', path: '/credentials/:id', kind: 'read' },

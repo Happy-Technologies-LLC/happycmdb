@@ -18,7 +18,7 @@ const NMAP_RANGE_CONCURRENCY = 4;
  * - Network devices (routers, switches, firewalls)
  * - Servers with open ports
  * - Services running on discovered hosts
- * - OS fingerprinting (when available)
+ * - OS fingerprinting: unsupported (nmap -O needs root; metadata.os.detection is 'unsupported', HAP-1759)
  *
  * Implements retry logic and comprehensive error handling.
  * Confidence score: 0.7 (network-based inference is less reliable than direct access)
@@ -55,7 +55,10 @@ export class NmapDiscoveryWorker {
               scanner = new (nmap as any).NmapScan(destination, '-p 1-65535');
               break;
             case 'os':
-              scanner = new nmap.OsAndPortScan(destination);
+              // HAP-1759: nmap -O needs root (raw sockets); the worker runs as the nodejs user, so -O always
+              // failed with "requires root privileges". Run an unprivileged TCP connect scan instead.
+              logger.warn('Nmap OS detection is unsupported (needs root); running a TCP connect scan', { jobId });
+              scanner = new (nmap as any).NmapScan(destination, '-sT');
               break;
             case 'version':
               scanner = new (nmap as any).NmapScan(destination, '-sV');
@@ -203,7 +206,8 @@ export class NmapDiscoveryWorker {
         }
 
         if (options?.detectOS) {
-          flags.push('-O'); // OS detection
+          // HAP-1759: no -O (needs root, fails as the nodejs user); metadata.os.detection reports 'unsupported'.
+          logger.warn('Nmap OS detection is unsupported (needs root); scanning without -O', { jobId });
         }
 
         if (options?.detectVersion) {
@@ -265,7 +269,7 @@ export class NmapDiscoveryWorker {
     // Extract open ports
     const openPorts = this.extractPorts(host.openPorts || host.ports || []);
 
-    // Extract OS information
+    // Extract OS information (this worker never runs nmap -O)
     const osInfo = this.extractOSInfo(host);
 
     // Determine device type based on open ports and OS
@@ -341,6 +345,8 @@ export class NmapDiscoveryWorker {
    */
   private extractOSInfo(host: any): any {
     const osInfo: any = {
+      // 'unsupported' unless the result carries OS data: nmap -O needs root, so the worker never requests it.
+      detection: 'unsupported',
       matches: [],
       fingerprint: undefined,
       classes: [],
@@ -388,6 +394,10 @@ export class NmapDiscoveryWorker {
             cpe: cls.cpe,
           }))
         : [];
+    }
+
+    if (osInfo.nmap_guess || osInfo.fingerprint || osInfo.matches.length > 0 || osInfo.classes.length > 0) {
+      osInfo.detection = 'detected';
     }
 
     return osInfo;
@@ -459,7 +469,7 @@ export class NmapDiscoveryWorker {
     let confidence = 0.5; // Base confidence for network discovery
 
     // Increase confidence based on scan type
-    if (scanType === 'os' || scanType === 'version') {
+    if (scanType === 'version') {
       confidence += 0.1;
     }
 

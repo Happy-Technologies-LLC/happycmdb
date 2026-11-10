@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # HAP-1755: the api image must be able to exec nmap as its normal user without any added capability.
-# Operator-run where Docker exists (Build01). NOT part of CI: no workflow builds Dockerfile.api.
+# Run by the `api-image-nmap` job in .github/workflows/test.yml, and by operators where Docker exists (Build01).
 # Usage: deploy/test-api-image-nmap.sh <api-image>
-# rc 126 "Operation not permitted" = exec refused: nmap carries a file capability (setcap +eip) that is missing from the
-# container's bounding set (cap_net_admin is not in Docker's default set; NET_RAW is gone under --cap-drop ALL).
+# Failure guarded: nmap carrying a file capability (setcap +eip cap_net_admin,cap_net_raw) that is missing from the
+# container's bounding set makes the kernel refuse the exec ("Operation not permitted"). Docker's default set has NET_RAW
+# but no NET_ADMIN (the real failure); --cap-drop ALL removes both. Through the dumb-init ENTRYPOINT the refusal shows as
+# rc 2 ("[dumb-init] nmap: Operation not permitted"); only a direct `--entrypoint nmap` gives rc 255.
 set -euo pipefail
 
 image=${1:?usage: $0 <api-image>}

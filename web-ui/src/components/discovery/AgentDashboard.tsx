@@ -152,7 +152,6 @@ export const AgentDashboard: React.FC = () => {
                   <div className="ml-4">-e CMDB_API_URL=http://your-server:3000 \</div>
                   <div className="ml-4">-e CMDB_CAPABILITIES=nmap,ssh \</div>
                   <div className="ml-4">-e CMDB_NETWORKS=10.0.0.0/8 \</div>
-                  <div className="ml-4">--cap-add=NET_RAW --cap-add=NET_ADMIN \</div>
                   <div className="ml-4">happycmdb/agent:latest</div>
                 </div>
               </div>
@@ -172,7 +171,7 @@ export const AgentDashboard: React.FC = () => {
                 </h4>
                 <ul className="list-disc list-inside text-sm space-y-1 text-muted-foreground">
                   <li>Agent needs network access to CMDB API server (port 3000)</li>
-                  <li>For nmap: Requires NET_RAW and NET_ADMIN capabilities</li>
+                  <li>For nmap: No added Linux capabilities needed (unprivileged TCP connect scans: -sT, -sV)</li>
                   <li>For SSH: Needs to reach target hosts on port 22</li>
                   <li>Agent sends heartbeat every 60 seconds</li>
                 </ul>

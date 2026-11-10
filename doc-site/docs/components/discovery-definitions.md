@@ -362,7 +362,7 @@ CREATE INDEX idx_jobs_status ON discovery_jobs(status);
 - `options` - Nmap scanning options
   - `portScan` - Enable port scanning
   - `serviceDetection` - Detect service versions
-  - `osDetection` - Attempt OS detection
+  - `osDetection` - Accepted but not acted on: `nmap -O` needs root and the engine runs as `nodejs`, so results report `metadata.os.detection: 'unsupported'`
   - `ports` - Specific ports to scan (default: top 1000)
 - `timeout` - Scan timeout in milliseconds (default: 300000)
 

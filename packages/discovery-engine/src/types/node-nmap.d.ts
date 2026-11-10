@@ -23,11 +23,4 @@ declare module 'node-nmap' {
     on(event: 'complete', listener: (data: NmapHost[]) => void): this;
     on(event: 'error', listener: (error: Error) => void): this;
   }
-
-  export class OsAndPortScan extends EventEmitter {
-    constructor(range: string, options?: any);
-    startScan(): void;
-    on(event: 'complete', listener: (data: NmapHost[]) => void): this;
-    on(event: 'error', listener: (error: Error) => void): this;
-  }
 }

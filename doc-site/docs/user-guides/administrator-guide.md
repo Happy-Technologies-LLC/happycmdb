@@ -246,19 +246,12 @@ curl -X POST http://localhost:3000/api/v1/jobs/{job-id}/retry \
 curl http://localhost:3000/api/v1/cmdb-health
 ```
 
-**Expected Response**:
+**Expected Response** (HTTP 200; HTTP 503 with `"unhealthy"` when a dependency is down):
 ```json
-{
-  "status": "healthy",
-  "version": "3.0.0",
-  "uptime": 86400,
-  "checks": {
-    "neo4j": "healthy",
-    "postgres": "healthy",
-    "redis": "healthy"
-  }
-}
+{ "_status": "healthy" }
 ```
+
+This public route reports overall dependency status only, with no version, uptime or per-dependency detail. Per-service status and latency are on the authenticated `GET /api/v1/cmdb-health/services`.
 
 ---
 

@@ -9,9 +9,12 @@
  *   - the port equals what the api-server binds in that definition. Precedence: explicit env
  *     `PORT` > the image's `ENV PORT` (a compose service resolves its `build.dockerfile`) > the
  *     code default, read through the real `listenTargetFromEnv`. A compose service with no
- *     `PORT` and no repo build, or a k8s container with no literal `PORT` (its registry image
- *     is not derivable here), fails instead of assuming a default. Dockerfile EXPOSE and k8s
- *     containerPort must agree: each is a named test, not a collection error;
+ *     explicit `PORT` fails (instead of assuming a default) when it has no repo build or has an
+ *     `env_file` (not read here); so does a k8s container with no literal `PORT` (its registry
+ *     image is not derivable here). An image `ENV` that sets `PORT` to anything but literal
+ *     digits (`$ARG`, `${ARG}`) fails with file:line; the code default applies only when no
+ *     `ENV` line sets `PORT`. Dockerfile EXPOSE and k8s containerPort must agree: each is a
+ *     named test, not a collection error;
  *   - the scheme is plain HTTP and the host is loopback (Dockerfile/Compose, run inside the
  *     container), `api-server` (Prometheus), or unset (k8s httpGet.host; scheme HTTP or unset);
  *   - the path is answered 2xx, anonymously, by the REAL `RestAPIServer` app (real mount
@@ -183,19 +186,83 @@ function probesIn(
   });
 }
 
-/** A Dockerfile's instructions, backslash continuations joined. */
-function dockerfileInstructions(file: string): (keyword: string) => string[] {
-  const lines = read(file)
-    .replace(/\\\r?\n/g, ' ')
-    .split(/\r?\n/);
-  return (keyword) => lines.filter((line) => new RegExp(`^\\s*${keyword}\\s`, 'i').test(line));
+type Instruction = { line: number; text: string };
+
+/**
+ * A Dockerfile's instructions with backslash continuations joined; `line` is the 1-based line
+ * the instruction starts on. Comment lines inside a continuation are dropped, as Docker does.
+ */
+function dockerfileInstructions(file: string): (keyword: string) => Instruction[] {
+  const all: Instruction[] = [];
+  let current: Instruction | undefined;
+  read(file)
+    .split(/\r?\n/)
+    .forEach((raw, index) => {
+      if (current && /^\s*#/.test(raw)) return;
+      const continued = raw.endsWith('\\');
+      const piece = continued ? raw.slice(0, -1) : raw;
+      current = current
+        ? { line: current.line, text: `${current.text} ${piece}` }
+        : { line: index + 1, text: piece };
+      if (!continued) {
+        all.push(current);
+        current = undefined;
+      }
+    });
+  if (current) all.push(current);
+  return (keyword) => all.filter(({ text }) => new RegExp(`^\\s*${keyword}\\s`, 'i').test(text));
 }
 
-/** The image's `ENV PORT`; undefined when the Dockerfile sets none. */
+const unquote = (word: string): string => word.replace(/^"(.*)"$|^'(.*)'$/s, '$1$2');
+
+/**
+ * The key/value pairs of one ENV instruction body: the legacy `ENV key value` (the value is the
+ * rest of the line) or `ENV k=v k2="v 2"`. Undefined when the body does not tokenise.
+ */
+function envPairs(body: string): [string, string][] | undefined {
+  const trimmed = body.trim();
+  const legacy = trimmed.match(/^([^\s=]+)\s+(.*)$/s);
+  if (legacy) return [[unquote(legacy[1]), unquote(legacy[2].trim())]];
+  const words = trimmed.match(/(?:[^\s"'\\]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')+/g) ?? [];
+  if (words.join('') !== trimmed.replace(/\s+/g, '')) return undefined;
+  const pairs: [string, string][] = [];
+  for (const word of words) {
+    const pair = word.match(/^([^=]+)=(.*)$/s);
+    if (!pair) return undefined;
+    pairs.push([unquote(pair[1]), unquote(pair[2])]);
+  }
+  return pairs;
+}
+
+/**
+ * The image's `ENV PORT`; undefined only when no ENV instruction mentions `PORT`. A `PORT` set
+ * to anything but literal digits (`$ARG`, `${ARG}`, an expression) or in an ENV body that does
+ * not tokenise throws, naming the file and line: the port is not derivable, so it is never
+ * treated as unset and defaulted. Other keys (`METRICS_PORT=...`) are not `PORT`.
+ */
 function dockerfileEnvPort(file: string): string | undefined {
-  const found = dockerfileInstructions(file)('ENV').flatMap((line) =>
-    [...line.matchAll(/\bPORT=(\d+)/g)].map((m) => m[1])
-  );
+  const found: string[] = [];
+  for (const { line, text } of dockerfileInstructions(file)('ENV')) {
+    const body = text.replace(/^\s*ENV\s+/i, '');
+    const pairs = envPairs(body);
+    if (pairs === undefined) {
+      if (/\bPORT\b/.test(body)) {
+        throw new Error(
+          `${file}:${line}: cannot parse ENV ${JSON.stringify(body.trim())}; set a literal ENV PORT`
+        );
+      }
+      continue;
+    }
+    for (const [key, value] of pairs) {
+      if (key !== 'PORT') continue;
+      if (!/^\d+$/.test(value)) {
+        throw new Error(
+          `${file}:${line}: ENV PORT is ${JSON.stringify(value)}, not a literal port; the effective listen port is not derivable`
+        );
+      }
+      found.push(value);
+    }
+  }
   if (found.length > 1) throw new Error(`${file}: expected at most one ENV PORT`);
   return found[0];
 }
@@ -204,14 +271,20 @@ function dockerfileProbes(file: string): Collected {
   const only = dockerfileInstructions(file);
   const healthchecks = only('HEALTHCHECK');
   if (healthchecks.length !== 1) throw new Error(`${file}: expected one HEALTHCHECK`);
-  const portEnv = dockerfileEnvPort(file);
-  if (portEnv === undefined) throw new Error(`${file}: expected one ENV PORT`);
-  const listenPort = listenPortFor(portEnv);
-  const exposed = only('EXPOSE').flatMap((line) => line.split(/\s+/).slice(1).map(Number));
+  const { port: listenPort, check } = resolveListenPort(file, undefined, () => {
+    const portEnv = dockerfileEnvPort(file);
+    if (portEnv === undefined) throw new Error(`${file}: expected one ENV PORT`);
+    return portEnv;
+  });
+  if (listenPort === undefined) return { probes: [], checks: [check] };
+  const exposed = only('EXPOSE').flatMap(({ text }) =>
+    text.trim().split(/\s+/).slice(1).map(Number)
+  );
   const consistent = exposed.length === 1 && exposed[0] === listenPort;
   return {
-    probes: probesIn(file, healthchecks[0], listenPort, LOOPBACK_HOSTS),
+    probes: probesIn(file, healthchecks[0].text, listenPort, LOOPBACK_HOSTS),
     checks: [
+      check,
       {
         name: `${file}: EXPOSE equals ENV PORT`,
         problem: consistent ? undefined : `EXPOSE ${exposed} does not match ENV PORT ${listenPort}`,
@@ -252,9 +325,16 @@ function composeProbes(file: string): Collected {
     const svc = service as Node;
     const healthcheck = isMap(service) ? service.healthcheck : undefined;
     if (!isMap(healthcheck)) throw new Error(`${file}: ${name} has no healthcheck`);
-    const { port, check } = resolveListenPort(source, envValue(svc.environment, 'PORT'), () =>
-      dockerfileEnvPort(composeDockerfile(file, name, svc))
-    );
+    // Compose: `environment` beats `env_file`, so an explicit PORT is unambiguous. Without one,
+    // PORT may come from an env_file that is not read here; that is a problem, not a guess.
+    const { port, check } = resolveListenPort(source, envValue(svc.environment, 'PORT'), () => {
+      if (svc.env_file !== undefined) {
+        throw new Error(
+          `${name} has env_file, so PORT may come from env_file; set PORT explicitly`
+        );
+      }
+      return dockerfileEnvPort(composeDockerfile(file, name, svc));
+    });
     checks.push(check);
     if (port !== undefined) {
       probes.push(...probesIn(source, JSON.stringify(healthcheck.test), port, LOOPBACK_HOSTS));
@@ -341,6 +421,8 @@ function prometheusProbes(file: string): Collected {
   if (mainProbes.length === 0) throw new Error(`${MAIN_COMPOSE}: api-server port did not resolve`);
   const listenPort = mainProbes[0].listenPort;
   const targets = (job.static_configs as Node[]).flatMap((entry) => entry.targets as string[]);
+  // The hostname filter picks the api-server targets, so the host assertion below is only a
+  // consistency check on the allowed-host list; the port is the part this case really verifies.
   const probes = targets
     .filter((target) => new URL(target).hostname === 'api-server')
     .flatMap((target) => probesIn(`${file}#${target}`, target, listenPort, ['api-server']));
@@ -384,7 +466,8 @@ describe('api-server probe definitions', () => {
   });
 
   // Definition consistency: a mismatch is a failing case with the definition in its name,
-  // never a collection error that reports `Tests: 0 total`.
+  // never a collection error that reports `Tests: 0 total`. Each check is a named slot that
+  // passes when green, so the case count is a slot count, not independent assertions.
   it.each(CHECKS)('$name', ({ problem }) => {
     expect(problem).toBeUndefined();
   });

@@ -396,10 +396,10 @@ services:
       - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
     volumes:
       # Provisioning configurations
-      - ../../monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-      - ../../monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ../monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ../monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       # Dashboard JSON files
-      - ../../monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards/cmdb:ro
+      - ../monitoring/grafana/dashboards:/var/lib/grafana/dashboards/cmdb:ro
       # Persistent storage
       - grafana_data:/var/lib/grafana
     networks:

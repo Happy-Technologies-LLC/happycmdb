@@ -280,7 +280,7 @@ iptables-save > /etc/iptables/rules.v4
 
 ```bash
 # Dashboards are auto-provisioned from:
-monitoring/grafana/dashboards/
+infrastructure/monitoring/grafana/dashboards/
 
 # Access Grafana:
 # URL: http://localhost:3001 (or configured GRAFANA_PORT)

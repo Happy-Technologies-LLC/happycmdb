@@ -2,7 +2,11 @@
 # Grafana Dashboard Provisioning - HappyCMDB
 # =============================================================================
 # This file automatically provisions all HappyCMDB dashboards when Grafana
-# starts. Dashboards are loaded from the /dashboards directory.
+# starts. The dashboard JSON directory is bind-mounted at
+# /var/lib/grafana/dashboards/cmdb (see infrastructure/docker/docker-compose.yml).
+# It must NOT live under /etc/grafana/provisioning: that tree is a :ro bind mount,
+# and Docker cannot create a nested mountpoint inside a read-only bind mount.
+# All dashboards (data mart and legacy Prometheus ones) sit in that one directory.
 # =============================================================================
 
 apiVersion: 1
@@ -17,17 +21,5 @@ providers:
     updateIntervalSeconds: 30
     allowUiUpdates: true
     options:
-      path: /etc/grafana/provisioning/dashboards/cmdb
-      foldersFromFilesStructure: false
-
-  # Prometheus Monitoring Dashboards (Legacy)
-  - name: 'HappyCMDB Monitoring Dashboards'
-    orgId: 1
-    folder: 'HappyCMDB Monitoring'
-    type: file
-    disableDeletion: false
-    updateIntervalSeconds: 30
-    allowUiUpdates: true
-    options:
-      path: /etc/grafana/provisioning/dashboards/monitoring
+      path: /var/lib/grafana/dashboards/cmdb
       foldersFromFilesStructure: false

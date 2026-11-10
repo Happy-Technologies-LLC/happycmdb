@@ -178,7 +178,6 @@ ETL_FULL_SYNC_SCHEDULE="0 3 * * *"  # 3 AM daily
 | `API_KEY` | No | - | Static API key (for backward compatibility) |
 | `API_KEY_HEADER` | No | `X-API-Key` | Header name for API key |
 | `SESSION_SECRET` | No | - | Session secret for cookie-based auth |
-| `CORS_ORIGIN` | No | `*` | CORS allowed origins (comma-separated) |
 | `RATE_LIMIT_WINDOW` | No | `60000` | Rate limit window (ms) - 1 minute |
 | `RATE_LIMIT_MAX` | No | `1000` | Max requests per window |
 | `BCRYPT_ROUNDS` | No | `10` | Bcrypt hashing rounds |
@@ -189,7 +188,6 @@ ETL_FULL_SYNC_SCHEDULE="0 3 * * *"  # 3 AM daily
 JWT_SECRET=${JWT_SECRET}  # From secrets - minimum 32 characters
 JWT_EXPIRES_IN=7200       # 2 hours
 API_KEY=${API_KEY}        # From secrets
-CORS_ORIGIN=https://dashboard.example.com,https://admin.example.com
 RATE_LIMIT_WINDOW=60000
 RATE_LIMIT_MAX=1000
 BCRYPT_ROUNDS=12

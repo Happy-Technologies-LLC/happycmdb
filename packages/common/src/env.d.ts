@@ -30,7 +30,6 @@ declare global {
       REDIS_PASSWORD?: string;
 
       // API Configuration
-      CORS_ORIGIN?: string;
       API_KEY?: string;
       JWT_SECRET?: string;
 

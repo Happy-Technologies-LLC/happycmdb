@@ -36,7 +36,6 @@ LOG_LEVEL=info                         # error | warn | info | debug | trace
 API_PORT=3000                          # Default: 3000
 API_HOST=0.0.0.0                       # Read by infrastructure/scripts only, not the api-server
 SERVER_HOST=                           # api-server bind address (unset: all interfaces)
-API_CORS_ORIGIN=*                      # CORS allowed origins (comma-separated)
 
 # Web UI Server
 WEB_UI_PORT=3001                       # Default: 3001
@@ -46,7 +45,6 @@ WEB_UI_BASE_URL=http://localhost:3001  # Public URL for UI
 **Production Recommendations**:
 - `NODE_ENV=production` - Enables optimizations, disables debug features
 - `LOG_LEVEL=warn` - Reduce log verbosity in production
-- `API_CORS_ORIGIN=https://cmdb.yourcompany.com` - Restrict CORS to your domain
 
 ---
 
@@ -680,7 +678,7 @@ DISCOVERY_WORKER_REPLICAS=5
 4. **Separate credentials by environment** - Different keys for dev/staging/prod
 5. **Enable audit logging** - Set `AUDIT_LOG_ENABLED=true` in production
 6. **Use HTTPS in production** - Configure SSL/TLS for all endpoints
-7. **Restrict CORS** - Set `API_CORS_ORIGIN` to specific domains, not `*`
+7. **CORS is not configurable** - The API uses default `cors()`, which allows any origin and sends no credentials; no environment variable configures it
 
 ### Performance
 

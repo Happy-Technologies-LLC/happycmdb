@@ -403,9 +403,6 @@ NEO4J_PASSWORD=password
 # Server Configuration
 NODE_ENV=development  # or production
 PORT=4000
-
-# CORS Configuration
-CORS_ORIGIN=http://localhost:3000
 ```
 
 ## Monitoring and Logging

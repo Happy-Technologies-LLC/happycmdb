@@ -270,11 +270,13 @@ This checklist provides a comprehensive security hardening guide for HappyCMDB p
 - [ ] **Global rate limiting**
   - Max 100 requests per minute per IP
   - Burst allowance for legitimate traffic spikes
-  - Not implemented: `rest/server.ts` mounts no global limiter. The only limiter middleware on the request path is the one `AuthController` applies to its own routes (below), so enforce a global limit at the reverse proxy or gateway
+  - Not implemented in the API: `ApiServer.setupMiddleware` (`rest/server.ts`) mounts no global limiter. The only limiters on the request path are the ones `AuthController` applies to its own routes (below), so enforce a global limit at the reverse proxy. The shipped `infrastructure/docker/nginx.conf` does: zone `api_limit` 100r/s with `burst=50` on `/api/`, `auth_limit` 5r/m (`burst=2`) on `/api/v1/auth/` and `graphql_limit` 50r/s (`burst=20`) on `/graphql`, each with `limit_req_status 429`. The `web-ui` image in `infrastructure/docker/docker-compose.yml` copies `web-ui/nginx.conf` instead, which has no `limit_req`
+  - An nginx `429` carries neither `_retryAfter` nor `X-RateLimit-*`
 
 - [ ] **Endpoint-specific rate limiting**
-  - Authentication endpoints: 10 requests per minute
-  - The auth limiter (`POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `PUT /api/v1/auth/password`) answers `429 Too Many Requests` with `_retryAfter` (seconds) in the body and an `X-RateLimit-Reset` (Unix epoch milliseconds) header; no `Retry-After` header is sent
+  - Authentication endpoints, target: 10 requests per minute. Shipped default: `rateLimit.endpoints.auth` is `max: 20` per `windowMs: 3600000` (20 per hour per client address; env `RATE_LIMIT_AUTH_MAX`, `RATE_LIMIT_AUTH_WINDOW_MS`), plus `endpoints.authAccount` (5 per 15 min per account + client address) and `endpoints.authAccountGlobal` (20 per 15 min per account) on login. The two differ in both count and window; set the env values to match the target if it is the one you want
+  - The auth limiter (`POST /api/v1/auth/login`, `PUT /api/v1/auth/password`) answers `429 Too Many Requests` with `_retryAfter` (seconds) in the body and an `X-RateLimit-Reset` (Unix epoch milliseconds) header; no `Retry-After` header is sent. Those headers are absent when `rateLimit.enabled` is `false`, on a bypass-header match (`rateLimit.bypassHeader`, `rateLimit.bypassSecret`) and on a limiter store error
+  - `POST /api/v1/auth/refresh` is not under the auth limiter: it has its own `auth-refresh` bucket (`RateLimitMiddleware.custom(endpointBudget('rest'), 'auth-refresh')`) on the REST budget (`rateLimit.endpoints.rest`, default 1000 per 3600000 ms). It fails open on a store error and is not mounted when `rateLimit.endpoints.rest.max` is `0`; its `429` has the same body and headers
   - Resource creation: 20 requests per minute
   - Query endpoints: 100 requests per minute
 

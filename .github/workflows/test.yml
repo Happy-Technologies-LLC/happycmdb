@@ -665,8 +665,16 @@ jobs:
           echo "$out"
           echo "$out" | grep -q 'zero size shared memory zone' || { echo "mutation failed for the wrong reason" >&2; exit 1; }
 
+      # Both steps also publish the script's output as one notice annotation, readable from the PR checks and the
+      # check-runs API without the job log.
       - name: HAP-1818 auth rate limits (behavioral, nginx in front of a stub api-server)
-        run: bash infrastructure/docker/test-nginx-auth-limits.sh
+        run: |
+          set -uo pipefail
+          rc=0
+          out=$(bash infrastructure/docker/test-nginx-auth-limits.sh 2>&1) || rc=$?
+          printf '%s\n' "$out"
+          echo "::notice title=HAP-1818 auth limits at head (exit $rc)::$(printf '%s' "$out" | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"}1')"
+          exit "$rc"
 
       - name: Mutation, the behavioral check must fail on the pre-HAP-1818 config (auth_limit on every /auth/ path)
         env:
@@ -677,7 +685,8 @@ jobs:
           git show "$PRE_HAP1818_SHA:infrastructure/docker/nginx.conf" > "$RUNNER_TEMP/pre-hap1818.conf"
           rc=0
           out=$(bash infrastructure/docker/test-nginx-auth-limits.sh "$RUNNER_TEMP/pre-hap1818.conf" 2>&1) || rc=$?
-          echo "$out"
+          printf '%s\n' "$out"
+          echo "::notice title=HAP-1818 auth limits at pre-fix ${PRE_HAP1818_SHA:0:8} (exit $rc)::$(printf '%s' "$out" | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"}1')"
           [ "$rc" -eq 1 ] || { echo "want exit 1 (assertion failed), got $rc" >&2; exit 1; }
           echo "$out" | grep -qF 'FAIL: session request 4 (GET /api/v1/auth/me): got 429, want 200' \
             || { echo "mutation failed for the wrong reason" >&2; exit 1; }

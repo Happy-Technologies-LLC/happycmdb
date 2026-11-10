@@ -1310,7 +1310,10 @@ paths:
     post:
       tags: [Credentials]
       summary: Match credential
-      description: Find best matching credential for given context
+      description: >-
+        Find the best matching credential for the given context. Requires the
+        `write` permission (the caller's credentials are decrypted server-side
+        to score them).
       operationId: matchCredential
       requestBody:
         required: true
@@ -1319,11 +1322,13 @@ paths:
             schema:
               $ref: '#/components/schemas/CredentialMatchContext'
             example:
-              _ip: 192.168.1.10
-              _hostname: web01.example.com
-              _os_type: ubuntu
-              _environment: production
-              _required_protocol: ssh_key
+              ip: 10.0.1.50
+              hostname: web-prod-01.example.com
+              os_type: linux
+              environment: production
+              cloud_provider: aws
+              required_protocol: ssh_key
+              required_scope: cloud_provider
       responses:
         '200':
           description: Best matching credential
@@ -1341,12 +1346,23 @@ paths:
           description: No matching credential found
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the `write` permission; refused before any lookup
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MiddlewareError'
+              example:
+                _error: Forbidden
+                _message: Permission 'write' required
 
   /credentials/rank:
     post:
       tags: [Credentials]
       summary: Rank credentials
-      description: Rank all credentials by match score
+      description: >-
+        Rank all credentials by match score. Requires the `write` permission
+        (the caller's credentials are decrypted server-side to score them).
       operationId: rankCredentials
       requestBody:
         required: true
@@ -1354,6 +1370,12 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/CredentialMatchContext'
+            example:
+              ip: 10.0.1.50
+              hostname: web-prod-01.example.com
+              os_type: linux
+              environment: production
+              required_protocol: ssh_key
       responses:
         '200':
           description: Ranked credentials
@@ -1370,6 +1392,15 @@ paths:
                       type: number
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller lacks the `write` permission; refused before any lookup
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MiddlewareError'
+              example:
+                _error: Forbidden
+                _message: Permission 'write' required
 
   /credentials/{id}/validate:
     post:
@@ -4967,21 +4998,21 @@ components:
     CredentialMatchContext:
       type: object
       properties:
-        _ip:
+        ip:
           type: string
-        _hostname:
+        hostname:
           type: string
-        _os_type:
+        os_type:
           type: string
-        _device_type:
+        device_type:
           type: string
-        _environment:
+        environment:
           type: string
-        _cloud_provider:
+        cloud_provider:
           type: string
-        _required_protocol:
+        required_protocol:
           $ref: '#/components/schemas/AuthProtocol'
-        _required_scope:
+        required_scope:
           $ref: '#/components/schemas/CredentialScope'
 
     CredentialSet:

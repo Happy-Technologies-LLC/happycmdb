@@ -79,34 +79,33 @@ Create a new credential with affinity matching rules.
 - `container` - Container platforms
 - `universal` - Any resource type
 
-**Response** (201 Created):
+**Response** (201 Created): the stored credential with its secret redacted; `credentials` is always `***REDACTED***`.
 ```json
 {
   "success": true,
   "data": {
-    "_id": "550e8400-e29b-41d4-a716-446655440000",
-    "_name": "AWS Production SSH Key",
-    "_description": "SSH key for production EC2 instances",
-    "_protocol": "ssh_key",
-    "_scope": "cloud_provider",
-    "_affinity": {
-      "_networks": ["10.0.0.0/8"],
-      "_hostname_patterns": ["*-prod-*", "*.example.com"],
-      "_os_types": ["linux"],
-      "_cloud_providers": ["aws"],
-      "_environments": ["production"],
-      "_priority": 8
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "AWS Production SSH Key",
+    "description": "SSH key for production EC2 instances",
+    "protocol": "ssh_key",
+    "scope": "cloud_provider",
+    "credentials": "***REDACTED***",
+    "affinity": {
+      "networks": ["10.0.0.0/8"],
+      "hostname_patterns": ["*-prod-*", "*.example.com"],
+      "os_types": ["linux"],
+      "cloud_providers": ["aws"],
+      "environments": ["production"],
+      "priority": 8
     },
-    "_tags": ["production", "aws", "ec2"],
-    "_createdBy": "admin@example.com",
-    "_createdAt": "2025-11-15T10:00:00Z",
-    "_updatedAt": "2025-11-15T10:00:00Z",
-    "_credentialsSummary": {
-      "username": "ec2-user",
-      "hasPrivateKey": true,
-      "hasPassphrase": true
-    }
-  }
+    "tags": ["production", "aws", "ec2"],
+    "created_by": "user-id",
+    "created_at": "2025-11-15T10:00:00.000Z",
+    "updated_at": "2025-11-15T10:00:00.000Z",
+    "last_validated_at": null,
+    "validation_status": null
+  },
+  "message": "Credential created successfully"
 }
 ```
 
@@ -181,35 +180,31 @@ curl "http://localhost:3000/api/v1/credentials/550e8400-e29b-41d4-a716-446655440
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
-**Response** (200 OK):
+**Response** (200 OK): `credentials` is always `***REDACTED***`.
 ```json
 {
   "success": true,
   "data": {
-    "_id": "550e8400-e29b-41d4-a716-446655440000",
-    "_name": "AWS Production SSH Key",
-    "_description": "SSH key for production EC2 instances",
-    "_protocol": "ssh_key",
-    "_scope": "cloud_provider",
-    "_affinity": {
-      "_networks": ["10.0.0.0/8"],
-      "_hostname_patterns": ["*-prod-*", "*.example.com"],
-      "_os_types": ["linux"],
-      "_cloud_providers": ["aws"],
-      "_environments": ["production"],
-      "_priority": 8
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "AWS Production SSH Key",
+    "description": "SSH key for production EC2 instances",
+    "protocol": "ssh_key",
+    "scope": "cloud_provider",
+    "credentials": "***REDACTED***",
+    "affinity": {
+      "networks": ["10.0.0.0/8"],
+      "hostname_patterns": ["*-prod-*", "*.example.com"],
+      "os_types": ["linux"],
+      "cloud_providers": ["aws"],
+      "environments": ["production"],
+      "priority": 8
     },
-    "_tags": ["production", "aws", "ec2"],
-    "_createdBy": "admin@example.com",
-    "_createdAt": "2025-11-15T10:00:00Z",
-    "_updatedAt": "2025-11-15T10:00:00Z",
-    "_lastUsedAt": "2025-11-15T14:30:00Z",
-    "_usageCount": 42,
-    "_credentialsSummary": {
-      "username": "ec2-user",
-      "hasPrivateKey": true,
-      "hasPassphrase": true
-    }
+    "tags": ["production", "aws", "ec2"],
+    "created_by": "user-id",
+    "created_at": "2025-11-15T10:00:00.000Z",
+    "updated_at": "2025-11-15T10:00:00.000Z",
+    "last_validated_at": "2025-11-15T16:00:00.000Z",
+    "validation_status": "valid"
   }
 }
 ```
@@ -311,7 +306,7 @@ Find the best matching credential for a given context using affinity scoring.
 }
 ```
 
-**Response** (200 OK): secrets are never returned; `credential.credentials` is always `***REDACTED***`.
+**Response** (200 OK): the highest-scoring credential (see [Match Score Calculation](#match-score-calculation)). Secrets are never returned; `credential.credentials` is always `***REDACTED***`. Against the request above, this credential scores 30 (network) + 25 (hostname) + 20 (OS) + 10 (environment) + 10 (priority 5 × 2) = 95.
 ```json
 {
   "success": true,
@@ -323,7 +318,13 @@ Find the best matching credential for a given context using affinity scoring.
       "protocol": "ssh_key",
       "scope": "cloud_provider",
       "credentials": "***REDACTED***",
-      "affinity": {},
+      "affinity": {
+        "networks": ["10.0.0.0/16"],
+        "hostname_patterns": ["*-prod-*"],
+        "os_types": ["linux"],
+        "environments": ["production"],
+        "priority": 5
+      },
       "tags": ["production"],
       "created_by": "user-id",
       "created_at": "2025-11-15T14:30:00.000Z",
@@ -334,17 +335,20 @@ Find the best matching credential for a given context using affinity scoring.
     "score": 95,
     "reasons": [
       "Network match: 10.0.0.0/16",
+      "Hostname match: *-prod-*",
       "OS type match: linux",
-      "Environment match: production"
+      "Environment match: production",
+      "Priority boost: +10 (priority 5)"
     ]
   }
 }
 ```
 
 **Error Responses**:
-- `404 Not Found` - No matching credential found
+- `404 Not Found` - No credential of the caller has the required protocol/scope
 - `400 Bad Request` - Invalid context data
 - `401 Unauthorized` - Missing or invalid JWT token
+- `403 Forbidden` - Caller lacks the `write` permission: `{"_error": "Forbidden", "_message": "Permission 'write' required"}`
 
 ---
 
@@ -367,7 +371,7 @@ Rank all credentials by match score for a given context.
 }
 ```
 
-**Response** (200 OK): results are sorted by `score` descending; secrets are never returned, `credential.credentials` is always `***REDACTED***`.
+**Response** (200 OK): every credential of the caller that has the required protocol/scope, sorted by `score` descending; none is excluded for a low score. Secrets are never returned; `credential.credentials` is always `***REDACTED***`. Against the request above: the first scores 30 + 25 + 20 + 10 + 10 (priority 5 × 2) = 95, the second 20 (OS only), the third has no affinity rules and gets the base score 1.
 ```json
 {
   "success": true,
@@ -380,7 +384,13 @@ Rank all credentials by match score for a given context.
         "protocol": "ssh_key",
         "scope": "cloud_provider",
         "credentials": "***REDACTED***",
-        "affinity": {},
+        "affinity": {
+          "networks": ["10.0.0.0/16"],
+          "hostname_patterns": ["*-prod-*"],
+          "os_types": ["linux"],
+          "environments": ["production"],
+          "priority": 5
+        },
         "tags": ["production"],
         "created_by": "user-id",
         "created_at": "2025-11-15T14:30:00.000Z",
@@ -391,8 +401,10 @@ Rank all credentials by match score for a given context.
       "score": 95,
       "reasons": [
         "Network match: 10.0.0.0/16",
+        "Hostname match: *-prod-*",
         "OS type match: linux",
-        "Environment match: production"
+        "Environment match: production",
+        "Priority boost: +10 (priority 5)"
       ]
     },
     {
@@ -401,9 +413,11 @@ Rank all credentials by match score for a given context.
         "name": "Generic Linux SSH Key",
         "description": null,
         "protocol": "ssh_key",
-        "scope": "cloud_provider",
+        "scope": "ssh",
         "credentials": "***REDACTED***",
-        "affinity": {},
+        "affinity": {
+          "os_types": ["linux"]
+        },
         "tags": [],
         "created_by": "user-id",
         "created_at": "2025-11-15T14:30:00.000Z",
@@ -413,11 +427,35 @@ Rank all credentials by match score for a given context.
       },
       "score": 20,
       "reasons": ["OS type match: linux"]
+    },
+    {
+      "credential": {
+        "id": "880a1733-a5ce-44a7-8049-779988773333",
+        "name": "Fallback SSH Key",
+        "description": null,
+        "protocol": "ssh_key",
+        "scope": "ssh",
+        "credentials": "***REDACTED***",
+        "affinity": {},
+        "tags": [],
+        "created_by": "user-id",
+        "created_at": "2025-11-15T14:30:00.000Z",
+        "updated_at": "2025-11-15T14:30:00.000Z",
+        "last_validated_at": null,
+        "validation_status": null
+      },
+      "score": 1,
+      "reasons": ["Default match (no affinity specified)"]
     }
   ],
-  "count": 2
+  "count": 3
 }
 ```
+
+**Error Responses**:
+- `400 Bad Request` - Invalid context data
+- `401 Unauthorized` - Missing or invalid JWT token
+- `403 Forbidden` - Caller lacks the `write` permission: `{"_error": "Forbidden", "_message": "Permission 'write' required"}`
 
 ---
 
@@ -435,19 +473,23 @@ curl -X POST "http://localhost:3000/api/v1/credentials/550e8400-e29b-41d4-a716-4
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
-**Response** (200 OK):
+**Response** (200 OK): `validate` checks the stored credential's structure for its protocol (it does not contact the target); `details` echoes the credential's protocol and scope.
 ```json
 {
   "success": true,
   "data": {
     "valid": true,
-    "message": "Credential successfully validated against target resource",
-    "validatedAt": "2025-11-15T16:00:00Z"
+    "message": "Credential structure is valid",
+    "validated_at": "2025-11-15T16:00:00.000Z",
+    "details": {
+      "protocol": "ssh_key",
+      "scope": "cloud_provider"
+    }
   }
 }
 ```
 
-**Failure Response** (200 OK): a credential that fails validation is still a `200`; `valid` is `false` and the message is fixed text.
+**Failure Response** (200 OK): a credential that fails validation is still a `200` with `valid: false`. A structural failure names the missing piece (for example `Missing certificate or private key`). If validation itself errors (for example the stored credential cannot be read), the message is the fixed text `Credential validation failed` (HAP-1800), shown below.
 ```json
 {
   "success": true,
@@ -641,6 +683,7 @@ Select credentials from a set using the configured strategy and context.
     {
       "id": "550e8400-e29b-41d4-a716-446655440000",
       "name": "AWS Production SSH Key",
+      "description": "SSH key for production EC2 instances",
       "protocol": "ssh_key",
       "scope": "cloud_provider",
       "credentials": "***REDACTED***",
@@ -665,49 +708,49 @@ The unified credentials system uses intelligent affinity matching to automatical
 
 ### Matching Rules
 
-Credentials are matched based on the following criteria (in priority order):
+`required_protocol` and `required_scope` are filters, not scoring rules: only the caller's credentials whose `protocol` / `scope` equal them are considered at all. Each remaining credential is scored against its `affinity`:
 
-1. **Network Match** - IP address falls within `_networks` CIDR ranges
-2. **Hostname Pattern Match** - Hostname matches wildcard patterns in `_hostname_patterns`
-3. **OS Type Match** - OS type matches `_os_types`
-4. **Device Type Match** - Device type matches `_device_types`
-5. **Environment Match** - Environment matches `_environments`
-6. **Cloud Provider Match** - Cloud provider matches `_cloud_providers`
-7. **Protocol Match** - Required protocol matches `_protocol`
-8. **Scope Match** - Required scope matches `_scope`
-9. **Priority** - Manual priority setting (1-10, higher = better)
+| Rule | Matches when | Points |
+|------|--------------|--------|
+| Network | `ip` falls within one of `networks` (CIDR) | +30 |
+| Hostname pattern | `hostname` matches one of `hostname_patterns` (wildcard) | +25 |
+| OS type | `os_type` is in `os_types` | +20 |
+| Device type | `device_type` is in `device_types` | +15 |
+| Environment | `environment` is in `environments` | +10 |
+| Cloud provider | `cloud_provider` is in `cloud_providers` | +20 |
+| Priority | `priority` (1-10) is set; applies regardless of the context | + `priority` × 2 |
 
 ### Match Score Calculation
 
-- Each matching criterion adds points to the match score
-- Priority multiplier increases the final score
-- Scores range from 0 (no match) to 100 (perfect match)
-- Credentials below 50% match score are excluded
+- The score is the sum of the points above; each rule counts at most once.
+- A credential with no matching rule and no `priority` gets the base score 1 (reason `Default match (no affinity specified)`).
+- There is no 0-100 scale: the maximum is 30 + 25 + 20 + 15 + 10 + 20 + 20 = 140.
+- No credential is excluded for a low score. Rank returns every considered credential sorted by score (highest first); Match returns the first of that list, and `404` only when no credential passes the protocol/scope filters.
 
 ### Example Affinity Configuration
 
 ```json
 {
-  "_affinity": {
-    "_networks": ["10.0.0.0/8", "172.16.0.0/12"],
-    "_hostname_patterns": ["*-prod-*", "*.example.com", "prod-*"],
-    "_os_types": ["linux", "ubuntu", "centos"],
-    "_device_types": ["server", "virtual-machine"],
-    "_environments": ["production"],
-    "_cloud_providers": ["aws"],
-    "_priority": 9
+  "affinity": {
+    "networks": ["10.0.0.0/8", "172.16.0.0/12"],
+    "hostname_patterns": ["*-prod-*", "*.example.com", "prod-*"],
+    "os_types": ["linux", "ubuntu", "centos"],
+    "device_types": ["server", "virtual-machine"],
+    "environments": ["production"],
+    "cloud_providers": ["aws"],
+    "priority": 9
   }
 }
 ```
 
-This configuration matches:
+This configuration scores points for:
 - Any IP in 10.0.0.0/8 or 172.16.0.0/12
 - Hostnames containing "-prod-" or ending with ".example.com" or starting with "prod-"
 - Linux-based operating systems
 - Server or VM device types
 - Production environment
 - AWS cloud provider
-- High priority (9/10)
+- Priority 9 (+18 whenever the credential is scored)
 
 ---
 

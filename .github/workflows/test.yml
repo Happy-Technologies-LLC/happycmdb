@@ -8,13 +8,13 @@ on:
 
 permissions:
   contents: read
-  checks: write
-  pull-requests: write
 
 jobs:
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       NODE_OPTIONS: --experimental-vm-modules
     timeout-minutes: 10
@@ -95,6 +95,8 @@ jobs:
     name: Web UI Build (tsc + vite)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -143,6 +145,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    permissions:
+      contents: read
     strategy:
       matrix:
         node-version: [22.x]
@@ -190,6 +194,8 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 150
+    permissions:
+      contents: read
     env:
       HARNESS: tests/integration/database/sec12-02-p99.integration.test.ts
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -273,6 +279,8 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
     env:
       HARNESS: tests/integration/database/hp1-s1-schema.integration.test.ts
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -593,6 +601,8 @@ jobs:
     name: Staging Migration Contract
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    permissions:
+      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -610,6 +620,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    permissions:
+      contents: read
     strategy:
       matrix:
         node-version: [22.x]
@@ -645,6 +657,10 @@ jobs:
     needs: [unit-tests, integration-tests, e2e-tests]
     if: always()
 
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
     steps:
       - name: Download all test results
         uses: actions/download-artifact@v4
@@ -666,6 +682,9 @@ jobs:
     needs: [unit-tests, integration-tests]
     if: always()
 
+    permissions:
+      contents: read
+      pull-requests: write
     env:
       NODE_OPTIONS: --experimental-vm-modules
     steps:

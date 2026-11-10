@@ -607,6 +607,64 @@ jobs:
       - name: Prove opt-in profile and migrate disposable empty Postgres
         run: bash deploy/test-staging-migrations.sh
 
+  nginx-config-test:
+    # HAP-1231: every nginx config tracked in the repo must pass `nginx -t` in the context it is written for.
+    # Full configs (a top-level `http {}` block) run as /etc/nginx/nginx.conf; everything else is a conf.d
+    # include. New nginx*.conf files are picked up by `git ls-files`, so none can be forgotten.
+    name: nginx -t (all nginx configs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NGINX_IMAGE: nginx:1.25-alpine # same tag as infrastructure/docker/Dockerfile.web
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Generate throwaway TLS material (never committed)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ssl"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=nginx-t.invalid' \
+            -keyout "$RUNNER_TEMP/ssl/key.pem" -out "$RUNNER_TEMP/ssl/cert.pem"
+          cp "$RUNNER_TEMP/ssl/cert.pem" "$RUNNER_TEMP/ssl/chain.pem"
+          openssl dhparam -dsaparam -out "$RUNNER_TEMP/ssl/dhparam.pem" 2048
+
+      - name: nginx -t for every tracked nginx config
+        run: |
+          set -euo pipefail
+          docker pull "$NGINX_IMAGE"
+          mapfile -t confs < <(git ls-files | grep -iE '(^|/)nginx[^/]*\.conf$')
+          [ "${#confs[@]}" -ge 4 ] || { echo "expected at least 4 nginx configs, found ${#confs[@]}" >&2; exit 1; }
+          run_nginx_t() { # $1 = repo-relative conf, $2 = in-container path
+            docker run --rm \
+              --add-host api-server:127.0.0.1 \
+              -v "$RUNNER_TEMP/ssl:/etc/nginx/ssl:ro" \
+              -v "$GITHUB_WORKSPACE/$1:$2:ro" \
+              "$NGINX_IMAGE" nginx -t
+          }
+          for f in "${confs[@]}"; do
+            if grep -qE '^http[[:space:]]*\{' "$f"; then target=/etc/nginx/nginx.conf; else target=/etc/nginx/conf.d/default.conf; fi
+            echo "::group::nginx -t $f (as $target)"
+            run_nginx_t "$f" "$target"
+            echo "::endgroup::"
+          done
+
+      - name: Mutation, the gate must catch the HAP-1231 bug (undeclared limit_req zones)
+        run: |
+          set -euo pipefail
+          sed -E 's/^limit_req_zone/# limit_req_zone/' infrastructure/docker/nginx.conf > "$RUNNER_TEMP/mutated.conf"
+          if out=$(docker run --rm \
+              --add-host api-server:127.0.0.1 \
+              -v "$RUNNER_TEMP/ssl:/etc/nginx/ssl:ro" \
+              -v "$RUNNER_TEMP/mutated.conf:/etc/nginx/conf.d/default.conf:ro" \
+              "$NGINX_IMAGE" nginx -t 2>&1); then
+            echo "mutated config unexpectedly passed nginx -t" >&2; exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -q 'zero size shared memory zone' || { echo "mutation failed for the wrong reason" >&2; exit 1; }
+
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest
@@ -704,7 +762,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   ci-rollup:
-    needs: [unit-tests, integration-tests, e2e-tests, staging-migrations, web-ui-build, hap630-real-store, hap644-real-store, hap668-real-store, hap835-real-store, hap1422-real-store, hap1562-real-store]
+    needs: [unit-tests, integration-tests, e2e-tests, staging-migrations, web-ui-build, nginx-config-test, hap630-real-store, hap644-real-store, hap668-real-store, hap835-real-store, hap1422-real-store, hap1562-real-store]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -720,6 +778,7 @@ jobs:
           STAGING_MIGRATIONS_RESULT: ${{ needs.staging-migrations.result }}
           E2E_TESTS_RESULT: ${{ needs.e2e-tests.result }}
           WEB_UI_BUILD_RESULT: ${{ needs.web-ui-build.result }}
+          NGINX_CONFIG_TEST_RESULT: ${{ needs.nginx-config-test.result }}
           HAP630_RESULT: ${{ needs.hap630-real-store.result }}
           HAP644_RESULT: ${{ needs.hap644-real-store.result }}
           HAP668_RESULT: ${{ needs.hap668-real-store.result }}
@@ -737,6 +796,7 @@ jobs:
              [ "$E2E_TESTS_RESULT" = "success" ] &&
              [ "$STAGING_MIGRATIONS_RESULT" = "success" ] &&
              [ "$WEB_UI_BUILD_RESULT" = "success" ] &&
+             [ "$NGINX_CONFIG_TEST_RESULT" = "success" ] &&
              { [ "$HAP630_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP630_RESULT" = "skipped" ]; }; } &&
              { [ "$HAP644_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP644_RESULT" = "skipped" ]; }; } &&
              { [ "$HAP668_RESULT" = "success" ] || { [ "${{ github.event_name }}" = "push" ] && [ "$HAP668_RESULT" = "skipped" ]; }; } &&
@@ -753,6 +813,7 @@ jobs:
             [ "$E2E_TESTS_RESULT" = "success" ] || failures+=("e2e-tests=$E2E_TESTS_RESULT")
             [ "$STAGING_MIGRATIONS_RESULT" = "success" ] || failures+=("staging-migrations=$STAGING_MIGRATIONS_RESULT")
             [ "$WEB_UI_BUILD_RESULT" = "success" ] || failures+=("web-ui-build=$WEB_UI_BUILD_RESULT")
+            [ "$NGINX_CONFIG_TEST_RESULT" = "success" ] || failures+=("nginx-config-test=$NGINX_CONFIG_TEST_RESULT")
             if [ "$HAP630_RESULT" != "success" ] && [ "${{ github.event_name }}" != "push" ]; then
               failures+=("hap630-real-store=$HAP630_RESULT")
             fi

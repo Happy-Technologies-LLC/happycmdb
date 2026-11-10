@@ -98,6 +98,9 @@ const credentialAffinitySchema = Joi.object({
   priority: Joi.number().integer().min(1).max(10).optional(),
 });
 
+/** HAP-1233: the optional Description may be blank (the form sends ''); the services store a blank as NULL, and an edit with a blank clears it. */
+const descriptionSchema = Joi.string().trim().allow('').max(1000).optional();
+
 /** HAP-444 K1: the shared SSH port rule; absent stays allowed (= 22). A bare fixed Error carries no Joi details, so no client value is logged. */
 const sshPortSchema = Joi.any()
   .custom((value, helpers) => (CredentialProtocolAdapter.isSshPort(value) ? value : helpers.error('any.invalid')))
@@ -108,7 +111,7 @@ const sshPortSchema = Joi.any()
  */
 const createCredentialSchema = Joi.object({
   name: Joi.string().required().min(1).max(255),
-  description: Joi.string().optional().max(1000),
+  description: descriptionSchema,
   protocol: authProtocolSchema.required(),
   scope: credentialScopeSchema.required(),
   credentials: Joi.object().required().when('protocol', { is: Joi.valid('ssh_password', 'ssh_key'), then: Joi.object({ port: sshPortSchema }).unknown(true) }),
@@ -121,7 +124,7 @@ const createCredentialSchema = Joi.object({
  */
 const updateCredentialSchema = Joi.object({
   name: Joi.string().optional().min(1).max(255),
-  description: Joi.string().optional().max(1000),
+  description: descriptionSchema,
   // The body carries no protocol, so the SSH port rule is applied in the CRUD service against the locked stored protocol.
   // HAP-1227: a non-object payload, or one holding the read placeholder anywhere, is refused before any write.
   // The bare fixed Error carries no Joi details, so no client value is echoed or logged.
@@ -164,7 +167,7 @@ const listCredentialsQuerySchema = Joi.object({
  */
 const createCredentialSetSchema = Joi.object({
   name: Joi.string().required().min(1).max(255),
-  description: Joi.string().optional().max(1000),
+  description: descriptionSchema,
   credential_ids: Joi.array().items(Joi.string().uuid()).min(1).required(),
   strategy: Joi.string().valid('sequential', 'parallel', 'adaptive').optional().default('sequential'),
   stop_on_success: Joi.boolean().optional().default(true),
@@ -176,7 +179,7 @@ const createCredentialSetSchema = Joi.object({
  */
 const updateCredentialSetSchema = Joi.object({
   name: Joi.string().optional().min(1).max(255),
-  description: Joi.string().optional().max(1000),
+  description: descriptionSchema,
   credential_ids: Joi.array().items(Joi.string().uuid()).min(1).optional(),
   strategy: Joi.string().valid('sequential', 'parallel', 'adaptive').optional(),
   stop_on_success: Joi.boolean().optional(),

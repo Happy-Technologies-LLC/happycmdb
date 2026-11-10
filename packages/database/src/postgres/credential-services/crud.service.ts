@@ -395,7 +395,7 @@ export class CredentialCRUDService {
 
       if (input.description !== undefined) {
         updates.push(`description = $${paramIndex++}`);
-        params.push(input.description);
+        params.push(input.description.trim() || null);
       }
 
       if (input.credentials !== undefined) {

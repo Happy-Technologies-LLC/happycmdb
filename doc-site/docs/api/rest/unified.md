@@ -405,6 +405,8 @@ Test if a credential is valid by attempting to use it.
 
 **Endpoint**: `POST /api/v1/credentials/:id/validate`
 
+**Permission**: `write`. It records `validation_status` and `last_validated_at`; a `viewer` gets `403` before any lookup.
+
 **Example Request**:
 ```bash
 curl -X POST "http://localhost:3000/api/v1/credentials/550e8400-e29b-41d4-a716-446655440000/validate" \
@@ -594,6 +596,8 @@ Credential sets allow trying multiple credentials in sequence with configurable 
 Select credentials from a set using the configured strategy and context.
 
 **Endpoint**: `POST /api/v1/credential-sets/:id/select`
+
+**Permission**: `write`. It reads the set's member secrets server-side; a `viewer` gets `403` before any lookup.
 
 **Request Body**:
 ```json

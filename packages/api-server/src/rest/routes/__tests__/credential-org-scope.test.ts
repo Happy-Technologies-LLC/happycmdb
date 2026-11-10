@@ -199,6 +199,37 @@ it('requires authentication, an organization and write permission before credent
   expect((await sql('SELECT name FROM credentials WHERE id = $1', [aId]))[0].name).toBe('A-private');
 });
 
+it('HAP-514: a viewer owner cannot validate a credential or select a set before any SQL; with write permission the owner can', async () => {
+  const viewer = identities.viewer;
+  viewer._role = 'operator';
+  const credId: string = (await request(app).post('/api/v1/credentials').set(as('viewer')).send(credential('V-private'))).body.data.id;
+  const setId: string = (await request(app).post('/api/v1/credential-sets').set(as('viewer'))
+    .send({ name: 'V-set', credential_ids: [credId] })).body.data.id;
+  const callAs = async (role: 'operator' | 'viewer') => {
+    viewer._role = role;
+    const validate = await request(app).post(`/api/v1/credentials/${credId}/validate`).set(as('viewer')).send({});
+    const select = await request(app).post(`/api/v1/credential-sets/${setId}/select`).set(as('viewer')).send({});
+    return { validate, select };
+  };
+  const stamp = () => sql('SELECT validation_status, last_validated_at FROM credentials WHERE id = $1', [credId]);
+  try {
+    const beforeSql = serial;
+    const refused = await callAs('viewer');
+    const denied = { _error: 'Forbidden', _message: "Permission 'write' required" };
+    expect([refused.validate.status, refused.validate.body, refused.select.status, refused.select.body]).toEqual([403, denied, 403, denied]);
+    expect(serial).toBe(beforeSql);
+    expect(await stamp()).toEqual([{ validation_status: null, last_validated_at: null }]);
+    const allowed = await callAs('operator');
+    expect([allowed.validate.status, allowed.validate.body.data.valid, allowed.select.status]).toEqual([200, true, 200]);
+    expect(allowed.select.body.data.map((c: { id: string; credentials: string }) => [c.id, c.credentials])).toEqual([[credId, '***REDACTED***']]);
+    expect((await stamp())[0].validation_status).toBe('valid');
+  } finally {
+    viewer._role = 'viewer';
+    await sql('DELETE FROM credential_sets WHERE id = $1', [setId]);
+    await sql('DELETE FROM credentials WHERE id = $1', [credId]);
+  }
+});
+
 it('scopes credential sets and their member IDs to the verified owner/org', async () => {
   const newB = await request(app).post('/api/v1/credentials').set(as('b')).send(credential('B-set-private'));
   expect(newB.status).toBe(201);

@@ -265,6 +265,7 @@ unifiedCredentialRoutes.delete(
  */
 unifiedCredentialRoutes.post(
   '/credentials/:id/validate',
+  authMiddleware.requirePermission('write'),
   credentialController.validate.bind(credentialController)
 );
 
@@ -322,6 +323,7 @@ unifiedCredentialRoutes.delete(
  */
 unifiedCredentialRoutes.post(
   '/credential-sets/:id/select',
+  authMiddleware.requirePermission('write'),
   validateRequest(selectCredentialsSchema, 'body'),
   credentialSetController.select.bind(credentialSetController)
 );

@@ -230,6 +230,68 @@ it('HAP-514: a viewer owner cannot validate a credential or select a set before 
   }
 });
 
+// One row per route registered in unified-credential.routes.ts. `write` routes sit behind requirePermission('write');
+// `oauth` routes refuse every authenticated caller; `read` routes are open to a viewer owner.
+type Verb = 'get' | 'post' | 'put' | 'delete';
+const routeTable: { verb: Verb; path: string; kind: 'read' | 'write' | 'oauth' }[] = [
+  { verb: 'post', path: '/credentials/:id/oauth/authorize', kind: 'oauth' },
+  { verb: 'get', path: '/credentials/oauth/callback', kind: 'oauth' },
+  { verb: 'post', path: '/credentials/match', kind: 'read' },
+  { verb: 'post', path: '/credentials/rank', kind: 'read' },
+  { verb: 'get', path: '/credentials', kind: 'read' },
+  { verb: 'post', path: '/credentials', kind: 'write' },
+  { verb: 'get', path: '/credentials/:id', kind: 'read' },
+  { verb: 'put', path: '/credentials/:id', kind: 'write' },
+  { verb: 'delete', path: '/credentials/:id', kind: 'write' },
+  { verb: 'post', path: '/credentials/:id/validate', kind: 'write' },
+  { verb: 'get', path: '/credential-sets', kind: 'read' },
+  { verb: 'post', path: '/credential-sets', kind: 'write' },
+  { verb: 'get', path: '/credential-sets/:id', kind: 'read' },
+  { verb: 'put', path: '/credential-sets/:id', kind: 'write' },
+  { verb: 'delete', path: '/credential-sets/:id', kind: 'write' },
+  { verb: 'post', path: '/credential-sets/:id/select', kind: 'write' },
+];
+
+it('per-route wiring table covers every route registered on the credential router', () => {
+  const registered = (unifiedCredentialRoutes.stack as { route?: { path: string; methods: Record<string, boolean> } }[])
+    .flatMap(layer => (layer.route ? Object.keys(layer.route.methods).map(m => `${m.toUpperCase()} ${layer.route!.path}`) : []));
+  expect(routeTable.map(r => `${r.verb.toUpperCase()} ${r.path}`).sort()).toEqual([...registered].sort());
+});
+
+it('every credential route returns 401 anonymously; a viewer owner gets 403 on every write route and still reads; none runs SQL when refused', async () => {
+  const viewer = identities.viewer;
+  viewer._role = 'operator';
+  const credId: string = (await request(app).post('/api/v1/credentials').set(as('viewer')).send(credential('W-private'))).body.data.id;
+  const setId: string = (await request(app).post('/api/v1/credential-sets').set(as('viewer'))
+    .send({ name: 'W-set', credential_ids: [credId] })).body.data.id;
+  viewer._role = 'viewer';
+  const url = (path: string) => `/api/v1${path.replace('/credentials/:id', `/credentials/${credId}`).replace('/credential-sets/:id', `/credential-sets/${setId}`)}`;
+  const call = (row: (typeof routeTable)[number], headers: Record<string, string>) => request(app)[row.verb](url(row.path)).set(headers).send({});
+  try {
+    for (const row of routeTable) {
+      const label = `${row.verb.toUpperCase()} ${row.path}`;
+      const beforeAnon = serial;
+      const anon = await call(row, {});
+      expect([label, anon.status, serial]).toEqual([label, 401, beforeAnon]);
+      const before = serial;
+      const asViewer = await call(row, as('viewer'));
+      if (row.kind === 'write') {
+        expect([label, asViewer.status, asViewer.body, serial]).toEqual([label, 403, { _error: 'Forbidden', _message: "Permission 'write' required" }, before]);
+      } else if (row.kind === 'oauth') {
+        expect([label, asViewer.status, asViewer.body.message, serial]).toEqual([label, 403, 'Credential OAuth is unavailable', before]);
+      } else {
+        expect([label, asViewer.status]).toEqual([label, 200]);
+      }
+    }
+    expect((await sql('SELECT count(*)::int AS n FROM credentials WHERE id = $1', [credId]))[0].n).toBe(1);
+    expect((await sql('SELECT count(*)::int AS n FROM credential_sets WHERE id = $1', [setId]))[0].n).toBe(1);
+  } finally {
+    viewer._role = 'viewer';
+    await sql('DELETE FROM credential_sets WHERE id = $1', [setId]);
+    await sql('DELETE FROM credentials WHERE id = $1', [credId]);
+  }
+});
+
 it('scopes credential sets and their member IDs to the verified owner/org', async () => {
   const newB = await request(app).post('/api/v1/credentials').set(as('b')).send(credential('B-set-private'));
   expect(newB.status).toBe(201);

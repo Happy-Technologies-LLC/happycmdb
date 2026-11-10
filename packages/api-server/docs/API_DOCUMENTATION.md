@@ -164,7 +164,7 @@ The API implements rate limiting to ensure fair usage and system stability.
 
 ### Rate Limit Headers
 
-Only the auth rate limiter sends `X-RateLimit-*` headers: `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh` and `PUT /api/v1/auth/password`, on allowed and on `429` responses (`auth.controller.ts:88,102,188`; `rate-limit.middleware.ts:248-250`). No other route sends them, and the `429` responses from the analysis, impact and GraphQL concurrency gates carry none.
+Only the auth rate limiter sends `X-RateLimit-*` headers: `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh` and `PUT /api/v1/auth/password`, on allowed and on `429` responses (routes registered in `AuthController`, limited through `RateLimitMiddleware.limit` and `RateLimitMiddleware.custom`; headers set by `RateLimitMiddleware.setRateLimitHeaders`). No other route sends them, and the `429` responses from the analysis, impact and GraphQL concurrency gates carry none.
 
 ```http
 X-RateLimit-Limit: 1000
@@ -188,13 +188,13 @@ X-RateLimit-Reset: 1640995200000
 
 `_retryAfter` is in seconds; `_resetAt` is the same instant as `X-RateLimit-Reset`, as an ISO 8601 string.
 
-This flat body is sent only by the auth rate limiter (`rate-limit.middleware.ts:170-176`, `:381-387`). Other `429` responses use a different body and no `X-RateLimit-*` headers:
+This flat body is sent only by the auth rate limiter (`RateLimitMiddleware.custom` and `RateLimitMiddleware.admit`, the latter behind `RateLimitMiddleware.limit`). Other `429` responses use a different body and no `X-RateLimit-*` headers:
 
 | Source | Body | Headers |
 |--------|------|---------|
-| Analysis gates (`analysis-admission.ts:147`) | `{ "success": false, "error": "<Scope> analysis rate limit exceeded" }` | none |
-| Impact dependency graph (`drift-impact.routes.ts:160`) | `{ "success": false, "error": "Impact analysis rate limit exceeded" }` | none |
-| GraphQL concurrency gate (`analysis-admission.ts:93`) | `{ "errors": [{ "message": "GraphQL concurrent request limit exceeded", "extensions": { "code": "TOO_MANY_REQUESTS" } }] }` | none |
+| Analysis gates (`executeBoundedAnalysis`) | `{ "success": false, "error": "<Scope> analysis rate limit exceeded" }` | none |
+| Impact dependency graph (`GET /impact/graph/:rootCiId`, `orgReadGate`) | `{ "success": false, "error": "Impact analysis rate limit exceeded" }` | none |
+| GraphQL concurrency gate (`admitGraphQLRequest`) | `{ "errors": [{ "message": "GraphQL concurrent request limit exceeded", "extensions": { "code": "TOO_MANY_REQUESTS" } }] }` | none |
 
 **HTTP Status Code:** `429 Too Many Requests`
 
@@ -208,6 +208,8 @@ This flat body is sent only by the auth rate limiter (`rate-limit.middleware.ts:
 **Example with retry logic:**
 
 ```javascript
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 // Delay before retrying a 429, in milliseconds. Order of preference:
 //   1. body `_retryAfter`, in seconds (auth rate limiter only)
 //   2. `X-RateLimit-Reset` header, Unix epoch milliseconds (auth rate limiter only)

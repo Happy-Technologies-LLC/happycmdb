@@ -99,7 +99,7 @@ api-server/src/
 - Request validation with Joi
 - Centralized error handling
 - Rate limiting
-- CORS configuration
+- Default `cors()` (all origins, no credentials)
 - Swagger/OpenAPI documentation
 
 **REST API Endpoints**:

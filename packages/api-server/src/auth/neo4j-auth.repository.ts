@@ -21,7 +21,7 @@ import neo4j from 'neo4j-driver';
 import type {
   AuthRepository, CredentialEventInput, GuardedPasswordWrite, GuardedUserWrite, UserProfileUpdate,
 } from './auth.service';
-import { AmbiguousUserIdentityError, type ApiKey, type User } from './types';
+import { AmbiguousUserIdentityError, UserNotFoundError, type ApiKey, type User } from './types';
 import { LOCK_USER } from './user-lock';
 
 /**
@@ -229,11 +229,11 @@ export class Neo4jAuthRepository implements AuthRepository {
         throw new AmbiguousUserIdentityError();
       }
       if (matched === 0) {
-        throw new Error('User not found');
+        throw new UserNotFoundError();
       }
       return this.mapUserNode(result.records[0]!.get('u'));
     } catch (error) {
-      if (error instanceof AmbiguousUserIdentityError) {
+      if (error instanceof AmbiguousUserIdentityError || error instanceof UserNotFoundError) {
         throw error;
       }
       throw new Error(`Failed to update user: ${error instanceof Error ? error.message : 'Unknown error'}`);

@@ -22,6 +22,7 @@ import {
   TokenPayload,
   ROLE_PERMISSIONS,
   AmbiguousUserIdentityError,
+  UserNotFoundError,
 } from './types';
 
 export interface UserProfileUpdate {
@@ -511,7 +512,7 @@ export class AuthService {
   ): Promise<Omit<User, '_passwordHash'>> {
     const user = await this.repository.findUserById(userId);
     if (!user) {
-      throw new Error('User not found');
+      throw new UserNotFoundError();
     }
 
     const updated = await this.repository.updateUser(userId, updates);

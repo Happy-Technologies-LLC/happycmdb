@@ -123,6 +123,19 @@ export class AmbiguousUserIdentityError extends Error {
   }
 }
 
+/**
+ * No :User node matches the identifier (HAP-1767). Thrown by the repository
+ * write when the node vanished between the read and the write; the controller
+ * maps it to 404 by `instanceof`. The message stays the historical text so
+ * message-based callers of the other account routes are unaffected.
+ */
+export class UserNotFoundError extends Error {
+  constructor() {
+    super('User not found');
+    this.name = 'UserNotFoundError';
+  }
+}
+
 export interface LoginRequest {
   username: string;
   password: string;

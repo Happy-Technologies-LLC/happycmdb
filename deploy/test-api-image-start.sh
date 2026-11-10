@@ -24,15 +24,18 @@ cid=$(docker run -d --network none \
   "$image")
 trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
 
+# Capture logs into a variable: with pipefail, `docker logs | grep -q` / `| head` can fail on SIGPIPE.
 started=no
+logs=
 for _ in $(seq 1 60); do
-  if docker logs "$cid" 2>&1 | grep -q "$marker"; then started=yes; break; fi
+  logs=$(docker logs "$cid" 2>&1 || true)
+  if grep -q "$marker" <<<"$logs"; then started=yes; break; fi
   [ "$(docker inspect -f '{{.State.Running}}' "$cid")" = true ] || break
   sleep 1
 done
-docker logs "$cid" 2>&1 | cut -c1-240 | head -60
+printf '%s\n' "$logs" | cut -c1-240 | head -40 || true
 [ "$started" = yes ] || { echo "FAIL: '$marker' never logged" >&2; exit 1; }
-if docker logs "$cid" 2>&1 | grep -q "Cannot find module"; then
+if grep -q "Cannot find module" <<<"$logs"; then
   echo "FAIL: a module is missing from the production image" >&2; exit 1
 fi
 

@@ -141,6 +141,13 @@ it('(c) both downs refuse while 035 objects exist, then the 035 down unblocks th
   await expectRefusal(DOWN_012, /035 objects still exist/);
   await exec('CREATE UNIQUE INDEX idx_itil_baselines_legacy_name ON itil_baselines(name) WHERE organization_id IS NULL');
 
+  // Only the index remains: still refused. Without this, a down that checked only the
+  // constraint would pass here and DROP COLUMN would silently drop the 035 index.
+  await exec('ALTER TABLE itil_baselines DROP CONSTRAINT itil_baselines_organization_write_guard');
+  await expectRefusal(DOWN_013, /035 objects still exist.*rollback\/035/);
+  await expectRefusal(DOWN_012, /035 objects still exist.*rollback\/035/);
+  await exec('ALTER TABLE itil_baselines ADD CONSTRAINT itil_baselines_organization_write_guard CHECK (organization_id IS NOT NULL) NOT VALID');
+
   await exec(DOWN_035); // no owned ITIL rows yet
   const names = (await schema()).indexes.map(i => i.indexname);
   expect(names).not.toContain('idx_itil_baselines_legacy_name');

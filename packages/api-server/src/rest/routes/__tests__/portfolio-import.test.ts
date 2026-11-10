@@ -35,10 +35,16 @@ host.on('message', ({ id, rows, rowCount, error, code }: { id: number; rows: Rec
 });
 /**
  * `mapFault`: the source id whose first map-row insert fails (a crash after its record was written). `preLink`: the next
- * service-CI mapping insert is run twice, as if another writer linked the pair first.
+ * service-CI mapping insert is run twice, as if another writer linked the pair first. `beforeApply`: run once, after
+ * the next apply planned and before it writes anything (another writer's commit between plan and apply).
  */
-const mockFault = { mapFault: null as string | null, preLink: false };
+const mockFault = { mapFault: null as string | null, preLink: false, beforeApply: null as (() => Promise<unknown>) | null };
 function mockSql(text: string, params: unknown[] = [], op: 'query' | 'exec' = 'query'): Promise<{ rows: Record<string, any>[]; rowCount: number }> {
+  if (mockFault.beforeApply && text.includes('INSERT INTO portfolio_imports (')) {
+    const run = mockFault.beforeApply;
+    mockFault.beforeApply = null;
+    return run().then(() => mockSql(text, params, op));
+  }
   if (mockFault.mapFault && text.includes('INSERT INTO portfolio_import_map') && params[3] === mockFault.mapFault) {
     mockFault.mapFault = null;
     return Promise.reject(Object.assign(new Error('connection lost'), { code: '08006' }));
@@ -366,6 +372,54 @@ it('A4: an apply interrupted after a CI was created resumes on re-run: every rec
   expect([res.status, res.body.mapping.find((entry: { source_id: string }) => entry.source_id === CI(2))])
     .toEqual([201, { kind: 'ci', source_id: CI(2), target_id: importedCIId(A, CI(2)), action: 'match' }]);
   expect(await state(A)).toEqual({ ...APPLIED, imports: 2 });
+});
+
+/** A tenant-A export of only services named "Billing Portal" (the seeded service's name), one per source id. */
+const billingFile = (...sourceIds: string[]) => [FILE.split('\n')[0]!.replace(/"row_counts":\{[^}]*\}/,
+  `"row_counts":{"service":${sourceIds.length},"ci":0,"relationship":0,"service_ci":0}`),
+...sourceIds.map(id => `{"kind":"service","source_id":"${id}","name":"Billing Portal","status":"active"}`)].join('\n') + '\n';
+/** Every name-match bind's audit row (BUSINESS_SERVICE UPDATE), in chain order. */
+const bindAudits = async () => (await rows(`SELECT entity_id, changes FROM audit_log WHERE entity_type = 'BUSINESS_SERVICE'
+  AND action = 'UPDATE' AND metadata->>'match' = 'name_match' ORDER BY timestamp, id`))
+  .map(row => [row['entity_id'], row['changes'][0].old_value, row['changes'][0].new_value]);
+const serviceMap = (column: 'source_id' | 'target_id', id: string) => rows(`SELECT source_id, target_id FROM portfolio_import_map
+  WHERE kind = 'service' AND ${column} = $1 ORDER BY source_id`, [id]);
+
+it('HAP-1652: a name-matched service deleted between plan and bind is 409 target_missing; its bind writes no map or audit row', async () => {
+  mockFault.beforeApply = () => asTableOwner(db, () => db(`DELETE FROM dim_business_services WHERE service_id = '${SEEDED}'`));
+  const res = await post('migrator', '?mode=apply', FILE);
+  expect([res.status, res.body]).toEqual([409, { success: false, error: 'Conflict', code: 'target_missing' }]);
+  // The three services created before the bind stay, each with its map row and CREATE audit rows.
+  expect([await serviceMap('source_id', SERVICE(3)), await bindAudits(), await state(A)])
+    .toEqual([[], [], { ...NOTHING, services: 3, offerings: 3, imports: 1, map: 3, audit: 6 }]);
+});
+
+it('HAP-1652: a fault mid-bind (its map-row insert) rolls the bind back: no map or audit row; a re-run binds once', async () => {
+  mockFault.mapFault = SERVICE(3);
+  expect((await post('migrator', '?mode=apply', FILE)).status).toBe(500);
+  expect([await serviceMap('target_id', SEEDED), await bindAudits()]).toEqual([[], []]);
+  expect(await state(A)).toMatchObject({ services: 4, map: 3, audit: 6 });
+  expect((await post('migrator', '?mode=apply', FILE)).status).toBe(201);
+  expect([await serviceMap('target_id', SEEDED), await bindAudits(), await state(A)]).toEqual([
+    [{ source_id: SERVICE(3), target_id: SEEDED }], [[SEEDED, null, SERVICE(3)]], { ...APPLIED, imports: 2 }]);
+});
+
+it('HAP-1652: a service another import bound to a different source id after this run planned is 409 concurrent_import; one bind, one audit row', async () => {
+  // The tenant's Unassigned legacy service first, so neither run below creates it.
+  expect((await post('migrator', '?mode=apply', billingFile())).status).toBe(201);
+  const plan = await post('migrator', '?mode=dry_run', billingFile(SERVICE(3)));
+  expect(plan.body.mapping[1]).toEqual({ kind: 'service', source_id: SERVICE(3), target_id: SEEDED, action: 'match', reason: 'name_match' });
+  let rival: request.Response | undefined;
+  mockFault.beforeApply = async () => { rival = await post('migrator', '?mode=apply', billingFile(SERVICE(8))); };
+  const res = await post('migrator', '?mode=apply', billingFile(SERVICE(3)));
+  expect([rival?.status, rival?.body.mapping[1], res.status, res.body]).toEqual([
+    201, { kind: 'service', source_id: SERVICE(8), target_id: SEEDED, action: 'match', reason: 'name_match' },
+    409, { success: false, error: 'Conflict', code: 'concurrent_import' }]);
+  expect([await serviceMap('target_id', SEEDED), await bindAudits()])
+    .toEqual([[{ source_id: SERVICE(8), target_id: SEEDED }], [[SEEDED, null, SERVICE(8)]]]);
+  // A re-run resumes: the bound service is no longer a name candidate for SERVICE(3), which is created instead.
+  const again = await post('migrator', '?mode=apply', billingFile(SERVICE(3)));
+  expect([again.status, again.body.mapping[1].action, await bindAudits()]).toEqual([201, 'create', [[SEEDED, null, SERVICE(8)]]]);
 });
 
 it('A5: a line with a credential-like or blob key is rejected by line number; its values reach no response, log, audit row or record', async () => {

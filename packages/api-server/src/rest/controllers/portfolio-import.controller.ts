@@ -55,6 +55,8 @@ interface Planned { record: ImportRecord; entry: MappingEntry; pending?: string;
 type Endpoint = { usable: false } | { usable: true; id: string | null; line?: Planned };
 
 class ImportTargetMissingError extends Error {}
+/** HAP-1652: another import bound the name-matched service to a different source record after this run planned. */
+class ImportTargetClaimedError extends Error {}
 
 const MODES = ['dry_run', 'apply'];
 const bad = (res: Response, status: number, code: string, extra: Record<string, unknown> = {}): void => {
@@ -377,6 +379,11 @@ export class PortfolioImportController {
    * HAP-1625: a name match binds the file's service to a tenant service it did not create. One transaction: the
    * service row locked FOR UPDATE (gone: ImportTargetMissingError), the map row, and, when this run wrote the map row,
    * its BUSINESS_SERVICE UPDATE audit row (import_source_id null -> the HappyHive source id).
+   *
+   * HAP-1652: under that lock, the planner's NOT EXISTS again (same tenant scope): a map row binding the service to any
+   * other source id is ImportTargetClaimedError. Every bind of an existing service takes this row's lock before its map
+   * insert and keeps it to COMMIT, so under READ COMMITTED a second binder waits here and its re-check, a new
+   * statement snapshot, sees the first binder's committed map row.
    */
   private async bindService(req: Request, organizationId: string, sourceId: string, serviceId: string, importId: string,
     writeMap: (client: PoolClient) => Promise<{ rowCount: number | null }>): Promise<void> {
@@ -390,6 +397,13 @@ export class PortfolioImportController {
           [serviceId, organizationId])).rows[0];
         if (service === undefined) {
           throw new ImportTargetMissingError();
+        }
+        const claimed = await client.query(
+          `SELECT 1 FROM portfolio_import_map WHERE organization_id = $1 AND kind = 'service' AND target_id = $2
+             AND source_id <> $3`,
+          [organizationId, serviceId, sourceId]);
+        if (claimed.rows.length > 0) {
+          throw new ImportTargetClaimedError();
         }
         if (((await writeMap(client)).rowCount ?? 0) > 0) {
           await appendPortfolioAudit(client, req, organizationId, { type: 'BUSINESS_SERVICE', id: serviceId }, 'UPDATE',
@@ -456,7 +470,7 @@ export class PortfolioImportController {
       res.status(409).json(CI_GAP_RESPONSE);
     } else if (error instanceof ImportTargetMissingError) {
       res.status(409).json({ success: false, error: 'Conflict', code: 'target_missing' });
-    } else if (code === '23505') {
+    } else if (error instanceof ImportTargetClaimedError || code === '23505') {
       res.status(409).json({ success: false, error: 'Conflict', code: 'concurrent_import' });
     } else if (error instanceof JournalUnavailableError || code === '55P03') {
       res.status(503).json(WRITE_UNAVAILABLE);

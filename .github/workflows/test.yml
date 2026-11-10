@@ -714,6 +714,18 @@ jobs:
           echo "$out" | grep -qF 'FAIL: session request 4 (GET /api/v1/auth/me): got 429, want 200' \
             || { echo "mutation failed for the wrong reason" >&2; exit 1; }
 
+      - name: Mutation, the behavioral check must fail when auth_limit is loosened from 5r/m to 10r/m (HAP-1836)
+        run: |
+          set -euo pipefail
+          sed -E 's/(zone=auth_limit:10m rate=)5r\/m/\110r\/m/' infrastructure/docker/nginx.conf > "$RUNNER_TEMP/loose-auth.conf"
+          grep -q 'zone=auth_limit:10m rate=10r/m' "$RUNNER_TEMP/loose-auth.conf" || { echo "sed did not loosen auth_limit" >&2; exit 1; }
+          rc=0
+          out=$(bash infrastructure/docker/test-nginx-auth-limits.sh "$RUNNER_TEMP/loose-auth.conf" 2>&1) || rc=$?
+          printf '%s\n' "$out"
+          [ "$rc" -eq 1 ] || { echo "want exit 1 (assertion failed), got $rc" >&2; exit 1; }
+          echo "$out" | grep -qF 'FAIL: login 9 s after the burst' \
+            || { echo "mutation failed for the wrong reason" >&2; exit 1; }
+
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest

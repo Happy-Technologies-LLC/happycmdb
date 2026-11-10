@@ -1,6 +1,6 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
-/** HAP-1800: POST /credentials/:id/validate never echoes decrypt or PostgreSQL driver error text; the detail stays in the server log. */
+/** HAP-1800: POST /credentials/:id/validate never echoes decrypt or PostgreSQL driver error text; the server log keeps the error class/code, never decrypted plaintext. */
 import { fork } from 'child_process';
 import { randomBytes } from 'crypto';
 import { readFileSync } from 'fs';
@@ -78,7 +78,8 @@ it('(a) a stored envelope that cannot decrypt returns the generic message; the i
   const res = await validate(id);
   const logged = logs();
   expect(generic(res)).toEqual([200, false, GENERIC]);
-  expect(logged).toContain(`Failed to decrypt credential ${id}`);
+  // HAP-1382: the validate catch logs the class only; the decrypt rethrow carries no inner message either.
+  expect(logged).toContain('"error":{"errorClass":"Error"}');
   const body = JSON.stringify(res.body);
   expect([body.includes(id), body.toLowerCase().includes('decrypt'), body.includes(MARK)]).toEqual([false, false, false]);
   expect(logged.includes(MARK)).toBe(false);
@@ -102,9 +103,12 @@ it('(c) a driver failure on the credential fetch returns the generic message wit
   const id = '44444444-4444-4444-8444-444444444444';
   await insert(id, getEncryptionService().encrypt(JSON.stringify({ username: 'svc', password: MARK })));
   failOn = /^\s*SELECT \* FROM credentials/;
+  const logs = capture();
   const res = await validate(id);
+  const logged = logs();
   expect(generic(res)).toEqual([200, false, GENERIC]);
   expect(JSON.stringify(res.body).includes(DRIVER)).toBe(false);
+  expect([logged.includes('42P01'), logged.includes(DRIVER)]).toEqual([true, false]);
 });
 
 it('(d) a stored payload that makes the structure check throw returns a fixed message, not the TypeError text', async () => {
@@ -123,4 +127,17 @@ it('(e) deliberate fixed validation messages are unchanged', async () => {
   const id = '66666666-6666-4666-8666-666666666666';
   await insert(id, getEncryptionService().encrypt(JSON.stringify({ username: 'svc', password: MARK, port: 70000 })));
   expect(generic(await validate(id))).toEqual([200, false, 'Invalid SSH port']);
+});
+
+it('(f) an authentic envelope whose plaintext is not JSON never reaches the body or any serialized log', async () => {
+  const id = '77777777-7777-4777-8777-777777777777';
+  // Short enough that V8 quotes all of it: `Unexpected token 'h', "h…" is not valid JSON`.
+  const plain = `h${randomBytes(8).toString('hex')}`;
+  await insert(id, getEncryptionService().encrypt(plain));
+  const logs = capture();
+  const res = await validate(id);
+  const logged = logs();
+  expect(generic(res)).toEqual([200, false, GENERIC]);
+  expect([JSON.stringify(res.body).includes(plain), logged.includes(plain)]).toEqual([false, false]);
+  expect(logged).toContain('"error":{"errorClass":"Error"}');
 });

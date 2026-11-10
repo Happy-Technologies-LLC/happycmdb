@@ -14,16 +14,15 @@ import {
 import { logger, CredentialProtocolAdapter } from '@cmdb/common';
 
 /**
- * Loggable fields of a caught value. Error's message/stack are non-enumerable, so logging `{ error }` serializes as
- * `"error":{}` (HAP-1733). A thrown value with a string `code` is a driver error (pg SQLSTATE, Node errno): log its
- * class and code only, because a driver message can quote SQL fragments, row values or a connection target (HAP-1382).
- * Anything else (the decrypt failure, a TypeError from the structure check) logs name and message; neither carries
- * decrypted material. Never the stack, `cause` or pg's `detail`/`where`/`parameters`.
+ * Type-only loggable fields of a caught value: its class and, when it has one, its string `code` (pg SQLSTATE, errno).
+ * Never the message, stack or `cause` (HAP-1382; mirrors api-server `errorClassFields`): a driver message can quote SQL
+ * or row values, and a decrypt failure's message can quote decrypted plaintext (a JSON.parse snippet). Logging the raw
+ * `{ error }` instead serializes as `"error":{}` (HAP-1733).
  */
-function errorLogFields(error: unknown): { name?: string; message?: string; errorClass?: string; code?: string } {
+function credentialErrorLogFields(error: unknown): { errorClass: string; code?: string } {
   if (!(error instanceof Error)) return { errorClass: typeof error };
-  if ('code' in error && typeof error.code === 'string') return { errorClass: error.constructor.name, code: error.code };
-  return { name: error.name, message: error.message };
+  const code = 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+  return code === undefined ? { errorClass: error.constructor.name } : { errorClass: error.constructor.name, code };
 }
 
 export class CredentialValidationService {
@@ -53,7 +52,7 @@ export class CredentialValidationService {
 
       return validationResult;
     } catch (error) {
-      logger.error('Failed to validate credential', { error: errorLogFields(error), id });
+      logger.error('Failed to validate credential', { error: credentialErrorLogFields(error), id });
       return {
         valid: false,
         message: 'Credential validation failed',
@@ -250,7 +249,10 @@ export class CredentialValidationService {
         },
       };
     } catch (error) {
-      logger.error('Credential structure validation threw', { error: errorLogFields(error), id: credential.id });
+      // The only throw here is a property read on a null `creds` (decoded JSON or a NULL legacy column), whose V8 TypeError
+      // message names the property (`Cannot read properties of null (reading 'port')`), never a stored value.
+      const fields = error instanceof TypeError ? { name: error.name, message: error.message } : credentialErrorLogFields(error);
+      logger.error('Credential structure validation threw', { error: fields, id: credential.id });
       return {
         valid: false,
         message: 'Validation failed',

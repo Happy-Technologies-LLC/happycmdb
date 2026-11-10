@@ -186,11 +186,8 @@ export class CredentialCRUDService {
         credentialsData = this.decodeStoredCredentials(row.credentials);
       } catch (error) {
         logger.error('Failed to decrypt credential', { id, error });
-        throw new Error(
-          `Failed to decrypt credential ${id}: ${
-            error instanceof Error ? error.message : String(error)
-          }`
-        );
+        // HAP-1800: the inner class only, never its message: a JSON.parse failure quotes the decrypted plaintext.
+        throw new Error(`Failed to decrypt credential ${id} (${error instanceof Error ? error.constructor.name : typeof error})`);
       }
 
       return {

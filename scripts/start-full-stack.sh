@@ -218,7 +218,7 @@ MAX_RETRIES=30
 RETRY_COUNT=0
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-  if curl -s http://localhost:$API_PORT/api/v1/cmdb-health > /dev/null 2>&1; then
+  if curl -sf http://localhost:$API_PORT/api/v1/cmdb-health > /dev/null 2>&1; then
     echo -e "${GREEN}API server is ready!${NC}"
     break
   fi

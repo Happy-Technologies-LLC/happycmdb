@@ -678,7 +678,7 @@ DISCOVERY_WORKER_REPLICAS=5
 4. **Separate credentials by environment** - Different keys for dev/staging/prod
 5. **Enable audit logging** - Set `AUDIT_LOG_ENABLED=true` in production
 6. **Use HTTPS in production** - Configure SSL/TLS for all endpoints
-7. **CORS is not configurable** - The API uses default `cors()`, which allows any origin and sends no credentials; no environment variable configures it
+7. **CORS is not configurable** - The API uses default `cors()`, which allows any origin and never sends `Access-Control-Allow-Credentials`, so browsers will not complete credentialed cross-origin requests; no environment variable configures it
 
 ### Performance
 

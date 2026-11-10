@@ -6,7 +6,7 @@ RUN apk add --no-cache dumb-init curl
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
+    adduser -S -G nodejs -u 1001 nodejs
 
 # Set working directory
 WORKDIR /app
@@ -18,7 +18,7 @@ COPY packages/database/package.json ./packages/database/
 COPY packages/api-server/package.json ./packages/api-server/
 
 # Install production dependencies only
-RUN npm install --workspace=packages/common --workspace=packages/database --workspace=packages/api-server --omit=dev
+RUN npm ci --workspace=packages/common --workspace=packages/database --workspace=packages/api-server --omit=dev
 
 # Copy pre-built artifacts
 COPY packages/common/dist ./packages/common/dist

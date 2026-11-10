@@ -94,7 +94,7 @@ jobs:
   web-ui-build:
     name: Web UI Build (tsc + vite)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -137,6 +137,18 @@ jobs:
         run: node web-ui/scripts/check-test-discovery.mjs
       - name: Run the whole web-ui vitest suite against the pinned design system (HAP-1687)
         run: npm run test:run --workspace=web-ui
+      - name: Build the web image from a design-system checkout that carries its own node_modules (HAP-1754)
+        run: |
+          set -euo pipefail
+          # Decoy `react` with no entry point. Dockerfile.web must replace the design system's node_modules
+          # with a link to the workspace's; if the decoy stayed, the design system's react import would
+          # resolve to it and the vite build would fail.
+          mkdir -p happy-technologies-design-system/node_modules/react
+          echo '{"name":"react","version":"0.0.0-decoy"}' > happy-technologies-design-system/node_modules/react/package.json
+          docker build -f infrastructure/docker/Dockerfile.web \
+            --build-context design-system=./happy-technologies-design-system -t web-ui-image:ci .
+      - name: The web image starts and serves the bundle (HAP-1754)
+        run: deploy/test-web-image-start.sh web-ui-image:ci
 
   integration-tests:
     name: Integration Tests
@@ -791,7 +803,7 @@ jobs:
   api-image-nmap:
     name: API image runs nmap as nodejs (HAP-1755, HAP-1759)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -803,6 +815,20 @@ jobs:
         run: docker build -f infrastructure/docker/Dockerfile.api -t api-image-nmap:ci .
       - name: Run nmap as nodejs under default caps and --cap-drop ALL
         run: deploy/test-api-image-nmap.sh api-image-nmap:ci
+      - name: The API image starts from the pruned production tree (HAP-1754)
+        run: deploy/test-api-image-start.sh api-image-nmap:ci
+      - name: The API image user is nodejs:nodejs (HAP-1754)
+        run: deploy/test-image-user.sh api-image-nmap:ci
+      - name: Build the discovery and etl images and check their user (HAP-1754)
+        run: |
+          set -euo pipefail
+          # Both images COPY host-built packages/*/dist. Empty directories satisfy the COPYs; what is under
+          # test here is `npm ci --omit=dev --workspace=...` and the user setup, not the compiled code.
+          mkdir -p packages/common/dist packages/database/dist packages/discovery-engine/dist packages/etl-processor/dist
+          docker build -f infrastructure/docker/Dockerfile.discovery -t discovery-image:ci .
+          docker build -f infrastructure/docker/Dockerfile.etl -t etl-image:ci .
+          deploy/test-image-user.sh discovery-image:ci
+          deploy/test-image-user.sh etl-image:ci
 
   test-report:
     name: Generate Test Report

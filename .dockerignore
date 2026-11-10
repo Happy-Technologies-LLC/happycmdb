@@ -5,6 +5,8 @@
 #
 # Keep out untracked host files that must never reach an image. Do NOT ignore
 # dist: Dockerfile.discovery and Dockerfile.etl COPY packages/*/dist from the host.
+# Dockerfile.api, which builds from source, deletes the host dist itself right
+# after its source COPYs.
 .git
 **/node_modules
 **/.env*

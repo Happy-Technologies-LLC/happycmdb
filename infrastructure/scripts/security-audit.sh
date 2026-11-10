@@ -346,15 +346,15 @@ check_secret_management() {
 
   # Check for .git directory in Docker images
   SECRET_TOTAL=$((SECRET_TOTAL + 1))
-  if grep -r "\.dockerignore" infrastructure/docker/ &> /dev/null; then
-    if grep -q "\.git" infrastructure/docker/.dockerignore 2>/dev/null; then
+  if [ -f .dockerignore ]; then
+    if grep -qE '^\.git/?$' .dockerignore; then
       SECRET_PASSED=$((SECRET_PASSED + 1))
       check_pass ".git directory excluded from Docker images"
     else
-      check_warning ".git not in .dockerignore (may leak secrets)"
+      check_warning ".git not in the root .dockerignore (may leak secrets)"
     fi
   else
-    check_warning ".dockerignore file not found"
+    check_warning "root .dockerignore file not found"
   fi
 }
 

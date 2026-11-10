@@ -240,8 +240,8 @@ if check_var API_KEY true 16; then
   fi
 fi
 
-# Check rate limit bypass secret
-if check_var RATE_LIMIT_BYPASS_SECRET true 16; then
+# Check rate limit bypass secret: optional (empty = bypass off); the config loader refuses one under 32 characters
+if check_var RATE_LIMIT_BYPASS_SECRET false 32; then
   if [[ "$ENVIRONMENT" != "development" ]]; then
     check_weak_secret RATE_LIMIT_BYPASS_SECRET
   fi

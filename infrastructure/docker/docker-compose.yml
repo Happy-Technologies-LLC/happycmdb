@@ -311,6 +311,38 @@ services:
       - JWT_EXPIRES_IN=7d
       - BCRYPT_ROUNDS=10
       - CREDENTIAL_ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      # HAP-1842: every RATE_LIMIT_* the config loader reads (packages/common/src/config/config.loader.ts, rateLimit block).
+      # The image has no .env (.dockerignore: **/.env*) and no config/ directory, so these are the only way to tune the
+      # limiter. Defaults equal the Joi defaults of `configSchema.rateLimit` in packages/common/src/config/config.schema.ts.
+      # Set a value in the shell that runs compose, in the .env that ./deploy.sh exports, or via --env-file, then RECREATE
+      # the container (`docker compose -f infrastructure/docker/docker-compose.yml up -d --force-recreate api-server`);
+      # `docker restart` keeps the old environment.
+      - RATE_LIMIT_ENABLED=${RATE_LIMIT_ENABLED:-true}
+      - RATE_LIMIT_BYPASS_HEADER=${RATE_LIMIT_BYPASS_HEADER:-X-Internal-Service}
+      # No schema default (optional): empty = bypass off, same as unset. ConfigurationLoader also turns the bypass off
+      # (one WARN) for a value shorter than 32 characters or a placeholder the repo shipped.
+      - RATE_LIMIT_BYPASS_SECRET=${RATE_LIMIT_BYPASS_SECRET:-}
+      - RATE_LIMIT_TIER_STANDARD_MULTIPLIER=${RATE_LIMIT_TIER_STANDARD_MULTIPLIER:-5}
+      - RATE_LIMIT_TIER_PREMIUM_MULTIPLIER=${RATE_LIMIT_TIER_PREMIUM_MULTIPLIER:-10}
+      - RATE_LIMIT_TIER_ENTERPRISE_MULTIPLIER=${RATE_LIMIT_TIER_ENTERPRISE_MULTIPLIER:-20}
+      - RATE_LIMIT_REST_MAX=${RATE_LIMIT_REST_MAX:-1000}
+      - RATE_LIMIT_REST_WINDOW_MS=${RATE_LIMIT_REST_WINDOW_MS:-3600000}
+      - RATE_LIMIT_GRAPHQL_MAX=${RATE_LIMIT_GRAPHQL_MAX:-500}
+      - RATE_LIMIT_GRAPHQL_WINDOW_MS=${RATE_LIMIT_GRAPHQL_WINDOW_MS:-3600000}
+      - RATE_LIMIT_HEALTH_MAX=${RATE_LIMIT_HEALTH_MAX:-0}
+      - RATE_LIMIT_HEALTH_WINDOW_MS=${RATE_LIMIT_HEALTH_WINDOW_MS:-60000}
+      - RATE_LIMIT_AUTH_MAX=${RATE_LIMIT_AUTH_MAX:-20}
+      - RATE_LIMIT_AUTH_WINDOW_MS=${RATE_LIMIT_AUTH_WINDOW_MS:-3600000}
+      - RATE_LIMIT_AUTH_ACCOUNT_MAX=${RATE_LIMIT_AUTH_ACCOUNT_MAX:-5}
+      - RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS=${RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS:-900000}
+      - RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_MAX=${RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_MAX:-20}
+      - RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_WINDOW_MS=${RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_WINDOW_MS:-900000}
+      - RATE_LIMIT_DISCOVERY_MAX=${RATE_LIMIT_DISCOVERY_MAX:-100}
+      - RATE_LIMIT_DISCOVERY_WINDOW_MS=${RATE_LIMIT_DISCOVERY_WINDOW_MS:-3600000}
+      - RATE_LIMIT_ADMIN_MAX=${RATE_LIMIT_ADMIN_MAX:-200}
+      - RATE_LIMIT_ADMIN_WINDOW_MS=${RATE_LIMIT_ADMIN_WINDOW_MS:-3600000}
+      - RATE_LIMIT_MONITORING_ENABLED=${RATE_LIMIT_MONITORING_ENABLED:-true}
+      - RATE_LIMIT_LOG_HITS=${RATE_LIMIT_LOG_HITS:-true}
     networks:
       - cmdb_network
     restart: unless-stopped

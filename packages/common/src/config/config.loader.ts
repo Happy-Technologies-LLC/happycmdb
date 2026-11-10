@@ -18,6 +18,30 @@ import { getLogger } from '../logging/logger';
 
 const logger = getLogger();
 
+/** HAP-1842: shortest `rateLimit.bypassSecret` the loader accepts (`openssl rand -base64 32` gives 44). */
+const MIN_BYPASS_SECRET_LENGTH = 32;
+
+/** HAP-1842: bypass secrets the repo has shipped (`.env.example`, the pre-Wave-1 compose); anyone can send them. */
+const KNOWN_BYPASS_PLACEHOLDERS: ReadonlySet<string> = new Set([
+  'your-internal-service-secret-change-this',
+  'your-internal-service-secret',
+]);
+
+/**
+ * The bypass secret `RateLimitMiddleware.checkBypass` may honour, or undefined (bypass off). Unset or empty already
+ * means off; a value shorter than MIN_BYPASS_SECRET_LENGTH or a shipped placeholder is refused with one WARN (fixed
+ * text, never the value) instead of skipping every limiter, including the login buckets, for anyone who sends it.
+ */
+function usableBypassSecret(secret: string | undefined): string | undefined {
+  if (!secret) return undefined;
+  const reason = KNOWN_BYPASS_PLACEHOLDERS.has(secret)
+    ? 'a known placeholder'
+    : secret.length < MIN_BYPASS_SECRET_LENGTH ? `shorter than ${MIN_BYPASS_SECRET_LENGTH} characters` : null;
+  if (reason === null) return secret;
+  logger.warn(`Rate limit bypass disabled: RATE_LIMIT_BYPASS_SECRET is ${reason}; set a long random value to enable it`);
+  return undefined;
+}
+
 export class ConfigurationLoader {
   private config: ConfigSchema | null = null;
   private configPath: string;
@@ -244,7 +268,7 @@ export class ConfigurationLoader {
       rateLimit: {
         enabled: env['RATE_LIMIT_ENABLED'] !== 'false' && fileConfig.rateLimit?.enabled !== false,
         bypassHeader: env['RATE_LIMIT_BYPASS_HEADER'] || fileConfig.rateLimit?.bypassHeader,
-        bypassSecret: env['RATE_LIMIT_BYPASS_SECRET'] || fileConfig.rateLimit?.bypassSecret,
+        bypassSecret: usableBypassSecret(env['RATE_LIMIT_BYPASS_SECRET'] || fileConfig.rateLimit?.bypassSecret),
         tierMultipliers: {
           standard: env['RATE_LIMIT_TIER_STANDARD_MULTIPLIER']
             ? parseInt(env['RATE_LIMIT_TIER_STANDARD_MULTIPLIER'], 10)

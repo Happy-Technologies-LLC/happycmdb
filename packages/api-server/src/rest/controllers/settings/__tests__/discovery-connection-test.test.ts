@@ -12,7 +12,8 @@
  */
 
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
-import { generateKeyPairSync } from 'crypto';
+import { createPrivateKey, generateKeyPairSync, sign } from 'crypto';
+import { logger } from '@cmdb/common';
 
 jest.mock('axios');
 
@@ -22,6 +23,31 @@ import { signAwsV4Request, testDiscoveryProviderConnection } from '../discovery-
 
 const mockedAxiosGet = axios.get as jest.Mock;
 const mockedAxiosPost = axios.post as jest.Mock;
+
+// The library error a malformed key raises, so assertions never pin OpenSSL's wording.
+function libraryError(parse: () => unknown): { name: string; message: string; code?: string } {
+  try {
+    parse();
+  } catch (error) {
+    const { name, message, code } = error as Error & { code?: string };
+    return { name, message, code };
+  }
+  throw new Error('expected the key to be rejected');
+}
+
+// HAP-1766: the response carries a fixed message; the library text reaches only the server log.
+async function expectKeyRejection(provider: 'gcp' | 'ssh', credentials: Record<string, unknown>, parse: () => unknown) {
+  const library = libraryError(parse);
+  const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+  try {
+    const result = await testDiscoveryProviderConnection(provider, credentials);
+    expect(result).toEqual({ success: false, message: `Invalid ${provider.toUpperCase()} private key` });
+    expect(JSON.stringify(result)).not.toContain(library.message);
+    expect(warn).toHaveBeenCalledWith(expect.any(String), { error: library });
+  } finally {
+    warn.mockRestore();
+  }
+}
 
 describe('signAwsV4Request', () => {
   it('matches the official AWS SigV4 "get-vanilla" test vector', () => {
@@ -280,16 +306,19 @@ describe('testDiscoveryProviderConnection', () => {
         expect.any(Object)
       );
     });
+
+    it('returns a fixed message for a private key the signer rejects, logging the library error', async () => {
+      await expectKeyRejection('gcp', {
+        credentials: JSON.stringify({ client_email: 'service-account@example.iam.gserviceaccount.com', private_key: 'not-a-real-key' }),
+      }, () => sign('RSA-SHA256', Buffer.from('x'), 'not-a-real-key'));
+      expect(mockedAxiosPost).not.toHaveBeenCalled();
+    });
   });
 
   describe('ssh', () => {
-    it('reports failure for a malformed private key', async () => {
-      const result = await testDiscoveryProviderConnection('ssh', {
-        username: 'root',
-        privateKey: 'not-a-real-key',
-      });
-      expect(result.success).toBe(false);
-      expect(result.message).toMatch(/Invalid SSH private key/);
+    it('returns a fixed message for a malformed private key, logging the library error', async () => {
+      await expectKeyRejection('ssh', { username: 'root', privateKey: 'not-a-real-key' },
+        () => createPrivateKey({ key: 'not-a-real-key', format: 'pem' }));
     });
 
     it('reports success for a well-formed private key without dialing a host', async () => {

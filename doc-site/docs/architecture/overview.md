@@ -212,8 +212,8 @@ Each component can be scaled independently:
 - **Jaeger**: Trace visualization (optional)
 
 ### Health Checks
-- **Liveness**: `/health/live` - Is the service running?
-- **Readiness**: `/health/ready` - Can the service accept traffic?
+- **Liveness**: `/api/v1/cmdb-health/alive` - Is the service running?
+- **Readiness**: `/api/v1/cmdb-health/ready` - Can the service accept traffic?
 - **Startup**: `/health/startup` - Has the service finished initialization?
 
 ## Deployment Models

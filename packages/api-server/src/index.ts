@@ -6,7 +6,6 @@ export { RestAPIServer } from './rest/server';
 export { ciRoutes } from './rest/routes/ci.routes';
 export { discoveryRoutes } from './rest/routes/discovery.routes';
 export { relationshipRoutes } from './rest/routes/relationship.routes';
-export { healthRoutes } from './rest/routes/health.routes';
 export { reconciliationRoutes } from './rest/routes/reconciliation.routes';
 export { CIController } from './rest/controllers/ci.controller';
 export { ReconciliationController } from './rest/controllers/reconciliation.controller';

@@ -21,6 +21,9 @@
  */
 
 import { createHash, createHmac, createPrivateKey, sign as cryptoSign } from 'crypto';
+import { types } from 'util';
+
+import { logger } from '@cmdb/common';
 import axios from 'axios';
 
 const CANONICAL_GCP_TOKEN_URI = 'https://oauth2.googleapis.com/token';
@@ -107,6 +110,16 @@ function hmacSha256(key: Buffer | string, data: string): Buffer {
 function base64Url(input: Buffer | string): string {
   const buffer = typeof input === 'string' ? Buffer.from(input, 'utf8') : input;
   return buffer.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// The crypto library's text goes to the server log only; the caller gets a fixed message.
+// isNativeError, not instanceof: Node-internal errors fail `instanceof Error` inside a vm context such as Jest's.
+function invalidPrivateKey(provider: 'GCP' | 'SSH', error: unknown): ConnectionTestResult {
+  const fields = types.isNativeError(error)
+    ? { name: error.name, message: error.message, code: (error as NodeJS.ErrnoException).code }
+    : { message: String(error) };
+  logger.warn(`Discovery connection test rejected an invalid ${provider} private key`, { error: fields });
+  return { success: false, message: `Invalid ${provider} private key` };
 }
 
 /**
@@ -311,10 +324,7 @@ async function testGcpConnection(credentials: Record<string, unknown>): Promise<
   try {
     signature = base64Url(cryptoSign('RSA-SHA256', Buffer.from(unsigned), privateKey));
   } catch (error) {
-    return {
-      success: false,
-      message: `Invalid GCP private key: ${error instanceof Error ? error.message : 'unable to sign JWT'}`,
-    };
+    return invalidPrivateKey('GCP', error);
   }
 
   const assertion = `${unsigned}.${signature}`;
@@ -362,10 +372,7 @@ async function testSshConnection(credentials: Record<string, unknown>): Promise<
   try {
     createPrivateKey({ key: privateKeyPem, format: 'pem' });
   } catch (error) {
-    return {
-      success: false,
-      message: `Invalid SSH private key: ${error instanceof Error ? error.message : 'unable to parse key'}`,
-    };
+    return invalidPrivateKey('SSH', error);
   }
 
   return {

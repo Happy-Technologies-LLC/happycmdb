@@ -81,7 +81,7 @@ API requests are rate-limited to prevent abuse:
 - **Authenticated requests**: 1000 requests per hour
 - **Unauthenticated requests**: 100 requests per hour
 
-Only the auth endpoints (`POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `PUT /api/v1/auth/password`) send rate limit headers; other routes send none, and their `429` responses carry none either:
+Only the auth endpoints (`POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `PUT /api/v1/auth/password`) send rate limit headers, on allowed and on their own `429` responses. The headers are absent when `rateLimit.enabled` is `false`, when the request carries the bypass header (`rateLimit.bypassHeader`) with the value of `rateLimit.bypassSecret`, when the endpoint's `max` is `0` (`rateLimit.endpoints.auth.max` for login and password; `rateLimit.endpoints.rest.max` for refresh, which is then not mounted), and when the limiter store errors (refresh fails open and sets none; the fail-closed `503` of login and password carries none). Other routes send none, and their `429` responses (including nginx's) carry none either:
 ```
 X-RateLimit-Limit: 1000
 X-RateLimit-Remaining: 999

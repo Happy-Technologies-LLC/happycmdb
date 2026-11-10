@@ -306,6 +306,14 @@ export class ConfigurationLoader {
               ? parseInt(env['RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS'], 10)
               : fileConfig.rateLimit?.endpoints?.authAccount?.windowMs,
           },
+          authAccountGlobal: {
+            max: env['RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_MAX']
+              ? parseInt(env['RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_MAX'], 10)
+              : fileConfig.rateLimit?.endpoints?.authAccountGlobal?.max,
+            windowMs: env['RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_WINDOW_MS']
+              ? parseInt(env['RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_WINDOW_MS'], 10)
+              : fileConfig.rateLimit?.endpoints?.authAccountGlobal?.windowMs,
+          },
           discovery: {
             max: env['RATE_LIMIT_DISCOVERY_MAX']
               ? parseInt(env['RATE_LIMIT_DISCOVERY_MAX'], 10)

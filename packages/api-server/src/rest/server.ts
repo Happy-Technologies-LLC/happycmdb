@@ -40,6 +40,7 @@ import { RateLimitMiddleware } from '../middleware/rate-limit.middleware';
 import { getRedisClient } from '@cmdb/database';
 import { loadConfig } from '@cmdb/common';
 import { applyTrustProxy } from './trust-proxy';
+import { errorClassFields } from '../utils/log-error';
 import { getAuthMiddleware } from '../auth/auth-bootstrap';
 
 /**
@@ -100,7 +101,8 @@ export class RestAPIServer {
     try {
       trustProxy = loadConfig().server.trustProxy;
     } catch (err) {
-      logger.warn('TRUST_PROXY not read; trusting no proxy', { error: (err as Error).message });
+      // Type only (HAP-1764): a Joi message can quote the offending env value, a secret included.
+      logger.warn('TRUST_PROXY not read; trusting no proxy', errorClassFields(err));
     }
     applyTrustProxy(this.app, trustProxy);
 

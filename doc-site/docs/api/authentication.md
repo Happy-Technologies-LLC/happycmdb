@@ -465,11 +465,16 @@ All authentication endpoints are rate-limited to prevent abuse.
 
 | Endpoint | Limit | Window |
 |----------|-------|--------|
-| `POST /api/auth/login` | 20 requests | 1 hour per IP |
+| `POST /api/auth/login` | 20 per IP (`RATE_LIMIT_AUTH_*`), 5 per account + IP (`RATE_LIMIT_AUTH_ACCOUNT_*`) and 20 per account across all IPs (`RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_*`); the account is the trimmed, lowercased username | 1 hour per IP; 15 minutes per account + IP and per account |
 | `PUT /api/auth/password` | Login's 20 per IP (shared bucket) and 5 per user across all IPs (`RATE_LIMIT_AUTH_ACCOUNT_*`) | 1 hour per IP; 15 minutes per user |
 | `POST /api/auth/refresh` | The REST budget (`RATE_LIMIT_REST_MAX`, default 1000; `0` = unlimited) under its own key, so renewals never use up the login limit (HAP-1211 H2) | `RATE_LIMIT_REST_WINDOW_MS` (default 1 hour) per IP |
 | `POST /api/auth/api-key` | 10 requests | 1 hour per user |
 | Other endpoints | 1000 requests | 1 hour per user |
+
+The client address ("IP") is `req.ip`: `X-Forwarded-For` counts only for the hops `TRUST_PROXY` trusts (default:
+none). See [Proxy Trust & Login Rate Limiting](/configuration/environment-variables#proxy-trust-login-rate-limiting).
+While the rate-limit store is unreachable, login and password change answer a fixed `503` with
+`Cache-Control: no-store` and never check the password (fail closed); refresh is let through (fail open).
 
 ### Rate Limit Headers
 

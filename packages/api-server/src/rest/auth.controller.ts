@@ -83,7 +83,8 @@ export class AuthController {
      */
     this.router.post(
       '/login',
-      // HAP-1091: per client (req.ip) plus per account+client; a limiter store error refuses the login (503).
+      // HAP-1091/HAP-1764: per client (req.ip), per account+client and per account across all clients; a limiter store
+      // error refuses the login (fixed 503, no-store) before the password is checked.
       this.rateLimiter.limit('auth', { account: req => req.body?.username, failClosed: true }),
       this.validator.validate(authSchemas._login),
       this.login.bind(this)

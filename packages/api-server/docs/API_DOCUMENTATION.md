@@ -189,7 +189,7 @@ X-RateLimit-Remaining: 999
 X-RateLimit-Reset: 1640995200000
 ```
 
-`X-RateLimit-Reset` is the time the window ends, in Unix epoch milliseconds (here 2022-01-01T00:00:00.000Z), not seconds. The API does not send a `Retry-After` header.
+`X-RateLimit-Reset` is the time the window ends, in Unix epoch milliseconds (here 2022-01-01T00:00:00.000Z), not seconds. The API does not send a `Retry-After` header. Requests refused before the limiter runs carry no rate-limit headers: `requireAuthHeader` on refresh (a fixed `403` without `X-CMDB-Auth: 1`), and `authenticate()` / `requireJwtSession()` on password (`401`, or `403` for an API key).
 
 ### Rate Limit Exceeded Response
 

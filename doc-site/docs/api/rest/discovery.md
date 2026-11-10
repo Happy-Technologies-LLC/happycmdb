@@ -791,11 +791,7 @@ All error responses follow this format:
 
 ## Rate Limiting
 
-API endpoints are rate limited to prevent abuse:
-
-- **Anonymous**: 100 requests per hour
-- **Authenticated**: 1000 requests per hour
-- **Admin**: 10000 requests per hour
+The discovery routes have no rate limiter of their own, and the API mounts no global one (`ApiServer.setupMiddleware`), so there is no anonymous, authenticated or admin hourly budget. `rateLimit.endpoints.discovery` and `rateLimit.endpoints.admin` exist in the config schema, but no route mounts a limiter on them. The only API limiters are on three auth routes in `AuthController` (login, password change, refresh); behind the shipped `infrastructure/docker/nginx.conf`, `/api/` requests also pass zone `api_limit` (100r/s per client address, `burst=50`). See [Authentication](/api/authentication#rate-limiting) and [API_DOCUMENTATION.md](https://github.com/Happy-Technologies-LLC/happycmdb/blob/main/packages/api-server/docs/API_DOCUMENTATION.md#rate-limiting).
 
 Only the auth endpoints (`POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `PUT /api/v1/auth/password`) send rate limit headers, on allowed and on their own `429` responses. The headers are absent when `rateLimit.enabled` is `false`, when the request carries the bypass header (`rateLimit.bypassHeader`) with the value of `rateLimit.bypassSecret`, when the endpoint's `max` is `0` (`rateLimit.endpoints.auth.max` for login and password; `rateLimit.endpoints.rest.max` for refresh, which is then not mounted), and when the limiter store errors (refresh fails open and sets none; the fail-closed `503` of login and password carries none). Other routes send none, and their `429` responses (including nginx's) carry none either:
 
@@ -805,7 +801,7 @@ X-RateLimit-Remaining: 995
 X-RateLimit-Reset: 1633444800000
 ```
 
-`X-RateLimit-Reset` is the reset time in Unix epoch milliseconds, not seconds.
+`X-RateLimit-Reset` is the reset time in Unix epoch milliseconds, not seconds. Requests refused before the limiter runs carry no rate-limit headers: `requireAuthHeader` on refresh, and `authenticate()` / `requireJwtSession()` on password.
 
 ---
 

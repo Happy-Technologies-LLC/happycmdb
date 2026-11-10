@@ -284,7 +284,7 @@ providers:
     folder: 'HappyCMDB'
     type: file
     options:
-      path: /etc/grafana/dashboards
+      path: /var/lib/grafana/dashboards/cmdb
 ```
 
 ### Adding Custom Dashboards

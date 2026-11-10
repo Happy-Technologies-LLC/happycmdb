@@ -42,13 +42,6 @@ export const configSchema = Joi.object({
       username: Joi.string().required(),
       password: Joi.string().required(),
       maxConnections: Joi.number().default(20),
-      ssl: Joi.object({
-        enabled: Joi.boolean().default(false),
-        rejectUnauthorized: Joi.boolean().default(true),
-        ca: Joi.string().optional(),
-        cert: Joi.string().optional(),
-        key: Joi.string().optional(),
-      }).default(),
     }).required(),
 
     redis: Joi.object({
@@ -357,13 +350,6 @@ export type ConfigSchema = {
       username: string;
       password: string;
       maxConnections: number;
-      ssl?: {
-        enabled: boolean;
-        rejectUnauthorized: boolean;
-        ca?: string;
-        cert?: string;
-        key?: string;
-      };
     };
     redis: {
       host: string;

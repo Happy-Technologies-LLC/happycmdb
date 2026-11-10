@@ -20,10 +20,7 @@
       "database": "cmdb_dev",
       "username": "postgres",
       "password": "development",
-      "maxConnections": 10,
-      "ssl": {
-        "enabled": false
-      }
+      "maxConnections": 10
     },
     "redis": {
       "host": "localhost",

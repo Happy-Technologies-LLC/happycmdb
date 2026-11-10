@@ -13,11 +13,7 @@
     },
     "postgres": {
       "port": 5432,
-      "maxConnections": 15,
-      "ssl": {
-        "enabled": true,
-        "rejectUnauthorized": true
-      }
+      "maxConnections": 15
     },
     "redis": {
       "port": 6379,

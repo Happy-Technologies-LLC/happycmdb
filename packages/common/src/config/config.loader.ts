@@ -330,15 +330,6 @@ export class ConfigurationLoader {
         },
       },
 
-      cors: {
-        enabled: env['CORS_ENABLED'] !== 'false' && fileConfig.cors?.enabled !== false,
-        origins: env['CORS_ORIGINS'] ? env['CORS_ORIGINS'].split(',') : fileConfig.cors?.origins,
-        credentials: env['CORS_CREDENTIALS'] === 'true' || fileConfig.cors?.credentials,
-        maxAge: env['CORS_MAX_AGE']
-          ? parseInt(env['CORS_MAX_AGE'], 10)
-          : fileConfig.cors?.maxAge,
-      },
-
       ssl: {
         enabled: env['SSL_ENABLED'] === 'true' || fileConfig.ssl?.enabled || false,
         keyPath: env['SSL_KEY_PATH'] || fileConfig.ssl?.keyPath,

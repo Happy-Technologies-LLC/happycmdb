@@ -220,16 +220,6 @@ export const configSchema = Joi.object({
     }).default(),
   }).default(),
 
-  // CORS Configuration
-  cors: Joi.object({
-    enabled: Joi.boolean().default(true),
-    origins: Joi.array()
-      .items(Joi.string().uri())
-      .default(['http://localhost:3000']),
-    credentials: Joi.boolean().default(true),
-    maxAge: Joi.number().default(86400), // 24 hours
-  }).default(),
-
   // SSL/TLS Configuration
   ssl: Joi.object({
     enabled: Joi.boolean().default(false),
@@ -435,12 +425,6 @@ export type ConfigSchema = {
       enabled: boolean;
       logRateLimitHits: boolean;
     };
-  };
-  cors: {
-    enabled: boolean;
-    origins: string[];
-    credentials: boolean;
-    maxAge: number;
   };
   ssl: {
     enabled: boolean;

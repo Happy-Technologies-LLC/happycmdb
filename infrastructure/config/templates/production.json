@@ -84,11 +84,6 @@
       }
     }
   },
-  "cors": {
-    "enabled": true,
-    "credentials": true,
-    "maxAge": 86400
-  },
   "ssl": {
     "enabled": true,
     "redirectHttp": true

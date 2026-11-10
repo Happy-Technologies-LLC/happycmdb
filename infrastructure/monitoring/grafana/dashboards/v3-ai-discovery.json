@@ -1,196 +1,258 @@
 {
-  "dashboard": {
-    "title": "HappyCMDB v3.0 - AI Discovery & Pattern Learning",
-    "uid": "v3-ai-discovery",
-    "tags": ["happycmdb", "v3.0", "ai", "discovery"],
-    "timezone": "browser",
-    "schemaVersion": 38,
-    "version": 1,
-    "refresh": "1m",
-    "panels": [
-      {
-        "id": 1,
-        "title": "AI Discovery Cost by Provider (Daily)",
-        "type": "timeseries",
-        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "provider:cmdb_ai_discovery_cost_daily:sum",
-            "legendFormat": "{{provider}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD",
-            "custom": {
-              "fillOpacity": 10
-            }
-          }
+  "title": "HappyCMDB v3.0 - AI Discovery & Pattern Learning",
+  "uid": "v3-ai-discovery",
+  "tags": [
+    "happycmdb",
+    "v3.0",
+    "ai",
+    "discovery"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "1m",
+  "panels": [
+    {
+      "id": 1,
+      "title": "AI Discovery Cost by Provider (Daily)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "provider:cmdb_ai_discovery_cost_daily:sum",
+          "legendFormat": "{{provider}}"
         }
-      },
-      {
-        "id": 2,
-        "title": "Monthly AI Budget Status",
-        "type": "gauge",
-        "gridPos": {"x": 12, "y": 0, "w": 6, "h": 8},
-        "targets": [
-          {
-            "expr": "sum(increase(cmdb_ai_discovery_cost_dollars[30d]))",
-            "legendFormat": "Monthly Spend"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD",
-            "min": 0,
-            "max": 5000,
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "green"},
-                {"value": 3500, "color": "yellow"},
-                {"value": 4500, "color": "red"}
-              ]
-            }
-          }
-        },
-        "options": {
-          "showThresholdLabels": true,
-          "showThresholdMarkers": true
-        }
-      },
-      {
-        "id": 3,
-        "title": "AI Token Usage by Provider",
-        "type": "stat",
-        "gridPos": {"x": 18, "y": 0, "w": 6, "h": 8},
-        "targets": [
-          {
-            "expr": "sum by (provider) (increase(cmdb_ai_tokens_used_total[24h]))",
-            "legendFormat": "{{provider}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short"
-          }
-        }
-      },
-      {
-        "id": 4,
-        "title": "Pattern Learning Success Rate",
-        "type": "timeseries",
-        "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "cmdb_ai_pattern_learning_success_rate:rate5m",
-            "legendFormat": "Success Rate"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percent",
-            "min": 0,
-            "max": 100
-          }
-        }
-      },
-      {
-        "id": 5,
-        "title": "Patterns Learned by Industry",
-        "type": "bargauge",
-        "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "sum by (industry) (cmdb_ai_patterns_total)",
-            "legendFormat": "{{industry}}"
-          }
-        ],
-        "options": {
-          "orientation": "horizontal",
-          "displayMode": "gradient"
-        }
-      },
-      {
-        "id": 6,
-        "title": "Anomaly Detection by Severity",
-        "type": "piechart",
-        "gridPos": {"x": 0, "y": 16, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "sum by (severity) (increase(cmdb_ai_anomalies_detected_total[24h]))",
-            "legendFormat": "{{severity}}"
-          }
-        ]
-      },
-      {
-        "id": 7,
-        "title": "AI Discovery Session Duration",
-        "type": "heatmap",
-        "gridPos": {"x": 8, "y": 16, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "rate(cmdb_ai_discovery_duration_seconds_bucket[5m])",
-            "legendFormat": "{{le}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "s"
-          }
-        }
-      },
-      {
-        "id": 8,
-        "title": "AI Model Response Latency (p95)",
-        "type": "stat",
-        "gridPos": {"x": 16, "y": 16, "w": 8, "h": 8},
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, rate(cmdb_ai_response_duration_seconds_bucket[5m])) by (provider)",
-            "legendFormat": "{{provider}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "s"
-          }
-        }
-      },
-      {
-        "id": 9,
-        "title": "Cost per AI Discovery Session",
-        "type": "timeseries",
-        "gridPos": {"x": 0, "y": 24, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "rate(cmdb_ai_discovery_cost_dollars[5m]) / rate(cmdb_ai_discovery_sessions_total[5m])",
-            "legendFormat": "Cost per Session"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "currencyUSD"
-          }
-        }
-      },
-      {
-        "id": 10,
-        "title": "AI Discovery Error Rate",
-        "type": "timeseries",
-        "gridPos": {"x": 12, "y": 24, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "rate(cmdb_ai_discovery_errors_total[5m]) / rate(cmdb_ai_discovery_sessions_total[5m]) * 100",
-            "legendFormat": "Error Rate"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percent"
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "custom": {
+            "fillOpacity": 10
           }
         }
       }
-    ]
-  }
+    },
+    {
+      "id": 2,
+      "title": "Monthly AI Budget Status",
+      "type": "gauge",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(cmdb_ai_discovery_cost_dollars[30d]))",
+          "legendFormat": "Monthly Spend"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "min": 0,
+          "max": 5000,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 3500,
+                "color": "yellow"
+              },
+              {
+                "value": 4500,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true
+      }
+    },
+    {
+      "id": 3,
+      "title": "AI Token Usage by Provider",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (provider) (increase(cmdb_ai_tokens_used_total[24h]))",
+          "legendFormat": "{{provider}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Pattern Learning Success Rate",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "cmdb_ai_pattern_learning_success_rate:rate5m",
+          "legendFormat": "Success Rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Patterns Learned by Industry",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (industry) (cmdb_ai_patterns_total)",
+          "legendFormat": "{{industry}}"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      }
+    },
+    {
+      "id": 6,
+      "title": "Anomaly Detection by Severity",
+      "type": "piechart",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (severity) (increase(cmdb_ai_anomalies_detected_total[24h]))",
+          "legendFormat": "{{severity}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "AI Discovery Session Duration",
+      "type": "heatmap",
+      "gridPos": {
+        "x": 8,
+        "y": 16,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(cmdb_ai_discovery_duration_seconds_bucket[5m])",
+          "legendFormat": "{{le}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "AI Model Response Latency (p95)",
+      "type": "stat",
+      "gridPos": {
+        "x": 16,
+        "y": 16,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(cmdb_ai_response_duration_seconds_bucket[5m])) by (provider)",
+          "legendFormat": "{{provider}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "title": "Cost per AI Discovery Session",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(cmdb_ai_discovery_cost_dollars[5m]) / rate(cmdb_ai_discovery_sessions_total[5m])",
+          "legendFormat": "Cost per Session"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "AI Discovery Error Rate",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(cmdb_ai_discovery_errors_total[5m]) / rate(cmdb_ai_discovery_sessions_total[5m]) * 100",
+          "legendFormat": "Error Rate"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        }
+      }
+    }
+  ]
 }

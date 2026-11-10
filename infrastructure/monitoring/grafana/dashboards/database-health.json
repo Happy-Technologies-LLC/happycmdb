@@ -1,308 +1,313 @@
 {
-  "dashboard": {
-    "title": "CMDB Database Health",
-    "tags": ["cmdb", "database", "neo4j", "postgres", "redis"],
-    "timezone": "browser",
-    "schemaVersion": 16,
-    "version": 0,
-    "refresh": "30s",
-    "panels": [
-      {
-        "id": 1,
-        "title": "Database Query Duration (p95)",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 0,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, sum by (database, le) (rate(cmdb_database_query_duration_seconds_bucket[5m])))",
-            "legendFormat": "{{database}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "duration",
-            "format": "s"
-          }
-        ]
+  "title": "CMDB Database Health",
+  "tags": [
+    "cmdb",
+    "database",
+    "neo4j",
+    "postgres",
+    "redis"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 16,
+  "version": 0,
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Database Query Duration (p95)",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
       },
-      {
-        "id": 2,
-        "title": "Database Queries per Second",
-        "type": "graph",
-        "gridPos": {
-          "x": 12,
-          "y": 0,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "sum by (database) (rate(cmdb_database_queries_total[5m]))",
-            "legendFormat": "{{database}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "queries/sec",
-            "format": "short"
-          }
-        ]
-      },
-      {
-        "id": 3,
-        "title": "Neo4j Node Count",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 8,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "cmdb_neo4j_node_count",
-            "legendFormat": "{{label}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "nodes",
-            "format": "short"
-          }
-        ]
-      },
-      {
-        "id": 4,
-        "title": "Neo4j Relationship Count",
-        "type": "graph",
-        "gridPos": {
-          "x": 12,
-          "y": 8,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "cmdb_neo4j_relationship_count",
-            "legendFormat": "{{type}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "relationships",
-            "format": "short"
-          }
-        ]
-      },
-      {
-        "id": 5,
-        "title": "Connection Pool Status",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 16,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "cmdb_database_connection_pool_size{state=\"active\"}",
-            "legendFormat": "{{database}} - active",
-            "refId": "A"
-          },
-          {
-            "expr": "cmdb_database_connection_pool_size{state=\"idle\"}",
-            "legendFormat": "{{database}} - idle",
-            "refId": "B"
-          },
-          {
-            "expr": "cmdb_database_connection_pool_size{state=\"total\"}",
-            "legendFormat": "{{database}} - total",
-            "refId": "C"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "connections",
-            "format": "short"
-          }
-        ]
-      },
-      {
-        "id": 6,
-        "title": "Active Database Connections",
-        "type": "graph",
-        "gridPos": {
-          "x": 12,
-          "y": 16,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "cmdb_database_connections_active",
-            "legendFormat": "{{database}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "connections",
-            "format": "short"
-          }
-        ]
-      },
-      {
-        "id": 7,
-        "title": "PostgreSQL Table Sizes",
-        "type": "bargauge",
-        "gridPos": {
-          "x": 0,
-          "y": 24,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "cmdb_postgres_table_size_bytes / 1024 / 1024",
-            "legendFormat": "{{table}}",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "orientation": "horizontal",
-          "displayMode": "gradient"
-        },
-        "fieldConfig": {
-          "defaults": {
-            "unit": "MB"
-          }
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (database, le) (rate(cmdb_database_query_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{database}}",
+          "refId": "A"
         }
+      ],
+      "yaxes": [
+        {
+          "label": "duration",
+          "format": "s"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Database Queries per Second",
+      "type": "graph",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
       },
-      {
-        "id": 8,
-        "title": "Database Transaction Duration",
-        "type": "graph",
-        "gridPos": {
-          "x": 12,
-          "y": 24,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.95, sum by (database, status, le) (rate(cmdb_database_transaction_duration_seconds_bucket[5m])))",
-            "legendFormat": "{{database}} - {{status}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "duration",
-            "format": "s"
-          }
-        ]
+      "targets": [
+        {
+          "expr": "sum by (database) (rate(cmdb_database_queries_total[5m]))",
+          "legendFormat": "{{database}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "queries/sec",
+          "format": "short"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Neo4j Node Count",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
       },
-      {
-        "id": 9,
-        "title": "Database Error Rate",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 32,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "sum by (database) (rate(cmdb_database_errors_total[5m]))",
-            "legendFormat": "{{database}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "errors/sec",
-            "format": "short"
-          }
-        ]
+      "targets": [
+        {
+          "expr": "cmdb_neo4j_node_count",
+          "legendFormat": "{{label}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "nodes",
+          "format": "short"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Neo4j Relationship Count",
+      "type": "graph",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
       },
-      {
-        "id": 10,
-        "title": "Database Deadlocks",
-        "type": "graph",
-        "gridPos": {
-          "x": 12,
-          "y": 32,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "sum by (database) (rate(cmdb_database_deadlocks_total[5m]))",
-            "legendFormat": "{{database}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "deadlocks/sec",
-            "format": "short"
-          }
-        ]
+      "targets": [
+        {
+          "expr": "cmdb_neo4j_relationship_count",
+          "legendFormat": "{{type}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "relationships",
+          "format": "short"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Connection Pool Status",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
       },
-      {
-        "id": 11,
-        "title": "Query Success Rate by Database",
-        "type": "stat",
-        "gridPos": {
-          "x": 0,
-          "y": 40,
-          "w": 8,
-          "h": 4
+      "targets": [
+        {
+          "expr": "cmdb_database_connection_pool_size{state=\"active\"}",
+          "legendFormat": "{{database}} - active",
+          "refId": "A"
         },
-        "targets": [
-          {
-            "expr": "sum by (database) (rate(cmdb_database_queries_total{status=\"success\"}[5m])) / sum by (database) (rate(cmdb_database_queries_total[5m])) * 100",
-            "legendFormat": "{{database}}",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "colorMode": "value",
-          "graphMode": "area"
+        {
+          "expr": "cmdb_database_connection_pool_size{state=\"idle\"}",
+          "legendFormat": "{{database}} - idle",
+          "refId": "B"
         },
-        "fieldConfig": {
-          "defaults": {
-            "unit": "percent",
-            "thresholds": {
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "red"
-                },
-                {
-                  "value": 95,
-                  "color": "yellow"
-                },
-                {
-                  "value": 99,
-                  "color": "green"
-                }
-              ]
-            }
+        {
+          "expr": "cmdb_database_connection_pool_size{state=\"total\"}",
+          "legendFormat": "{{database}} - total",
+          "refId": "C"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "connections",
+          "format": "short"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Active Database Connections",
+      "type": "graph",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "cmdb_database_connections_active",
+          "legendFormat": "{{database}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "connections",
+          "format": "short"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "PostgreSQL Table Sizes",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "cmdb_postgres_table_size_bytes / 1024 / 1024",
+          "legendFormat": "{{table}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "MB"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Database Transaction Duration",
+      "type": "graph",
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (database, status, le) (rate(cmdb_database_transaction_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{database}} - {{status}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "duration",
+          "format": "s"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Database Error Rate",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (database) (rate(cmdb_database_errors_total[5m]))",
+          "legendFormat": "{{database}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "errors/sec",
+          "format": "short"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Database Deadlocks",
+      "type": "graph",
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (database) (rate(cmdb_database_deadlocks_total[5m]))",
+          "legendFormat": "{{database}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "deadlocks/sec",
+          "format": "short"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Query Success Rate by Database",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum by (database) (rate(cmdb_database_queries_total{status=\"success\"}[5m])) / sum by (database) (rate(cmdb_database_queries_total[5m])) * 100",
+          "legendFormat": "{{database}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 95,
+                "color": "yellow"
+              },
+              {
+                "value": 99,
+                "color": "green"
+              }
+            ]
           }
         }
       }
-    ]
-  }
+    }
+  ],
+  "uid": "database-health"
 }

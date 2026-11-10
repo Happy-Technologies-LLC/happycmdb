@@ -13,7 +13,7 @@ import {
   CredentialMatchResult,
 } from '@cmdb/common';
 import { getEncryptionService } from '@cmdb/common';
-import { logger } from '@cmdb/common';
+import { logger, errorClassFields } from '@cmdb/common';
 import { isIpInCidr, matchGlob } from './utils';
 
 export class CredentialAffinityService {
@@ -96,9 +96,10 @@ export class CredentialAffinityService {
             reasons,
           });
         } catch (error) {
+          // HAP-1814: class/code only; a decrypt or JSON.parse failure message can quote the decrypted plaintext.
           logger.error('Failed to decrypt credential during matching', {
             id: row.id,
-            error,
+            error: errorClassFields(error),
           });
         }
       }

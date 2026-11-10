@@ -1,330 +1,339 @@
 {
-  "dashboard": {
-    "title": "CMDB ETL Operations",
-    "tags": ["cmdb", "etl", "data-sync"],
-    "timezone": "browser",
-    "schemaVersion": 16,
-    "version": 0,
-    "refresh": "1m",
-    "panels": [
-      {
-        "id": 1,
-        "title": "ETL Job Success Rate",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 0,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "sum by (job_type) (rate(cmdb_etl_jobs_total{status=\"success\"}[5m])) / sum by (job_type) (rate(cmdb_etl_jobs_total[5m])) * 100",
-            "legendFormat": "{{job_type}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "success rate %",
-            "format": "percent",
-            "min": 0,
-            "max": 100
-          }
-        ],
-        "thresholds": [
-          {
-            "value": 95,
-            "colorMode": "critical",
-            "op": "lt",
-            "fill": true,
-            "line": true
-          }
-        ]
+  "title": "CMDB ETL Operations",
+  "tags": [
+    "cmdb",
+    "etl",
+    "data-sync"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 16,
+  "version": 0,
+  "refresh": "1m",
+  "panels": [
+    {
+      "id": 1,
+      "title": "ETL Job Success Rate",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
       },
-      {
-        "id": 2,
-        "title": "ETL Sync Lag",
-        "type": "graph",
-        "gridPos": {
-          "x": 12,
-          "y": 0,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "cmdb_etl_sync_lag_seconds / 60",
-            "legendFormat": "{{job_type}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "lag (minutes)",
-            "format": "short"
-          }
-        ],
-        "alert": {
-          "conditions": [
-            {
-              "evaluator": {
-                "params": [60],
-                "type": "gt"
-              },
-              "query": {
-                "params": ["A", "5m", "now"]
-              }
-            }
-          ],
-          "name": "ETL Sync Lag Alert"
+      "targets": [
+        {
+          "expr": "sum by (job_type) (rate(cmdb_etl_jobs_total{status=\"success\"}[5m])) / sum by (job_type) (rate(cmdb_etl_jobs_total[5m])) * 100",
+          "legendFormat": "{{job_type}}",
+          "refId": "A"
         }
+      ],
+      "yaxes": [
+        {
+          "label": "success rate %",
+          "format": "percent",
+          "min": 0,
+          "max": 100
+        }
+      ],
+      "thresholds": [
+        {
+          "value": 95,
+          "colorMode": "critical",
+          "op": "lt",
+          "fill": true,
+          "line": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "ETL Sync Lag",
+      "type": "graph",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
       },
-      {
-        "id": 3,
-        "title": "Records Processed per Minute",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 8,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
+      "targets": [
+        {
+          "expr": "cmdb_etl_sync_lag_seconds / 60",
+          "legendFormat": "{{job_type}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "lag (minutes)",
+          "format": "short"
+        }
+      ],
+      "alert": {
+        "conditions": [
           {
-            "expr": "sum by (job_type) (rate(cmdb_etl_records_processed_total[1m])) * 60",
-            "legendFormat": "{{job_type}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "records/min",
-            "format": "short"
-          }
-        ]
-      },
-      {
-        "id": 4,
-        "title": "CIs Synced by Operation",
-        "type": "graph",
-        "gridPos": {
-          "x": 12,
-          "y": 8,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "sum by (operation) (rate(cmdb_cis_synced_total[5m]))",
-            "legendFormat": "{{operation}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "CIs/sec",
-            "format": "short"
-          }
-        ],
-        "stack": true
-      },
-      {
-        "id": 5,
-        "title": "Data Quality Score",
-        "type": "gauge",
-        "gridPos": {
-          "x": 0,
-          "y": 16,
-          "w": 6,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "avg(cmdb_data_quality_score)",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "showThresholdLabels": true,
-          "showThresholdMarkers": true
-        },
-        "fieldConfig": {
-          "defaults": {
-            "min": 0,
-            "max": 1,
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "red"
-                },
-                {
-                  "value": 0.7,
-                  "color": "yellow"
-                },
-                {
-                  "value": 0.9,
-                  "color": "green"
-                }
+            "evaluator": {
+              "params": [
+                60
+              ],
+              "type": "gt"
+            },
+            "query": {
+              "params": [
+                "A",
+                "5m",
+                "now"
               ]
             }
           }
-        }
-      },
-      {
-        "id": 6,
-        "title": "Data Quality by Dimension",
-        "type": "bargauge",
-        "gridPos": {
-          "x": 6,
-          "y": 16,
-          "w": 6,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "cmdb_data_quality_score",
-            "legendFormat": "{{dimension}}",
-            "refId": "A"
-          }
         ],
-        "options": {
-          "orientation": "horizontal",
-          "displayMode": "gradient"
-        },
-        "fieldConfig": {
-          "defaults": {
-            "min": 0,
-            "max": 1
-          }
-        }
-      },
-      {
-        "id": 7,
-        "title": "Change Detection Rate",
-        "type": "graph",
-        "gridPos": {
-          "x": 12,
-          "y": 16,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "sum by (change_type) (rate(cmdb_changes_detected_total[5m]))",
-            "legendFormat": "{{change_type}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "changes/sec",
-            "format": "short"
-          }
-        ]
-      },
-      {
-        "id": 8,
-        "title": "ETL Job Duration (p50, p95, p99)",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 24,
-          "w": 12,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "histogram_quantile(0.50, sum by (job_type, le) (rate(cmdb_etl_job_duration_seconds_bucket[5m])))",
-            "legendFormat": "{{job_type}} p50",
-            "refId": "A"
-          },
-          {
-            "expr": "histogram_quantile(0.95, sum by (job_type, le) (rate(cmdb_etl_job_duration_seconds_bucket[5m])))",
-            "legendFormat": "{{job_type}} p95",
-            "refId": "B"
-          },
-          {
-            "expr": "histogram_quantile(0.99, sum by (job_type, le) (rate(cmdb_etl_job_duration_seconds_bucket[5m])))",
-            "legendFormat": "{{job_type}} p99",
-            "refId": "C"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "duration",
-            "format": "s"
-          }
-        ]
-      },
-      {
-        "id": 9,
-        "title": "Active ETL Jobs",
-        "type": "stat",
-        "gridPos": {
-          "x": 12,
-          "y": 24,
-          "w": 6,
-          "h": 4
-        },
-        "targets": [
-          {
-            "expr": "sum(cmdb_etl_jobs_active)",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "graphMode": "area",
-          "colorMode": "value"
-        }
-      },
-      {
-        "id": 10,
-        "title": "ETL Batch Size (avg)",
-        "type": "stat",
-        "gridPos": {
-          "x": 18,
-          "y": 24,
-          "w": 6,
-          "h": 4
-        },
-        "targets": [
-          {
-            "expr": "avg(rate(cmdb_etl_batch_size_sum[5m]) / rate(cmdb_etl_batch_size_count[5m]))",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "graphMode": "area",
-          "colorMode": "value"
-        }
-      },
-      {
-        "id": 11,
-        "title": "ETL Errors by Type",
-        "type": "graph",
-        "gridPos": {
-          "x": 0,
-          "y": 32,
-          "w": 24,
-          "h": 8
-        },
-        "targets": [
-          {
-            "expr": "sum by (job_type, error_type) (rate(cmdb_etl_errors_total[5m]))",
-            "legendFormat": "{{job_type}} - {{error_type}}",
-            "refId": "A"
-          }
-        ],
-        "yaxes": [
-          {
-            "label": "errors/sec",
-            "format": "short"
-          }
-        ]
+        "name": "ETL Sync Lag Alert"
       }
-    ]
-  }
+    },
+    {
+      "id": 3,
+      "title": "Records Processed per Minute",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (job_type) (rate(cmdb_etl_records_processed_total[1m])) * 60",
+          "legendFormat": "{{job_type}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "records/min",
+          "format": "short"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "CIs Synced by Operation",
+      "type": "graph",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (operation) (rate(cmdb_cis_synced_total[5m]))",
+          "legendFormat": "{{operation}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "CIs/sec",
+          "format": "short"
+        }
+      ],
+      "stack": true
+    },
+    {
+      "id": 5,
+      "title": "Data Quality Score",
+      "type": "gauge",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "avg(cmdb_data_quality_score)",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 0.7,
+                "color": "yellow"
+              },
+              {
+                "value": 0.9,
+                "color": "green"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Data Quality by Dimension",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 6,
+        "y": 16,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "cmdb_data_quality_score",
+          "legendFormat": "{{dimension}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Change Detection Rate",
+      "type": "graph",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (change_type) (rate(cmdb_changes_detected_total[5m]))",
+          "legendFormat": "{{change_type}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "changes/sec",
+          "format": "short"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "ETL Job Duration (p50, p95, p99)",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (job_type, le) (rate(cmdb_etl_job_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{job_type}} p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (job_type, le) (rate(cmdb_etl_job_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{job_type}} p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (job_type, le) (rate(cmdb_etl_job_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{job_type}} p99",
+          "refId": "C"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "duration",
+          "format": "s"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Active ETL Jobs",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(cmdb_etl_jobs_active)",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 10,
+      "title": "ETL Batch Size (avg)",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 24,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "avg(rate(cmdb_etl_batch_size_sum[5m]) / rate(cmdb_etl_batch_size_count[5m]))",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 11,
+      "title": "ETL Errors by Type",
+      "type": "graph",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (job_type, error_type) (rate(cmdb_etl_errors_total[5m]))",
+          "legendFormat": "{{job_type}} - {{error_type}}",
+          "refId": "A"
+        }
+      ],
+      "yaxes": [
+        {
+          "label": "errors/sec",
+          "format": "short"
+        }
+      ]
+    }
+  ],
+  "uid": "etl-operations"
 }

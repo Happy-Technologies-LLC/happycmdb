@@ -15,7 +15,7 @@ import {
   UnifiedCredentialSummary,
 } from '@cmdb/common';
 import { getEncryptionService, CredentialProtocolAdapter } from '@cmdb/common';
-import { logger } from '@cmdb/common';
+import { logger, errorClassFields } from '@cmdb/common';
 
 export interface CredentialFilters {
   protocol?: string;
@@ -190,7 +190,7 @@ export class CredentialCRUDService {
       try {
         credentialsData = this.decodeStoredCredentials(row.credentials);
       } catch (error) {
-        logger.error('Failed to decrypt credential', { id, error });
+        logger.error('Failed to decrypt credential', { id, error: errorClassFields(error) });
         throw this.decryptFailure(id, error);
       }
 
@@ -369,11 +369,14 @@ export class CredentialCRUDService {
       const params: any[] = [];
       let paramIndex = 1;
 
+      // HAP-1814: one transaction for every update, so the UPDATE commits only once its returned row decodes; a stored
+      // value that cannot be decoded (bad envelope, non-JSON plaintext) rolls the write back instead of committing it
+      // behind a 500.
+      await client.query('BEGIN');
+      inTransaction = true;
       // The protocol (credentials) and the tags (non-admins, HAP-1613) are only known from the row; lock it so the
       // checked row is the one updated.
       if (input.credentials !== undefined || isOrgAdmin !== true) {
-        await client.query('BEGIN');
-        inTransaction = true;
         const locked = await client.query<{ protocol: string; tags: string[] | null }>(
           'SELECT protocol, tags FROM credentials WHERE id = $1 AND created_by = $2 AND organization_id = $3 FOR UPDATE',
           [id, createdBy, organizationId]
@@ -418,10 +421,8 @@ export class CredentialCRUDService {
       }
 
       if (updates.length === 0) {
-        if (inTransaction) {
-          await client.query('COMMIT');
-          inTransaction = false;
-        }
+        await client.query('COMMIT');
+        inTransaction = false;
         const existing = await this.getById(id, createdBy, organizationId);
         if (!existing) {
           throw new Error(`Credential with id ${id} not found`);
@@ -438,10 +439,6 @@ export class CredentialCRUDService {
         RETURNING *`,
         params
       );
-      if (inTransaction) {
-        await client.query('COMMIT');
-        inTransaction = false;
-      }
 
       if (result.rows.length === 0) {
         throw new Error(`Credential with id ${id} not found`);
@@ -449,17 +446,20 @@ export class CredentialCRUDService {
 
       const row = result.rows[0];
 
-      logger.info('Unified credential updated', {
-        id: row.id,
-        name: row.name,
-      });
-
       let credentialsData: Record<string, unknown>;
       try {
         credentialsData = this.decodeStoredCredentials(row.credentials);
       } catch (error) {
         throw this.decryptFailure(id, error);
       }
+
+      await client.query('COMMIT');
+      inTransaction = false;
+
+      logger.info('Unified credential updated', {
+        id: row.id,
+        name: row.name,
+      });
 
       return {
         id: row.id,
@@ -485,7 +485,7 @@ export class CredentialCRUDService {
           `Credential with name '${input.name}' already exists for this user`
         );
       }
-      logger.error('Failed to update unified credential', { error, id });
+      logger.error('Failed to update unified credential', { error: errorClassFields(error), id });
       throw error;
     } finally {
       client.release();

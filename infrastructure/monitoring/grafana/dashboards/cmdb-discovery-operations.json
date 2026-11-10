@@ -1,600 +1,603 @@
 {
-  "dashboard": {
-    "title": "CMDB Discovery Operations",
-    "tags": ["cmdb", "discovery", "connectors", "operations"],
-    "timezone": "browser",
-    "schemaVersion": 38,
-    "version": 1,
-    "refresh": "1m",
-    "time": {
-      "from": "now-24h",
-      "to": "now"
-    },
-    "panels": [
-      {
-        "id": 1,
-        "title": "Discovery Jobs - Total",
-        "type": "stat",
-        "gridPos": {
-          "x": 0,
-          "y": 0,
-          "w": 6,
-          "h": 5
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT COUNT(*) AS \"Total Jobs\" FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '24 hours';",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "blue"
-                }
-              ]
-            }
-          }
-        },
-        "options": {
-          "textMode": "value_and_name",
-          "graphMode": "area",
-          "colorMode": "background"
-        }
+  "title": "CMDB Discovery Operations",
+  "tags": [
+    "cmdb",
+    "discovery",
+    "connectors",
+    "operations"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Discovery Jobs - Total",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 5
       },
-      {
-        "id": 2,
-        "title": "Discovery Jobs - Completed",
-        "type": "stat",
-        "gridPos": {
-          "x": 6,
-          "y": 0,
-          "w": 6,
-          "h": 5
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT COUNT(*) AS \"Completed\" FROM connector_run_history WHERE status = 'completed' AND started_at >= NOW() - INTERVAL '24 hours';",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "green"
-                }
-              ]
-            }
-          }
-        },
-        "options": {
-          "textMode": "value_and_name",
-          "graphMode": "area",
-          "colorMode": "background"
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) AS \"Total Jobs\" FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '24 hours';",
+          "format": "table",
+          "refId": "A"
         }
-      },
-      {
-        "id": 3,
-        "title": "Discovery Jobs - Failed",
-        "type": "stat",
-        "gridPos": {
-          "x": 12,
-          "y": 0,
-          "w": 6,
-          "h": 5
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT COUNT(*) AS \"Failed\" FROM connector_run_history WHERE status = 'failed' AND started_at >= NOW() - INTERVAL '24 hours';",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "green"
-                },
-                {
-                  "value": 1,
-                  "color": "red"
-                }
-              ]
-            }
-          }
-        },
-        "options": {
-          "textMode": "value_and_name",
-          "graphMode": "area",
-          "colorMode": "background"
-        }
-      },
-      {
-        "id": 4,
-        "title": "Discovery Jobs - Running",
-        "type": "stat",
-        "gridPos": {
-          "x": 18,
-          "y": 0,
-          "w": 6,
-          "h": 5
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT COUNT(*) AS \"Running\" FROM connector_run_history WHERE status = 'running';",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "yellow"
-                }
-              ]
-            }
-          }
-        },
-        "options": {
-          "textMode": "value_and_name",
-          "graphMode": "none",
-          "colorMode": "background"
-        }
-      },
-      {
-        "id": 5,
-        "title": "Discovery Duration Trends (Last 24h)",
-        "type": "timeseries",
-        "gridPos": {
-          "x": 0,
-          "y": 5,
-          "w": 12,
-          "h": 10
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT time_bucket('1 hour', started_at) AS time, connector_type, AVG(duration_ms / 1000.0) AS \"Avg Duration (sec)\" FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '24 hours' AND duration_ms IS NOT NULL GROUP BY time_bucket('1 hour', started_at), connector_type ORDER BY time;",
-            "format": "time_series",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "color": {
-              "mode": "palette-classic"
-            },
-            "custom": {
-              "drawStyle": "line",
-              "lineInterpolation": "smooth",
-              "fillOpacity": 10,
-              "showPoints": "auto"
-            },
-            "unit": "s"
-          }
-        },
-        "options": {
-          "tooltip": {
-            "mode": "multi"
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
           },
-          "legend": {
-            "displayMode": "list",
-            "placement": "bottom"
-          }
-        }
-      },
-      {
-        "id": 6,
-        "title": "Connector Success Rates (Last 7 Days)",
-        "type": "barchart",
-        "gridPos": {
-          "x": 12,
-          "y": 5,
-          "w": 12,
-          "h": 10
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT connector_type AS metric, ROUND(100.0 * SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) / COUNT(*), 2) AS \"Success Rate %\" FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '7 days' GROUP BY connector_type ORDER BY \"Success Rate %\" DESC;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "red"
-                },
-                {
-                  "value": 70,
-                  "color": "yellow"
-                },
-                {
-                  "value": 90,
-                  "color": "green"
-                }
-              ]
-            },
-            "unit": "percent",
-            "min": 0,
-            "max": 100
-          }
-        },
-        "options": {
-          "orientation": "horizontal",
-          "xTickLabelRotation": 0,
-          "legend": {
-            "displayMode": "hidden"
-          }
-        }
-      },
-      {
-        "id": 7,
-        "title": "Failed Discoveries by Connector (Last 7 Days)",
-        "type": "table",
-        "gridPos": {
-          "x": 0,
-          "y": 15,
-          "w": 12,
-          "h": 10
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT connector_type AS \"Connector\", config_name AS \"Configuration\", COUNT(*) AS \"Failures\", MAX(started_at) AS \"Last Failure\", SUBSTRING(error_message, 1, 100) AS \"Last Error\" FROM connector_run_history WHERE status = 'failed' AND started_at >= NOW() - INTERVAL '7 days' GROUP BY connector_type, config_name, error_message ORDER BY \"Failures\" DESC, \"Last Failure\" DESC LIMIT 20;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "custom": {
-              "align": "left",
-              "filterable": true
-            }
-          },
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "Failures"
-              },
-              "properties": [
-                {
-                  "id": "custom.width",
-                  "value": 100
-                },
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "thresholds"
-                  }
-                },
-                {
-                  "id": "thresholds",
-                  "value": {
-                    "mode": "absolute",
-                    "steps": [
-                      {
-                        "value": 0,
-                        "color": "green"
-                      },
-                      {
-                        "value": 5,
-                        "color": "yellow"
-                      },
-                      {
-                        "value": 10,
-                        "color": "red"
-                      }
-                    ]
-                  }
-                }
-              ]
-            }
-          ]
-        },
-        "options": {
-          "showHeader": true
-        }
-      },
-      {
-        "id": 8,
-        "title": "Average CIs Discovered Per Job (Last 7 Days)",
-        "type": "stat",
-        "gridPos": {
-          "x": 12,
-          "y": 15,
-          "w": 12,
-          "h": 5
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT ROUND(AVG(records_loaded), 2) AS \"Avg CIs Per Job\" FROM connector_run_history WHERE status = 'completed' AND started_at >= NOW() - INTERVAL '7 days' AND records_loaded > 0;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "decimals": 2,
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "blue"
-                }
-              ]
-            }
-          }
-        },
-        "options": {
-          "textMode": "value_and_name",
-          "graphMode": "area",
-          "colorMode": "background"
-        }
-      },
-      {
-        "id": 9,
-        "title": "Total CIs Discovered (Last 7 Days)",
-        "type": "stat",
-        "gridPos": {
-          "x": 12,
-          "y": 20,
-          "w": 12,
-          "h": 5
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT SUM(records_loaded) AS \"Total CIs\" FROM connector_run_history WHERE status = 'completed' AND started_at >= NOW() - INTERVAL '7 days';",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "green"
-                }
-              ]
-            }
-          }
-        },
-        "options": {
-          "textMode": "value_and_name",
-          "graphMode": "area",
-          "colorMode": "background"
-        }
-      },
-      {
-        "id": 10,
-        "title": "Discovery Job Status Over Time (Last 7 Days)",
-        "type": "timeseries",
-        "gridPos": {
-          "x": 0,
-          "y": 25,
-          "w": 24,
-          "h": 10
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT time_bucket('1 hour', started_at) AS time, status, COUNT(*) AS count FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '7 days' GROUP BY time_bucket('1 hour', started_at), status ORDER BY time;",
-            "format": "time_series",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "color": {
-              "mode": "palette-classic"
-            },
-            "custom": {
-              "drawStyle": "bars",
-              "fillOpacity": 80,
-              "showPoints": "never",
-              "stacking": {
-                "mode": "normal"
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "blue"
               }
-            },
-            "unit": "short"
-          },
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "completed"
-              },
-              "properties": [
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "fixed",
-                    "fixedColor": "green"
-                  }
-                }
-              ]
-            },
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "failed"
-              },
-              "properties": [
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "fixed",
-                    "fixedColor": "red"
-                  }
-                }
-              ]
-            },
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "running"
-              },
-              "properties": [
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "fixed",
-                    "fixedColor": "yellow"
-                  }
-                }
-              ]
-            }
-          ]
-        },
-        "options": {
-          "tooltip": {
-            "mode": "multi"
-          },
-          "legend": {
-            "displayMode": "list",
-            "placement": "bottom"
+            ]
           }
         }
       },
-      {
-        "id": 11,
-        "title": "Connector Performance Comparison (Last 24h)",
-        "type": "table",
-        "gridPos": {
-          "x": 0,
-          "y": 35,
-          "w": 24,
-          "h": 10
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT connector_type AS \"Connector\", COUNT(*) AS \"Total Runs\", SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS \"Completed\", SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS \"Failed\", ROUND(100.0 * SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) / COUNT(*), 2) AS \"Success Rate %\", ROUND(AVG(duration_ms / 1000.0), 2) AS \"Avg Duration (sec)\", SUM(records_loaded) AS \"Total CIs\", ROUND(AVG(records_loaded), 2) AS \"Avg CIs/Run\" FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '24 hours' GROUP BY connector_type ORDER BY \"Total Runs\" DESC;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "custom": {
-              "align": "left",
-              "filterable": true
-            }
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "area",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Discovery Jobs - Completed",
+      "type": "stat",
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) AS \"Completed\" FROM connector_run_history WHERE status = 'completed' AND started_at >= NOW() - INTERVAL '24 hours';",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
           },
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "Success Rate %"
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "area",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Discovery Jobs - Failed",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) AS \"Failed\" FROM connector_run_history WHERE status = 'failed' AND started_at >= NOW() - INTERVAL '24 hours';",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
               },
-              "properties": [
-                {
-                  "id": "custom.width",
-                  "value": 130
-                },
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "thresholds"
-                  }
-                },
-                {
-                  "id": "thresholds",
-                  "value": {
-                    "mode": "absolute",
-                    "steps": [
-                      {
-                        "value": 0,
-                        "color": "red"
-                      },
-                      {
-                        "value": 70,
-                        "color": "yellow"
-                      },
-                      {
-                        "value": 90,
-                        "color": "green"
-                      }
-                    ]
-                  }
-                }
-              ]
-            }
-          ]
+              {
+                "value": 1,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "area",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Discovery Jobs - Running",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 5
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) AS \"Running\" FROM connector_run_history WHERE status = 'running';",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "yellow"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "none",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Discovery Duration Trends (Last 24h)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 10
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT time_bucket('1 hour', started_at) AS time, connector_type, AVG(duration_ms / 1000.0) AS \"Avg Duration (sec)\" FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '24 hours' AND duration_ms IS NOT NULL GROUP BY time_bucket('1 hour', started_at), connector_type ORDER BY time;",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "showPoints": "auto"
+          },
+          "unit": "s"
+        }
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
         },
-        "options": {
-          "showHeader": true,
-          "sortBy": [
-            {
-              "displayName": "Total Runs",
-              "desc": true
-            }
-          ]
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
         }
       }
-    ]
-  },
-  "overwrite": true
+    },
+    {
+      "id": 6,
+      "title": "Connector Success Rates (Last 7 Days)",
+      "type": "barchart",
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 12,
+        "h": 10
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT connector_type AS metric, ROUND(100.0 * SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) / COUNT(*), 2) AS \"Success Rate %\" FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '7 days' GROUP BY connector_type ORDER BY \"Success Rate %\" DESC;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 70,
+                "color": "yellow"
+              },
+              {
+                "value": 90,
+                "color": "green"
+              }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "xTickLabelRotation": 0,
+        "legend": {
+          "displayMode": "hidden"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Failed Discoveries by Connector (Last 7 Days)",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 12,
+        "h": 10
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT connector_type AS \"Connector\", config_name AS \"Configuration\", COUNT(*) AS \"Failures\", MAX(started_at) AS \"Last Failure\", SUBSTRING(error_message, 1, 100) AS \"Last Error\" FROM connector_run_history WHERE status = 'failed' AND started_at >= NOW() - INTERVAL '7 days' GROUP BY connector_type, config_name, error_message ORDER BY \"Failures\" DESC, \"Last Failure\" DESC LIMIT 20;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Failures"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": 0,
+                      "color": "green"
+                    },
+                    {
+                      "value": 5,
+                      "color": "yellow"
+                    },
+                    {
+                      "value": 10,
+                      "color": "red"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 8,
+      "title": "Average CIs Discovered Per Job (Last 7 Days)",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 15,
+        "w": 12,
+        "h": 5
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT ROUND(AVG(records_loaded), 2) AS \"Avg CIs Per Job\" FROM connector_run_history WHERE status = 'completed' AND started_at >= NOW() - INTERVAL '7 days' AND records_loaded > 0;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "blue"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "area",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 9,
+      "title": "Total CIs Discovered (Last 7 Days)",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 5
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT SUM(records_loaded) AS \"Total CIs\" FROM connector_run_history WHERE status = 'completed' AND started_at >= NOW() - INTERVAL '7 days';",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "area",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 10,
+      "title": "Discovery Job Status Over Time (Last 7 Days)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 24,
+        "h": 10
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT time_bucket('1 hour', started_at) AS time, status, COUNT(*) AS count FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '7 days' GROUP BY time_bucket('1 hour', started_at), status ORDER BY time;",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "completed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "running"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Connector Performance Comparison (Last 24h)",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 35,
+        "w": 24,
+        "h": 10
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT connector_type AS \"Connector\", COUNT(*) AS \"Total Runs\", SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS \"Completed\", SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS \"Failed\", ROUND(100.0 * SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) / COUNT(*), 2) AS \"Success Rate %\", ROUND(AVG(duration_ms / 1000.0), 2) AS \"Avg Duration (sec)\", SUM(records_loaded) AS \"Total CIs\", ROUND(AVG(records_loaded), 2) AS \"Avg CIs/Run\" FROM connector_run_history WHERE started_at >= NOW() - INTERVAL '24 hours' GROUP BY connector_type ORDER BY \"Total Runs\" DESC;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Success Rate %"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 130
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": 0,
+                      "color": "red"
+                    },
+                    {
+                      "value": 70,
+                      "color": "yellow"
+                    },
+                    {
+                      "value": 90,
+                      "color": "green"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Total Runs",
+            "desc": true
+          }
+        ]
+      }
+    }
+  ],
+  "uid": "cmdb-discovery-operations"
 }

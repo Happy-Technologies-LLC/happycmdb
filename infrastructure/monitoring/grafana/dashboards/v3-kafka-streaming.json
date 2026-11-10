@@ -1,237 +1,330 @@
 {
-  "dashboard": {
-    "title": "HappyCMDB v3.0 - Kafka Event Streaming",
-    "uid": "v3-kafka-streaming",
-    "tags": ["happycmdb", "v3.0", "kafka", "events"],
-    "timezone": "browser",
-    "schemaVersion": 38,
-    "version": 1,
-    "refresh": "30s",
-    "panels": [
-      {
-        "id": 1,
-        "title": "Kafka Brokers Up",
-        "type": "stat",
-        "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
-        "targets": [
-          {
-            "expr": "count(up{job=\"kafka-jmx\"} == 1)",
-            "legendFormat": "Active Brokers"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "red"},
-                {"value": 2, "color": "yellow"},
-                {"value": 3, "color": "green"}
-              ]
-            }
-          }
+  "title": "HappyCMDB v3.0 - Kafka Event Streaming",
+  "uid": "v3-kafka-streaming",
+  "tags": [
+    "happycmdb",
+    "v3.0",
+    "kafka",
+    "events"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Kafka Brokers Up",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "count(up{job=\"kafka-jmx\"} == 1)",
+          "legendFormat": "Active Brokers"
         }
-      },
-      {
-        "id": 2,
-        "title": "Total Event Throughput",
-        "type": "stat",
-        "gridPos": {"x": 8, "y": 0, "w": 8, "h": 4},
-        "targets": [
-          {
-            "expr": "sum(rate(kafka_topic_partition_current_offset[5m]))",
-            "legendFormat": "Events/sec"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "ops"
-          }
-        }
-      },
-      {
-        "id": 3,
-        "title": "Total Consumer Lag",
-        "type": "stat",
-        "gridPos": {"x": 16, "y": 0, "w": 8, "h": 4},
-        "targets": [
-          {
-            "expr": "sum(kafka_consumer_lag_records)",
-            "legendFormat": "Lag (records)"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "green"},
-                {"value": 10000, "color": "yellow"},
-                {"value": 50000, "color": "red"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 4,
-        "title": "Event Throughput by Topic",
-        "type": "timeseries",
-        "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "topic:cmdb_kafka_events:rate5m",
-            "legendFormat": "{{topic}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "ops"
-          }
-        }
-      },
-      {
-        "id": 5,
-        "title": "Consumer Lag by Group",
-        "type": "timeseries",
-        "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "consumer_group:cmdb_kafka_consumer_lag:max",
-            "legendFormat": "{{consumer_group}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short"
-          }
-        }
-      },
-      {
-        "id": 6,
-        "title": "Event Processing Latency (p95)",
-        "type": "timeseries",
-        "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "topic:cmdb_kafka_latency_ms:p95",
-            "legendFormat": "{{topic}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "ms"
-          }
-        }
-      },
-      {
-        "id": 7,
-        "title": "Broker Disk Usage",
-        "type": "bargauge",
-        "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "kafka_log_log_size_value / (1024*1024*1024)",
-            "legendFormat": "{{broker}}"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "decgbytes"
-          }
-        },
-        "options": {
-          "orientation": "horizontal"
-        }
-      },
-      {
-        "id": 8,
-        "title": "Messages per Topic (24h)",
-        "type": "bargauge",
-        "gridPos": {"x": 0, "y": 20, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "sum by (topic) (increase(kafka_topic_partition_current_offset[24h]))",
-            "legendFormat": "{{topic}}"
-          }
-        ],
-        "options": {
-          "orientation": "horizontal",
-          "displayMode": "gradient"
-        }
-      },
-      {
-        "id": 9,
-        "title": "Failed Message Processing",
-        "type": "timeseries",
-        "gridPos": {"x": 12, "y": 20, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "rate(cmdb_kafka_processing_errors_total[5m])",
-            "legendFormat": "{{topic}}"
-          }
-        ]
-      },
-      {
-        "id": 10,
-        "title": "Topics by Message Size",
-        "type": "table",
-        "gridPos": {"x": 0, "y": 28, "w": 12, "h": 8},
-        "targets": [
-          {
-            "expr": "kafka_topic_partition_replicas",
-            "legendFormat": "",
-            "format": "table"
-          }
-        ]
-      },
-      {
-        "id": 11,
-        "title": "Under-Replicated Partitions",
-        "type": "stat",
-        "gridPos": {"x": 12, "y": 28, "w": 6, "h": 8},
-        "targets": [
-          {
-            "expr": "sum(kafka_topic_partition_under_replicated_partition)",
-            "legendFormat": "Under-Replicated"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "green"},
-                {"value": 1, "color": "red"}
-              ]
-            }
-          }
-        }
-      },
-      {
-        "id": 12,
-        "title": "Offline Partitions",
-        "type": "stat",
-        "gridPos": {"x": 18, "y": 28, "w": 6, "h": 8},
-        "targets": [
-          {
-            "expr": "sum(kafka_controller_offline_partitions_count)",
-            "legendFormat": "Offline"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {"value": 0, "color": "green"},
-                {"value": 1, "color": "red"}
-              ]
-            }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "red"
+              },
+              {
+                "value": 2,
+                "color": "yellow"
+              },
+              {
+                "value": 3,
+                "color": "green"
+              }
+            ]
           }
         }
       }
-    ]
-  }
+    },
+    {
+      "id": 2,
+      "title": "Total Event Throughput",
+      "type": "stat",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(kafka_topic_partition_current_offset[5m]))",
+          "legendFormat": "Events/sec"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Total Consumer Lag",
+      "type": "stat",
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(kafka_consumer_lag_records)",
+          "legendFormat": "Lag (records)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 10000,
+                "color": "yellow"
+              },
+              {
+                "value": 50000,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Event Throughput by Topic",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "topic:cmdb_kafka_events:rate5m",
+          "legendFormat": "{{topic}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Consumer Lag by Group",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "consumer_group:cmdb_kafka_consumer_lag:max",
+          "legendFormat": "{{consumer_group}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Event Processing Latency (p95)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "topic:cmdb_kafka_latency_ms:p95",
+          "legendFormat": "{{topic}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Broker Disk Usage",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "kafka_log_log_size_value / (1024*1024*1024)",
+          "legendFormat": "{{broker}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decgbytes"
+        }
+      },
+      "options": {
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 8,
+      "title": "Messages per Topic (24h)",
+      "type": "bargauge",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (topic) (increase(kafka_topic_partition_current_offset[24h]))",
+          "legendFormat": "{{topic}}"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      }
+    },
+    {
+      "id": 9,
+      "title": "Failed Message Processing",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(cmdb_kafka_processing_errors_total[5m])",
+          "legendFormat": "{{topic}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Topics by Message Size",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "kafka_topic_partition_replicas",
+          "legendFormat": "",
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Under-Replicated Partitions",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(kafka_topic_partition_under_replicated_partition)",
+          "legendFormat": "Under-Replicated"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 1,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "Offline Partitions",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 28,
+        "w": 6,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(kafka_controller_offline_partitions_count)",
+          "legendFormat": "Offline"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 1,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
 }

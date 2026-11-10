@@ -1,579 +1,588 @@
 {
-  "dashboard": {
-    "title": "CMDB Relationship Analytics",
-    "tags": ["cmdb", "relationships", "graph", "analytics"],
-    "timezone": "browser",
-    "schemaVersion": 38,
-    "version": 1,
-    "refresh": "5m",
-    "time": {
-      "from": "now-30d",
-      "to": "now"
-    },
-    "panels": [
-      {
-        "id": 1,
-        "title": "Relationship Types Distribution",
-        "type": "piechart",
-        "gridPos": {
-          "x": 0,
-          "y": 0,
-          "w": 12,
-          "h": 12
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT relationship_type AS metric, COUNT(*) AS value FROM cmdb.fact_ci_relationships WHERE is_active = TRUE GROUP BY relationship_type ORDER BY value DESC;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "options": {
-          "pieType": "pie",
-          "legend": {
-            "displayMode": "table",
-            "placement": "right",
-            "values": ["value", "percent"]
-          },
-          "tooltip": {
-            "mode": "single"
-          }
-        },
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short"
-          }
-        }
+  "title": "CMDB Relationship Analytics",
+  "tags": [
+    "cmdb",
+    "relationships",
+    "graph",
+    "analytics"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "5m",
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Relationship Types Distribution",
+      "type": "piechart",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 12
       },
-      {
-        "id": 2,
-        "title": "Total Active Relationships",
-        "type": "stat",
-        "gridPos": {
-          "x": 12,
-          "y": 0,
-          "w": 6,
-          "h": 6
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT COUNT(*) AS \"Active Relationships\" FROM cmdb.fact_ci_relationships WHERE is_active = TRUE;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "blue"
-                }
-              ]
-            }
-          }
-        },
-        "options": {
-          "textMode": "value_and_name",
-          "graphMode": "area",
-          "colorMode": "background"
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT relationship_type AS metric, COUNT(*) AS value FROM cmdb.fact_ci_relationships WHERE is_active = TRUE GROUP BY relationship_type ORDER BY value DESC;",
+          "format": "table",
+          "refId": "A"
         }
-      },
-      {
-        "id": 3,
-        "title": "Orphaned CIs (No Relationships)",
-        "type": "stat",
-        "gridPos": {
-          "x": 18,
-          "y": 0,
-          "w": 6,
-          "h": 6
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT COUNT(*) AS \"Orphaned CIs\" FROM cmdb.dim_ci c WHERE c.is_current = TRUE AND NOT EXISTS (SELECT 1 FROM cmdb.fact_ci_relationships r WHERE (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) AND r.is_active = TRUE);",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "green"
-                },
-                {
-                  "value": 10,
-                  "color": "yellow"
-                },
-                {
-                  "value": 50,
-                  "color": "red"
-                }
-              ]
-            }
-          }
-        },
-        "options": {
-          "textMode": "value_and_name",
-          "graphMode": "area",
-          "colorMode": "background"
-        }
-      },
-      {
-        "id": 4,
-        "title": "Average Connections Per CI",
-        "type": "stat",
-        "gridPos": {
-          "x": 12,
-          "y": 6,
-          "w": 6,
-          "h": 6
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT ROUND(AVG(connection_count), 2) AS \"Avg Connections\" FROM (SELECT c.ci_key, COUNT(*) AS connection_count FROM cmdb.dim_ci c INNER JOIN cmdb.fact_ci_relationships r ON (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) WHERE c.is_current = TRUE AND r.is_active = TRUE GROUP BY c.ci_key) AS ci_connections;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "decimals": 2,
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "blue"
-                }
-              ]
-            }
-          }
-        },
-        "options": {
-          "textMode": "value_and_name",
-          "graphMode": "area",
-          "colorMode": "background"
-        }
-      },
-      {
-        "id": 5,
-        "title": "Max Connections (Single CI)",
-        "type": "stat",
-        "gridPos": {
-          "x": 18,
-          "y": 6,
-          "w": 6,
-          "h": 6
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT MAX(connection_count) AS \"Max Connections\" FROM (SELECT c.ci_key, COUNT(*) AS connection_count FROM cmdb.dim_ci c INNER JOIN cmdb.fact_ci_relationships r ON (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) WHERE c.is_current = TRUE AND r.is_active = TRUE GROUP BY c.ci_key) AS ci_connections;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "unit": "short",
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "green"
-                },
-                {
-                  "value": 50,
-                  "color": "yellow"
-                },
-                {
-                  "value": 100,
-                  "color": "red"
-                }
-              ]
-            }
-          }
-        },
-        "options": {
-          "textMode": "value_and_name",
-          "graphMode": "none",
-          "colorMode": "background"
-        }
-      },
-      {
-        "id": 6,
-        "title": "Most Dependent CIs (Top 20)",
-        "type": "table",
-        "gridPos": {
-          "x": 0,
-          "y": 12,
-          "w": 12,
-          "h": 12
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT c.ci_name AS \"CI Name\", c.ci_type AS \"Type\", c.environment AS \"Environment\", (SELECT COUNT(*) FROM cmdb.fact_ci_relationships r WHERE r.to_ci_key = c.ci_key AND r.is_active = TRUE) AS \"Incoming Dependencies\", (SELECT COUNT(*) FROM cmdb.fact_ci_relationships r WHERE r.from_ci_key = c.ci_key AND r.is_active = TRUE) AS \"Outgoing Dependencies\", (SELECT COUNT(*) FROM cmdb.fact_ci_relationships r WHERE (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) AND r.is_active = TRUE) AS \"Total Connections\" FROM cmdb.dim_ci c WHERE c.is_current = TRUE AND EXISTS (SELECT 1 FROM cmdb.fact_ci_relationships r WHERE (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) AND r.is_active = TRUE) ORDER BY \"Total Connections\" DESC LIMIT 20;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "custom": {
-              "align": "left",
-              "filterable": true
-            }
-          },
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "Total Connections"
-              },
-              "properties": [
-                {
-                  "id": "custom.width",
-                  "value": 150
-                },
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "thresholds"
-                  }
-                },
-                {
-                  "id": "thresholds",
-                  "value": {
-                    "mode": "absolute",
-                    "steps": [
-                      {
-                        "value": 0,
-                        "color": "green"
-                      },
-                      {
-                        "value": 20,
-                        "color": "yellow"
-                      },
-                      {
-                        "value": 50,
-                        "color": "red"
-                      }
-                    ]
-                  }
-                }
-              ]
-            }
+      ],
+      "options": {
+        "pieType": "pie",
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "value",
+            "percent"
           ]
         },
-        "options": {
-          "showHeader": true,
-          "sortBy": [
-            {
-              "displayName": "Total Connections",
-              "desc": true
-            }
-          ]
+        "tooltip": {
+          "mode": "single"
         }
       },
-      {
-        "id": 7,
-        "title": "Relationship Growth Over Time (Last 30 Days)",
-        "type": "timeseries",
-        "gridPos": {
-          "x": 12,
-          "y": 12,
-          "w": 12,
-          "h": 12
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT time_bucket('1 day', discovered_at) AS time, COUNT(*) AS \"New Relationships\" FROM cmdb.fact_ci_relationships WHERE discovered_at >= NOW() - INTERVAL '30 days' GROUP BY time_bucket('1 day', discovered_at) ORDER BY time;",
-            "format": "time_series",
-            "refId": "A"
-          },
-          {
-            "rawSql": "SELECT time_bucket('1 day', discovered_at) AS time, (SELECT COUNT(*) FROM cmdb.fact_ci_relationships WHERE is_active = TRUE AND discovered_at <= time_bucket.time) AS \"Cumulative Relationships\" FROM (SELECT time_bucket('1 day', discovered_at) AS time FROM cmdb.fact_ci_relationships WHERE discovered_at >= NOW() - INTERVAL '30 days' GROUP BY time_bucket('1 day', discovered_at)) AS time_bucket ORDER BY time;",
-            "format": "time_series",
-            "refId": "B"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "color": {
-              "mode": "palette-classic"
-            },
-            "custom": {
-              "drawStyle": "line",
-              "lineInterpolation": "smooth",
-              "fillOpacity": 15,
-              "showPoints": "auto"
-            },
-            "unit": "short"
-          },
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "New Relationships"
-              },
-              "properties": [
-                {
-                  "id": "custom.fillOpacity",
-                  "value": 30
-                }
-              ]
-            },
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "Cumulative Relationships"
-              },
-              "properties": [
-                {
-                  "id": "custom.drawStyle",
-                  "value": "line"
-                },
-                {
-                  "id": "custom.lineStyle",
-                  "value": {
-                    "dash": [10, 10],
-                    "fill": "dash"
-                  }
-                }
-              ]
-            }
-          ]
-        },
-        "options": {
-          "tooltip": {
-            "mode": "multi"
-          },
-          "legend": {
-            "displayMode": "list",
-            "placement": "bottom"
-          }
-        }
-      },
-      {
-        "id": 8,
-        "title": "Relationships by CI Type Pairs",
-        "type": "table",
-        "gridPos": {
-          "x": 0,
-          "y": 24,
-          "w": 12,
-          "h": 12
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT from_ci.ci_type AS \"From Type\", r.relationship_type AS \"Relationship\", to_ci.ci_type AS \"To Type\", COUNT(*) AS \"Count\" FROM cmdb.fact_ci_relationships r INNER JOIN cmdb.dim_ci from_ci ON r.from_ci_key = from_ci.ci_key INNER JOIN cmdb.dim_ci to_ci ON r.to_ci_key = to_ci.ci_key WHERE r.is_active = TRUE AND from_ci.is_current = TRUE AND to_ci.is_current = TRUE GROUP BY from_ci.ci_type, r.relationship_type, to_ci.ci_type ORDER BY \"Count\" DESC LIMIT 50;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "custom": {
-              "align": "left",
-              "filterable": true
-            }
-          },
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "Count"
-              },
-              "properties": [
-                {
-                  "id": "custom.width",
-                  "value": 100
-                },
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "continuous-GrYlRd"
-                  }
-                }
-              ]
-            }
-          ]
-        },
-        "options": {
-          "showHeader": true,
-          "sortBy": [
-            {
-              "displayName": "Count",
-              "desc": true
-            }
-          ]
-        }
-      },
-      {
-        "id": 9,
-        "title": "Orphaned CIs by Type",
-        "type": "barchart",
-        "gridPos": {
-          "x": 12,
-          "y": 24,
-          "w": 12,
-          "h": 12
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT c.ci_type AS metric, COUNT(*) AS value FROM cmdb.dim_ci c WHERE c.is_current = TRUE AND NOT EXISTS (SELECT 1 FROM cmdb.fact_ci_relationships r WHERE (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) AND r.is_active = TRUE) GROUP BY c.ci_type ORDER BY value DESC;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "color": {
-              "mode": "thresholds"
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "value": 0,
-                  "color": "green"
-                },
-                {
-                  "value": 5,
-                  "color": "yellow"
-                },
-                {
-                  "value": 10,
-                  "color": "red"
-                }
-              ]
-            },
-            "unit": "short"
-          }
-        },
-        "options": {
-          "orientation": "horizontal",
-          "xTickLabelRotation": 0,
-          "legend": {
-            "displayMode": "hidden"
-          }
-        }
-      },
-      {
-        "id": 10,
-        "title": "Relationship Strength Distribution",
-        "type": "histogram",
-        "gridPos": {
-          "x": 0,
-          "y": 36,
-          "w": 12,
-          "h": 10
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT relationship_strength AS value FROM cmdb.fact_ci_relationships WHERE is_active = TRUE AND relationship_strength IS NOT NULL;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "color": {
-              "mode": "palette-classic"
-            },
-            "unit": "short"
-          }
-        },
-        "options": {
-          "legend": {
-            "displayMode": "list",
-            "placement": "bottom"
-          }
-        }
-      },
-      {
-        "id": 11,
-        "title": "Recently Verified Relationships (Last 7 Days)",
-        "type": "table",
-        "gridPos": {
-          "x": 12,
-          "y": 36,
-          "w": 12,
-          "h": 10
-        },
-        "datasource": "HappyCMDB",
-        "targets": [
-          {
-            "rawSql": "SELECT from_ci.ci_name AS \"From CI\", r.relationship_type AS \"Type\", to_ci.ci_name AS \"To CI\", r.last_verified_at AS \"Last Verified\", r.relationship_strength AS \"Strength\" FROM cmdb.fact_ci_relationships r INNER JOIN cmdb.dim_ci from_ci ON r.from_ci_key = from_ci.ci_key INNER JOIN cmdb.dim_ci to_ci ON r.to_ci_key = to_ci.ci_key WHERE r.is_active = TRUE AND r.last_verified_at >= NOW() - INTERVAL '7 days' AND from_ci.is_current = TRUE AND to_ci.is_current = TRUE ORDER BY r.last_verified_at DESC LIMIT 50;",
-            "format": "table",
-            "refId": "A"
-          }
-        ],
-        "fieldConfig": {
-          "defaults": {
-            "custom": {
-              "align": "left",
-              "filterable": true
-            }
-          },
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "Strength"
-              },
-              "properties": [
-                {
-                  "id": "custom.width",
-                  "value": 100
-                },
-                {
-                  "id": "color",
-                  "value": {
-                    "mode": "continuous-GrYlRd"
-                  }
-                }
-              ]
-            }
-          ]
-        },
-        "options": {
-          "showHeader": true
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
         }
       }
-    ]
-  },
-  "overwrite": true
+    },
+    {
+      "id": 2,
+      "title": "Total Active Relationships",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 6
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) AS \"Active Relationships\" FROM cmdb.fact_ci_relationships WHERE is_active = TRUE;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "blue"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "area",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 3,
+      "title": "Orphaned CIs (No Relationships)",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 6
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT COUNT(*) AS \"Orphaned CIs\" FROM cmdb.dim_ci c WHERE c.is_current = TRUE AND NOT EXISTS (SELECT 1 FROM cmdb.fact_ci_relationships r WHERE (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) AND r.is_active = TRUE);",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 10,
+                "color": "yellow"
+              },
+              {
+                "value": 50,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "area",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Average Connections Per CI",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 6,
+        "w": 6,
+        "h": 6
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT ROUND(AVG(connection_count), 2) AS \"Avg Connections\" FROM (SELECT c.ci_key, COUNT(*) AS connection_count FROM cmdb.dim_ci c INNER JOIN cmdb.fact_ci_relationships r ON (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) WHERE c.is_current = TRUE AND r.is_active = TRUE GROUP BY c.ci_key) AS ci_connections;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 2,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "blue"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "area",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 5,
+      "title": "Max Connections (Single CI)",
+      "type": "stat",
+      "gridPos": {
+        "x": 18,
+        "y": 6,
+        "w": 6,
+        "h": 6
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT MAX(connection_count) AS \"Max Connections\" FROM (SELECT c.ci_key, COUNT(*) AS connection_count FROM cmdb.dim_ci c INNER JOIN cmdb.fact_ci_relationships r ON (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) WHERE c.is_current = TRUE AND r.is_active = TRUE GROUP BY c.ci_key) AS ci_connections;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 50,
+                "color": "yellow"
+              },
+              {
+                "value": 100,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "none",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 6,
+      "title": "Most Dependent CIs (Top 20)",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 12
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT c.ci_name AS \"CI Name\", c.ci_type AS \"Type\", c.environment AS \"Environment\", (SELECT COUNT(*) FROM cmdb.fact_ci_relationships r WHERE r.to_ci_key = c.ci_key AND r.is_active = TRUE) AS \"Incoming Dependencies\", (SELECT COUNT(*) FROM cmdb.fact_ci_relationships r WHERE r.from_ci_key = c.ci_key AND r.is_active = TRUE) AS \"Outgoing Dependencies\", (SELECT COUNT(*) FROM cmdb.fact_ci_relationships r WHERE (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) AND r.is_active = TRUE) AS \"Total Connections\" FROM cmdb.dim_ci c WHERE c.is_current = TRUE AND EXISTS (SELECT 1 FROM cmdb.fact_ci_relationships r WHERE (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) AND r.is_active = TRUE) ORDER BY \"Total Connections\" DESC LIMIT 20;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total Connections"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 150
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "thresholds"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": 0,
+                      "color": "green"
+                    },
+                    {
+                      "value": 20,
+                      "color": "yellow"
+                    },
+                    {
+                      "value": 50,
+                      "color": "red"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Total Connections",
+            "desc": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "title": "Relationship Growth Over Time (Last 30 Days)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 12
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT time_bucket('1 day', discovered_at) AS time, COUNT(*) AS \"New Relationships\" FROM cmdb.fact_ci_relationships WHERE discovered_at >= NOW() - INTERVAL '30 days' GROUP BY time_bucket('1 day', discovered_at) ORDER BY time;",
+          "format": "time_series",
+          "refId": "A"
+        },
+        {
+          "rawSql": "SELECT time_bucket('1 day', discovered_at) AS time, (SELECT COUNT(*) FROM cmdb.fact_ci_relationships WHERE is_active = TRUE AND discovered_at <= time_bucket.time) AS \"Cumulative Relationships\" FROM (SELECT time_bucket('1 day', discovered_at) AS time FROM cmdb.fact_ci_relationships WHERE discovered_at >= NOW() - INTERVAL '30 days' GROUP BY time_bucket('1 day', discovered_at)) AS time_bucket ORDER BY time;",
+          "format": "time_series",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "fillOpacity": 15,
+            "showPoints": "auto"
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "New Relationships"
+            },
+            "properties": [
+              {
+                "id": "custom.fillOpacity",
+                "value": 30
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Cumulative Relationships"
+            },
+            "properties": [
+              {
+                "id": "custom.drawStyle",
+                "value": "line"
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "dash": [
+                    10,
+                    10
+                  ],
+                  "fill": "dash"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Relationships by CI Type Pairs",
+      "type": "table",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 12
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT from_ci.ci_type AS \"From Type\", r.relationship_type AS \"Relationship\", to_ci.ci_type AS \"To Type\", COUNT(*) AS \"Count\" FROM cmdb.fact_ci_relationships r INNER JOIN cmdb.dim_ci from_ci ON r.from_ci_key = from_ci.ci_key INNER JOIN cmdb.dim_ci to_ci ON r.to_ci_key = to_ci.ci_key WHERE r.is_active = TRUE AND from_ci.is_current = TRUE AND to_ci.is_current = TRUE GROUP BY from_ci.ci_type, r.relationship_type, to_ci.ci_type ORDER BY \"Count\" DESC LIMIT 50;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Count"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-GrYlRd"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Count",
+            "desc": true
+          }
+        ]
+      }
+    },
+    {
+      "id": 9,
+      "title": "Orphaned CIs by Type",
+      "type": "barchart",
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 12
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT c.ci_type AS metric, COUNT(*) AS value FROM cmdb.dim_ci c WHERE c.is_current = TRUE AND NOT EXISTS (SELECT 1 FROM cmdb.fact_ci_relationships r WHERE (r.from_ci_key = c.ci_key OR r.to_ci_key = c.ci_key) AND r.is_active = TRUE) GROUP BY c.ci_type ORDER BY value DESC;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": 0,
+                "color": "green"
+              },
+              {
+                "value": 5,
+                "color": "yellow"
+              },
+              {
+                "value": 10,
+                "color": "red"
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "xTickLabelRotation": 0,
+        "legend": {
+          "displayMode": "hidden"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Relationship Strength Distribution",
+      "type": "histogram",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 12,
+        "h": 10
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT relationship_strength AS value FROM cmdb.fact_ci_relationships WHERE is_active = TRUE AND relationship_strength IS NOT NULL;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Recently Verified Relationships (Last 7 Days)",
+      "type": "table",
+      "gridPos": {
+        "x": 12,
+        "y": 36,
+        "w": 12,
+        "h": 10
+      },
+      "datasource": "HappyCMDB",
+      "targets": [
+        {
+          "rawSql": "SELECT from_ci.ci_name AS \"From CI\", r.relationship_type AS \"Type\", to_ci.ci_name AS \"To CI\", r.last_verified_at AS \"Last Verified\", r.relationship_strength AS \"Strength\" FROM cmdb.fact_ci_relationships r INNER JOIN cmdb.dim_ci from_ci ON r.from_ci_key = from_ci.ci_key INNER JOIN cmdb.dim_ci to_ci ON r.to_ci_key = to_ci.ci_key WHERE r.is_active = TRUE AND r.last_verified_at >= NOW() - INTERVAL '7 days' AND from_ci.is_current = TRUE AND to_ci.is_current = TRUE ORDER BY r.last_verified_at DESC LIMIT 50;",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Strength"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-GrYlRd"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    }
+  ],
+  "uid": "cmdb-relationship-analytics"
 }

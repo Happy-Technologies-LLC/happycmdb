@@ -201,14 +201,19 @@ POSTGRES_SSL_MODE=verify-full
 POSTGRES_SSL_CA_FILE=/ssl/ca.crt
 ```
 
-The Postgres client reads only `POSTGRES_SSL_MODE`, `POSTGRES_SSL_ENABLED` (client mode only when `POSTGRES_SSL_MODE`
-is unset: `on` = `require`, `off` = `disable`) and `POSTGRES_SSL_CA_FILE`. It does not present a client certificate or
+The Postgres client reads only `POSTGRES_SSL_MODE`, `POSTGRES_SSL_ENABLED` and `POSTGRES_SSL_CA_FILE` (`resolveSsl` in
+`packages/database/src/postgres/client.ts`). `POSTGRES_SSL_ENABLED` is consulted only when `POSTGRES_SSL_MODE` is unset
+(or empty): `on` means `require`, and any other value is used as the mode itself, so `off`, `false`, `disable`,
+`require`, `prefer` and `verify-full` are all accepted. It does not present a client certificate or
 key, and no other `POSTGRES_SSL_*` variable is honored (there are no client certificate, client key or CA-path settings;
 use `POSTGRES_SSL_CA_FILE` for the CA). The server certificate and key are the postgres `ssl_cert_file` / `ssl_key_file`
 flags shown under Docker Compose Configuration below.
 With `NODE_ENV=production` and a non-local host, leaving both `POSTGRES_SSL_MODE` and `POSTGRES_SSL_ENABLED` unset
-refuses to start. An unsupported `POSTGRES_SSL_MODE` value, or a `POSTGRES_SSL_ENABLED` value other than `on`, `off`,
-`false` or `disable` (for example `true`), refuses to start in every environment, not only production.
+refuses to start. An unsupported mode value (for example `POSTGRES_SSL_MODE=bogus`, or `POSTGRES_SSL_ENABLED=true` while
+`POSTGRES_SSL_MODE` is unset) also refuses to start, in every environment. The shipped compose always sets
+`POSTGRES_SSL_MODE` for the api-server (`${POSTGRES_SSL_MODE:-prefer}`), so for compose deploys `POSTGRES_SSL_ENABLED`
+never selects the api-server's client mode there; it only drives the server flag `-c ssl=${POSTGRES_SSL_ENABLED:-off}`
+on the `postgres` service.
 See [environment-variables.md](../configuration/environment-variables.md) for the full table.
 
 ::: warning The shipped compose does not support `verify-full`
@@ -219,11 +224,14 @@ See [environment-variables.md](../configuration/environment-variables.md) for th
   verifies against the Node.js trust store, so a private CA is rejected. A `POSTGRES_SSL_CA_FILE=/ssl/ca.crt` line in
   `.env` has no effect, because the variable never reaches the container.
 - **Grafana's own database**: `GF_DATABASE_SSL_MODE` is `${POSTGRES_SSL_MODE:-disable}`, so `verify-full` in `.env`
-  switches it to verify-full, and no root certificate is set for it, so it verifies against the system roots.
+  switches it to verify-full. The compose file sets no `GF_DATABASE_CA_CERT_PATH`, and Grafana 10.2.0 then passes an
+  empty `sslrootcert` to `lib/pq` v1.10.9, which loads no root certificate and verifies against the system roots, so a
+  private CA is rejected (checked in the Grafana v10.2.0 and `lib/pq` v1.10.9 sources, not by running a container).
 - **Grafana datasources**: `sslmode: ${POSTGRES_SSL_MODE:-prefer}` in
   `infrastructure/monitoring/grafana/provisioning/datasources/postgres.yml` is expanded from the Grafana container's own
-  environment, which the compose file populates with `GF_*` variables only. The value in `.env` does not reach it, and
-  the file is not mounted today because the compose mount path is wrong (tracked separately as HAP-1820).
+  environment. The compose `grafana` service mounts the provisioning directory (HAP-1820), so both datasources are
+  provisioned, but its `environment` carries `GF_*` variables only: `POSTGRES_SSL_MODE` and the `POSTGRES_*` credentials
+  from `.env` do not reach it, so the datasources cannot connect until that env is wired (HAP-1827).
 
 To run `verify-full` with this compose file, add these in a compose override file; the shipped file does none of it:
 
@@ -239,7 +247,7 @@ To run `verify-full` with this compose file, add these in a compose override fil
    restarted.
 3. Grafana's own database: set `GF_DATABASE_CA_CERT_PATH` to a CA file mounted into the Grafana container, and set
    `GF_DATABASE_SSL_MODE` independently of the shared `POSTGRES_SSL_MODE` if it should differ.
-4. Grafana datasources (once HAP-1820 mounts the provisioning file): set the mode literally in the file rather than
+4. Grafana datasources (once HAP-1827 wires `POSTGRES_*` into the `grafana` service environment): set the mode literally in the file rather than
    from `POSTGRES_SSL_MODE`, and use one CA method: `jsonData.sslRootCertFile` pointing at a mounted CA file, with the
    default `tlsConfigurationMethod` (`file-path`). Do not mix it with `secureJsonData.tlsCACert`, which applies only to
    `tlsConfigurationMethod: file-content`.
@@ -516,6 +524,20 @@ Already configured in `infrastructure/docker/nginx.conf`:
 - X-Content-Type-Options: nosniff
 - X-XSS-Protection: 1; mode=block
 - Referrer-Policy: strict-origin-when-cross-origin
+
+#### Rate Limiting (Nginx)
+
+`infrastructure/docker/nginx.conf` also rate-limits per client address in front of the application limits above:
+
+| Zone | Applies to | Limit | Why |
+|------|------------|-------|-----|
+| `auth_limit` | `POST /api/v1/auth/login`, `PUT /api/v1/auth/password` (any letter case, optional trailing slash) | 5r/m, burst 2 | Password guessing. Only these two endpoints check a password. |
+| `auth_session_limit` | Every other `/api/v1/auth/` path (`refresh`, `me`, `logout`, `profile`, `api-key(s)`, `account`) | 2r/s, burst 20 | Flood damping only. A page load sends `refresh` + `me`, and the web UI signs the user out on a 429 from `refresh`, so this zone admits 10 tabs restored at once. |
+| `api_limit` / `graphql_limit` | Remaining `/api/` paths, `/graphql` | 100r/s burst 50, 50r/s burst 20 | General flood protection. |
+
+**Behind a load balancer, CDN or NAT**, nginx sees the proxy's address, so every client shares one bucket and a few failed logins lock everyone out of `auth_limit`. Uncomment the `set_real_ip_from` / `real_ip_header` lines at the top of `nginx.conf` and set `set_real_ip_from` to your proxy's address range only (never `0.0.0.0/0`, which lets any client pick its own bucket by sending the header). nginx then appends that client address to `X-Forwarded-For`, so the api-server's own limits keep `TRUST_PROXY=1`; see [Proxy Trust & Login Rate Limiting](/configuration/environment-variables#proxy-trust-login-rate-limiting).
+
+`bash infrastructure/docker/test-nginx-auth-limits.sh` (needs Docker) runs the config against a stub upstream and checks these limits.
 
 ### Secrets Management
 

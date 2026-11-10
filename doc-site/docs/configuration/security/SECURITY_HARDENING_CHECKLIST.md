@@ -270,7 +270,7 @@ This checklist provides a comprehensive security hardening guide for HappyCMDB p
 - [ ] **Global rate limiting**
   - Max 100 requests per minute per IP
   - Burst allowance for legitimate traffic spikes
-  - `429 Too Many Requests` response with `Retry-After` header
+  - `429 Too Many Requests` response with `_retryAfter` (seconds) in the body and `X-RateLimit-Reset` (Unix epoch milliseconds) header; no `Retry-After` header is sent
 
 - [ ] **Endpoint-specific rate limiting**
   - Authentication endpoints: 10 requests per minute

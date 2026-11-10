@@ -802,8 +802,10 @@ Rate limit headers are included in all responses:
 ```
 X-RateLimit-Limit: 1000
 X-RateLimit-Remaining: 995
-X-RateLimit-Reset: 1633444800
+X-RateLimit-Reset: 1633444800000
 ```
+
+`X-RateLimit-Reset` is the reset time in Unix epoch milliseconds, not seconds.
 
 ---
 

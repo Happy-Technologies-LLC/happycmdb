@@ -169,26 +169,24 @@ Every API response includes rate limit information:
 ```http
 X-RateLimit-Limit: 1000
 X-RateLimit-Remaining: 999
-X-RateLimit-Reset: 1640995200
+X-RateLimit-Reset: 1640995200000
 ```
+
+`X-RateLimit-Reset` is the time the window ends, in Unix epoch milliseconds (here 2022-01-01T00:00:00.000Z), not seconds. The API does not send a `Retry-After` header.
 
 ### Rate Limit Exceeded Response
 
 ```json
 {
-  "success": false,
-  "error": {
-    "code": "RATE_LIMIT_EXCEEDED",
-    "message": "Rate limit exceeded. Please retry after 60 seconds.",
-    "details": {
-      "limit": 1000,
-      "remaining": 0,
-      "resetAt": "2025-01-15T10:35:00Z",
-      "retryAfter": 60
-    }
-  }
+  "_error": "Too Many Requests",
+  "_message": "Rate limit exceeded. Try again in 60 seconds",
+  "_retryAfter": 60,
+  "_limit": 1000,
+  "_resetAt": "2022-01-01T00:00:00.000Z"
 }
 ```
+
+`_retryAfter` is in seconds; `_resetAt` is the same instant as `X-RateLimit-Reset`, as an ISO 8601 string.
 
 **HTTP Status Code:** `429 Too Many Requests`
 
@@ -207,8 +205,10 @@ async function apiCallWithRetry(url, options, maxRetries = 3) {
     const response = await fetch(url, options);
 
     if (response.status === 429) {
-      const retryAfter = parseInt(response.headers.get('X-RateLimit-Reset'));
-      await sleep((retryAfter || 60) * 1000);
+      // X-RateLimit-Reset is Unix epoch milliseconds, not a number of seconds.
+      const reset = Number(response.headers.get('X-RateLimit-Reset'));
+      const waitMs = Number.isFinite(reset) ? Math.max(0, reset - Date.now()) : 60000;
+      await sleep(waitMs);
       continue;
     }
 
@@ -1909,8 +1909,10 @@ Rate limit headers:
 ```
 X-RateLimit-Limit: 1000
 X-RateLimit-Remaining: 999
-X-RateLimit-Reset: 1705316400
+X-RateLimit-Reset: 1705316400000
 ```
+
+`X-RateLimit-Reset` is the reset time in Unix epoch milliseconds (compare with `Date.now()`).
 
 ---
 

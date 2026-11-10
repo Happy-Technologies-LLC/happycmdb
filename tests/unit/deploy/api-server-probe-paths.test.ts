@@ -6,8 +6,14 @@
  * the registered routes had drifted apart. This reads every probe URL out of each
  * definition (Dockerfile HEALTHCHECKs, Compose healthchecks, the k8s Deployment probes,
  * the Prometheus blackbox targets) and checks, per URL:
- *   - the port equals what the api-server binds in that definition (`PORT`, read through
- *     the real `listenTargetFromEnv`; Dockerfile EXPOSE and k8s containerPort agree);
+ *   - the port equals what the api-server binds in that definition. Precedence: explicit env
+ *     `PORT` > the image's `ENV PORT` (a compose service resolves its `build.dockerfile`) > the
+ *     code default, read through the real `listenTargetFromEnv`. A compose service with no
+ *     `PORT` and no repo build, or a k8s container with no literal `PORT` (its registry image
+ *     is not derivable here), fails instead of assuming a default. Dockerfile EXPOSE and k8s
+ *     containerPort must agree: each is a named test, not a collection error;
+ *   - the scheme is plain HTTP and the host is loopback (Dockerfile/Compose, run inside the
+ *     container), `api-server` (Prometheus), or unset (k8s httpGet.host; scheme HTTP or unset);
  *   - the path is answered 2xx, anonymously, by the REAL `RestAPIServer` app (real mount
  *     order, so a health mount moved under the `/api/v1` auth gate gets a 401). Only the
  *     auth middleware and the databases are stubbed.
@@ -15,16 +21,23 @@
  */
 import { randomBytes } from 'crypto';
 import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { dirname, relative, resolve } from 'path';
 import request from 'supertest';
 import { parse, parseAllDocuments } from 'yaml';
 
 // Placeholder config so loadConfig() validates; no database is contacted.
 Object.assign(process.env, {
   JWT_SECRET: randomBytes(32).toString('hex'),
-  NEO4J_URI: 'bolt://127.0.0.1:1', NEO4J_USERNAME: 'unused', NEO4J_PASSWORD: 'unused',
-  POSTGRES_HOST: '127.0.0.1', POSTGRES_DB: 'unused', POSTGRES_USER: 'unused', POSTGRES_PASSWORD: 'unused',
-  REDIS_HOST: '127.0.0.1', KAFKA_CLIENT_ID: 'unused', KAFKA_GROUP_ID: 'unused',
+  NEO4J_URI: 'bolt://127.0.0.1:1',
+  NEO4J_USERNAME: 'unused',
+  NEO4J_PASSWORD: 'unused',
+  POSTGRES_HOST: '127.0.0.1',
+  POSTGRES_DB: 'unused',
+  POSTGRES_USER: 'unused',
+  POSTGRES_PASSWORD: 'unused',
+  REDIS_HOST: '127.0.0.1',
+  KAFKA_CLIENT_ID: 'unused',
+  KAFKA_GROUP_ID: 'unused',
 });
 
 const mockRun = jest.fn<Promise<unknown>, [string]>();
@@ -72,33 +85,88 @@ jest.mock('../../../packages/api-server/src/middleware/rate-limit.middleware', (
   };
 });
 
-import {
-  RestAPIServer,
-  listenTargetFromEnv,
-} from '../../../packages/api-server/src/rest/server';
+import { RestAPIServer, listenTargetFromEnv } from '../../../packages/api-server/src/rest/server';
 
 const REPO = resolve(__dirname, '../../..');
 const API_SERVICE_NAMES = ['api-server', 'api-server-e2e'];
 const URL_PATTERN = /https?:\/\/[^\s"'\\]+/g;
 const MAIN_COMPOSE = 'infrastructure/docker/docker-compose.yml';
 
-/** One probe URL, with the port the api-server binds in the same definition. */
-type Probe = { source: string; path: string; urlPort: number; listenPort: number };
+/**
+ * One probe URL, with the port the api-server binds in the same definition.
+ * `host` is undefined for a k8s httpGet without `host` (the pod IP). `scheme` is upper-case.
+ */
+type Probe = {
+  source: string;
+  path: string;
+  scheme: string;
+  host: string | undefined;
+  allowedHosts: (string | undefined)[];
+  urlPort: number;
+  listenPort: number;
+};
+/** A definition-consistency check; `problem` is undefined when it holds. */
+type Check = { name: string; problem: string | undefined };
+type Collected = { probes: Probe[]; checks: Check[] };
 type Node = Record<string, unknown>;
+
+// A probe run inside the container reaches the api-server through loopback.
+const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 
 const isMap = (value: unknown): value is Node =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const read = (file: string): string => readFileSync(resolve(REPO, file), 'utf8');
 
-/** The port `RestAPIServer` binds for this `PORT` value (undefined: its default). */
+/** The port `RestAPIServer` binds for this `PORT` value (undefined: its code default). */
 const listenPortFor = (portEnv: string | undefined): number =>
   listenTargetFromEnv(portEnv === undefined ? {} : { PORT: portEnv }).port;
 
 const urlPortOf = (url: URL): number => Number(url.port || (url.protocol === 'https:' ? 443 : 80));
 
+/**
+ * Runs one definition's collector. A parse/structure failure becomes a named failing check
+ * (and the definition's probes are dropped) instead of throwing during collection.
+ */
+function collect(source: string, collector: () => Collected): Collected {
+  const name = `${source}: reads as an api-server definition`;
+  try {
+    const collected = collector();
+    return {
+      probes: collected.probes,
+      checks: [{ name, problem: undefined }, ...collected.checks],
+    };
+  } catch (error) {
+    return { probes: [], checks: [{ name, problem: (error as Error).message }] };
+  }
+}
+
+/**
+ * The port the api-server binds. Precedence: explicit env `PORT` > the image's `ENV PORT` >
+ * the code default. The code default applies only when the image resolves from this repo and
+ * declares no `ENV PORT`; an image that cannot be resolved here is a problem, never a guess.
+ * `imagePort` is called only when no explicit `PORT` is set, and throws when unresolvable.
+ */
+function resolveListenPort(
+  label: string,
+  explicit: string | undefined,
+  imagePort: () => string | undefined
+): { port: number | undefined; check: Check } {
+  const name = `${label}: effective listen port resolves`;
+  try {
+    return { port: listenPortFor(explicit ?? imagePort()), check: { name, problem: undefined } };
+  } catch (error) {
+    return { port: undefined, check: { name, problem: (error as Error).message } };
+  }
+}
+
 /** Every URL in `text`; chained probes (`curl A || curl B`) yield one Probe each. */
-function probesIn(source: string, text: string, listenPort: number): Probe[] {
+function probesIn(
+  source: string,
+  text: string,
+  listenPort: number,
+  allowedHosts: string[]
+): Probe[] {
   const urls = text.match(URL_PATTERN) ?? [];
   if (urls.length === 0) throw new Error(`${source}: no probe URL in ${JSON.stringify(text)}`);
   return urls.map((raw, index) => {
@@ -106,27 +174,50 @@ function probesIn(source: string, text: string, listenPort: number): Probe[] {
     return {
       source: urls.length === 1 ? source : `${source}[url ${index + 1}]`,
       path: url.pathname,
+      scheme: url.protocol.slice(0, -1).toUpperCase(),
+      host: url.hostname,
+      allowedHosts,
       urlPort: urlPortOf(url),
       listenPort,
     };
   });
 }
 
-function dockerfileProbes(file: string): Probe[] {
-  // Join backslash continuations, then take the HEALTHCHECK/ENV/EXPOSE instructions.
-  const lines = read(file).replace(/\\\r?\n/g, ' ').split(/\r?\n/);
-  const only = (keyword: string): string[] =>
-    lines.filter((line) => new RegExp(`^\\s*${keyword}\\s`, 'i').test(line));
+/** A Dockerfile's instructions, backslash continuations joined. */
+function dockerfileInstructions(file: string): (keyword: string) => string[] {
+  const lines = read(file)
+    .replace(/\\\r?\n/g, ' ')
+    .split(/\r?\n/);
+  return (keyword) => lines.filter((line) => new RegExp(`^\\s*${keyword}\\s`, 'i').test(line));
+}
+
+/** The image's `ENV PORT`; undefined when the Dockerfile sets none. */
+function dockerfileEnvPort(file: string): string | undefined {
+  const found = dockerfileInstructions(file)('ENV').flatMap((line) =>
+    [...line.matchAll(/\bPORT=(\d+)/g)].map((m) => m[1])
+  );
+  if (found.length > 1) throw new Error(`${file}: expected at most one ENV PORT`);
+  return found[0];
+}
+
+function dockerfileProbes(file: string): Collected {
+  const only = dockerfileInstructions(file);
   const healthchecks = only('HEALTHCHECK');
   if (healthchecks.length !== 1) throw new Error(`${file}: expected one HEALTHCHECK`);
-  const portEnv = only('ENV').flatMap((line) => [...line.matchAll(/\bPORT=(\d+)/g)].map((m) => m[1]));
-  if (portEnv.length !== 1) throw new Error(`${file}: expected one ENV PORT`);
-  const listenPort = listenPortFor(portEnv[0]);
+  const portEnv = dockerfileEnvPort(file);
+  if (portEnv === undefined) throw new Error(`${file}: expected one ENV PORT`);
+  const listenPort = listenPortFor(portEnv);
   const exposed = only('EXPOSE').flatMap((line) => line.split(/\s+/).slice(1).map(Number));
-  if (exposed.length !== 1 || exposed[0] !== listenPort) {
-    throw new Error(`${file}: EXPOSE ${exposed} does not match ENV PORT ${listenPort}`);
-  }
-  return probesIn(file, healthchecks[0], listenPort);
+  const consistent = exposed.length === 1 && exposed[0] === listenPort;
+  return {
+    probes: probesIn(file, healthchecks[0], listenPort, LOOPBACK_HOSTS),
+    checks: [
+      {
+        name: `${file}: EXPOSE equals ENV PORT`,
+        problem: consistent ? undefined : `EXPOSE ${exposed} does not match ENV PORT ${listenPort}`,
+      },
+    ],
+  };
 }
 
 function envValue(environment: unknown, name: string): string | undefined {
@@ -138,21 +229,42 @@ function envValue(environment: unknown, name: string): string | undefined {
   return value === undefined ? undefined : String(value);
 }
 
-function composeProbes(file: string): Probe[] {
-  const services = (parse(read(file)) as Node).services as Node;
-  const probes = Object.entries(services)
-    .filter(([name]) => API_SERVICE_NAMES.includes(name))
-    .flatMap(([name, service]) => {
-      const healthcheck = isMap(service) ? service.healthcheck : undefined;
-      if (!isMap(healthcheck)) throw new Error(`${file}: ${name} has no healthcheck`);
-      const listenPort = listenPortFor(envValue((service as Node).environment, 'PORT'));
-      return probesIn(`${file}#${name}`, JSON.stringify(healthcheck.test), listenPort);
-    });
-  if (probes.length === 0) throw new Error(`${file}: no api-server service`);
-  return probes;
+/** The Dockerfile a compose service builds, relative to the compose file's directory. */
+function composeDockerfile(file: string, name: string, service: Node): string {
+  const build = service.build;
+  if (build === undefined) {
+    throw new Error(
+      `${name} has no build in this repo, so its image's ENV PORT is not derivable: set PORT explicitly`
+    );
+  }
+  const context = isMap(build) ? String(build.context ?? '.') : String(build);
+  const dockerfile = isMap(build) && build.dockerfile ? String(build.dockerfile) : 'Dockerfile';
+  return relative(REPO, resolve(REPO, dirname(file), context, dockerfile));
 }
 
-function kubernetesProbes(file: string): Probe[] {
+function composeProbes(file: string): Collected {
+  const services = (parse(read(file)) as Node).services as Node;
+  const probes: Probe[] = [];
+  const checks: Check[] = [];
+  for (const [name, service] of Object.entries(services)) {
+    if (!API_SERVICE_NAMES.includes(name)) continue;
+    const source = `${file}#${name}`;
+    const svc = service as Node;
+    const healthcheck = isMap(service) ? service.healthcheck : undefined;
+    if (!isMap(healthcheck)) throw new Error(`${file}: ${name} has no healthcheck`);
+    const { port, check } = resolveListenPort(source, envValue(svc.environment, 'PORT'), () =>
+      dockerfileEnvPort(composeDockerfile(file, name, svc))
+    );
+    checks.push(check);
+    if (port !== undefined) {
+      probes.push(...probesIn(source, JSON.stringify(healthcheck.test), port, LOOPBACK_HOSTS));
+    }
+  }
+  if (checks.length === 0) throw new Error(`${file}: no api-server service`);
+  return { probes, checks };
+}
+
+function kubernetesProbes(file: string): Collected {
   const deployment = parseAllDocuments(read(file))
     .map((doc) => doc.toJS() as unknown)
     .find(
@@ -162,14 +274,22 @@ function kubernetesProbes(file: string): Probe[] {
   if (!deployment) throw new Error(`${file}: no api-server Deployment`);
   const spec = ((deployment.spec as Node).template as Node).spec as Node;
   const probes: Probe[] = [];
+  const checks: Check[] = [];
   for (const container of spec.containers as Node[]) {
+    const source = `${file}#${container.name}`;
     const containerPorts = (container.ports as Node[] | undefined) ?? [];
-    const listenPort = listenPortFor(
-      envValue(
-        ((container.env as Node[] | undefined) ?? []).map((e) => `${e.name}=${e.value}`),
-        'PORT'
-      )
-    );
+    const env = (container.env as Node[] | undefined) ?? [];
+    const literal = env
+      .filter((entry) => entry.value !== undefined)
+      .map((entry) => `${entry.name}=${entry.value}`);
+    const { port: listenPort, check } = resolveListenPort(source, envValue(literal, 'PORT'), () => {
+      // A k8s image is a registry tag (`happycmdb/api-server:latest`); nothing here maps it to a Dockerfile.
+      throw new Error(
+        `${container.name} sets no literal env PORT and image ${container.image} is not derivable from this repo: set PORT explicitly`
+      );
+    });
+    checks.push(check);
+    if (listenPort === undefined) continue;
     for (const kind of ['livenessProbe', 'readinessProbe', 'startupProbe']) {
       const probe = container[kind];
       if (probe === undefined) continue;
@@ -178,48 +298,71 @@ function kubernetesProbes(file: string): Probe[] {
       // A probe port is a number or the name of a containerPort.
       const named = containerPorts.find((entry) => entry.name === httpGet.port);
       const urlPort = Number(named ? named.containerPort : httpGet.port);
-      if (named && named.containerPort !== listenPort) {
-        throw new Error(`${file}: containerPort ${named.containerPort} is not PORT ${listenPort}`);
+      if (named) {
+        checks.push({
+          name: `${source}.${kind}: named port ${named.name} is the bound port`,
+          problem:
+            named.containerPort === listenPort
+              ? undefined
+              : `containerPort ${named.containerPort} is not PORT ${listenPort}`,
+        });
       }
       probes.push({
-        source: `${file}#${container.name}.${kind}`,
+        source: `${source}.${kind}`,
         path: String(httpGet.path),
+        // httpGet.scheme defaults to HTTP and host to the pod IP; the api-server serves plain HTTP.
+        scheme: String(httpGet.scheme ?? 'HTTP'),
+        host: httpGet.host === undefined ? undefined : String(httpGet.host),
+        allowedHosts: [undefined],
         urlPort,
         listenPort,
       });
     }
-    if (!containerPorts.some((entry) => entry.containerPort === listenPort)) {
-      throw new Error(`${file}: ${container.name} declares no containerPort ${listenPort}`);
-    }
+    checks.push({
+      name: `${source}: declares containerPort equal to PORT`,
+      problem: containerPorts.some((entry) => entry.containerPort === listenPort)
+        ? undefined
+        : `declares no containerPort ${listenPort}`,
+    });
   }
-  if (probes.length === 0) throw new Error(`${file}: api-server has no probes`);
-  return probes;
+  // An unresolved port already failed a named check above; do not mask it with a collection error.
+  if (probes.length === 0 && checks.every((check) => check.problem === undefined)) {
+    throw new Error(`${file}: api-server has no probes`);
+  }
+  return { probes, checks };
 }
 
-function prometheusProbes(file: string): Probe[] {
+function prometheusProbes(file: string): Collected {
   const config = parse(read(file)) as Node;
   const job = (config.scrape_configs as Node[]).find((entry) => entry.job_name === 'blackbox');
   if (!job) throw new Error(`${file}: no blackbox job`);
   // Targets reach the api-server container on the network: the port it binds in the main compose.
-  const listenPort = composeProbes(MAIN_COMPOSE)[0].listenPort;
+  const mainProbes = composeProbes(MAIN_COMPOSE).probes;
+  if (mainProbes.length === 0) throw new Error(`${MAIN_COMPOSE}: api-server port did not resolve`);
+  const listenPort = mainProbes[0].listenPort;
   const targets = (job.static_configs as Node[]).flatMap((entry) => entry.targets as string[]);
   const probes = targets
     .filter((target) => new URL(target).hostname === 'api-server')
-    .flatMap((target) => probesIn(`${file}#${target}`, target, listenPort));
+    .flatMap((target) => probesIn(`${file}#${target}`, target, listenPort, ['api-server']));
   if (probes.length === 0) throw new Error(`${file}: no api-server blackbox target`);
-  return probes;
+  return { probes, checks: [] };
 }
 
-const PROBES: Probe[] = [
-  ...dockerfileProbes('infrastructure/docker/Dockerfile.api'),
-  ...dockerfileProbes('infrastructure/docker/Dockerfile.api.dev'),
-  ...composeProbes(MAIN_COMPOSE),
-  ...composeProbes('infrastructure/docker/docker-compose.test.yml'),
-  ...composeProbes('tests/e2e/docker-compose.e2e.yml'),
-  ...composeProbes('deploy/build01-staging.compose.yml'),
-  ...kubernetesProbes('infrastructure/kubernetes/deployments/api-server-deployment.yaml'),
-  ...prometheusProbes('infrastructure/monitoring/prometheus/prometheus.yml'),
+const DEFINITIONS: [string, (file: string) => Collected][] = [
+  ['infrastructure/docker/Dockerfile.api', dockerfileProbes],
+  ['infrastructure/docker/Dockerfile.api.dev', dockerfileProbes],
+  [MAIN_COMPOSE, composeProbes],
+  ['infrastructure/docker/docker-compose.test.yml', composeProbes],
+  ['tests/e2e/docker-compose.e2e.yml', composeProbes],
+  ['deploy/build01-staging.compose.yml', composeProbes],
+  ['infrastructure/kubernetes/deployments/api-server-deployment.yaml', kubernetesProbes],
+  ['infrastructure/monitoring/prometheus/prometheus.yml', prometheusProbes],
 ];
+const COLLECTED: Collected[] = DEFINITIONS.map(([file, collector]) =>
+  collect(file, () => collector(file))
+);
+const PROBES: Probe[] = COLLECTED.flatMap((collected) => collected.probes);
+const CHECKS: Check[] = COLLECTED.flatMap((collected) => collected.checks);
 
 // The real app, as index.ts builds it (error handling is mounted after GraphQL there, not needed).
 const app = new RestAPIServer(0).getApp();
@@ -240,8 +383,20 @@ describe('api-server probe definitions', () => {
     expect(status).toBe(401);
   });
 
+  // Definition consistency: a mismatch is a failing case with the definition in its name,
+  // never a collection error that reports `Tests: 0 total`.
+  it.each(CHECKS)('$name', ({ problem }) => {
+    expect(problem).toBeUndefined();
+  });
+
   it.each(PROBES)('$source targets the bound port $listenPort', ({ urlPort, listenPort }) => {
     expect(urlPort).toBe(listenPort);
+  });
+
+  it.each(PROBES)('$source is plain HTTP at an allowed host', ({ scheme, host, allowedHosts }) => {
+    // The api-server serves plain HTTP; a probe of `https` or of a foreign host never reaches it.
+    expect(scheme).toBe('HTTP');
+    expect(allowedHosts).toContain(host);
   });
 
   it.each(PROBES)('$source probes $path and the real app answers 2xx', async ({ path }) => {

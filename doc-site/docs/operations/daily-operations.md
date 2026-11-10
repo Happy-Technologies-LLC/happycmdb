@@ -479,8 +479,6 @@ resources:
 env:
   - name: DB_POOL_SIZE
     value: "50"
-  - name: API_RATE_LIMIT
-    value: "1000"
 ```
 
 ### Cache Optimization

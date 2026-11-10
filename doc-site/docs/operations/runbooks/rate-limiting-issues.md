@@ -113,18 +113,27 @@ docker exec cmdb-redis redis-cli set "rate_limit:blocked:$ABUSIVE_IP" "1" EX 360
 
 ### Step 2: Adjust Internal Rate Limits
 
-Edit `.env` file to adjust rate limits:
+Only the `rateLimit.endpoints` budgets that a route mounts have an effect: `auth` (login and password change, per client address), `authAccount` (login: per account + client address; password change: per verified user across all clients) and `authAccountGlobal` (login only: per account across all clients; `max: 0` turns it off), and `rest` (`POST /api/v1/auth/refresh` only). `endpoints.graphql`, `endpoints.health`, `endpoints.discovery` and `endpoints.admin` are not mounted by any route. Edit the `.env` file to adjust them:
 
 ```bash
-# Increase rate limits if legitimate traffic
-RATE_LIMIT_WINDOW_MS=60000           # 1 minute window
-RATE_LIMIT_MAX_REQUESTS=200          # Increase from 100
-RATE_LIMIT_SKIP_SUCCESSFUL_REQUESTS=false
+# Login and password change, per client address (defaults: 20 per 3600000 ms)
+RATE_LIMIT_AUTH_MAX=20
+RATE_LIMIT_AUTH_WINDOW_MS=3600000
 
-# Per-endpoint limits
-RATE_LIMIT_SEARCH_MAX=50            # Increase search endpoint limit
-RATE_LIMIT_DISCOVERY_MAX=20         # Limit discovery job submission
+# Login: per account + client address; password change: per verified user across all clients (defaults: 5 per 900000 ms)
+RATE_LIMIT_AUTH_ACCOUNT_MAX=5
+RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS=900000
+
+# Login only: per account across all clients (defaults: 20 per 900000 ms; 0 = bucket off)
+RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_MAX=20
+RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_WINDOW_MS=900000
+
+# POST /api/v1/auth/refresh only (defaults: 1000 per 3600000 ms; 0 = no limiter)
+RATE_LIMIT_REST_MAX=1000
+RATE_LIMIT_REST_WINDOW_MS=3600000
 ```
+
+A limit on any other route is an nginx zone in `infrastructure/docker/nginx.conf` (`api_limit`, `auth_limit`, `auth_session_limit`, `graphql_limit`), not an `.env` setting.
 
 Restart API server:
 
@@ -376,6 +385,6 @@ X-RateLimit-Remaining: 87
 X-RateLimit-Reset: 1678901234000
 ```
 
-`X-RateLimit-Reset` is the window end in Unix epoch milliseconds. Seconds left = `(X-RateLimit-Reset - Date.now()) / 1000`. The API sends no `Retry-After` header; a `429` body carries `_retryAfter` (seconds) and `_resetAt` (ISO 8601).
+`X-RateLimit-Reset` is the window end in Unix epoch milliseconds. Seconds left = `(X-RateLimit-Reset - Date.now()) / 1000`. The API sends no `Retry-After` header; a `429` body carries `_retryAfter` (seconds) and `_resetAt` (ISO 8601). Requests refused before the limiter runs carry no rate-limit headers: `requireAuthHeader` on refresh (a fixed `403` without `X-CMDB-Auth: 1`), and `authenticate()` / `requireJwtSession()` on password (`401`, or `403` for an API key).
 
 Clients should respect these values and implement exponential backoff.

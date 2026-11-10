@@ -165,7 +165,7 @@ Comprehensive OpenAPI 3.0 specification and Swagger UI integration for the Happy
 ### Security
 - **Two authentication methods**: JWT tokens and API keys
 - **Security schemes**: BearerAuth and ApiKeyAuth
-- **Rate limiting**: 1000/hour, 100/minute
+- **Rate limiting**: no global limiter (`ApiServer.setupMiddleware`); limiters only on `POST /auth/login`, `PUT /auth/password` and `POST /auth/refresh` (`AuthController`), plus the nginx zones in `infrastructure/docker/nginx.conf` (see [API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md#rate-limiting))
 - **Encrypted credentials**: AES-256 at rest
 - **CSP headers**: Content Security Policy for Swagger UI
 

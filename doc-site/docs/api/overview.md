@@ -76,10 +76,7 @@ curl -X GET http://localhost:3000/api/v1/cis \\
 
 ## Rate Limiting
 
-API requests are rate-limited to prevent abuse:
-
-- **Authenticated requests**: 1000 requests per hour
-- **Unauthenticated requests**: 100 requests per hour
+The API mounts no global rate limiter (`ApiServer.setupMiddleware`), so there is no per-token, per-user or per-hour request budget for REST routes in general. Limiters exist only on three auth routes registered in `AuthController` (`POST /api/v1/auth/login` and `PUT /api/v1/auth/password` through `RateLimitMiddleware.limit('auth', …)`; `POST /api/v1/auth/refresh` through its own `auth-refresh` bucket on `rateLimit.endpoints.rest`, default 1000 per hour per client address). Analysis requests (`executeBoundedAnalysis`) and GraphQL requests (`admitGraphQLRequest`) have in-process admission gates that answer `429`. The shipped `infrastructure/docker/nginx.conf` adds per-client-address zones: `api_limit` (100r/s, `burst=50`, `location /api/`), `auth_limit` (5r/m, `burst=2`, login and password change only), `auth_session_limit` (2r/s, `burst=20`, the other `/api/v1/auth/` paths) and `graphql_limit` (50r/s, `burst=20`, `location /graphql`). Budgets and zones are listed in [API_DOCUMENTATION.md](https://github.com/Happy-Technologies-LLC/happycmdb/blob/main/packages/api-server/docs/API_DOCUMENTATION.md#rate-limiting) and [Authentication](/api/authentication#rate-limiting).
 
 Only the auth endpoints (`POST /api/v1/auth/login`, `POST /api/v1/auth/refresh`, `PUT /api/v1/auth/password`) send rate limit headers, on allowed and on their own `429` responses. The headers are absent when `rateLimit.enabled` is `false`, when the request carries the bypass header (`rateLimit.bypassHeader`) with the value of `rateLimit.bypassSecret`, when the endpoint's `max` is `0` (`rateLimit.endpoints.auth.max` for login and password; `rateLimit.endpoints.rest.max` for refresh, which is then not mounted), and when the limiter store errors (refresh fails open and sets none; the fail-closed `503` of login and password carries none). Other routes send none, and their `429` responses (including nginx's) carry none either:
 ```
@@ -88,7 +85,7 @@ X-RateLimit-Remaining: 999
 X-RateLimit-Reset: 1625097600000
 ```
 
-`X-RateLimit-Reset` is the reset time in Unix epoch milliseconds, not seconds.
+`X-RateLimit-Reset` is the reset time in Unix epoch milliseconds, not seconds. Requests refused before the limiter runs carry no rate-limit headers: `requireAuthHeader` on refresh, and `authenticate()` / `requireJwtSession()` on password.
 
 ## Error Handling
 

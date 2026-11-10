@@ -152,19 +152,36 @@ curl -X GET https://cmdb.example.com/api/v1/cis \
 
 ## Rate Limiting
 
-The API implements rate limiting to ensure fair usage and system stability.
+The API mounts no global rate limiter: `ApiServer.setupMiddleware` (`rest/server.ts`) applies none, so a request outside the routes below is not rate-limited by the API itself. Limiters sit on three auth routes registered in `AuthController`, and a reverse proxy can add a global limit (see [Proxy limits](#proxy-limits)).
 
 ### Rate Limit Rules
 
-| Authentication | Rate Limit | Window |
-|----------------|------------|--------|
-| API Key | 1000 requests | 1 minute |
-| JWT Token | 500 requests | 1 minute |
-| Unauthenticated | 100 requests | 1 minute |
+| Route | Limiter | Budget (`rateLimit` config) | On a limiter store (Redis) error |
+|-------|---------|-----------------------------|----------------------------------|
+| `POST /api/v1/auth/login` | `RateLimitMiddleware.limit('auth', …)`: per client address, per account + client address, and per account across all clients | `endpoints.auth` (default 20 per 3600000 ms), `endpoints.authAccount` (5 per 900000 ms), `endpoints.authAccountGlobal` (20 per 900000 ms; `max: 0` turns it off) | fail closed: fixed `503`, `Cache-Control: no-store` |
+| `PUT /api/v1/auth/password` | `RateLimitMiddleware.limit('auth', { perUser: true, … })`: per client address and per verified user | `endpoints.auth` and `endpoints.authAccount` | fail closed: fixed `503`, `Cache-Control: no-store` |
+| `POST /api/v1/auth/refresh` | separate `auth-refresh` bucket: `RateLimitMiddleware.custom(endpointBudget('rest'), 'auth-refresh')`; it never uses up login's budget | the REST budget, `endpoints.rest` (default 1000 per 3600000 ms) | fail open: the request is let through |
+
+The refresh limiter is not mounted when `rateLimit.endpoints.rest.max` is `0`. `endpoints.graphql`, `endpoints.health`, `endpoints.discovery` and `endpoints.admin` exist in the config schema, but no route mounts a limiter on them.
+
+### Proxy limits
+
+For a limit on the other routes, use the reverse proxy. The shipped `infrastructure/docker/nginx.conf` declares four `limit_req_zone`s (keyed by `$binary_remote_addr`) and answers a refusal with `limit_req_status 429`:
+
+| Zone | Rate | Applied to | `burst` |
+|------|------|------------|---------|
+| `api_limit` | 100r/s | `location /api/`, except the paths the two auth locations below match | 50 (`nodelay`) |
+| `auth_limit` | 5r/m | `location ~* ^/api/v1/auth/(login\|password)/?$` only (`POST /api/v1/auth/login`, `PUT /api/v1/auth/password`; the regex location wins over the prefix locations) | 2 (`nodelay`) |
+| `auth_session_limit` | 2r/s | `location /api/v1/auth/`, i.e. every other `/api/v1/auth/` path (`refresh`, `me`, `logout`, `api-key(s)`, `profile`, `account`) | 20 (`nodelay`) |
+| `graphql_limit` | 50r/s | `location /graphql` | 20 (`nodelay`) |
+
+Auth paths matched by `auth_limit` or `auth_session_limit` do not also pass `api_limit`. See [Rate Limiting (Nginx)](../../../doc-site/docs/deployment/PRODUCTION_CONFIGURATION.md#rate-limiting-nginx) for the reasoning and for running nginx behind a load balancer.
+
+That file is the TLS-terminating configuration; the `web-ui` image that `infrastructure/docker/docker-compose.yml` builds (`Dockerfile.web`) copies `web-ui/nginx.conf`, which has no `limit_req` directive.
 
 ### Rate Limit Headers
 
-Only the auth rate limiter sends `X-RateLimit-*` headers: `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh` and `PUT /api/v1/auth/password`, on allowed and on `429` responses (routes registered in `AuthController`, limited through `RateLimitMiddleware.limit` and `RateLimitMiddleware.custom`; headers set by `RateLimitMiddleware.setRateLimitHeaders`). No other route sends them, and the `429` responses from the analysis, impact and GraphQL concurrency gates carry none.
+The auth rate limiters send `X-RateLimit-*` headers: `POST /api/v1/auth/login` and `PUT /api/v1/auth/password` (both `RateLimitMiddleware.limit`) and `POST /api/v1/auth/refresh` (`RateLimitMiddleware.custom`), on allowed and on `429` responses, set by `RateLimitMiddleware.setRateLimitHeaders`. They are absent when `rateLimit.enabled` is `false`, when the request carries the bypass header (`rateLimit.bypassHeader`, default `X-Internal-Service`) with the value of `rateLimit.bypassSecret`, when the endpoint's `max` is `0` (login and password; refresh is not mounted then), and when the limiter store fails (refresh fails open and sets none; the fail-closed `503` of login and password carries none). No other route sends them, and the `429` responses from the analysis, impact and GraphQL concurrency gates and from nginx carry none.
 
 ```http
 X-RateLimit-Limit: 1000
@@ -188,13 +205,14 @@ X-RateLimit-Reset: 1640995200000
 
 `_retryAfter` is in seconds; `_resetAt` is the same instant as `X-RateLimit-Reset`, as an ISO 8601 string.
 
-This flat body is sent only by the auth rate limiter (`RateLimitMiddleware.custom` and `RateLimitMiddleware.admit`, the latter behind `RateLimitMiddleware.limit`). Other `429` responses use a different body and no `X-RateLimit-*` headers:
+This flat body is sent only by the auth rate limiters (`RateLimitMiddleware.custom` for refresh and `RateLimitMiddleware.admit`, behind `RateLimitMiddleware.limit`, for login and password change). Other `429` responses use a different body and no `X-RateLimit-*` headers:
 
 | Source | Body | Headers |
 |--------|------|---------|
 | Analysis gates (`executeBoundedAnalysis`) | `{ "success": false, "error": "<Scope> analysis rate limit exceeded" }` | none |
 | Impact dependency graph (`GET /impact/graph/:rootCiId`, `orgReadGate`) | `{ "success": false, "error": "Impact analysis rate limit exceeded" }` | none |
 | GraphQL concurrency gate (`admitGraphQLRequest`) | `{ "errors": [{ "message": "GraphQL concurrent request limit exceeded", "extensions": { "code": "TOO_MANY_REQUESTS" } }] }` | none |
+| nginx (`limit_req_status 429` in `infrastructure/docker/nginx.conf`: `auth_limit` on `location ~* ^/api/v1/auth/(login\|password)/?$`, `auth_session_limit` on the rest of `location /api/v1/auth/`, `api_limit` on `location /api/`, `graphql_limit` on `location /graphql`; see [Proxy limits](#proxy-limits)) | nginx's own error page, not JSON; no `_retryAfter` | none |
 
 **HTTP Status Code:** `429 Too Many Requests`
 
@@ -1927,13 +1945,9 @@ All API endpoints return consistent error responses:
 
 ## Rate Limiting
 
-API requests are rate-limited to prevent abuse:
+The API mounts no global rate limiter; only `POST /api/v1/auth/login`, `PUT /api/v1/auth/password` and `POST /api/v1/auth/refresh` are limited (own `auth-refresh` bucket for refresh). See [Rate Limiting](#rate-limiting) above for the budgets and the nginx limits at the reverse proxy.
 
-- **REST API**: 1000 requests per minute per IP
-- **GraphQL API**: 100 queries per minute per IP
-- **Heavy queries** (impact analysis, dependencies): 10 per minute
-
-Rate limit headers (sent only by `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh` and `PUT /api/v1/auth/password`; no other route sends them):
+Rate limit headers (sent only by those three routes, and not when `rateLimit.enabled` is `false`, on a bypass-header match or on a limiter store error; no other route sends them):
 ```
 X-RateLimit-Limit: 1000
 X-RateLimit-Remaining: 999

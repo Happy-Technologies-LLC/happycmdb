@@ -98,7 +98,7 @@ api-server/src/
 - JWT authentication middleware
 - Request validation with Joi
 - Centralized error handling
-- Rate limiting
+- Rate limiting only on the auth routes (`POST /api/v1/auth/login` and `PUT /api/v1/auth/password` through `RateLimitMiddleware.limit('auth', …)`, `POST /api/v1/auth/refresh` through its own `auth-refresh` bucket on the REST budget); `ApiServer.setupMiddleware` mounts no global limiter, so a global limit belongs at the reverse proxy (`infrastructure/docker/nginx.conf` zones `api_limit` on `/api/`, `auth_limit` on login and password change only, `auth_session_limit` on the other `/api/v1/auth/` paths, `graphql_limit` on `/graphql`; see [Rate Limiting (Nginx)](/deployment/PRODUCTION_CONFIGURATION#rate-limiting-nginx))
 - Default `cors()` (all origins, no credentials)
 - Swagger/OpenAPI documentation
 

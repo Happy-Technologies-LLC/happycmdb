@@ -206,8 +206,30 @@ is unset: `on` = `require`, `off` = `disable`) and `POSTGRES_SSL_CA_FILE`. It do
 key, and no other `POSTGRES_SSL_*` variable is honored (there are no client certificate, client key or CA-path settings;
 use `POSTGRES_SSL_CA_FILE` for the CA). The server certificate and key are the postgres `ssl_cert_file` / `ssl_key_file`
 flags shown under Docker Compose Configuration below.
-With `NODE_ENV=production` and a non-local host, leaving both `POSTGRES_SSL_MODE` and `POSTGRES_SSL_ENABLED` unset, or
-setting an unsupported mode, refuses to start. See `environment-variables.md` for the full table.
+With `NODE_ENV=production` and a non-local host, leaving both `POSTGRES_SSL_MODE` and `POSTGRES_SSL_ENABLED` unset
+refuses to start. An unsupported `POSTGRES_SSL_MODE` value refuses to start in every environment, not only production.
+See [environment-variables.md](../configuration/environment-variables.md) for the full table.
+
+::: warning The shipped compose does not support `verify-full`
+`infrastructure/docker/docker-compose.yml` is wired for `require` / `prefer` only:
+
+- **api-server**: forwards only `POSTGRES_SSL_ENABLED` and `POSTGRES_SSL_MODE` (default `prefer`). It does not forward
+  `POSTGRES_SSL_CA_FILE` and mounts no `/ssl` volume. With `POSTGRES_SSL_MODE=verify-full` in `.env`, the api-server
+  verifies against the Node.js trust store, so a private CA is rejected. A `POSTGRES_SSL_CA_FILE=/ssl/ca.crt` line in
+  `.env` has no effect, because the variable never reaches the container.
+- **Grafana**: `GF_DATABASE_SSL_MODE` and the datasource `sslmode` in
+  `infrastructure/monitoring/grafana/provisioning/datasources/postgres.yml` both reuse `POSTGRES_SSL_MODE`, and neither
+  sets a root certificate. `verify-full` therefore also switches Grafana to verify-full against its system roots.
+
+To run `verify-full` with this compose file, add these in a compose override file; the shipped file does none of it:
+
+1. api-server: forward `POSTGRES_SSL_CA_FILE` and mount the CA read-only, for example
+   `- ./ssl/postgres:/ssl:ro` (the postgres service already mounts that directory), so the path in
+   `POSTGRES_SSL_CA_FILE` exists inside the api-server container.
+2. Grafana: give it a root certificate (`GF_DATABASE_CA_CERT_PATH` for Grafana's own database, `tlsCACert` in the
+   datasource `secureJsonData` for the datasource), mount the CA into the Grafana container, and set its mode
+   independently of the shared `POSTGRES_SSL_MODE`.
+:::
 
 #### Docker Compose Configuration
 

@@ -67,6 +67,8 @@ NEO4J_ENCRYPTED=true
 | `POSTGRES_SSL_ENABLED` | No | - | `on` (= `require`) or `off` (= `disable`); used only when `POSTGRES_SSL_MODE` is unset |
 | `POSTGRES_SSL_CA_FILE` | No | Node.js trust store | Path to the CA bundle that `verify-full` trusts |
 
+`POSTGRES_SSL_CA_FILE` only takes effect in a process that receives it. The shipped `infrastructure/docker/docker-compose.yml` does not forward it to the api-server or mount a CA, so `verify-full` needs the additions described in [Production Configuration](../deployment/PRODUCTION_CONFIGURATION.md).
+
 **Example:**
 
 ```bash

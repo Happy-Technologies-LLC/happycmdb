@@ -267,9 +267,11 @@ openssl genrsa -out postgres/server.key 2048
 openssl req -new -key postgres/server.key -out postgres/server.csr \
   -subj "/C=US/ST=State/L=City/O=HappyCMDB/OU=IT/CN=cmdb-postgres"
 
-# Sign certificate
+# Sign certificate. The SAN must match the host clients dial (compose service name `postgres`);
+# `verify-full` ignores the CN and fails without it. Add more DNS:/IP: entries if clients use other hosts.
 openssl x509 -req -in postgres/server.csr -CA ca.crt -CAkey ca.key \
-  -CAcreateserial -out postgres/server.crt -days 365 -sha256
+  -CAcreateserial -out postgres/server.crt -days 365 -sha256 \
+  -extfile <(printf 'subjectAltName=DNS:postgres,DNS:cmdb-postgres')
 
 # Copy CA certificate
 cp ca.crt postgres/ca.crt

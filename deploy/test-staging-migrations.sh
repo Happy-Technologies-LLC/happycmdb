@@ -13,6 +13,8 @@ export ENCRYPTION_KEY=ci_disposable_encryption_key_0123456789
 export AUDIT_CHAIN_KEY=ci_disposable_audit_chain_key
 export STAGING_PUBLIC_URL=https://ci.invalid
 export COMPOSE_PROJECT_NAME="stg-mig-ci-${GITHUB_RUN_ID:?CI only}-${GITHUB_RUN_ATTEMPT:?CI only}"
+# Unconditional: an inherited IMAGE_TAG must never let the build retag an image the real staging deploy uses.
+export IMAGE_TAG="$COMPOSE_PROJECT_NAME"
 
 compose() { docker compose -f deploy/build01-staging.compose.yml "$@"; }
 services=$(compose config --services)
@@ -43,6 +45,8 @@ if (config.services.postgres.volumes.some(volume => volume.target.startsWith("/d
 scratch=$(mktemp -d)
 cleanup() {
   compose --profile migrate down -v --remove-orphans
+  # Best effort, only this run's scoped tags (api-server is built here; web-ui is never built).
+  docker image rm "staging-happycmdb/api-server:${IMAGE_TAG}" "staging-happycmdb/web-ui:${IMAGE_TAG}" >/dev/null 2>&1 || true
   rm -rf "$scratch"
 }
 trap cleanup EXIT

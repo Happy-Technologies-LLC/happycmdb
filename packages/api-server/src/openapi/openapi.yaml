@@ -32,7 +32,10 @@ info:
     - **Standard**: 1000 requests/hour
     - **Burst**: 100 requests/minute
 
-    Rate limit headers included in responses:
+    Rate limit headers are sent only by `POST /auth/login`, `PUT /auth/password`
+    and `POST /auth/refresh`, on allowed and on 429 responses, and not when
+    `rateLimit.enabled` is false, on a bypass-header match, when the endpoint's
+    `max` is 0 or on a limiter store error. No other route sends them:
     - `X-RateLimit-Limit`: Maximum requests per window
     - `X-RateLimit-Remaining`: Remaining requests
     - `X-RateLimit-Reset`: Unix epoch milliseconds when limit resets

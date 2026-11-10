@@ -181,7 +181,7 @@ That file is the TLS-terminating configuration; the `web-ui` image that `infrast
 
 ### Rate Limit Headers
 
-The auth rate limiters send `X-RateLimit-*` headers: `POST /api/v1/auth/login` and `PUT /api/v1/auth/password` (both `RateLimitMiddleware.limit`) and `POST /api/v1/auth/refresh` (`RateLimitMiddleware.custom`), on allowed and on `429` responses, set by `RateLimitMiddleware.setRateLimitHeaders`. They are absent when `rateLimit.enabled` is `false`, when the request carries the bypass header (`rateLimit.bypassHeader`, default `X-Internal-Service`) with the value of `rateLimit.bypassSecret`, when the endpoint's `max` is `0` (login and password; refresh is not mounted then), and when the limiter store fails (refresh fails open and sets none; the fail-closed `503` of login and password carries none). No other route sends them, and the `429` responses from the analysis, impact and GraphQL concurrency gates and from nginx carry none.
+The auth rate limiters send `X-RateLimit-*` headers: `POST /api/v1/auth/login` and `PUT /api/v1/auth/password` (both `RateLimitMiddleware.limit`) and `POST /api/v1/auth/refresh` (`RateLimitMiddleware.custom`), on allowed and on `429` responses, set by `RateLimitMiddleware.setRateLimitHeaders`. They are absent when `rateLimit.enabled` is `false`, when the request carries the bypass header (`rateLimit.bypassHeader`, default `X-Internal-Service`) with the value of `rateLimit.bypassSecret`, when the endpoint's `max` is `0` (`rateLimit.endpoints.auth.max` for login and password, which then skip the limiter; `rateLimit.endpoints.rest.max` for refresh, which is then not mounted), and when the limiter store fails (refresh fails open and sets none; the fail-closed `503` of login and password carries none). No other route sends them, and the `429` responses from the analysis, impact and GraphQL concurrency gates and from nginx carry none.
 
 ```http
 X-RateLimit-Limit: 1000
@@ -213,6 +213,8 @@ This flat body is sent only by the auth rate limiters (`RateLimitMiddleware.cust
 | Impact dependency graph (`GET /impact/graph/:rootCiId`, `orgReadGate`) | `{ "success": false, "error": "Impact analysis rate limit exceeded" }` | none |
 | GraphQL concurrency gate (`admitGraphQLRequest`) | `{ "errors": [{ "message": "GraphQL concurrent request limit exceeded", "extensions": { "code": "TOO_MANY_REQUESTS" } }] }` | none |
 | nginx (`limit_req_status 429` in `infrastructure/docker/nginx.conf`: `auth_limit` on `location ~* ^/api/v1/auth/(login\|password)/?$`, `auth_session_limit` on the rest of `location /api/v1/auth/`, `api_limit` on `location /api/`, `graphql_limit` on `location /graphql`; see [Proxy limits](#proxy-limits)) | nginx's own error page, not JSON; no `_retryAfter` | none |
+
+The nginx `limit_conn conn_limit 20` in `location /api/` (zone `conn_limit`, per `$binary_remote_addr`) is not a `429` source: `nginx.conf` sets no `limit_conn_status`, so a refusal is nginx's default `503 Service Unavailable` (an nginx error page, no `X-RateLimit-*`). The auth locations and `location /graphql` carry no `limit_conn`.
 
 **HTTP Status Code:** `429 Too Many Requests`
 
@@ -1947,7 +1949,7 @@ All API endpoints return consistent error responses:
 
 The API mounts no global rate limiter; only `POST /api/v1/auth/login`, `PUT /api/v1/auth/password` and `POST /api/v1/auth/refresh` are limited (own `auth-refresh` bucket for refresh). See [Rate Limiting](#rate-limiting) above for the budgets and the nginx limits at the reverse proxy.
 
-Rate limit headers (sent only by those three routes, and not when `rateLimit.enabled` is `false`, on a bypass-header match or on a limiter store error; no other route sends them):
+Rate limit headers (sent only by those three routes, and not when `rateLimit.enabled` is `false`, on a bypass-header match, when the endpoint's `max` is `0` or on a limiter store error; no other route sends them):
 ```
 X-RateLimit-Limit: 1000
 X-RateLimit-Remaining: 999

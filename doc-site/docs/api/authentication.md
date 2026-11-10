@@ -471,7 +471,7 @@ While the rate-limit store is unreachable, login and password change answer a fi
 
 ### Rate Limit Headers
 
-Rate limit info is returned in response headers:
+The three limited endpoints return rate limit info in response headers, on allowed and on `429` responses. They are absent when `rateLimit.enabled` is `false`, when the request carries the bypass header (`rateLimit.bypassHeader`) with the value of `rateLimit.bypassSecret`, when the endpoint's `max` is `0` (`rateLimit.endpoints.auth.max` for login and password; `rateLimit.endpoints.rest.max` for refresh, which is then not mounted), and when the limiter store errors (refresh fails open and sets none; the fail-closed `503` of login and password carries none). Nginx's own `429` carries none:
 
 ```
 X-RateLimit-Limit: 20

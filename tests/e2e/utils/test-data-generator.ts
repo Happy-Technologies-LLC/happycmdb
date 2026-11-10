@@ -6,7 +6,6 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import {
-  CI,
   CIInput,
   CIType,
   CIStatus,
@@ -14,15 +13,24 @@ import {
   Relationship,
   RelationshipType,
 } from '../../../packages/common/src/types/ci.types';
-import {
-  DiscoveryProvider,
-  DiscoveredCI,
-} from '../../../packages/common/src/types/discovery.types';
+import { DiscoveredCI } from '../../../packages/common/src/types/discovery.types';
+
+// The REST API takes `id`, `type`, `from_id` and `to_id` without the underscore prefix that
+// CIInput/Relationship carry in packages/common (ci.controller.ts requires `type`,
+// relationship.controller.ts requires `from_id`, `to_id` and `type`). The fixtures keep sending that
+// wire shape; deriving the types from the package types keeps every other field checked against them.
+export type CIFixture = Omit<CIInput, '_id' | '_type'> & { id: string; type: CIType };
+export type DiscoveredCIFixture = Omit<DiscoveredCI, '_id' | '_type'> & { id: string; type: CIType };
+export type RelationshipFixture = Omit<Relationship, '_from_id' | '_to_id' | '_type'> & {
+  from_id: string;
+  to_id: string;
+  type: RelationshipType;
+};
 
 /**
  * Generate a random CI
  */
-export function generateCI(overrides?: Partial<CIInput>): CIInput {
+export function generateCI(overrides?: Partial<CIFixture>): CIFixture {
   const types: CIType[] = [
     'server',
     'virtual-machine',
@@ -59,8 +67,8 @@ export function generateCI(overrides?: Partial<CIInput>): CIInput {
  * Generate a batch of related CIs
  */
 export function generateCIHierarchy(): {
-  cis: CIInput[];
-  relationships: Relationship[];
+  cis: CIFixture[];
+  relationships: RelationshipFixture[];
 } {
   // Create a simple 3-tier application hierarchy
   const loadBalancer = generateCI({
@@ -114,7 +122,7 @@ export function generateCIHierarchy(): {
     database,
   ];
 
-  const relationships: Relationship[] = [
+  const relationships: RelationshipFixture[] = [
     // Load balancer connects to web servers
     {
       from_id: loadBalancer.id,
@@ -156,8 +164,8 @@ export function generateCIHierarchy(): {
 /**
  * Generate AWS EC2 discovered CIs
  */
-export function generateAWSEC2Instances(count: number): DiscoveredCI[] {
-  const instances: DiscoveredCI[] = [];
+export function generateAWSEC2Instances(count: number): DiscoveredCIFixture[] {
+  const instances: DiscoveredCIFixture[] = [];
 
   for (let i = 0; i < count; i++) {
     instances.push({
@@ -169,7 +177,9 @@ export function generateAWSEC2Instances(count: number): DiscoveredCI[] {
       environment: 'production',
       discovered_at: new Date().toISOString(),
       discovery_job_id: 'test-job-id',
-      discovery_provider: 'aws',
+      // 'aws' is no longer a DiscoveryProvider (AWS is discovered through the connector framework);
+      // 'ssh' is the nearest host-inventory provider. Nothing consumes this field.
+      discovery_provider: 'ssh',
       confidence_score: 0.95,
       metadata: {
         region: 'us-east-1',
@@ -198,7 +208,7 @@ export function generateRelationship(
   fromId: string,
   toId: string,
   type?: RelationshipType
-): Relationship {
+): RelationshipFixture {
   const types: RelationshipType[] = [
     'DEPENDS_ON',
     'HOSTS',

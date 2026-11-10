@@ -11,7 +11,7 @@ HappyCMDB supports two authentication methods:
 ## Base URL
 
 ```
-http://localhost:3000/api/auth
+http://localhost:3000/api/v1/auth
 ```
 
 ## Default credentials, credential generation and operator rotation
@@ -62,7 +62,7 @@ nodes match, for example one user's `_id` equal to another user's `id`, every lo
 token and API key for that identifier gets the standard `401`, and profile writes change nothing.
 An operator must make the identifiers unique.
 
-**New passwords** (`PUT /api/auth/password`) are refused with `400 Password not allowed` in every
+**New passwords** (`PUT /api/v1/auth/password`) are refused with `400 Password not allowed` in every
 environment when they are a default or a default-equivalent, contain U+0000, or exceed 72 UTF-8
 bytes. A password change or account deletion authorized before an operator rotation is refused with
 `401 Credentials changed`.
@@ -71,13 +71,13 @@ bytes. A password change or account deletion authorized before an operator rotat
 advances the user's credential generation together with the new hash. Every other access token,
 refresh cookie and WebSocket of the user is refused on its next use (WebSockets within the 2-minute
 re-check), and so is every API key of the user: keys are valid only at the generation they were
-created in, so they stop authenticating (`401`), are listed by `GET /api/auth/api-keys` with
+created in, so they stop authenticating (`401`), are listed by `GET /api/v1/auth/api-keys` with
 `_enabled: false`, and must be recreated. The changing device stays signed in: the `200` response
 (message "Password changed. All other sessions and all your API keys have been revoked; this device
 stays signed in.") carries `data` (`_accessToken`, `_expiresIn`, `_user`, as login) and sets a new
 `__Secure-cmdb_rt` cookie, whose 7-day cap starts at the change.
 
-**Password changes are rate-limited and audited** (HAP-1368). `PUT /api/auth/password` shares the
+**Password changes are rate-limited and audited** (HAP-1368). `PUT /api/v1/auth/password` shares the
 login limit per client address (`RATE_LIMIT_AUTH_MAX` per `RATE_LIMIT_AUTH_WINDOW_MS`, the same
 bucket as login) and adds a per-user limit across all client addresses at login's per-account budget
 (`RATE_LIMIT_AUTH_ACCOUNT_MAX` per `RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS`, default 5 per 15 minutes).
@@ -105,7 +105,7 @@ administrators yet: global TBM and connector controls still refuse every caller.
 
 Authenticate with username/email and password to obtain JWT tokens.
 
-**Endpoint**: `POST /api/auth/login`
+**Endpoint**: `POST /api/v1/auth/login`
 
 **Request Body**:
 ```json
@@ -145,9 +145,9 @@ Authenticate with username/email and password to obtain JWT tokens.
 ```
 The refresh token is not in the body: with the header `X-CMDB-Auth: 1` (exactly; the web UI sends it) it is set as `__Secure-cmdb_rt=<refresh JWT>; Max-Age=<refresh TTL>; Path=/api/v1/auth; HttpOnly; Secure; SameSite=Strict` (HAP-1211 H1, renamed from `cmdb_rt` in H2). `Max-Age` is the refresh TTL, but never more than what is left of the 7-day absolute cap from the login (HAP-1382), so the cookie never outlives the session refresh still accepts. A login without that header (scripts, the CLI, or a cross-site form, which cannot add a custom header) gets the same `200` body and **no cookie** (HAP-1211 H2, login CSRF): it cannot refresh and signs in again when the access token expires. Browsers do not store a `Secure` cookie from plain `http://` other than `localhost`, and never store a `__Secure-` cookie from plain `http://`.
 
-**Caching** (HAP-1382): every `/api/auth/*` response, refusals included, carries `Cache-Control: no-store` and `Pragma: no-cache`, so no browser or proxy cache keeps an access token, an API key, the refresh cookie or account data. A failure of the user or API-key store answers the endpoint's fixed body (`"message": "Internal error"`) and logs only the error class, its code and the user id, never the driver's message.
+**Caching** (HAP-1382): every `/api/v1/auth/*` response, refusals included, carries `Cache-Control: no-store` and `Pragma: no-cache`, so no browser or proxy cache keeps an access token, an API key, the refresh cookie or account data. A failure of the user or API-key store answers the endpoint's fixed body (`"message": "Internal error"`) and logs only the error class, its code and the user id, never the driver's message.
 
-**Web UI session (HAP-1211 H2)**: the web UI holds the access token only in memory, never in `localStorage` or `sessionStorage`. A reload or a new tab restores the session with `POST /api/auth/refresh`, the UI renews the access token about a minute before it expires, and a logout in one tab signs out the other tabs of the same browser. **Cut-over**: the first load after the upgrade signs every web UI user out once, because a session saved by an older release (a `localStorage` token, or a `cmdb_rt` cookie) is not carried over; the server does not clear an old `cmdb_rt` cookie, which expires on its own and is never read. On plain `http://` (local development without TLS) the browser refuses the `__Secure-` cookie, so a reload there always asks you to sign in again.
+**Web UI session (HAP-1211 H2)**: the web UI holds the access token only in memory, never in `localStorage` or `sessionStorage`. A reload or a new tab restores the session with `POST /api/v1/auth/refresh`, the UI renews the access token about a minute before it expires, and a logout in one tab signs out the other tabs of the same browser. **Cut-over**: the first load after the upgrade signs every web UI user out once, because a session saved by an older release (a `localStorage` token, or a `cmdb_rt` cookie) is not carried over; the server does not clear an old `cmdb_rt` cookie, which expires on its own and is never read. On plain `http://` (local development without TLS) the browser refuses the `__Secure-` cookie, so a reload there always asks you to sign in again.
 
 **Token Lifetimes**:
 - **Access Token**: 15 minutes by default (`JWT_ACCESS_TOKEN_EXPIRES_IN`)
@@ -156,13 +156,13 @@ The refresh token is not in the body: with the header `X-CMDB-Auth: 1` (exactly;
 **Error Responses**:
 - `401 Unauthorized` - Invalid credentials
 - `403 Forbidden` - Account disabled
-- `429 Too Many Requests` - Rate limit exceeded (max 20 login attempts per hour)
+- `429 Too Many Requests` - Rate limit exceeded (per client address 20 login attempts per hour by default; per-account limits also apply, see [Rate Limiting](#rate-limiting))
 
 ---
 
 ### Refresh Token
 
-**Endpoint**: `POST /api/auth/refresh` with the header `X-CMDB-Auth: 1` (exactly). Exchanges the `__Secure-cmdb_rt` cookie (the only token source; no body is read) for a new access token and a new `__Secure-cmdb_rt` cookie (same attributes, full TTL: sliding, within the 7-day absolute cap from login; its `Max-Age` is clamped to the time left of that cap, HAP-1382).
+**Endpoint**: `POST /api/v1/auth/refresh` with the header `X-CMDB-Auth: 1` (exactly). Exchanges the `__Secure-cmdb_rt` cookie (the only token source; no body is read) for a new access token and a new `__Secure-cmdb_rt` cookie (same attributes, full TTL: sliding, within the 7-day absolute cap from login; its `Max-Age` is clamped to the time left of that cap, HAP-1382).
 
 **Error Responses** (fixed bodies): `403 Forbidden` without `X-CMDB-Auth: 1`, checked first. `401 Unauthorized` when the cookie is missing, duplicated or malformed, or the token is invalid, expired, not a refresh token, of an older credential generation (HP1-S6, including after a self-service password change), more than 7 days past its login (HAP-1285; a refresh token issued before HAP-1285 carries no login time and is refused too), or its user is disabled.
 
@@ -170,7 +170,7 @@ The refresh token is not in the body: with the header `X-CMDB-Auth: 1` (exactly;
 
 ### Logout
 
-**Endpoint**: `POST /api/auth/logout` → `{ "success": true, "message": "Logged out successfully" }`. Expires the `__Secure-cmdb_rt` cookie (`Max-Age=0`, past `Expires`, same attributes); no header and no access token are required.
+**Endpoint**: `POST /api/v1/auth/logout` → `{ "success": true, "message": "Logged out successfully" }`. Expires the `__Secure-cmdb_rt` cookie (`Max-Age=0`, past `Expires`, same attributes); no header and no access token are required.
 
 **Stateless** (founder decision, HAP-1211 H1b): logout only clears this browser's cookie. A refresh cookie captured before logout can still be renewed until 7 days after the login it came from (HAP-1285 absolute cap), or earlier when the user changes their password, an operator rotation changes the user's credential generation, or the account is disabled or deleted. The access token stays valid until it expires (15 minutes by default).
 
@@ -180,7 +180,7 @@ The refresh token is not in the body: with the header `X-CMDB-Auth: 1` (exactly;
 
 Get information about the currently authenticated user.
 
-**Endpoint**: `GET /api/auth/me`
+**Endpoint**: `GET /api/v1/auth/me`
 
 **Headers**:
 ```
@@ -224,7 +224,7 @@ Authorization: Bearer YOUR_ACCESS_TOKEN
 
 Create a new API key for programmatic access.
 
-**Endpoint**: `POST /api/auth/api-key`
+**Endpoint**: `POST /api/v1/auth/api-key`
 
 **Headers**:
 ```
@@ -279,7 +279,7 @@ Authorization: Bearer YOUR_ACCESS_TOKEN
 
 Get all API keys for the current user.
 
-**Endpoint**: `GET /api/auth/api-keys`
+**Endpoint**: `GET /api/v1/auth/api-keys`
 
 **Headers**:
 ```
@@ -328,7 +328,7 @@ Authorization: Bearer YOUR_ACCESS_TOKEN
 
 Revoke (delete) an API key permanently.
 
-**Endpoint**: `DELETE /api/auth/api-key/:keyId`
+**Endpoint**: `DELETE /api/v1/auth/api-key/:keyId`
 
 **Headers**:
 ```
@@ -337,7 +337,7 @@ Authorization: Bearer YOUR_ACCESS_TOKEN
 
 **Example Request**:
 ```bash
-curl -X DELETE "http://localhost:3000/api/auth/api-key/apikey-123-abc" \
+curl -X DELETE "http://localhost:3000/api/v1/auth/api-key/apikey-123-abc" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
 
@@ -459,17 +459,16 @@ Permissions follow the format: `resource:action`
 
 ## Rate Limiting
 
-All authentication endpoints are rate-limited to prevent abuse.
+Only three authentication endpoints carry a rate limiter: `POST /api/v1/auth/login`, `PUT /api/v1/auth/password` and `POST /api/v1/auth/refresh`. The other `/api/v1/auth/*` routes (`logout`, `me`, `profile`, `account`, and the API key routes `POST /api/v1/auth/api-key`, `GET /api/v1/auth/api-keys`, `DELETE /api/v1/auth/api-key/:keyId`) have no dedicated limiter. The API key routes are session-only: they need a JWT session (`authenticate` then `requireJwtSession`), and an API key cannot call them. No generic REST limiter is mounted on the other `/api/v1/*` routes.
 
 ### Rate Limits
 
 | Endpoint | Limit | Window |
 |----------|-------|--------|
-| `POST /api/auth/login` | 20 per IP (`RATE_LIMIT_AUTH_*`), 5 per account + IP (`RATE_LIMIT_AUTH_ACCOUNT_*`) and 20 per account across all IPs (`RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_*`); the account is the trimmed, lowercased username | 1 hour per IP; 15 minutes per account + IP and per account |
-| `PUT /api/auth/password` | Login's 20 per IP (shared bucket) and 5 per user across all IPs (`RATE_LIMIT_AUTH_ACCOUNT_*`) | 1 hour per IP; 15 minutes per user |
-| `POST /api/auth/refresh` | The REST budget (`RATE_LIMIT_REST_MAX`, default 1000; `0` = unlimited) under its own key, so renewals never use up the login limit (HAP-1211 H2) | `RATE_LIMIT_REST_WINDOW_MS` (default 1 hour) per IP |
-| `POST /api/auth/api-key` | 10 requests | 1 hour per user |
-| Other endpoints | 1000 requests | 1 hour per user |
+| `POST /api/v1/auth/login` | 20 per IP (`RATE_LIMIT_AUTH_*`), 5 per account + IP (`RATE_LIMIT_AUTH_ACCOUNT_*`) and 20 per account across all IPs (`RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_*`); the account is the trimmed, lowercased username | 1 hour per IP; 15 minutes per account + IP and per account |
+| `PUT /api/v1/auth/password` | Login's 20 per IP (shared bucket) and 5 per user across all IPs (`RATE_LIMIT_AUTH_ACCOUNT_*`) | 1 hour per IP; 15 minutes per user |
+| `POST /api/v1/auth/refresh` | The REST budget (`RATE_LIMIT_REST_MAX`, default 1000; `0` = unlimited) under its own key, so renewals never use up the login limit (HAP-1211 H2) | `RATE_LIMIT_REST_WINDOW_MS` (default 1 hour) per IP |
+| Other `/api/v1/auth/*` endpoints, including `POST /api/v1/auth/api-key` | No dedicated limiter | n/a |
 
 The client address ("IP") is `req.ip`: `X-Forwarded-For` counts only for the hops `TRUST_PROXY` trusts (default:
 none). See [Proxy Trust & Login Rate Limiting](/configuration/environment-variables#proxy-trust-login-rate-limiting).
@@ -483,8 +482,10 @@ Rate limit info is returned in response headers:
 ```
 X-RateLimit-Limit: 20
 X-RateLimit-Remaining: 15
-X-RateLimit-Reset: 1699642800
+X-RateLimit-Reset: 1699642800000
 ```
+
+`X-RateLimit-Reset` is a Unix timestamp in **milliseconds** (the request time plus the window), not seconds. Divide by 1000 for epoch seconds, or pass it to `new Date(...)`. The `429` body's `_resetAt` is the same instant as an ISO 8601 string, and `_retryAfter` is in seconds.
 
 **429 Too Many Requests Response**:
 ```json
@@ -544,22 +545,22 @@ Passwords must meet these criteria:
 ### Web Application Flow
 
 1. User enters credentials on login page
-2. Frontend calls `POST /api/auth/login` with `X-CMDB-Auth: 1` (without it no refresh cookie is set)
+2. Frontend calls `POST /api/v1/auth/login` with `X-CMDB-Auth: 1` (without it no refresh cookie is set)
 3. Keep `accessToken` in memory; the server sets the refresh token as the `__Secure-cmdb_rt` HttpOnly cookie
 4. Include `accessToken` in Authorization header for all API calls
-5. Before token expiry, call `POST /api/auth/refresh` with `X-CMDB-Auth: 1` (the browser sends the cookie)
-6. On logout, call `POST /api/auth/logout` (expires the cookie) and discard the access token
+5. Before token expiry, call `POST /api/v1/auth/refresh` with `X-CMDB-Auth: 1` (the browser sends the cookie)
+6. On logout, call `POST /api/v1/auth/logout` (expires the cookie) and discard the access token
 
 ### API/Script Flow
 
-1. Administrator creates API key via UI or `POST /api/auth/api-key`
+1. Administrator creates API key via UI or `POST /api/v1/auth/api-key`
 2. Store API key in environment variable or secret manager
 3. Include API key in `X-API-Key` header for all requests
 4. Monitor usage and rotate key periodically
 
 ### Mobile App Flow
 
-1. User authenticates with `POST /api/auth/login`
+1. User authenticates with `POST /api/v1/auth/login`
 2. Store `accessToken` in secure storage (Keychain/Keystore)
 3. Log in with `X-CMDB-Auth: 1` and keep the `__Secure-cmdb_rt` cookie from the response in encrypted secure storage
 4. Implement background token refresh
@@ -607,7 +608,7 @@ curl -X POST "http://localhost:3000/api/v1/auth/refresh" -H "X-CMDB-Auth: 1" -b 
 
 **Cause**: API key has been revoked or never existed
 
-**Solution**: Generate a new API key via `POST /api/auth/api-key`
+**Solution**: Generate a new API key via `POST /api/v1/auth/api-key`
 
 ---
 
@@ -617,7 +618,7 @@ curl -X POST "http://localhost:3000/api/v1/auth/refresh" -H "X-CMDB-Auth: 1" -b 
 
 ```bash
 # Login
-curl -X POST "http://localhost:3000/api/auth/login" \
+curl -X POST "http://localhost:3000/api/v1/auth/login" \
   -H "Content-Type: application/json" \
   -d '{
     "username": "admin",
@@ -636,7 +637,7 @@ curl "http://localhost:3000/api/v1/cis" \
 
 ```bash
 # Generate API key (requires logged-in access token first)
-curl -X POST "http://localhost:3000/api/auth/api-key" \
+curl -X POST "http://localhost:3000/api/v1/auth/api-key" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{

@@ -261,46 +261,34 @@ postgres:
   command: >
     postgres
     -c shared_preload_libraries=timescaledb
-
-    # Connection Settings
     -c max_connections=200
     -c superuser_reserved_connections=3
-
-    # Memory Settings (adjust based on deployment tier)
-    # Small: 256MB shared_buffers, 64MB work_mem
-    # Medium: 2GB shared_buffers, 128MB work_mem
-    # Large: 8GB shared_buffers, 256MB work_mem
     -c shared_buffers=2GB
     -c effective_cache_size=6GB
     -c maintenance_work_mem=512MB
     -c work_mem=128MB
-
-    # Checkpoint Settings (reduce I/O spikes)
     -c checkpoint_completion_target=0.9
     -c checkpoint_timeout=15min
     -c max_wal_size=4GB
     -c min_wal_size=1GB
-
-    # Query Planner
     -c random_page_cost=1.1
     -c effective_io_concurrency=200
-
-    # Logging
     -c log_min_duration_statement=1000
     -c log_line_prefix='%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '
     -c log_checkpoints=on
     -c log_connections=on
     -c log_disconnections=on
     -c log_lock_waits=on
-
-    # SSL
     -c ssl=on
     -c ssl_cert_file=/ssl/server.crt
     -c ssl_key_file=/ssl/server.key
     -c ssl_ca_file=/ssl/ca.crt
 ```
 
+The `command: >` value is a folded scalar, so it carries no `# ...` comment lines (they would reach `postgres` as literal arguments). In order, the `-c` settings cover connections, memory (`shared_buffers`, `effective_cache_size`, `maintenance_work_mem`, `work_mem`), checkpoints, the query planner, logging and SSL.
+
 **Memory Sizing Guidelines:**
+- **shared_buffers** and **work_mem** by deployment tier: Small 256MB / 64MB, Medium 2GB / 128MB (the values above), Large 8GB / 256MB
 - **shared_buffers**: 25% of system RAM (max 8GB)
 - **effective_cache_size**: 50-75% of system RAM
 - **work_mem**: Total RAM / max_connections / 2
@@ -357,34 +345,23 @@ REDIS_TLS_AUTH_CLIENTS=yes
 redis:
   command: >
     redis-server /usr/local/etc/redis/redis-auth.conf
-
-    # Memory Management
     --maxmemory 2gb
     --maxmemory-policy allkeys-lru
-
-    # Persistence (AOF for durability)
     --appendonly yes
     --appendfsync everysec
     --auto-aof-rewrite-percentage 100
     --auto-aof-rewrite-min-size 64mb
-
-    # Performance
     --hz 10
     --tcp-backlog 511
     --timeout 300
-
-    # Security (requirepass is in redis-auth.conf, not in this command line)
     --rename-command CONFIG ""
     --rename-command FLUSHDB ""
     --rename-command FLUSHALL ""
-
-    # SSL/TLS
     --tls-port 6380
     --tls-cert-file /ssl/redis.crt
     --tls-key-file /ssl/redis.key
     --tls-ca-cert-file /ssl/ca.crt
     --tls-auth-clients yes
-
   volumes:
     - ./secrets/redis-auth.conf:/usr/local/etc/redis/redis-auth.conf:ro
   environment:
@@ -394,7 +371,15 @@ redis:
     test: ["CMD-SHELL", "redis-cli ping"]
 ```
 
-**Password handling**: do not pass `--requirepass` (or `redis-cli -a`) on a command line: `ps`, `/proc/<pid>/cmdline` and `docker top` show it. `redis-auth.conf` holds `requirepass "<hex-escaped password>"` (mode `0600`, never committed); `redis-server` receives only its path. `infrastructure/kubernetes/statefulsets/redis-statefulset.yaml` builds the same file in an init container from the `redis-password` key of `cmdb-secrets` (HAP-1719), and `redis-cli` clients read the password from `REDISCLI_AUTH` (HAP-1664).
+**Password handling**: do not pass `--requirepass` (or `redis-cli -a`) on a command line: `ps`, `/proc/<pid>/cmdline` and `docker top` show it. `redis-auth.conf` holds `requirepass "<hex-escaped password>"` and `masterauth "<hex-escaped password>"` (mode `0600`, never committed); `redis-server` receives only its path. `infrastructure/kubernetes/statefulsets/redis-statefulset.yaml` builds the same file in an init container from the `redis-password` key of `cmdb-secrets` (HAP-1719), and `redis-cli` clients read the password from `REDISCLI_AUTH` (HAP-1664).
+
+Generate the Compose `./secrets/redis-auth.conf` with the same pipeline as that init container. The password is read from `REDIS_PASSWORD` in the shell environment (`printf` is a shell builtin, and `od`, `tr` and `sed` see it only on stdin), so it never reaches an argv:
+
+```bash
+( set -eu; umask 077; mkdir -p secrets; hex=$(printf '%s' "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}" | od -An -v -tx1 | tr -d ' \n' | sed 's/../\\x&/g'); [ -n "$hex" ]; printf 'requirepass "%s"\nmasterauth "%s"\n' "$hex" "$hex" > secrets/redis-auth.conf )
+```
+
+The `command: >` value above is a folded scalar: YAML folds every line into one string, so a `# ...` line inside it is not a comment but literal `redis-server` arguments. Keep comments out of it (put them above the key or in the prose).
 
 **Memory Sizing Guidelines:**
 - **Small**: 512MB (cache only)
@@ -955,12 +940,18 @@ redis-master:
 # Redis sentinel
 redis-sentinel:
   image: redis:7.2-alpine
-  command: >
-    redis-sentinel --sentinel monitor cmdb-master redis-master 6379 2
-                   --sentinel down-after-milliseconds cmdb-master 5000
-                   --sentinel parallel-syncs cmdb-master 1
-                   --sentinel failover-timeout cmdb-master 10000
+  command: redis-sentinel /usr/local/etc/redis/sentinel.conf
+  volumes:
+    - ./secrets/sentinel.conf:/usr/local/etc/redis/sentinel.conf
 ```
+
+`sentinel.conf` holds the monitor settings and `sentinel auth-pass cmdb-master "<hex-escaped password>"`. Without `auth-pass` the sentinels cannot authenticate to the master (its `redis-auth.conf` sets `requirepass`), so they report it `s_down` instead of monitoring it. A `--sentinel auth-pass` argument would put the password in argv, so it goes in the configuration file, generated like `redis-auth.conf` (same `REDIS_PASSWORD` environment, same hex escaping, mode `0600`, never committed):
+
+```bash
+( set -eu; umask 077; mkdir -p secrets; hex=$(printf '%s' "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}" | od -An -v -tx1 | tr -d ' \n' | sed 's/../\\x&/g'); [ -n "$hex" ]; printf 'sentinel resolve-hostnames yes\nsentinel monitor cmdb-master redis-master 6379 2\nsentinel down-after-milliseconds cmdb-master 5000\nsentinel parallel-syncs cmdb-master 1\nsentinel failover-timeout cmdb-master 10000\nsentinel auth-pass cmdb-master "%s"\n' "$hex" > secrets/sentinel.conf )
+```
+
+`sentinel resolve-hostnames yes` is required because `sentinel monitor` names the master by its Compose service name `redis-master`, a hostname. The bind mount has no `:ro` because Sentinel rewrites its configuration file to persist state, so `secrets/sentinel.conf` must be writable by the container's `redis` user.
 
 ### Load Balancing
 

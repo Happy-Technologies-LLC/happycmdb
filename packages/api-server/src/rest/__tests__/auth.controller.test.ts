@@ -445,9 +445,19 @@ describe('AuthController profile/password/account routes', () => {
     });
 
     it('HAP-1872: the login response documented in doc-site/docs/api/authentication.md has the keys the route sends', async () => {
-      const doc = readFileSync(join(__dirname, '../../../../../doc-site/docs/api/authentication.md'), 'utf8');
-      const section = doc.slice(doc.indexOf('### Login'), doc.indexOf('### Refresh Token'));
-      const documented = JSON.parse(/\*\*Response\*\* \(200 OK\):\s*```json\n([\s\S]*?)\n```/.exec(section)![1]!);
+      const docPath = 'doc-site/docs/api/authentication.md';
+      const doc = readFileSync(join(__dirname, '../../../../..', docPath), 'utf8');
+      const start = doc.indexOf('### Login');
+      const end = doc.indexOf('### Refresh Token');
+      if (start < 0 || end < start) {
+        throw new Error(`${docPath} must keep a "### Login" heading followed by a "### Refresh Token" heading: this test reads the documented login response between them (found Login at ${start}, Refresh Token at ${end}). If you renamed either heading, update this test too.`);
+      }
+      const section = doc.slice(start, end);
+      const block = /\*\*Response\*\* \(200 OK\):\s*```json\n([\s\S]*?)\n```/.exec(section);
+      if (!block) {
+        throw new Error(`The "### Login" section of ${docPath} must contain a "**Response** (200 OK):" line followed by a fenced json block: this test compares its keys with the route's login response.`);
+      }
+      const documented = JSON.parse(block[1]!);
       const response = await login();
       expect(response.status).toBe(200);
       sensitive.push(refreshCookieOf(response).value, response.body.data._accessToken);

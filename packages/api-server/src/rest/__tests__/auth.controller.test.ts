@@ -26,6 +26,8 @@ import { JWTService } from '../../auth/jwt.service';
 import { User, ApiKey } from '../../auth/types';
 import { logger } from '@cmdb/common';
 import * as jwt from 'jsonwebtoken';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { inspect } from 'util';
 import { AUTH_HEADER, AUTH_HEADER_VALUE, REFRESH_COOKIE, setRefreshCookie } from '../middleware/refresh-cookie';
@@ -440,6 +442,20 @@ describe('AuthController profile/password/account routes', () => {
       expect(Object.keys(response.body.data).sort()).toEqual(['_accessToken', '_expiresIn', '_user']);
       expect(cookie.attributes).toEqual(cookieAttributes(jwtService.getTokenExpiresIn('refresh')));
       expect(jwtService.verifyToken(cookie.value)._type).toBe('refresh');
+    });
+
+    it('HAP-1872: the login response documented in doc-site/docs/api/authentication.md has the keys the route sends', async () => {
+      const doc = readFileSync(join(__dirname, '../../../../../doc-site/docs/api/authentication.md'), 'utf8');
+      const section = doc.slice(doc.indexOf('### Login'), doc.indexOf('### Refresh Token'));
+      const documented = JSON.parse(/\*\*Response\*\* \(200 OK\):\s*```json\n([\s\S]*?)\n```/.exec(section)![1]!);
+      const response = await login();
+      expect(response.status).toBe(200);
+      sensitive.push(refreshCookieOf(response).value, response.body.data._accessToken);
+      const keyPaths = (value: unknown, prefix = ''): string[] =>
+        value !== null && typeof value === 'object'
+          ? Object.entries(value).flatMap(([key, child]) => [`${prefix}${key}`, ...keyPaths(child, `${prefix}${key}.`)])
+          : [];
+      expect(keyPaths(documented).sort()).toEqual(keyPaths(response.body).sort());
     });
 
     it('HAP-1211 F2: a login without exactly X-CMDB-Auth: 1 (all a cross-site form can send) gets the body token but no cookie', async () => {

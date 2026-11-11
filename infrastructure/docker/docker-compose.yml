@@ -308,7 +308,6 @@ services:
       - KAFKA_CLIENT_ID=cmdb-api-server
       - KAFKA_GROUP_ID=cmdb-api-group
       - JWT_SECRET=${JWT_SECRET}
-      - JWT_EXPIRES_IN=7d
       - BCRYPT_ROUNDS=10
       - CREDENTIAL_ENCRYPTION_KEY=${ENCRYPTION_KEY}
       # HAP-1842: every RATE_LIMIT_* the config loader reads (packages/common/src/config/config.loader.ts, rateLimit block).

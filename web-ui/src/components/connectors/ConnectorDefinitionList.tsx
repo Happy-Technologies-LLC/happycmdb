@@ -83,6 +83,9 @@ const transformConnectorToTemplate = (connector: any): ConnectorTemplate => {
       description: schema.description,
       default: schema.default,
       options: schema.enum,
+      // HAP-1895: the modal picks SecretInput/SecretTextarea from these, not from `type`.
+      format: schema.format,
+      sensitive: schema.sensitive === true,
     };
   });
 

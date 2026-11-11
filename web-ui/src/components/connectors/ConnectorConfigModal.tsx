@@ -14,7 +14,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { SecretInput } from '@/components/ui/secret-input';
+import { SecretInput, SecretTextarea } from '@/components/ui/secret-input';
 import { Switch } from '@/components/ui/switch';
 import {
   Select,
@@ -27,13 +27,32 @@ import { CronBuilder } from '@/components/ui/cron-builder';
 import { FieldMappingBuilder } from './FieldMappingBuilder';
 import { apiClient } from '@/lib/api-client';
 
+/** How a connection field is rendered. `sensitive` and `format` come from the connector's schema property. */
+interface ConnectorConfigField {
+  type?: string;
+  format?: string;
+  sensitive?: boolean;
+  [key: string]: any;
+}
+
+/**
+ * HAP-1895: which secret control (if any) a field needs. A sensitive multi-line field (`format: 'textarea'`,
+ * e.g. an oracle-cloud PEM `private_key`) cannot be a password input, so it gets `SecretTextarea`; every other
+ * sensitive field, `type: 'password'` or `format: 'password'` gets `SecretInput`. Neither mirrors the value into the DOM.
+ */
+function secretControl(field: ConnectorConfigField): 'textarea' | 'input' | null {
+  if (field.sensitive === true && (field.type === 'textarea' || field.format === 'textarea')) return 'textarea';
+  if (field.sensitive === true || field.type === 'password' || field.format === 'password') return 'input';
+  return null;
+}
+
 interface ConnectorConfigModalProps {
   template: {
     type: string;
     name: string;
     description: string;
     icon: string;
-    config_schema: Record<string, any>;
+    config_schema: Record<string, ConnectorConfigField>;
   };
   onClose: () => void;
   onDeploy: (config: any) => void;
@@ -330,6 +349,14 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
                         ))}
                       </SelectContent>
                     </Select>
+                  ) : secretControl(field) === 'textarea' ? (
+                    <SecretTextarea
+                      id={key}
+                      placeholder={field.label}
+                      value={config.connection[key] || ''}
+                      onChange={(e) => updateConnection(key, e.target.value)}
+                      rows={5}
+                    />
                   ) : field.type === 'textarea' ? (
                     <Textarea
                       id={key}
@@ -338,7 +365,7 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
                       onChange={(e) => updateConnection(key, e.target.value)}
                       rows={5}
                     />
-                  ) : field.type === 'password' ? (
+                  ) : secretControl(field) === 'input' ? (
                     <SecretInput
                       id={key}
                       autoComplete="new-password"

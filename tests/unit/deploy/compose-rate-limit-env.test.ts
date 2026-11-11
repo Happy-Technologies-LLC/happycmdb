@@ -1,16 +1,18 @@
 /**
  * HAP-1842: the Docker api-server image has no `.env` (`.dockerignore`: `**\/.env*`) and no `config/` directory,
  * so the only way an operator can tune the rate limiter is an `environment:` entry on the compose `api-server`
- * service. This resolves each compose file's `RATE_LIMIT_*` entries the way Compose interpolates them (against a
+ * service. This resolves the `RATE_LIMIT_*` entries of every tracked compose file whose `api-server` has an
+ * `environment:` (discovered by glob, HAP-1849) the way Compose interpolates them (against a
  * shell environment) and feeds the result to the REAL `ConfigurationLoader`, the code the api-server runs at boot:
  *  - with nothing set in the shell, the resolved config equals the config with no `RATE_LIMIT_*` at all (every
  *    compose default equals the `config.schema.ts` default);
  *  - a value set in the shell for each knob reaches the loaded `rateLimit` config (an `environment:` entry that is
  *    missing, misspelled or hard-coded fails for that knob);
- *  - every leaf of the schema's `rateLimit` config has such a knob, so a new schema field cannot ship unforwarded.
+ *  - every leaf of the schema's `rateLimit` config has such a knob, so a new schema field cannot ship unforwarded;
+ *  - `.env.example` names exactly those knobs, at the schema defaults (HAP-1849).
  * The forwarded RATE_LIMIT_BYPASS_SECRET skips every limiter, login included: the shipped `.env.example`, sourced the
- * way `./deploy.sh` does and resolved through each compose file, must not let a known or short secret through the real
- * `RateLimitMiddleware.limit('auth', ...)` that guards POST /auth/login.
+ * way `./deploy.sh` does and resolved through each compose file, must not let a known or short secret, padded with
+ * whitespace or not, through the real `RateLimitMiddleware.limit('auth', ...)` that guards POST /auth/login.
  */
 import { execFileSync } from 'child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'fs';
@@ -26,7 +28,24 @@ import { getLogger } from '../../../packages/common/src/logging/logger';
 import { RateLimitMiddleware } from '../../../packages/api-server/src/middleware/rate-limit.middleware';
 
 const REPO = resolve(__dirname, '../../..');
-const COMPOSE_FILES = ['infrastructure/docker/docker-compose.yml', 'deploy/build01-staging.compose.yml'];
+
+/**
+ * HAP-1849: test harnesses that start their own api-server with fixed settings; an operator never tunes their limits.
+ * Any other compose file is discovered and must forward every knob.
+ */
+const TEST_HARNESS_COMPOSE = new Set(['infrastructure/docker/docker-compose.test.yml']);
+
+/** Every tracked compose file whose `api-server` service has an `environment:` block (git pathspec glob). */
+function discoverComposeFiles(): string[] {
+  const tracked = execFileSync('git', ['ls-files', '-z', '--', ':(glob)**/*compose*.yml', ':(glob)**/*compose*.yaml'], {
+    cwd: REPO,
+    encoding: 'utf8',
+  });
+  return tracked.split('\0').filter((file) =>
+    file !== '' && !TEST_HARNESS_COMPOSE.has(file) &&
+    parse(readFileSync(join(REPO, file), 'utf8'))?.services?.['api-server']?.environment !== undefined);
+}
+const COMPOSE_FILES = discoverComposeFiles();
 
 // Placeholder config so the loader validates; nothing connects.
 const REQUIRED_ENV: Record<string, string> = {
@@ -223,6 +242,20 @@ async function loginAttempts(rateLimit: any, header: string, value: string) {
 const ENV_EXAMPLE = join(REPO, '.env.example');
 const SHIPPED_PLACEHOLDERS = ['your-internal-service-secret-change-this', 'your-internal-service-secret'];
 
+describe('HAP-1849: .env.example RATE_LIMIT_* values', () => {
+  const shipped = Object.fromEntries(
+    Object.entries(shellFromEnvFile(ENV_EXAMPLE)).filter(([k]) => k.startsWith('RATE_LIMIT_'))
+  );
+
+  it('names exactly the schema knobs', () => {
+    expect(Object.keys(shipped).sort()).toEqual(Object.keys(KNOBS).sort());
+  });
+
+  it('load to the schema defaults', () => {
+    expect(loadRateLimit(shipped)).toEqual(loadRateLimit({}));
+  });
+});
+
 describe.each(COMPOSE_FILES)('HAP-1842: .env.example through %s cannot bypass the login limiter', (file) => {
   let timerSpy: jest.SpyInstance;
   beforeEach(() => {
@@ -257,6 +290,32 @@ describe.each(COMPOSE_FILES)('HAP-1842: .env.example through %s cannot bypass th
       expect(await loginAttempts(rateLimit, shell['RATE_LIMIT_BYPASS_HEADER']!, secret)).toEqual(limited(rateLimit));
     });
 
+  // HAP-1849: a CRLF .env leaves a trailing CR; Node strips a header value's surrounding whitespace before compare.
+  it.each([
+    ['the placeholder + CR', `${SHIPPED_PLACEHOLDERS[0]}\r`],
+    ['the placeholder padded with spaces', `  ${SHIPPED_PLACEHOLDERS[0]}  `],
+    ['the short placeholder + 4 tabs (33 characters)', `${SHIPPED_PLACEHOLDERS[1]}\t\t\t\t`],
+    ['a 31-character random value + CR and a space', `${short}\r `],
+  ])('.env.example with RATE_LIMIT_BYPASS_SECRET = %s: trimmed, refused with one WARN', async (_label, secret) => {
+    const shell = { ...shellFromEnvFile(ENV_EXAMPLE), RATE_LIMIT_BYPASS_SECRET: secret };
+    const { rateLimit, bypassWarns } = loadThroughCompose(file, shell);
+    expect(bypassWarns).toHaveLength(1);
+    expect(inspect(bypassWarns)).not.toContain(secret.trim());
+    expect(await loginAttempts(rateLimit, shell['RATE_LIMIT_BYPASS_HEADER']!, secret.trim())).toEqual(limited(rateLimit));
+  });
+
+  it('a 32-character random secret + CR (CRLF .env) bypasses with the trimmed value only', async () => {
+    const secret = randomBytes(24).toString('base64');
+    const shell = { ...shellFromEnvFile(ENV_EXAMPLE), RATE_LIMIT_BYPASS_SECRET: `${secret}\r` };
+    const { rateLimit, bypassWarns } = loadThroughCompose(file, shell);
+    expect(bypassWarns).toEqual([]);
+    const header = shell['RATE_LIMIT_BYPASS_HEADER']!;
+    const n = rateLimit.endpoints.authAccount.max + 1;
+    expect(await loginAttempts(rateLimit, header, secret))
+      .toEqual({ statuses: Array(n).fill(401), limits: Array(n).fill(undefined), reached: n });
+    expect(await loginAttempts(rateLimit, header, secret.slice(0, -1))).toEqual(limited(rateLimit));
+  });
+
   it('a 32-character random secret still bypasses, only with that exact value', async () => {
     const secret = randomBytes(24).toString('base64');
     expect(secret).toHaveLength(32);
@@ -268,5 +327,6 @@ describe.each(COMPOSE_FILES)('HAP-1842: .env.example through %s cannot bypass th
     expect(await loginAttempts(rateLimit, header, secret))
       .toEqual({ statuses: Array(n).fill(401), limits: Array(n).fill(undefined), reached: n });
     expect(await loginAttempts(rateLimit, header, `${secret}x`)).toEqual(limited(rateLimit));
+    expect(await loginAttempts(rateLimit, header, secret.slice(0, -1))).toEqual(limited(rateLimit));
   });
 });

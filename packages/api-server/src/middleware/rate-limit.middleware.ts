@@ -17,7 +17,7 @@
  * - A store error is logged by class and code only, never its message (HAP-1764, the HAP-1382 pattern)
  */
 
-import { createHash } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { Redis } from 'ioredis';
 import type { ConfigSchema } from '@cmdb/common';
@@ -64,11 +64,15 @@ export class RateLimitMiddleware {
   private config: ConfigSchema['rateLimit'];
   private metricsEnabled: boolean;
   private rateLimitHits: Map<string, number> = new Map();
+  /** SHA-256 of config.bypassSecret, or null (bypass off); checkBypass compares digests in constant time. */
+  private bypassDigest: Buffer | null;
 
   constructor(redis: Redis, config: ConfigSchema['rateLimit']) {
     this.redis = redis;
     this.config = config;
     this.metricsEnabled = config.monitoring.enabled;
+    const secret = config.bypassSecret ?? '';
+    this.bypassDigest = secret === '' ? null : createHash('sha256').update(secret).digest();
 
     // Periodically log rate limit metrics
     if (this.metricsEnabled && config.monitoring.logRateLimitHits) {
@@ -250,15 +254,19 @@ export class RateLimitMiddleware {
   }
 
   /**
-   * Check if request should bypass rate limiting (internal services)
+   * Check if request should bypass rate limiting (internal services). Equal-length SHA-256 digests are compared with
+   * timingSafeEqual (HAP-1849), so the response time leaks neither the secret's length nor a matching prefix.
    */
   private checkBypass(req: Request): boolean {
-    if (!this.config.bypassSecret) {
+    if (this.bypassDigest === null) {
       return false;
     }
 
-    const bypassHeader = req.headers[this.config.bypassHeader.toLowerCase()] as string | undefined;
-    return bypassHeader === this.config.bypassSecret;
+    const presented = req.headers[this.config.bypassHeader.toLowerCase()];
+    if (typeof presented !== 'string') {
+      return false;
+    }
+    return timingSafeEqual(createHash('sha256').update(presented).digest(), this.bypassDigest);
   }
 
   /**

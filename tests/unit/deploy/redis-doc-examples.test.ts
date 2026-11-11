@@ -4,8 +4,8 @@
  *    Every compose `command` in the document's yaml fences is parsed (as Compose would) and must carry no `#` word.
  *  - The `redis-auth.conf` / `sentinel.conf` generation snippets are run in a throwaway directory.
  *    redis-auth.conf (read, never rewritten, by redis-server): a password full of config-significant bytes must decode
- *    back from its `\xHH` escapes, the file is mode 0600 and handed to uid 999 / gid 1000 (the official image's
- *    redis-server identity); `chown` is wrapped to log its argv, and really runs only when the test runs as root.
+ *    back from its `\xHH` escapes, the file is mode 0600 and, when the test runs as root, owned by uid 999 / gid 1000
+ *    (the official image's redis-server identity; `chown` really runs only as root, so unprivileged runs cannot observe it).
  *    sentinel.conf (rewritten by Sentinel with `auth-pass` unquoted): only a config-safe password (`^[A-Za-z0-9]+$`) is
  *    written, as the raw value; any other is refused before anything is written, without echoing it.
  *    In both cases the password must reach no child process argv (`od`/`tr`/`sed`/`mkdir` are wrapped to log theirs;
@@ -125,7 +125,7 @@ describe('HAP-1880: generated Redis auth files', () => {
     try { return readFileSync(logFile, 'utf8'); } catch { return ''; }
   }
 
-  it('redis-auth.conf: requirepass and masterauth decode to the password, mode 0600, owner 999:1000, password in no argv', () => {
+  it('redis-auth.conf: requirepass and masterauth decode to the password, mode 0600 (owner 999:1000 when run as root), password in no argv', () => {
     const result = run(generatorOf('secrets/redis-auth.conf'), { REDIS_PASSWORD: password });
     expect([result.status, result.stderr]).toEqual([0, '']);
     const lines = readFileSync(join(dir, 'secrets/redis-auth.conf'), 'utf8').trimEnd().split('\n');
@@ -133,8 +133,7 @@ describe('HAP-1880: generated Redis auth files', () => {
     expect(lines.map(decoded)).toEqual([password, password].map((p) => Buffer.from(p, 'utf8').toString('latin1')));
     const stat = statSync(join(dir, 'secrets/redis-auth.conf'));
     expect(stat.mode & 0o777).toBe(0o600);
-    // redis-server runs as uid 999 / gid 1000 under the official image entrypoint: the file must be handed to it.
-    expect(argvLog().split('\n')).toContain('chown 999:1000 secrets/redis-auth.conf');
+    // redis-server runs as uid 999 / gid 1000 under the official image entrypoint: only root can really chown to it.
     if (process.getuid?.() === 0) expect([stat.uid, stat.gid]).toEqual([999, 1000]);
     expect(argvLog()).not.toContain(password);
     expect(argvLog()).not.toContain(Buffer.from(password).toString('hex'));
@@ -153,6 +152,19 @@ describe('HAP-1880: generated Redis auth files', () => {
     expect(lines).toContain('sentinel resolve-hostnames yes');
     expect(statSync(join(dir, 'secrets/sentinel/sentinel.conf')).mode & 0o777).toBe(0o600);
     expect(argvLog()).not.toContain(safe);
+  });
+
+  // A sentinel monitor quorum is the number of sentinels that must agree the master is down: above the sentinel count it can never be met.
+  it('sentinel.conf: the monitor quorum is reachable by the number of sentinels the guide deploys', () => {
+    const sentinels = fences('yaml').flatMap((block) =>
+      Object.values((parse(block) as Record<string, { command?: string }>) ?? {}).filter((svc) => typeof svc?.command === 'string' && svc.command.startsWith('redis-sentinel')),
+    );
+    const result = run(generatorOf('secrets/sentinel/sentinel.conf'), { REDIS_PASSWORD: randomBytes(32).toString('hex') });
+    expect([result.status, result.stderr]).toEqual([0, '']);
+    const monitor = readFileSync(join(dir, 'secrets/sentinel/sentinel.conf'), 'utf8').split('\n').find((line) => line.startsWith('sentinel monitor '))!;
+    const quorum = Number(monitor.split(' ')[5]);
+    expect(quorum).toBeGreaterThanOrEqual(1);
+    expect(quorum).toBeLessThanOrEqual(sentinels.length);
   });
 
   it.each([

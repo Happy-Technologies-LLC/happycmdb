@@ -14,6 +14,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { SecretInput } from '@/components/ui/secret-input';
 import { Switch } from '@/components/ui/switch';
 import {
   Select,
@@ -337,10 +338,18 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
                       onChange={(e) => updateConnection(key, e.target.value)}
                       rows={5}
                     />
+                  ) : field.type === 'password' ? (
+                    <SecretInput
+                      id={key}
+                      autoComplete="new-password"
+                      placeholder={field.label}
+                      value={config.connection[key] || ''}
+                      onChange={(e) => updateConnection(key, e.target.value)}
+                    />
                   ) : (
                     <Input
                       id={key}
-                      type={field.type === 'password' ? 'password' : 'text'}
+                      type="text"
                       placeholder={field.label}
                       value={config.connection[key] || ''}
                       onChange={(e) => updateConnection(key, e.target.value)}

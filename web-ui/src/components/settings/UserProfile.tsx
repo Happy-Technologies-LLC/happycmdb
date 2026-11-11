@@ -15,6 +15,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { api } from '../../services/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { SecretInput } from '@/components/ui/secret-input';
 import { Label } from '@/components/ui/label';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import {
@@ -246,9 +247,9 @@ export const UserProfile: React.FC = () => {
                 control={passwordForm.control}
                 render={({ field, fieldState }) => (
                   <div>
-                    <Input
+                    <SecretInput
                       id="current-password"
-                      type="password"
+                      autoComplete="current-password"
                       {...field}
                       className={fieldState.error ? 'border-destructive' : ''}
                     />
@@ -267,9 +268,9 @@ export const UserProfile: React.FC = () => {
                 control={passwordForm.control}
                 render={({ field, fieldState }) => (
                   <div>
-                    <Input
+                    <SecretInput
                       id="new-password"
-                      type="password"
+                      autoComplete="new-password"
                       {...field}
                       className={fieldState.error ? 'border-destructive' : ''}
                     />
@@ -288,9 +289,9 @@ export const UserProfile: React.FC = () => {
                 control={passwordForm.control}
                 render={({ field, fieldState }) => (
                   <div>
-                    <Input
+                    <SecretInput
                       id="confirm-password"
-                      type="password"
+                      autoComplete="new-password"
                       {...field}
                       className={fieldState.error ? 'border-destructive' : ''}
                     />

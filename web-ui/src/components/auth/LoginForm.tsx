@@ -14,6 +14,7 @@ import { Icon } from '@happy-technologies/design-system';
 import { useAuth } from '../../contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { SecretInput } from '@/components/ui/secret-input';
 import {
   Form,
   FormControl,
@@ -112,7 +113,7 @@ export const LoginForm: React.FC = () => {
               </div>
               <FormControl>
                 <div className="relative">
-                  <Input
+                  <SecretInput
                     {...field}
                     type={showPassword ? 'text' : 'password'}
                     autoComplete="current-password"

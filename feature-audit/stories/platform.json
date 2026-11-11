@@ -176,7 +176,7 @@
     "feature": "Swagger UI",
     "ref": "GET /api-docs (swagger.routes.ts)",
     "user_story": "As a developer, I want an interactive Swagger UI so that I can browse and try the REST API.",
-    "expected_behavior": "swaggerRoutes is mounted at /api-docs (rest/server.ts:79, no auth). It serves the Swagger UI from the OpenAPI spec loaded at startup from ../../openapi/openapi.yaml, with custom CSS, title, and try-it-out enabled. If the spec fails to load, a minimal fallback document ('API documentation is currently unavailable') is rendered instead of crashing.",
+    "expected_behavior": "Off by default: createSwaggerRoutes() is mounted at /api-docs by RestAPIServer.setupRoutes (rest/server.ts) only when API_DOCS_ENABLED=true (server.apiDocsEnabled); otherwise /api-docs is a 404 and openapi.yaml is not read. When mounted it has no auth. It serves the Swagger UI from the OpenAPI spec loaded by createSwaggerRoutes() from ../../openapi/openapi.yaml, with custom CSS, title, and try-it-out enabled. If the spec fails to load, a minimal fallback document ('API documentation is currently unavailable') is rendered instead of crashing.",
     "issue": false,
     "severity": "",
     "issue_note": ""
@@ -188,7 +188,7 @@
     "feature": "Raw OpenAPI JSON",
     "ref": "GET /api-docs/openapi.json",
     "user_story": "As a tooling integrator, I want the raw OpenAPI spec as JSON so that I can generate clients or import it into other tools.",
-    "expected_behavior": "Sets Content-Type application/json and sends the in-memory swaggerDocument object (the parsed YAML, or the fallback document if loading failed). Always 200.",
+    "expected_behavior": "Only while /api-docs is mounted (API_DOCS_ENABLED=true; 404 otherwise). Sets Content-Type application/json and sends the in-memory swaggerDocument object (the parsed YAML, or the fallback document if loading failed). Always 200 when mounted; no auth.",
     "issue": false,
     "severity": "",
     "issue_note": ""
@@ -200,7 +200,7 @@
     "feature": "Raw OpenAPI YAML",
     "ref": "GET /api-docs/openapi.yaml",
     "user_story": "As a tooling integrator, I want the OpenAPI spec as YAML so that I can consume it in YAML-native pipelines.",
-    "expected_behavior": "Sets Content-Type text/yaml and returns YAML.stringify(swaggerDocument, 10, 2). Always 200; serves the fallback document if the spec failed to load at startup.",
+    "expected_behavior": "Only while /api-docs is mounted (API_DOCS_ENABLED=true; 404 otherwise). Sets Content-Type text/yaml and returns YAML.stringify(swaggerDocument, 10, 2). Always 200 when mounted, no auth; serves the fallback document if the spec failed to load when createSwaggerRoutes() ran.",
     "issue": false,
     "severity": "",
     "issue_note": ""
@@ -212,7 +212,7 @@
     "feature": "API docs health summary",
     "ref": "GET /api-docs/health",
     "user_story": "As an operator, I want a docs health summary so that I can confirm the OpenAPI spec loaded and see how many paths/schemas it exposes.",
-    "expected_behavior": "Responds 200 {status:'ok', openapi_version, api_version, paths_count, schemas_count} computed from the loaded swaggerDocument. When the spec failed to load, counts are 0 and versions reflect the fallback document.",
+    "expected_behavior": "Only while /api-docs is mounted (API_DOCS_ENABLED=true; 404 otherwise, no auth when mounted). Responds 200 {status:'ok', openapi_version, api_version, paths_count, schemas_count} computed from the loaded swaggerDocument. When the spec failed to load, counts are 0 and versions reflect the fallback document.",
     "issue": false,
     "severity": "",
     "issue_note": ""

@@ -13,8 +13,9 @@ This directory contains the comprehensive OpenAPI 3.0 specification for the Happ
 
 ### Access Swagger UI
 
-When the API server is running:
+`/api-docs` is off by default (`API_DOCS_ENABLED` unset, `server.apiDocsEnabled` in `ConfigSchema`); it is mounted only when `API_DOCS_ENABLED=true` (`RestAPIServer.setupRoutes` in `src/rest/server.ts`). When mounted it is **unauthenticated**: anyone who can reach the API server can read the full spec. Without the flag, read `src/openapi/openapi.yaml` in the repository instead.
 
+With `API_DOCS_ENABLED=true` and the API server running:
 ```
 http://localhost:3000/api-docs
 ```
@@ -331,7 +332,7 @@ Offerings belong to one business service of the caller's organization (HAP-1424)
 
 ## Authentication
 
-All API endpoints except `/auth` public actions, `/cmdb-health`, `/cmdb-health/ready`, `/cmdb-health/alive` and `/api-docs` require authentication. `/cmdb-health/metrics` and `/timeseries` authenticate before their fixed refusal; `/cmdb-health/services` authenticates before probing.
+All API endpoints except `/auth` public actions, `/cmdb-health`, `/cmdb-health/ready`, `/cmdb-health/alive` and `/api-docs` (mounted only when `API_DOCS_ENABLED=true`, then unauthenticated) require authentication. `/cmdb-health/metrics` and `/timeseries` authenticate before their fixed refusal; `/cmdb-health/services` authenticates before probing.
 Root Prometheus `/metrics` (outside `/api/v1`) accepts only `Authorization: Bearer $METRICS_SCRAPE_TOKEN` (401 otherwise) and answers 404 while that token is unset or shorter than 32 characters.
 
 ### JWT Token Authentication

@@ -270,11 +270,14 @@ describe('HAP-1647 / HAP-1666 / HAP-1719: the Neo4j and Redis passwords never re
     expect(redisConfig(readFileSync(confPath, 'latin1'))).toEqual({ requirepass: password, masterauth: password });
   });
 
-  it('HAP-1719: the auth init container aborts, naming the variable, and writes no file when it is unset', () => {
+  it.each([
+    ['unset', {}],
+    ['empty', { REDIS_PASSWORD: '' }],
+  ])('HAP-1719: the auth init container aborts, naming the variable, and writes no file when it is %s', (_, extra) => {
     const { init } = redisPod();
     expect(init).toBeDefined();
     for (const m of init?.volumeMounts ?? []) mkdirSync(join(dir, 'vol', m.name), { recursive: true });
-    const run = runInPod(init as Container, sandboxEnv());
+    const run = runInPod(init as Container, { ...sandboxEnv(), ...extra });
 
     expect({
       status: run.status === 0 ? 0 : 'failed',

@@ -122,17 +122,12 @@ A body with `email` instead of `username` fails validation (`username` is requir
 {
   "success": true,
   "data": {
-    "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJ1c2VyLWFkbWluLTAwMSIsInVzZXJuYW1lIjoiYWRtaW4iLCJyb2xlIjoiYWRtaW4iLCJpYXQiOjE2OTk1NTY0MDAsImV4cCI6MTY5OTY0MjgwMH0.signature",
-    "expiresIn": 900,
-    "tokenType": "Bearer",
-    "user": {
+    "_accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJ1c2VyLWFkbWluLTAwMSIsInVzZXJuYW1lIjoiYWRtaW4iLCJyb2xlIjoiYWRtaW4iLCJpYXQiOjE2OTk1NTY0MDAsImV4cCI6MTY5OTY0MjgwMH0.signature",
+    "_expiresIn": 900,
+    "_user": {
       "_id": "user-admin-001",
       "_username": "admin",
-      "_email": "admin@happycmdb.local",
-      "_role": "admin",
-      "_enabled": true,
-      "_createdAt": "2025-01-01T00:00:00Z",
-      "_lastLoginAt": "2025-11-15T10:00:00Z"
+      "_role": "admin"
     }
   }
 }

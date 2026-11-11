@@ -356,7 +356,7 @@ REDIS_TLS_AUTH_CLIENTS=yes
 ```yaml
 redis:
   command: >
-    redis-server
+    redis-server /usr/local/etc/redis/redis-auth.conf
 
     # Memory Management
     --maxmemory 2gb
@@ -373,8 +373,7 @@ redis:
     --tcp-backlog 511
     --timeout 300
 
-    # Security
-    --requirepass <strong-random-password>
+    # Security (requirepass is in redis-auth.conf, not in this command line)
     --rename-command CONFIG ""
     --rename-command FLUSHDB ""
     --rename-command FLUSHALL ""
@@ -385,7 +384,17 @@ redis:
     --tls-key-file /ssl/redis.key
     --tls-ca-cert-file /ssl/ca.crt
     --tls-auth-clients yes
+
+  volumes:
+    - ./secrets/redis-auth.conf:/usr/local/etc/redis/redis-auth.conf:ro
+  environment:
+    # redis-cli reads REDISCLI_AUTH from its environment, so the healthcheck needs no -a flag
+    REDISCLI_AUTH: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+  healthcheck:
+    test: ["CMD-SHELL", "redis-cli ping"]
 ```
+
+**Password handling**: do not pass `--requirepass` (or `redis-cli -a`) on a command line: `ps`, `/proc/<pid>/cmdline` and `docker top` show it. `redis-auth.conf` holds `requirepass "<hex-escaped password>"` (mode `0600`, never committed); `redis-server` receives only its path. `infrastructure/kubernetes/statefulsets/redis-statefulset.yaml` builds the same file in an init container from the `redis-password` key of `cmdb-secrets` (HAP-1719), and `redis-cli` clients read the password from `REDISCLI_AUTH` (HAP-1664).
 
 **Memory Sizing Guidelines:**
 - **Small**: 512MB (cache only)
@@ -938,7 +947,10 @@ promote_trigger_file = '/tmp/promote_standby'
 # Redis master
 redis-master:
   image: redis:7.2-alpine
-  command: redis-server --requirepass <password>
+  # requirepass is in redis-auth.conf (see Docker Compose Configuration above), never in argv
+  command: redis-server /usr/local/etc/redis/redis-auth.conf
+  volumes:
+    - ./secrets/redis-auth.conf:/usr/local/etc/redis/redis-auth.conf:ro
 
 # Redis sentinel
 redis-sentinel:

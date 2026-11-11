@@ -159,7 +159,6 @@ services:
       - REDIS_PORT=6379
       - KAFKA_BROKERS=kafka:29092
       - JWT_SECRET=development_jwt_secret_change_in_production
-      - JWT_EXPIRES_IN=7d
       - BCRYPT_ROUNDS=10
     networks:
       - cmdb_network

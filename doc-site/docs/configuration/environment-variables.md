@@ -176,7 +176,8 @@ ETL_FULL_SYNC_SCHEDULE="0 3 * * *"  # 3 AM daily
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `JWT_SECRET` | Yes | - | Secret key for JWT token signing (use secrets management) |
-| `JWT_EXPIRES_IN` | No | `3600` | JWT token expiration (seconds) - 1 hour |
+| `JWT_ACCESS_TOKEN_EXPIRES_IN` | No | `15m` | Access token lifetime, a number plus one unit `s`, `m`, `h` or `d` (`15m`, `1h`); a bare number such as `3600` is rejected by `JwtService.getTokenExpiresIn`. Config key `auth.jwt.accessTokenExpiresIn` in `packages/common/src/config/config.loader.ts`. The web UI renews it from the refresh cookie before it expires |
+| `JWT_REFRESH_TOKEN_EXPIRES_IN` | No | `7d` | Refresh token lifetime (`auth.jwt.refreshTokenExpiresIn`); the refresh token travels only in the `__Secure-cmdb_rt` cookie, and `POST /api/v1/auth/refresh` refuses a session more than 7 days past its login whatever this is set to ([Authentication](/api/authentication#refresh-token)) |
 | `API_KEY` | No | - | Static API key (for backward compatibility) |
 | `API_KEY_HEADER` | No | `X-API-Key` | Header name for API key |
 | `SESSION_SECRET` | No | - | Session secret for cookie-based auth |
@@ -187,7 +188,7 @@ ETL_FULL_SYNC_SCHEDULE="0 3 * * *"  # 3 AM daily
 
 ```bash
 JWT_SECRET=${JWT_SECRET}  # From secrets - minimum 32 characters
-JWT_EXPIRES_IN=7200       # 2 hours
+JWT_ACCESS_TOKEN_EXPIRES_IN=30m  # access token lifetime (default 15m)
 API_KEY=${API_KEY}        # From secrets
 RATE_LIMIT_AUTH_MAX=20    # login and password change, per client address
 RATE_LIMIT_REST_MAX=1000  # POST /api/v1/auth/refresh only

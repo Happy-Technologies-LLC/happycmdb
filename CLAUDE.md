@@ -462,7 +462,7 @@ SERVER_HOST=         # api-server bind address (unset: all interfaces)
 
 # Authentication & Security
 JWT_SECRET=your-super-secret-jwt-key-change-this-in-production-minimum-32-chars
-JWT_EXPIRATION=24h
+JWT_ACCESS_TOKEN_EXPIRES_IN=15m
 ENCRYPTION_KEY=your-encryption-key-for-sensitive-data-minimum-32-characters
 
 # Neo4j Graph Database

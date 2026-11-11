@@ -6,7 +6,8 @@
  * derive it inside sh from the container env, as HAP-1379 (#188) did for the Compose
  * healthchecks. Unset password: abort-style scripts stop before any client call, check-style
  * scripts fail that check. HAP-1719: the k8s redis-server gets requirepass/masterauth from a
- * config file, not argv. Scripts only ever meet stubs here.
+ * config file, not argv. Scripts only ever meet stubs here. HAP-1667: the scan reads every tracked command file, also
+ * flags a Neo4j password flag built apart from the client call, and excuses only exact throwaway literals.
  */
 import { spawnSync } from 'child_process';
 import { randomBytes } from 'crypto';
@@ -22,18 +23,100 @@ const GENERATED = randomBytes(12).toString('hex');
 // Split so this file's own fixtures never match its scan (no self-exclusion needed).
 const SHELL = 'cypher' + '-shell';
 const REDIS_CLI = 'redis' + '-cli';
-const ROOTS = ['infrastructure', 'scripts', 'deploy', '.github', 'tests', 'packages'];
-const COMMAND_FILE = /(\.(sh|bash|ya?ml|json|[cm]?js|ts)|\/Dockerfile[^/]*|\/Makefile)$/;
-const EXCEPTIONS: Record<string, string> = {
-  'tests/e2e/docker-compose.e2e.yml': 'fixed throwaway password of an ephemeral e2e container; operator follow-up (HAP-1647 D4)',
-  'packages/etl-processor/tests/scratch/run-n18-receipt.sh': 'fixed throwaway password of an ephemeral scratch container; operator follow-up (HAP-1647 D4)',
+// Every tracked file of these kinds anywhere in the repository (root deploy.sh included).
+const COMMAND_FILE = /(\.(sh|bash|ya?ml|json|[cm]?js|ts|py|tf|cron|service)|(^|\/)Dockerfile[^/]*|(^|\/)Makefile)$/;
+// Fixed non-secret literals a file may pass as a password value. Each entry excuses only those exact values in that
+// file; any other password value there is still flagged.
+const EXCEPTIONS: Record<string, string[]> = {
+  // HAP-1647 D4 (operator follow-up): fixed throwaway passwords of ephemeral containers.
+  'tests/e2e/docker-compose.e2e.yml': ['test_password'],
+  'packages/etl-processor/tests/scratch/run-n18-receipt.sh': ['testpassword'],
+  // The seed CLI's rejection of a password flag: its dummy value, and the `/` closing the expected-error regex.
+  'packages/api-server/src/scripts/__tests__/seed-tenant-fixture.test.ts': ['x', '/'],
 };
-// Per client: the argv flags that carry the password (the Redis client's -p is the port, the
-// Neo4j client's -a the address) and the docker exec -e form that carries its value.
+// A flag starts a word, a quoted string or a list item.
+const AT_WORD = `(?<=^|[\\s"'[,(])`;
+// Per client: its password flags (the Redis client's port flag and the Neo4j client's address flag are not among them)
+// and the variable it reads instead. `apart`: files where a password flag away from the client's own line (an argv
+// array built before the call) still counts.
+const client = (bin: string, short: string, long: string, env: string, apart?: RegExp) => ({
+  bin,
+  apart,
+  // On the client's line: attached (-p$X, -pX) or not.
+  onLine: new RegExp(`${AT_WORD}(?:${short}(?!-)|${long}(?![\\w-]))`, 'g'),
+  // Apart from it: a word of its own.
+  offLine: new RegExp(`${AT_WORD}(?:${short}|${long})(?![\\w-])`, 'g'),
+  envOption: new RegExp(`(?:-e\\s*|--env[\\s=]\\s*)["']?${env}=`, 'g'),
+  assignment: new RegExp(`(?<![\\w-])${env}=`, 'g'),
+});
 const CLIENTS = [
-  { bin: SHELL, flag: /(?:^|[\s"'[,])(?:-p|--password)(?=[\s"'=,\]]|$)/, valueInExec: /-e\s+["']?NEO4J_PASSWORD=/ },
-  { bin: REDIS_CLI, flag: /(?:^|[\s"'[,])(?:-a|--pass)(?=[\s"'=,\]]|$)/, valueInExec: /-e\s+["']?REDISCLI_AUTH=/ },
+  client(SHELL, '-' + 'p', '--' + 'password', 'NEO4J_PASSWORD', new RegExp(`\\bNEO4J_PASSWORD\\b|${SHELL}`)),
+  client(REDIS_CLI, '-' + 'a', '--' + 'pass', 'REDISCLI_AUTH'),
 ];
+// A non-secret value of a port-publishing flag: a port, host:port or <NAME>_PORT reference.
+const PORT = /^[\d.:]+$|_PORT\b|:\d+$/;
+// The option of one of these commands (mkdir, read, ps) is not a client flag.
+const OTHER_COMMAND = /(?:^|[\s;|&(])(?:mkdir|read|ps)\s[^;|&]*$/;
+const COMMENT = /^\s*(?:#|\/\/|\/\*|\*)/;
+// A container runtime call: whatever follows it on the line is that process's argv.
+const CONTAINER_CALL = /\b(?:docker|podman|kubectl)/;
+
+/** The value after `index`: `=`-joined, attached, or the next shell word or list item, unquoted. */
+function valueAt(line: string, index: number): string {
+  return /^[=\s"',]*([^\s"',\])]*)/.exec(line.slice(index))![1];
+}
+
+/** In which quote `index` sits on a shell line: '' outside, `'` or `"`. */
+function quoteAt(line: string, index: number): string {
+  let quote = '';
+  for (let i = 0; i < index; i++) {
+    if (quote === "'") quote = line[i] === "'" ? '' : quote;
+    else if (line[i] === '\\') i++;
+    else if (line[i] === quote) quote = '';
+    else if (!quote && (line[i] === "'" || line[i] === '"')) quote = line[i];
+  }
+  return quote;
+}
+
+const valuesAfter = (line: string, re: RegExp) => [...line.matchAll(re)].map((m) => ({ at: m.index!, value: valueAt(line, m.index! + m[0].length) }));
+
+/** The password values one logical line hands a client in argv; `gated[i]`: the file is in CLIENTS[i].apart. */
+function lineSecrets(line: string, gated: boolean[]): string[] {
+  return CLIENTS.flatMap(({ bin, onLine, offLine, envOption, assignment }, i) => {
+    if (line.includes(bin)) {
+      // The flag, and the variable set as an argv word: -e/--env anywhere, any NAME=value after a container call (sh -c,
+      // env). Only a single-quoted NAME="$X" there is not argv: the container's shell expands it from its own environment.
+      const call = CONTAINER_CALL.exec(line);
+      return [
+        ...valuesAfter(line, onLine),
+        ...valuesAfter(line, envOption),
+        ...valuesAfter(line, assignment).filter(({ at, value }) => call && at > call.index && !(quoteAt(line, at) === "'" && value.startsWith('$'))),
+      ].map(({ value }) => value);
+    }
+    if (!gated[i] || COMMENT.test(line)) return [];
+    // Apart from the client's line, unless the flag belongs to mkdir/read/ps or publishes a port.
+    return valuesAfter(line, offLine)
+      .filter(({ at, value }) => !OTHER_COMMAND.test(line.slice(0, at)) && !PORT.test(value))
+      .map(({ value }) => value);
+  });
+}
+
+/** Logical lines of `file` that hand cypher-shell or redis-cli a password in argv, bar the file's excepted literals. */
+function argvSecretLines(text: string, file = ''): string[] {
+  const gated = CLIENTS.map(({ apart }) => apart?.test(text) ?? false);
+  const excepted = EXCEPTIONS[file] ?? [];
+  return logicalLines(text).filter((line) => lineSecrets(line, gated).some((value) => !excepted.includes(value)));
+}
+
+function commandFiles(files: string[]): string[] {
+  return files.filter((file) => COMMAND_FILE.test(file));
+}
+
+function trackedCommandFiles(): string[] {
+  const run = spawnSync('git', ['ls-files', '-z'], { cwd: REPO, encoding: 'utf8' });
+  if (run.status !== 0) throw new Error(`git ls-files failed: ${run.stderr}`);
+  return commandFiles(run.stdout.split('\0'));
+}
 
 /**
  * Logical lines: backslash continuations are joined, and so are consecutive same-indent YAML
@@ -55,23 +138,10 @@ function logicalLines(text: string): string[] {
   return out;
 }
 
-/** Logical lines that give cypher-shell or redis-cli the password in argv. */
-function argvSecretLines(text: string): string[] {
-  return logicalLines(text).filter((line) =>
-    CLIENTS.some(({ bin, flag, valueInExec }) => line.includes(bin) && (flag.test(line) || valueInExec.test(line))),
-  );
-}
-
-function trackedCommandFiles(): string[] {
-  const run = spawnSync('git', ['ls-files', '-z', '--', ...ROOTS], { cwd: REPO, encoding: 'utf8' });
-  if (run.status !== 0) throw new Error(`git ls-files failed: ${run.stderr}`);
-  return run.stdout.split('\0').filter((file) => COMMAND_FILE.test(`/${file}`));
-}
-
-describe('HAP-1647 / HAP-1666 / HAP-1719: the Neo4j and Redis passwords never reach client or server argv', () => {
+describe('HAP-1647 / HAP-1666 / HAP-1667 / HAP-1719: the Neo4j and Redis passwords never reach client or server argv', () => {
   let dir: string;
   const stub = (name: string, body: string) => {
-    writeFileSync(join(dir, name), `#!/bin/sh\n${body}\n`);
+    writeFileSync(join(dir, name), `#!/bin/bash\n${body}\n`);
     chmodSync(join(dir, name), 0o755);
   };
   const sandboxEnv = () => ({ PATH: `${dir}:/usr/bin:/bin`, OUT: join(dir, 'out'), TMPDIR: dir });
@@ -80,19 +150,90 @@ describe('HAP-1647 / HAP-1666 / HAP-1719: the Neo4j and Redis passwords never re
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'hap1647-'));
-    stub(SHELL, 'printf "%s\\n" "$0" "$@" > "$OUT.argv"\nprintf "%s" "${NEO4J_PASSWORD-}" > "$OUT.env"');
+    // One env line per call; an empty line is a call without NEO4J_PASSWORD.
+    stub(SHELL, 'printf "%s\\n" "$0" "$@" >> "$OUT.argv"\necho "${NEO4J_PASSWORD-}" >> "$OUT.env"');
     stub(REDIS_CLI, 'echo "$0 $*" >> "$OUT.redis-argv"\necho "${REDISCLI_AUTH-}" >> "$OUT.redis-env"');
-    // docker: record every call; report the cmdb containers as running and healthy.
-    stub('docker', 'echo "$*" >> "$OUT.calls"\ncase "$1" in ps) echo cmdb-neo4j cmdb-postgres cmdb-redis cmdb-api-server cmdb-web-ui;; inspect) echo healthy;; esac');
+    // docker: record every call; report the cmdb containers as running and healthy. exec runs a sandbox stub as the
+    // container would: its environment holds only the -e variables, NAME=value as given, a bare NAME with the
+    // caller's value. Other commands (psql) fail.
+    stub('docker', [
+      'echo "$*" >> "$OUT.calls"',
+      'case "$1" in',
+      '  ps) echo cmdb-neo4j cmdb-postgres cmdb-redis cmdb-api-server cmdb-web-ui;;',
+      '  inspect) echo healthy;;',
+      '  exec) shift; vars=()',
+      '    while [[ $1 == -* ]]; do',
+      '      if [[ $1 == -e || $1 == --env ]]; then shift; if [[ $1 == *=* ]]; then vars+=("$1"); elif [[ -v $1 ]]; then vars+=("$1=${!1}"); fi; fi',
+      '      shift',
+      '    done',
+      '    [[ -x "${0%/*}/$2" ]] || exit 1',
+      '    exec env -i PATH="$PATH" OUT="$OUT" "${vars[@]}" "${@:2}";;',
+      'esac',
+    ].join('\n'));
     stub('curl', 'printf "{}\\n200"');
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it('the scan flags -p (even on a continuation line) and -e NEO4J_PASSWORD=value, not the name-only form', () => {
-    const p = '-' + 'p';
-    expect(argvSecretLines(`docker exec -e NEO4J_PASSWORD c ${SHELL} -u neo4j 'RETURN 1'`)).toEqual([]);
-    expect(argvSecretLines(`docker exec c ${SHELL} -u neo4j \\\n    ${p} "$P" 'RETURN 1'`)).toHaveLength(1);
-    expect(argvSecretLines(`docker exec -e NEO4J_PASSWORD="$P" c ${SHELL} -u neo4j 'RETURN 1'`)).toHaveLength(1);
+  const p = '-' + 'p';
+  const lines = (texts: string[], file?: string) => texts.map((text) => argvSecretLines(text, file).length);
+
+  it('on the Neo4j client line the scan flags the password flag in any spelling and NEO4J_PASSWORD=value in the exec argv', () => {
+    expect(lines([
+      `docker exec c ${SHELL} -u neo4j \\\n    ${p} "$P" 'RETURN 1'`,
+      `docker exec c ${SHELL} -u neo4j ${p}$P 'RETURN 1'`,
+      `docker exec c ${SHELL} -u neo4j ${p}"$P" 'RETURN 1'`,
+      `docker exec c ${SHELL} -u neo4j -${p}assword="$P" 'RETURN 1'`,
+      `docker exec -e NEO4J_PASSWORD="$P" c ${SHELL} -u neo4j 'RETURN 1'`,
+      `docker exec --env NEO4J_PASSWORD="$P" c ${SHELL} -u neo4j 'RETURN 1'`,
+      `docker exec --env=NEO4J_PASSWORD="$P" c ${SHELL} -u neo4j 'RETURN 1'`,
+      `docker exec -eNEO4J_PASSWORD="$P" c ${SHELL} -u neo4j 'RETURN 1'`,
+      `"$DOCKER" exec -e NEO4J_PASSWORD="$P" c ${SHELL} -u neo4j 'RETURN 1'`,
+      `docker exec c sh -c "NEO4J_PASSWORD='$P' ${SHELL} -u neo4j 'RETURN 1'"`,
+      `docker exec c sh -c 'NEO4J_PASSWORD=literal ${SHELL} -u neo4j "RETURN 1"'`,
+      `docker exec c env NEO4J_PASSWORD="$P" ${SHELL} -u neo4j 'RETURN 1'`,
+      `kubectl exec neo4j-0 -- env NEO4J_PASSWORD="$P" ${SHELL} -u neo4j 'RETURN 1'`,
+    ])).toEqual(Array(13).fill(1));
+    // Named safe forms: name-only -e; a host env prefix; an assignment the container's shell expands from its own env.
+    expect(lines([
+      `docker exec -e NEO4J_PASSWORD c ${SHELL} -u neo4j 'RETURN 1'`,
+      `NEO4J_PASSWORD="$P" docker exec -e NEO4J_PASSWORD c ${SHELL} -u neo4j 'RETURN 1'`,
+      `docker exec -e NEO4J_AUTH c sh -c 'NEO4J_PASSWORD="\${NEO4J_AUTH#*/}" exec ${SHELL} -u neo4j "RETURN 1"'`,
+    ])).toEqual([0, 0, 0]);
+  });
+
+  it('in a file that runs the Neo4j client or names NEO4J_PASSWORD the scan flags a password flag built apart from the call', () => {
+    expect(lines([
+      `auth=(-u neo4j ${p} "$NEO4J_PASSWORD")\ndocker exec c ${SHELL} "\${auth[@]}" 'RETURN 1'`,
+      `args+=(${p}"$pw")\ndocker exec c ${SHELL} "\${args[@]}"`,
+      `spawnSync('docker', [\n  'exec', 'c', '${SHELL}',\n  '${p}', password,\n]);`,
+      `subprocess.run(["${SHELL}", "-u", "neo4j",\n    "${p}", os.environ["NEO4J_PASSWORD"]])`,
+      `command: ["${SHELL}"]\nargs:\n  - -u\n  - neo4j\n  - ${p}\n  - $(NEO4J_PASSWORD)`,
+    ])).toEqual([1, 1, 1, 1, 1]);
+    // Named safe forms there: mkdir/read/ps options, port publishing, comments; and -p in a file naming neither.
+    expect(lines([
+      [
+        `: "\${NEO4J_PASSWORD:?}"`,
+        `mkdir -m 700 ${p} "$DIR"`,
+        `read -r ${p} "Proceed? " answer`,
+        `if ps ${p} $PID > /dev/null; then :; fi`,
+        `docker run -d ${p} "$NEO4J_PORT:7687" ${p} 127.0.0.1::7474 neo4j`,
+        `# without ${p} it prompts`,
+      ].join('\n'),
+      `psql ${p} "$PGPORT_FILE"`,
+    ])).toEqual([0, 0]);
+  });
+
+  it('an exception excuses only its exact throwaway literal, and only in its own file', () => {
+    const file = 'packages/etl-processor/tests/scratch/run-n18-receipt.sh';
+    expect(lines([`docker exec c ${SHELL} -u neo4j ${p} testpassword`, `docker exec c ${SHELL} -u neo4j ${p} "$NEO4J_PASSWORD"`], file))
+      .toEqual([0, 1]);
+    expect(lines([`docker exec c ${SHELL} -u neo4j ${p} testpassword`], 'scripts/db-init.sh')).toEqual([1]);
+  });
+
+  it('the scan covers the root deploy.sh and cron, systemd, Terraform and Python files', () => {
+    const files = ['deploy.sh', 'ops/backup.cron', 'ops/backup.service', 'infra/main.tf', 'tools/seed.py', 'Dockerfile'];
+    expect(commandFiles(files)).toEqual(files);
+    expect(trackedCommandFiles()).toEqual(expect.arrayContaining(['deploy.sh', 'infrastructure/config/cron/happycmdb-backup.cron']));
   });
 
   it('the Redis scan flags the auth flag inline, in a YAML exec array and as -e REDISCLI_AUTH=value', () => {
@@ -110,10 +251,9 @@ describe('HAP-1647 / HAP-1666 / HAP-1719: the Neo4j and Redis passwords never re
     ].join('\n'))).toEqual([]);
   });
 
-  it('no tracked script, workflow or manifest passes it in argv (named exceptions only)', () => {
+  it('no tracked script, workflow or manifest passes it in argv (excepted literals only)', () => {
     const hits = trackedCommandFiles()
-      .filter((file) => !(file in EXCEPTIONS))
-      .flatMap((file) => argvSecretLines(readFileSync(join(REPO, file), 'utf8')).map((line) => `${file}: ${line.trim()}`));
+      .flatMap((file) => argvSecretLines(readFileSync(join(REPO, file), 'utf8'), file).map((line) => `${file}: ${line.trim()}`));
     expect(hits).toEqual([]);
   });
 
@@ -129,7 +269,7 @@ describe('HAP-1647 / HAP-1666 / HAP-1719: the Neo4j and Redis passwords never re
     expect({
       argv: readFileSync(join(dir, 'out.argv'), 'utf8').includes(GENERATED),
       env: readFileSync(join(dir, 'out.env'), 'utf8'),
-    }).toEqual({ argv: false, env: GENERATED });
+    }).toEqual({ argv: false, env: `${GENERATED}\n` });
   });
 
   it('abort style: restore-neo4j exits, naming the variable, before any docker call when it is unset', () => {
@@ -156,6 +296,24 @@ describe('HAP-1647 / HAP-1666 / HAP-1719: the Neo4j and Redis passwords never re
       named: run.stdout.includes('NEO4J_PASSWORD'),
       cypherShellRun: readFileSync(join(dir, 'out.calls'), 'utf8').includes(SHELL),
     }).toEqual({ status: 1, named: true, cypherShellRun: false });
+  });
+
+  it('post-deploy-validation hands a set NEO4J_PASSWORD to cypher-shell through the container environment, never argv', () => {
+    const scripts = join(dir, 'root/infrastructure/scripts');
+    mkdirSync(scripts, { recursive: true });
+    copyFileSync(join(REPO, 'infrastructure/scripts/post-deploy-validation.sh'), join(scripts, 'post-deploy-validation.sh'));
+    const run = spawnSync('bash', [join(scripts, 'post-deploy-validation.sh')], {
+      env: { ...sandboxEnv(), NEO4J_PASSWORD: GENERATED },
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+
+    expect({
+      connected: run.stdout.includes('Neo4j connection successful'),
+      argv: readFileSync(join(dir, 'out.argv'), 'utf8').includes(GENERATED),
+      env: readFileSync(join(dir, 'out.env'), 'utf8'),
+      output: `${run.stdout}${run.stderr}`.includes(GENERATED),
+    }).toEqual({ connected: true, argv: false, env: `${GENERATED}\n${GENERATED}\n`, output: false });
   });
 
   // HAP-1666 rows: sleep is stubbed so the scripts' startup waits cost nothing.

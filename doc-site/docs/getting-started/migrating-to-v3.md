@@ -365,10 +365,10 @@ For each cloud provider in your v2.0 setup, create a unified credential:
 **AWS Example**:
 ```bash
 # Get JWT token first
-TOKEN=$(curl -X POST http://localhost:3000/api/auth/login \
+TOKEN=$(curl -X POST http://localhost:3000/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"Admin123!"}' \
-  | jq -r '.data.accessToken')
+  | jq -r '.data._accessToken')
 
 # Create AWS credential
 curl -X POST http://localhost:3000/api/v1/credentials \

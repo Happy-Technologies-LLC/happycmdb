@@ -73,8 +73,9 @@ docker logs cmdb-api-server --since 5m | awk '{print $1}' | sort | uniq -c | sor
 
 ```bash
 # View the rate limit settings the running api-server container actually has (docker-compose.yml forwards each
-# RATE_LIMIT_* through the api-server `environment:`; a .env file is not read inside the image, .dockerignore: **/.env*)
-docker exec cmdb-api-server printenv | grep '^RATE_LIMIT_' | sort
+# RATE_LIMIT_* through the api-server `environment:`; a .env file is not read inside the image, .dockerignore: **/.env*).
+# The grep -v keeps RATE_LIMIT_BYPASS_SECRET (it skips every limiter, login included) out of the terminal and its scrollback.
+docker exec cmdb-api-server printenv | grep '^RATE_LIMIT_' | grep -v '^RATE_LIMIT_BYPASS_SECRET=' | sort
 
 # Check Redis rate limit counters
 docker exec cmdb-redis redis-cli keys "rate_limit:*" | head -20
@@ -141,12 +142,11 @@ A limit on any other route is an nginx zone in `infrastructure/docker/nginx.conf
 
 Recreate the API server container so Compose re-reads the environment. `docker restart cmdb-api-server` does NOT: it restarts the existing container with the environment it was created with.
 
-Load the whole host `.env` into the shell first, as `./deploy.sh` does. Compose resolves the `api-server` block's other variables (`JWT_SECRET`, `NEO4J_PASSWORD`, `POSTGRES_PASSWORD`, `ENCRYPTION_KEY`) from the same environment and, with `-f infrastructure/docker/docker-compose.yml`, does not read the root `.env` by itself; without it they interpolate as empty in the recreated container.
+Load the whole host `.env`, as `./deploy.sh` does, in a subshell. Compose resolves the `api-server` block's other variables (`JWT_SECRET`, `NEO4J_PASSWORD`, `POSTGRES_PASSWORD`, `ENCRYPTION_KEY`) from the same environment and, with `-f infrastructure/docker/docker-compose.yml`, does not read the root `.env` by itself; without it they interpolate as empty in the recreated container. The parentheses run `set -a` and `docker compose` in a child shell, so those `.env` secrets are not left exported in your shell afterwards.
 
 ```bash
 # From the repository root
-set -a; . ./.env; set +a
-docker compose -f infrastructure/docker/docker-compose.yml up -d --force-recreate api-server
+( set -a; . ./.env; set +a; docker compose -f infrastructure/docker/docker-compose.yml up -d --force-recreate api-server )
 
 # Or, without changing the shell: docker compose --env-file .env -f infrastructure/docker/docker-compose.yml up -d --force-recreate api-server
 # (a variable already exported in the shell overrides the --env-file value)

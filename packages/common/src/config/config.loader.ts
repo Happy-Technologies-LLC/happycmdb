@@ -28,11 +28,14 @@ const KNOWN_BYPASS_PLACEHOLDERS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The bypass secret `RateLimitMiddleware.checkBypass` may honour, or undefined (bypass off). Unset or empty already
- * means off; a value shorter than MIN_BYPASS_SECRET_LENGTH or a shipped placeholder is refused with one WARN (fixed
- * text, never the value) instead of skipping every limiter, including the login buckets, for anyone who sends it.
+ * The bypass secret `RateLimitMiddleware.checkBypass` may honour, or undefined (bypass off). The value is trimmed
+ * first (HAP-1849: a CRLF `.env` leaves a trailing CR, and Node strips a header value's surrounding whitespace, so an
+ * untrimmed value could never match). Unset, empty or blank means off; a trimmed value shorter than
+ * MIN_BYPASS_SECRET_LENGTH or a shipped placeholder is refused with one WARN (fixed text, never the value) instead of
+ * skipping every limiter, including the login buckets, for anyone who sends it.
  */
-function usableBypassSecret(secret: string | undefined): string | undefined {
+function usableBypassSecret(raw: string | undefined): string | undefined {
+  const secret = raw?.trim();
   if (!secret) return undefined;
   const reason = KNOWN_BYPASS_PLACEHOLDERS.has(secret)
     ? 'a known placeholder'

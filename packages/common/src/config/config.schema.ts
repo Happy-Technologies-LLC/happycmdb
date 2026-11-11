@@ -22,6 +22,8 @@ export const configSchema = Joi.object({
     // Unset/0/false trusts nothing (req.ip = socket address). Any shape is accepted here; the api-server resolves
     // it and fails closed to the socket address on `true` or an invalid value, so startup never crashes on it.
     trustProxy: Joi.alternatives().try(Joi.boolean(), Joi.number(), Joi.string().allow('')).default(false),
+    // HAP-900: mount /api-docs (Swagger UI + the full OpenAPI spec, no authentication) only when true. Off by default.
+    apiDocsEnabled: Joi.boolean().strict().default(false),
   }).required(),
 
   // Database Configuration
@@ -323,6 +325,7 @@ export type ConfigSchema = {
     port: number;
     host: string;
     trustProxy: boolean | number | string;
+    apiDocsEnabled: boolean;
   };
   databases: {
     neo4j: {

@@ -13,26 +13,26 @@ import * as YAML from 'yamljs';
 import * as path from 'path';
 import { logger } from '@cmdb/common';
 
-export const swaggerRoutes = Router();
-
 // Load OpenAPI specification
 const openApiSpecPath = path.join(__dirname, '../../openapi/openapi.yaml');
-let swaggerDocument: any;
 
-try {
-  swaggerDocument = YAML.load(openApiSpecPath);
-  logger.info('OpenAPI specification loaded successfully', { path: openApiSpecPath });
-} catch (error) {
-  logger.error('Failed to load OpenAPI specification', { error, path: openApiSpecPath });
-  swaggerDocument = {
-    openapi: '3.0.0',
-    info: {
-      title: 'HappyCMDB API',
-      version: '2.0.0',
-      description: 'API documentation is currently unavailable. Please check server logs.',
-    },
-    paths: {},
-  };
+function loadSwaggerDocument(): any {
+  try {
+    const document = YAML.load(openApiSpecPath);
+    logger.info('OpenAPI specification loaded successfully', { path: openApiSpecPath });
+    return document;
+  } catch (error) {
+    logger.error('Failed to load OpenAPI specification', { error, path: openApiSpecPath });
+    return {
+      openapi: '3.0.0',
+      info: {
+        title: 'HappyCMDB API',
+        version: '2.0.0',
+        description: 'API documentation is currently unavailable. Please check server logs.',
+      },
+      paths: {},
+    };
+  }
 }
 
 // Swagger UI options
@@ -71,37 +71,48 @@ const swaggerOptions: swaggerUi.SwaggerUiOptions = {
 };
 
 /**
- * Serve Swagger UI at /api-docs
+ * Build the /api-docs router. Called only when API_DOCS_ENABLED=true (HAP-900), so the spec is
+ * neither read nor are spec errors logged while the docs are off. The mount is unauthenticated.
  */
-swaggerRoutes.use('/', swaggerUi.serve);
-swaggerRoutes.get('/', swaggerUi.setup(swaggerDocument, swaggerOptions));
+export function createSwaggerRoutes(): Router {
+  const swaggerRoutes = Router();
+  const swaggerDocument = loadSwaggerDocument();
 
-/**
- * Serve raw OpenAPI JSON at /api-docs/openapi.json
- */
-swaggerRoutes.get('/openapi.json', (_req: Request, res: Response) => {
-  res.setHeader('Content-Type', 'application/json');
-  res.send(swaggerDocument);
-});
+  /**
+   * Serve Swagger UI at /api-docs
+   */
+  swaggerRoutes.use('/', swaggerUi.serve);
+  swaggerRoutes.get('/', swaggerUi.setup(swaggerDocument, swaggerOptions));
 
-/**
- * Serve raw OpenAPI YAML at /api-docs/openapi.yaml
- */
-swaggerRoutes.get('/openapi.yaml', (_req: Request, res: Response) => {
-  res.setHeader('Content-Type', 'text/yaml');
-  const yamlContent = YAML.stringify(swaggerDocument, 10, 2);
-  res.send(yamlContent);
-});
-
-/**
- * Health check for API documentation
- */
-swaggerRoutes.get('/health', (_req: Request, res: Response) => {
-  res.json({
-    status: 'ok',
-    openapi_version: swaggerDocument.openapi || 'unknown',
-    api_version: swaggerDocument.info?.version || 'unknown',
-    paths_count: Object.keys(swaggerDocument.paths || {}).length,
-    schemas_count: Object.keys(swaggerDocument.components?.schemas || {}).length,
+  /**
+   * Serve raw OpenAPI JSON at /api-docs/openapi.json
+   */
+  swaggerRoutes.get('/openapi.json', (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.send(swaggerDocument);
   });
-});
+
+  /**
+   * Serve raw OpenAPI YAML at /api-docs/openapi.yaml
+   */
+  swaggerRoutes.get('/openapi.yaml', (_req: Request, res: Response) => {
+    res.setHeader('Content-Type', 'text/yaml');
+    const yamlContent = YAML.stringify(swaggerDocument, 10, 2);
+    res.send(yamlContent);
+  });
+
+  /**
+   * Health check for API documentation
+   */
+  swaggerRoutes.get('/health', (_req: Request, res: Response) => {
+    res.json({
+      status: 'ok',
+      openapi_version: swaggerDocument.openapi || 'unknown',
+      api_version: swaggerDocument.info?.version || 'unknown',
+      paths_count: Object.keys(swaggerDocument.paths || {}).length,
+      schemas_count: Object.keys(swaggerDocument.components?.schemas || {}).length,
+    });
+  });
+
+  return swaggerRoutes;
+}

@@ -11,7 +11,7 @@
  */
 import { spawnSync } from 'child_process';
 import { randomBytes } from 'crypto';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { gzipSync } from 'zlib';
@@ -55,8 +55,9 @@ const CLIENTS = [
 ];
 // A non-secret value of a port-publishing flag: a port, host:port or <NAME>_PORT reference.
 const PORT = /^[\d.:]+$|_PORT\b|:\d+$/;
-// The option of one of these commands (mkdir, read, ps) is not a client flag.
-const OTHER_COMMAND = /(?:^|[\s;|&(])(?:mkdir|read|ps)\s[^;|&]*$/;
+// The option of one of these commands is not a client flag: mkdir, read and ps, and the file tools whose -p preserves
+// attributes (cp, mv, install, rsync, scp, tar).
+const OTHER_COMMAND = /(?:^|[\s;|&(])(?:mkdir|read|ps|cp|mv|install|rsync|scp|tar)\s[^;|&]*$/;
 const COMMENT = /^\s*(?:#|\/\/|\/\*|\*)/;
 // A container runtime call: whatever follows it on the line is that process's argv.
 const CONTAINER_CALL = /\b(?:docker|podman|kubectl)/;
@@ -94,7 +95,7 @@ function lineSecrets(line: string, gated: boolean[]): string[] {
       ].map(({ value }) => value);
     }
     if (!gated[i] || COMMENT.test(line)) return [];
-    // Apart from the client's line, unless the flag belongs to mkdir/read/ps or publishes a port.
+    // Apart from the client's line, unless the flag belongs to OTHER_COMMAND or publishes a port.
     return valuesAfter(line, offLine)
       .filter(({ at, value }) => !OTHER_COMMAND.test(line.slice(0, at)) && !PORT.test(value))
       .map(({ value }) => value);
@@ -208,14 +209,20 @@ describe('HAP-1647 / HAP-1666 / HAP-1667 / HAP-1719: the Neo4j and Redis passwor
       `spawnSync('docker', [\n  'exec', 'c', '${SHELL}',\n  '${p}', password,\n]);`,
       `subprocess.run(["${SHELL}", "-u", "neo4j",\n    "${p}", os.environ["NEO4J_PASSWORD"]])`,
       `command: ["${SHELL}"]\nargs:\n  - -u\n  - neo4j\n  - ${p}\n  - $(NEO4J_PASSWORD)`,
-    ])).toEqual([1, 1, 1, 1, 1]);
-    // Named safe forms there: mkdir/read/ps options, port publishing, comments; and -p in a file naming neither.
+      // The attribute-preserving -p of an earlier line excuses nothing on a later one.
+      `cp ${p} a b\nauth=(-u neo4j ${p} "$NEO4J_PASSWORD")\ndocker exec c ${SHELL} "\${auth[@]}"`,
+    ])).toEqual([1, 1, 1, 1, 1, 1]);
+    // Named safe forms there: mkdir/read/ps options, cp/tar attribute preservation, port publishing, comments; and -p in
+    // a file naming neither.
     expect(lines([
       [
         `: "\${NEO4J_PASSWORD:?}"`,
         `mkdir -m 700 ${p} "$DIR"`,
         `read -r ${p} "Proceed? " answer`,
         `if ps ${p} $PID > /dev/null; then :; fi`,
+        `cp ${p} a b`,
+        `tar -x ${p} -f a.tar`,
+        `cat a.tar | docker exec -i c tar -x ${p} -f -`,
         `docker run -d ${p} "$NEO4J_PORT:7687" ${p} 127.0.0.1::7474 neo4j`,
         `# without ${p} it prompts`,
       ].join('\n'),
@@ -311,9 +318,11 @@ describe('HAP-1647 / HAP-1666 / HAP-1667 / HAP-1719: the Neo4j and Redis passwor
     expect({
       connected: run.stdout.includes('Neo4j connection successful'),
       argv: readFileSync(join(dir, 'out.argv'), 'utf8').includes(GENERATED),
+      // The docker CLI's own argv: where `--env NAME=value` would leak it.
+      dockerArgv: readFileSync(join(dir, 'out.calls'), 'utf8').includes(GENERATED),
       env: readFileSync(join(dir, 'out.env'), 'utf8'),
       output: `${run.stdout}${run.stderr}`.includes(GENERATED),
-    }).toEqual({ connected: true, argv: false, env: `${GENERATED}\n${GENERATED}\n`, output: false });
+    }).toEqual({ connected: true, argv: false, dockerArgv: false, env: `${GENERATED}\n${GENERATED}\n`, output: false });
   });
 
   // HAP-1666 rows: sleep is stubbed so the scripts' startup waits cost nothing.
@@ -380,6 +389,22 @@ describe('HAP-1647 / HAP-1666 / HAP-1667 / HAP-1719: the Neo4j and Redis passwor
       for (const m of c.volumeMounts ?? []) out = out.split(m.mountPath).join(join(dir, 'vol', m.name));
       return out;
     });
+  // A directory of symlinks, one per executable in /usr/bin and /bin, to one logger: it appends its argv to
+  // $OUT.init-argv, then execs the real binary. Returns the directory, to use as the whole PATH.
+  const loggingShims = () => {
+    const shims = join(dir, 'shims');
+    mkdirSync(shims);
+    stub('logger', [
+      'name=${0##*/}',
+      'printf \'%s\\n\' "$name $*" >> "$OUT.init-argv"',
+      'for d in /usr/bin /bin; do [[ -x $d/$name ]] && exec "$d/$name" "$@"; done',
+      'exit 127',
+    ].join('\n'));
+    for (const bin of ['/usr/bin', '/bin'].flatMap((d) => readdirSync(d))) {
+      if (!existsSync(join(shims, bin))) symlinkSync(join(dir, 'logger'), join(shims, bin));
+    }
+    return shims;
+  };
   const runInPod = (c: Container, env: Record<string, string>) => {
     const [cmd, ...args] = podArgv(c, env);
     return spawnSync(cmd, args, { env, encoding: 'utf8' });
@@ -401,12 +426,9 @@ describe('HAP-1647 / HAP-1666 / HAP-1667 / HAP-1719: the Neo4j and Redis passwor
     // A password with quotes, backslashes, a space, a non-ASCII char and a trailing newline.
     const password = `${GENERATED} "\\' $x\u00e9\n`;
     for (const m of [...(init?.volumeMounts ?? []), ...(redis.volumeMounts ?? [])]) mkdirSync(join(dir, 'vol', m.name), { recursive: true });
-    // Every external command the init script runs logs its argv, then runs the real binary.
-    for (const bin of ['od', 'tr', 'sed', 'cat', 'base64', 'xxd', 'awk']) {
-      const real = spawnSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' }).stdout.trim();
-      if (real) stub(bin, `printf '%s\\n' "$*" >> "$OUT.init-argv"\nexec ${real} "$@"`);
-    }
-    const env = { ...sandboxEnv(), REDIS_PASSWORD: password } as Record<string, string>;
+    // PATH holds only logging shims: every external command the init script can run, whatever its name, logs its argv
+    // and then runs the real binary.
+    const env = { ...sandboxEnv(), PATH: loggingShims(), REDIS_PASSWORD: password } as Record<string, string>;
     const initRun = runInPod(init as Container, env);
     const server = podArgv(redis, env);
     const confPath = server[1];
@@ -417,12 +439,14 @@ describe('HAP-1647 / HAP-1666 / HAP-1667 / HAP-1719: the Neo4j and Redis passwor
     expect({
       status: initRun.status,
       initArgv: initArgv.includes(GENERATED) || podArgv(init as Container, env).join(' ').includes(GENERATED),
+      // The shims were on the init script's path: it ran some external command.
+      shimmed: initArgv.length > 0,
       initOutput: `${initRun.stdout}${initRun.stderr}`.includes(GENERATED),
       serverArgv: server.join(' ').includes(GENERATED),
-      // In memory, never on node disk, and readable by the owner only.
-      volume: volume?.emptyDir,
+      // In memory, never on node disk (the size limit is incidental), and readable by the owner only.
+      volume: volume?.emptyDir?.medium,
       confMode: (statSync(confPath).mode & 0o777).toString(8),
-    }).toEqual({ status: 0, initArgv: false, initOutput: false, serverArgv: false, volume: { medium: 'Memory', sizeLimit: '1Mi' }, confMode: '600' });
+    }).toEqual({ status: 0, initArgv: false, shimmed: true, initOutput: false, serverArgv: false, volume: 'Memory', confMode: '600' });
     // The config file is redis-server's first argument and carries both directives.
     expect(server[0]).toBe('redis-server');
     expect(redisConfig(readFileSync(confPath, 'latin1'))).toEqual({ requirepass: password, masterauth: password });

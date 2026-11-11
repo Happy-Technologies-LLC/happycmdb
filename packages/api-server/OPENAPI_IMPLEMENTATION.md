@@ -26,7 +26,7 @@ Comprehensive OpenAPI 3.0 specification and Swagger UI integration for the Happy
    - Best practices
 
 4. **`/packages/api-server/src/rest/server.ts`** (updated)
-   - Integrated Swagger routes at `/api-docs`
+   - Integrated Swagger routes at `/api-docs`, mounted only when `API_DOCS_ENABLED=true` (off by default; unauthenticated when mounted)
    - Updated Content Security Policy for Swagger UI
 
 ### Packages Installed
@@ -184,7 +184,7 @@ Comprehensive OpenAPI 3.0 specification and Swagger UI integration for the Happy
 
 ## Access Points
 
-When API server is running on `localhost:3000`:
+When the API server is running on `localhost:3000` with `API_DOCS_ENABLED=true` (off by default; these routes are unauthenticated and return 404 otherwise, `RestAPIServer.setupRoutes` in `src/rest/server.ts`):
 
 | Endpoint | Description |
 |----------|-------------|
@@ -445,4 +445,4 @@ This OpenAPI 3.0 implementation provides:
 ✅ **Production-ready**: Security, rate limiting, error handling documented
 ✅ **Maintainable**: Clear structure, comprehensive examples
 
-The API documentation is now accessible at **http://localhost:3000/api-docs** when the server is running.
+With `API_DOCS_ENABLED=true` (off by default; the mount is unauthenticated, `RestAPIServer.setupRoutes` in `src/rest/server.ts`) the API documentation is accessible at **http://localhost:3000/api-docs** when the server is running. Otherwise read `src/openapi/openapi.yaml`.

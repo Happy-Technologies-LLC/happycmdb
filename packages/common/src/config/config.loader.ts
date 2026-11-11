@@ -141,6 +141,19 @@ export class ConfigurationLoader {
   }
 
   /**
+   * HAP-1881: `server.apiDocsEnabled` from the config file, or undefined (schema default: off) when it is not a
+   * boolean. The key is the only thing logged; the value is not.
+   */
+  private fileApiDocsEnabled(fileConfig: Partial<ConfigSchema>): boolean | undefined {
+    const value: unknown = fileConfig.server?.apiDocsEnabled;
+    if (value === undefined || typeof value === 'boolean') {
+      return value;
+    }
+    logger.warn('Configuration key server.apiDocsEnabled is not a boolean; /api-docs stays off');
+    return undefined;
+  }
+
+  /**
    * Merge config with environment variables
    */
   private mergeWithEnvVars(fileConfig: Partial<ConfigSchema>): any {
@@ -154,10 +167,12 @@ export class ConfigurationLoader {
         host: env['SERVER_HOST'] || fileConfig.server?.host,
         trustProxy: env['TRUST_PROXY'] ?? fileConfig.server?.trustProxy,
         // HAP-900: only the exact string 'true' enables /api-docs; empty or any other value is off.
+        // HAP-1881: a file-config value that is not a boolean leaves it off (warning names the key only)
+        // instead of failing the whole load against the strict schema.
         apiDocsEnabled:
           env['API_DOCS_ENABLED'] !== undefined
             ? env['API_DOCS_ENABLED'] === 'true'
-            : fileConfig.server?.apiDocsEnabled,
+            : this.fileApiDocsEnabled(fileConfig),
       },
 
       databases: {

@@ -16,7 +16,7 @@ Complete reference for configuring HappyCMDB platform through environment variab
 | `LOG_LEVEL` | No | `info` | Logging level (`trace`, `debug`, `info`, `warn`, `error`, `fatal`) |
 | `LOG_FORMAT` | No | `json` | Log format (`json`, `pretty`) |
 | `TZ` | No | `UTC` | Timezone for timestamps |
-| `API_DOCS_ENABLED` | No | unset (off) | Mounts `/api-docs` (Swagger UI, `/api-docs/openapi.json`, `/api-docs/openapi.yaml`, `/api-docs/health`) only when exactly `true`; unset, empty or any other value leaves it unmounted (404) and the spec file unread. **When on, the full API spec is readable without authentication** by anyone who can reach the API server. Config symbol: `server.apiDocsEnabled` (`ConfigSchema` in `packages/common/src/config/config.schema.ts`, read in `config.loader.ts`). Not set in any shipped compose file, manifest or config template (HAP-900). |
+| `API_DOCS_ENABLED` | No | unset (off) | Mounts `/api-docs` (Swagger UI, `/api-docs/openapi.json`, `/api-docs/openapi.yaml`, `/api-docs/health`) only when exactly `true`; unset, empty or any other value leaves it unmounted (404) and the spec file unread. **When on, the full API spec is readable without authentication** by anyone who can reach the API server. Config symbol: `server.apiDocsEnabled` (`ConfigSchema` in `packages/common/src/config/config.schema.ts`, read in `config.loader.ts`). The config-file key `server.apiDocsEnabled` must be a JSON boolean; a non-boolean value (for example the string `"true"`) is ignored with a warning that names only the key (`ConfigurationLoader.fileApiDocsEnabled`), leaves docs off and does not fail `loadConfig()`. Not set in any shipped compose file, manifest or config template (HAP-900). |
 
 **Example:**
 

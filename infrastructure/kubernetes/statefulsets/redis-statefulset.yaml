@@ -45,6 +45,40 @@ spec:
                       values:
                         - redis
                 topologyKey: kubernetes.io/hostname
+      # HAP-1719: requirepass/masterauth reach redis-server through a config file built from the
+      # cmdb-secrets redis-password, never through its argv (ps, /proc/<pid>/cmdline).
+      volumes:
+        - name: redis-auth
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+      initContainers:
+        - name: redis-auth-config
+          image: redis:7.2-alpine
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cmdb-secrets
+                  key: redis-password
+          command:
+            - sh
+            - -c
+            # Every byte becomes a \xHH escape in a double-quoted value, so any password survives
+            # Redis config parsing. The value only meets the printf builtin and stdin, never argv.
+            - |
+              set -eu
+              : "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
+              umask 077
+              hex=$(printf '%s' "$REDIS_PASSWORD" | od -An -v -tx1 | tr -d ' \n' | sed 's/../\\x&/g')
+              [ -n "$hex" ]
+              printf 'requirepass "%s"\nmasterauth "%s"\n' "$hex" "$hex" > "$1"
+            - sh
+            - /etc/redis-auth/auth.conf
+          volumeMounts:
+            - name: redis-auth
+              mountPath: /etc/redis-auth
       containers:
         - name: redis
           image: redis:7.2-alpine
@@ -62,6 +96,7 @@ spec:
           command:
             - redis-server
           args:
+            - /etc/redis-auth/auth.conf
             - --port
             - "6379"
             - --cluster-enabled
@@ -78,10 +113,6 @@ spec:
             - 1gb
             - --maxmemory-policy
             - allkeys-lru
-            - --requirepass
-            - $(REDIS_PASSWORD)
-            - --masterauth
-            - $(REDIS_PASSWORD)
           ports:
             - containerPort: 6379
               name: client
@@ -90,6 +121,9 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            - name: redis-auth
+              mountPath: /etc/redis-auth
+              readOnly: true
           resources:
             requests:
               cpu: "500m"

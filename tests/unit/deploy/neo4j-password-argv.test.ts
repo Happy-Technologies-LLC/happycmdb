@@ -5,7 +5,8 @@
  * REDISCLI_AUTH (the value travels in the environment); the k8s probes and the Redis init Job
  * derive it inside sh from the container env, as HAP-1379 (#188) did for the Compose
  * healthchecks. Unset password: abort-style scripts stop before any client call, check-style
- * scripts fail that check. Scripts only ever meet stubs here.
+ * scripts fail that check. Scripts only ever meet stubs here. HAP-1667: the scan reads every tracked command file, also
+ * flags a Neo4j password flag built apart from the client call, and excuses only exact throwaway literals.
  */
 import { spawnSync } from 'child_process';
 import { randomBytes } from 'crypto';
@@ -148,7 +149,8 @@ describe('HAP-1647 / HAP-1666: the Neo4j and Redis passwords never reach client 
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'hap1647-'));
-    stub(SHELL, 'printf "%s\\n" "$0" "$@" > "$OUT.argv"\nprintf "%s" "${NEO4J_PASSWORD-}" > "$OUT.env"');
+    // One env line per call; an empty line is a call without NEO4J_PASSWORD.
+    stub(SHELL, 'printf "%s\\n" "$0" "$@" >> "$OUT.argv"\necho "${NEO4J_PASSWORD-}" >> "$OUT.env"');
     stub(REDIS_CLI, 'echo "$0 $*" >> "$OUT.redis-argv"\necho "${REDISCLI_AUTH-}" >> "$OUT.redis-env"');
     // docker: record every call; report the cmdb containers as running and healthy. exec runs a sandbox stub as the
     // container would: its environment holds only the -e variables, NAME=value as given, a bare NAME with the
@@ -266,7 +268,7 @@ describe('HAP-1647 / HAP-1666: the Neo4j and Redis passwords never reach client 
     expect({
       argv: readFileSync(join(dir, 'out.argv'), 'utf8').includes(GENERATED),
       env: readFileSync(join(dir, 'out.env'), 'utf8'),
-    }).toEqual({ argv: false, env: GENERATED });
+    }).toEqual({ argv: false, env: `${GENERATED}\n` });
   });
 
   it('abort style: restore-neo4j exits, naming the variable, before any docker call when it is unset', () => {
@@ -310,7 +312,7 @@ describe('HAP-1647 / HAP-1666: the Neo4j and Redis passwords never reach client 
       argv: readFileSync(join(dir, 'out.argv'), 'utf8').includes(GENERATED),
       env: readFileSync(join(dir, 'out.env'), 'utf8'),
       output: `${run.stdout}${run.stderr}`.includes(GENERATED),
-    }).toEqual({ connected: true, argv: false, env: GENERATED, output: false });
+    }).toEqual({ connected: true, argv: false, env: `${GENERATED}\n${GENERATED}\n`, output: false });
   });
 
   // HAP-1666 rows: sleep is stubbed so the scripts' startup waits cost nothing.

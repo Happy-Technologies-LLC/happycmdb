@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { SecretInput, SecretTextarea } from '@/components/ui/secret-input';
 import {
   Select,
   SelectContent,
@@ -169,7 +170,7 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
         {label} {required && <span className="text-destructive">*</span>}
       </Label>
       <div className="relative">
-        <Input
+        <SecretInput
           id={id}
           type={showSecrets[id] ? 'text' : 'password'}
           value={credentialsData[id] || ''}
@@ -207,16 +208,7 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
                 placeholder="us-east-1"
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="session_token">Session Token</Label>
-              <Input
-                id="session_token"
-                type="text"
-                value={credentialsData.session_token || ''}
-                onChange={(e) => handleCredentialFieldChange('session_token', e.target.value)}
-                placeholder="Optional session token"
-              />
-            </div>
+            {renderSecretField('session_token', 'Session Token', 'Optional session token')}
           </>
         );
 
@@ -282,7 +274,7 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
                   <Icon name="upload-simple" size={16} />
                 </Button>
               </div>
-              <Textarea
+              <SecretTextarea
                 id="service_account_json"
                 value={JSON.stringify(credentialsData, null, 2) || ''}
                 onChange={(e) => {
@@ -322,7 +314,7 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
               <Label htmlFor="private_key">
                 Private Key <span className="text-destructive">*</span>
               </Label>
-              <Textarea
+              <SecretTextarea
                 id="private_key"
                 value={credentialsData.private_key || ''}
                 onChange={(e) => handleCredentialFieldChange('private_key', e.target.value)}
@@ -547,7 +539,7 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
               <Label htmlFor="private_key">
                 Private Key <span className="text-destructive">*</span>
               </Label>
-              <Textarea
+              <SecretTextarea
                 id="private_key"
                 value={credentialsData.private_key || ''}
                 onChange={(e) => handleCredentialFieldChange('private_key', e.target.value)}
@@ -603,7 +595,7 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
             </div>
             <div className="space-y-2">
               <Label htmlFor="keytab">Keytab</Label>
-              <Textarea
+              <SecretTextarea
                 id="keytab"
                 value={credentialsData.keytab || ''}
                 onChange={(e) => handleCredentialFieldChange('keytab', e.target.value)}

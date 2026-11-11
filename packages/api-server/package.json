@@ -15,7 +15,7 @@
     "./services/public-installed-connector": { "types": "./dist/services/public-installed-connector.d.ts", "default": "./dist/services/public-installed-connector.js" }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-assets.cjs",
     "build:tenant-fixture": "tsc -p tsconfig.scripts.json",
     "dev": "ts-node src/index.ts",
     "start": "node dist/index.js",

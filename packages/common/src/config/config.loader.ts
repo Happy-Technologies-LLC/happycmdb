@@ -153,6 +153,11 @@ export class ConfigurationLoader {
         port: env['SERVER_PORT'] ? parseInt(env['SERVER_PORT'], 10) : fileConfig.server?.port,
         host: env['SERVER_HOST'] || fileConfig.server?.host,
         trustProxy: env['TRUST_PROXY'] ?? fileConfig.server?.trustProxy,
+        // HAP-900: only the exact string 'true' enables /api-docs; empty or any other value is off.
+        apiDocsEnabled:
+          env['API_DOCS_ENABLED'] !== undefined
+            ? env['API_DOCS_ENABLED'] === 'true'
+            : fileConfig.server?.apiDocsEnabled,
       },
 
       databases: {

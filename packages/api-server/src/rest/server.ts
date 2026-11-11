@@ -25,7 +25,7 @@ import { unifiedCredentialRoutes } from './routes/unified-credential.routes';
 import { reconciliationRoutes } from './routes/reconciliation.routes';
 import { dashboardRoutes } from './routes/dashboard.routes';
 import { aiPatternRoutes } from './routes/ai-pattern.routes';
-import { swaggerRoutes } from './routes/swagger.routes';
+import { createSwaggerRoutes } from './routes/swagger.routes';
 import { itilRoutes } from './routes/itil.routes';
 import { businessServiceRoutes } from './routes/business-service.routes';
 import { serviceOfferingRoutes } from './routes/service-offering.routes';
@@ -135,8 +135,17 @@ export class RestAPIServer {
   }
 
   private setupRoutes(): void {
-    // API Documentation (no authentication required)
-    this.app.use('/api-docs', swaggerRoutes);
+    // API Documentation (no authentication required): mounted only when API_DOCS_ENABLED=true (HAP-900).
+    // Off by default and when the config does not load: the spec is neither read nor served, /api-docs is a 404.
+    let apiDocsEnabled = false;
+    try {
+      apiDocsEnabled = loadConfig().server.apiDocsEnabled === true;
+    } catch (err) {
+      logger.warn('API_DOCS_ENABLED not read; /api-docs not mounted', errorClassFields(err));
+    }
+    if (apiDocsEnabled) {
+      this.app.use('/api-docs', createSwaggerRoutes());
+    }
 
     // API endpoints
     this.app.use('/api/v1/cmdb-health', healthRoutes);

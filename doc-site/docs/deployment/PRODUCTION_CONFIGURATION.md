@@ -371,13 +371,15 @@ redis:
     test: ["CMD-SHELL", "redis-cli ping"]
 ```
 
-**Password handling**: do not pass `--requirepass` (or `redis-cli -a`) on a command line: `ps`, `/proc/<pid>/cmdline` and `docker top` show it. `redis-auth.conf` holds `requirepass "<hex-escaped password>"` and `masterauth "<hex-escaped password>"` (mode `0600`, never committed); `redis-server` receives only its path. `infrastructure/kubernetes/statefulsets/redis-statefulset.yaml` builds the same file in an init container from the `redis-password` key of `cmdb-secrets` (HAP-1719), and `redis-cli` clients read the password from `REDISCLI_AUTH` (HAP-1664).
+**Password handling**: do not pass `--requirepass` (or `redis-cli -a`) on a command line: `ps`, `/proc/<pid>/cmdline` and `docker top` show it. `redis-auth.conf` holds `requirepass "<hex-escaped password>"` and `masterauth "<hex-escaped password>"` (mode `0600`, owner `999:1000`, never committed); `redis-server` receives only its path. `infrastructure/kubernetes/statefulsets/redis-statefulset.yaml` builds the same file in an init container from the `redis-password` key of `cmdb-secrets` (HAP-1719), and `redis-cli` clients read the password from `REDISCLI_AUTH` (HAP-1664).
 
 Generate the Compose `./secrets/redis-auth.conf` with the same pipeline as that init container. The password is read from `REDIS_PASSWORD` in the shell environment (`printf` is a shell builtin, and `od`, `tr` and `sed` see it only on stdin), so it never reaches an argv:
 
 ```bash
-( set -eu; umask 077; mkdir -p secrets; hex=$(printf '%s' "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}" | od -An -v -tx1 | tr -d ' \n' | sed 's/../\\x&/g'); [ -n "$hex" ]; printf 'requirepass "%s"\nmasterauth "%s"\n' "$hex" "$hex" > secrets/redis-auth.conf )
+( set -eu; umask 077; mkdir -p secrets; hex=$(printf '%s' "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}" | od -An -v -tx1 | tr -d ' \n' | sed 's/../\\x&/g'); [ -n "$hex" ]; printf 'requirepass "%s"\nmasterauth "%s"\n' "$hex" "$hex" > secrets/redis-auth.conf; chown 999:1000 secrets/redis-auth.conf )
 ```
+
+Run it as root (for example `sudo --preserve-env=REDIS_PASSWORD sh`, then paste it): the last step, `chown 999:1000`, needs root. It is required under Compose because the official `redis` image's entrypoint starts `redis-server` as uid 999, gid 1000 (it drops from root only when the command is `redis-server`), and that uid cannot open a `0600` file owned by the operator through the `:ro` bind mount (`Fatal error, can't open config file ... Permission denied`). Owner `999:1000` with mode `0600` keeps the file unreadable by anyone else. The Kubernetes path is unchanged: its init container builds the file and `redis-statefulset.yaml` does not go through the image entrypoint.
 
 The `command: >` value above is a folded scalar: YAML folds every line into one string, so a `# ...` line inside it is not a comment but literal `redis-server` arguments. Keep comments out of it (put them above the key or in the prose).
 
@@ -940,18 +942,26 @@ redis-master:
 # Redis sentinel
 redis-sentinel:
   image: redis:7.2-alpine
-  command: redis-sentinel /usr/local/etc/redis/sentinel.conf
+  command: redis-sentinel /usr/local/etc/redis-sentinel/sentinel.conf
   volumes:
-    - ./secrets/sentinel.conf:/usr/local/etc/redis/sentinel.conf
+    - ./secrets/sentinel/:/usr/local/etc/redis-sentinel/
 ```
 
-`sentinel.conf` holds the monitor settings and `sentinel auth-pass cmdb-master "<hex-escaped password>"`. Without `auth-pass` the sentinels cannot authenticate to the master (its `redis-auth.conf` sets `requirepass`), so they report it `s_down` instead of monitoring it. A `--sentinel auth-pass` argument would put the password in argv, so it goes in the configuration file, generated like `redis-auth.conf` (same `REDIS_PASSWORD` environment, same hex escaping, mode `0600`, never committed):
+`secrets/sentinel/sentinel.conf` holds the monitor settings and `sentinel auth-pass cmdb-master <password>`. Without `auth-pass` the sentinels cannot authenticate to the master (its `redis-auth.conf` sets `requirepass`), so they report it `s_down` instead of monitoring it. A `--sentinel auth-pass` argument would put the password in argv, so it goes in the configuration file.
+
+**Sentinel requires a config-safe password.** When Sentinel is used, `REDIS_PASSWORD` MUST match `^[A-Za-z0-9]+$` (generate one with `openssl rand -hex 32`). Sentinel rewrites its configuration file to persist state (`myid`, epochs, failover results) and writes `auth-pass` back unquoted and unescaped (`sentinel.c`, `sdscatprintf("sentinel auth-pass %s %s", ...)` in Redis 6.2, 7.2 and 7.4; only `unstable` quotes it). A password with whitespace, `"`, `'`, `\` or non-printable bytes is therefore corrupted by the first rewrite and the next Sentinel start fails with `FATAL CONFIG FILE ERROR ... Unbalanced quotes in configuration line`. `redis-auth.conf` is read by `redis-server`, which never rewrites it, so it keeps the hex escaping and accepts any password; only `sentinel.conf` is restricted. The generator below refuses a password that does not match, before it writes anything:
 
 ```bash
-( set -eu; umask 077; mkdir -p secrets; hex=$(printf '%s' "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}" | od -An -v -tx1 | tr -d ' \n' | sed 's/../\\x&/g'); [ -n "$hex" ]; printf 'sentinel resolve-hostnames yes\nsentinel monitor cmdb-master redis-master 6379 2\nsentinel down-after-milliseconds cmdb-master 5000\nsentinel parallel-syncs cmdb-master 1\nsentinel failover-timeout cmdb-master 10000\nsentinel auth-pass cmdb-master "%s"\n' "$hex" > secrets/sentinel.conf )
+( set -eu; umask 077; export LC_ALL=C; case "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}" in *[!A-Za-z0-9]*) echo 'REDIS_PASSWORD must match ^[A-Za-z0-9]+$ when Sentinel is used (sentinel.conf stores auth-pass unquoted); generate one with: openssl rand -hex 32' >&2; exit 1;; esac; mkdir -p secrets/sentinel; printf 'sentinel resolve-hostnames yes\nsentinel monitor cmdb-master redis-master 6379 2\nsentinel down-after-milliseconds cmdb-master 5000\nsentinel parallel-syncs cmdb-master 1\nsentinel failover-timeout cmdb-master 10000\nsentinel auth-pass cmdb-master %s\n' "$REDIS_PASSWORD" > secrets/sentinel/sentinel.conf )
 ```
 
-`sentinel resolve-hostnames yes` is required because `sentinel monitor` names the master by its Compose service name `redis-master`, a hostname. The bind mount has no `:ro` because Sentinel rewrites its configuration file to persist state, so `secrets/sentinel.conf` must be writable by the container's `redis` user.
+The password reaches only the `printf` builtin and the redirect, never an argv. Do not commit `secrets/`.
+
+**Plaintext after the first flush.** Once Sentinel has rewritten `sentinel.conf` (it does at startup to save `myid`, and after every failover or epoch change) the file holds the password in plaintext, and its mode is then `0644 & ~umask` of the Sentinel process (upstream redis/redis#8369), not the `0600` the generator set. In the official image `redis-sentinel` runs under the entrypoint's `umask 0077`, so the file stays `0600`. On bare metal with the usual umask 022 it becomes `0644`, world-readable: run Sentinel under `umask 077` and keep the directory restrictive (`chmod 700 secrets/sentinel`).
+
+**Why a directory mount, and who runs Sentinel.** Redis 7.x writes its configuration by creating a temporary file next to it and `rename`-ing it over the original (`rewriteConfigOverwriteFile` in `config.c`). `rename(2)` onto a bind-mounted single file fails with `EBUSY`, so a `./secrets/sentinel.conf:/usr/local/etc/redis/sentinel.conf` mount makes Sentinel log `Could not rename tmp config file (Device or resource busy)` and never persist its state. Mounting the directory (no `:ro`) lets the rename succeed. In the official `redis` image the entrypoint drops to uid 999 only when the command is `redis-server`; `redis-sentinel` runs as root, so the directory needs no ownership change for the container.
+
+`sentinel resolve-hostnames yes` is required because `sentinel monitor` names the master by its Compose service name `redis-master`, a hostname.
 
 ### Load Balancing
 

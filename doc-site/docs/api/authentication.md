@@ -656,7 +656,7 @@ Configure authentication behavior via environment variables:
 ```bash
 # JWT Configuration
 JWT_SECRET=your-super-secret-jwt-key-change-this-in-production-minimum-32-chars
-JWT_EXPIRATION=24h
+JWT_ACCESS_TOKEN_EXPIRES_IN=15m   # default; refresh token: JWT_REFRESH_TOKEN_EXPIRES_IN (default 7d)
 
 # API Key Configuration
 API_KEY=your-api-key-for-service-to-service-authentication

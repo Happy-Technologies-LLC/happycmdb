@@ -1,12 +1,13 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { ApolloClient, InMemoryCache, createHttpLink, from } from '@apollo/client';
+import { ApolloClient, ApolloLink, InMemoryCache, Observable, createHttpLink, from } from '@apollo/client';
 import { setContext } from '@apollo/client/link/context';
 import { onError } from '@apollo/client/link/error';
 import { gql } from '@apollo/client';
 import { logClientError, logger } from '@/utils/logger';
 import { getToken, removeToken } from '@/utils/token';
+import { refreshSession } from '@/lib/session';
 
 // HTTP Link
 const httpLink = createHttpLink({
@@ -24,7 +25,47 @@ const authLink = setContext((_, { headers }) => {
   };
 });
 
-// Error Link - handle errors
+// Session link - a 401 renews the session once from the refresh cookie and replays the operation once, like the
+// REST interceptor (attachSession in lib/session.ts); a refused renewal or a second 401 signs out to /login.
+// Sits before authLink so the replay carries the renewed in-memory token.
+const isUnauthorized = (error: unknown): boolean =>
+  typeof error === 'object' && error !== null && 'statusCode' in error && (error as { statusCode?: unknown }).statusCode === 401;
+
+export const sessionLink = new ApolloLink((operation, forward) =>
+  new Observable((observer) => {
+    let subscription: { unsubscribe(): void } | undefined;
+    let closed = false;
+
+    const signOut = (error: unknown) => {
+      removeToken();
+      window.location.href = '/login';
+      observer.error(error);
+    };
+
+    const run = (replayed: boolean) => {
+      subscription = forward(operation).subscribe({
+        next: (result) => observer.next(result),
+        complete: () => observer.complete(),
+        error: (error) => {
+          if (!isUnauthorized(error)) return observer.error(error);
+          if (replayed) return signOut(error);
+          void refreshSession().then(
+            () => !closed && run(true),
+            () => !closed && signOut(error),
+          );
+        },
+      });
+    };
+
+    run(false);
+    return () => {
+      closed = true;
+      subscription?.unsubscribe();
+    };
+  }),
+);
+
+// Error Link - log errors
 const errorLink = onError(({ graphQLErrors, networkError }) => {
   if (graphQLErrors) {
     graphQLErrors.forEach(() => logger.error('GraphQL error'));
@@ -32,16 +73,12 @@ const errorLink = onError(({ graphQLErrors, networkError }) => {
 
   if (networkError) {
     logClientError('GraphQL network error', networkError);
-    if ('statusCode' in networkError && networkError.statusCode === 401) {
-      removeToken();
-      window.location.href = '/login';
-    }
   }
 });
 
 // Apollo Client
 export const apolloClient = new ApolloClient({
-  link: from([errorLink, authLink, httpLink]),
+  link: from([errorLink, sessionLink, authLink, httpLink]),
   cache: new InMemoryCache({
     typePolicies: {
       Query: {

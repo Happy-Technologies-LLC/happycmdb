@@ -32,11 +32,16 @@ curl -X POST http://localhost:3000/api/v1/auth/login \\
 Response:
 ```json
 {
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refreshToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "expiresIn": 3600
+  "success": true,
+  "data": {
+    "_accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "_expiresIn": 900,
+    "_user": { "_id": "...", "_username": "admin", "_role": "admin" }
+  }
 }
 ```
+
+`_expiresIn` is the access token lifetime in seconds (`JWT_ACCESS_TOKEN_EXPIRES_IN`, default `15m`). The refresh token is not in the body: a login sent with the header `X-CMDB-Auth: 1` sets it as the `__Secure-cmdb_rt` cookie, and `POST /api/v1/auth/refresh` (also with `X-CMDB-Auth: 1`) exchanges that cookie for a new access token. See [Authentication](/api/authentication).
 
 ### Using the Token
 

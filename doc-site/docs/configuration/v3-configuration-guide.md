@@ -53,8 +53,8 @@ WEB_UI_BASE_URL=http://localhost:3001  # Public URL for UI
 ```bash
 # JWT Configuration
 JWT_SECRET=your-super-secret-jwt-key-change-this-in-production-minimum-32-chars
-JWT_EXPIRATION=24h                     # Token lifetime (e.g., 15m, 1h, 24h, 7d)
-JWT_REFRESH_EXPIRATION=7d              # Refresh token lifetime
+JWT_ACCESS_TOKEN_EXPIRES_IN=15m       # Access token lifetime (default 15m; e.g. 15m, 1h)
+JWT_REFRESH_TOKEN_EXPIRES_IN=7d       # Refresh token lifetime (default 7d; carried in the __Secure-cmdb_rt cookie)
 
 # Encryption (for credentials storage)
 ENCRYPTION_KEY=your-encryption-key-for-sensitive-data-minimum-32-characters
@@ -78,7 +78,7 @@ RATE_LIMIT_REST_MAX=1000               # POST /api/v1/auth/refresh only (per 360
 **Security Best Practices**:
 - **JWT_SECRET**: Use 64+ character random string (generate with `openssl rand -base64 64`)
 - **ENCRYPTION_KEY**: Use 64+ character random string, NEVER commit to git
-- **JWT_EXPIRATION**: Use shorter expiration (15m-1h) for high-security environments
+- **JWT_ACCESS_TOKEN_EXPIRES_IN**: Keep the 15m default, or shorter, for high-security environments; the web UI renews the access token from the refresh cookie, so a short lifetime does not sign users out
 - **Rotate secrets quarterly** using `infrastructure/scripts/secret-rotation.sh`
 
 ---
@@ -580,7 +580,7 @@ POSTGRES_HOST=localhost
 REDIS_HOST=localhost
 
 # Relaxed security (dev only!)
-JWT_EXPIRATION=7d
+JWT_ACCESS_TOKEN_EXPIRES_IN=1h
 
 # Discovery (lower frequency)
 DISCOVERY_DEFAULT_INTERVAL=3600000
@@ -604,7 +604,7 @@ POSTGRES_HOST=postgres-staging
 REDIS_HOST=redis-staging
 
 # Moderate security
-JWT_EXPIRATION=24h
+JWT_ACCESS_TOKEN_EXPIRES_IN=15m
 
 # Discovery (production-like)
 DISCOVERY_DEFAULT_INTERVAL=3600000
@@ -633,8 +633,8 @@ REDIS_HOST=redis-prod-sentinel
 
 # Strict security
 JWT_SECRET=$(openssl rand -base64 64)
-JWT_EXPIRATION=1h
-JWT_REFRESH_EXPIRATION=7d
+JWT_ACCESS_TOKEN_EXPIRES_IN=15m
+JWT_REFRESH_TOKEN_EXPIRES_IN=7d
 ENCRYPTION_KEY=$(openssl rand -base64 64)
 
 # Discovery (high concurrency)

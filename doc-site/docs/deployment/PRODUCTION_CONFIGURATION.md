@@ -54,7 +54,7 @@ SERVER_HOST=         # api-server bind address (unset: all interfaces)
 # CRITICAL: Generate strong secrets
 # Use: openssl rand -base64 64
 JWT_SECRET=<64-character-random-string>
-JWT_EXPIRATION=24h
+JWT_ACCESS_TOKEN_EXPIRES_IN=15m
 
 # CRITICAL: For encrypting credential storage
 # Use: openssl rand -base64 64

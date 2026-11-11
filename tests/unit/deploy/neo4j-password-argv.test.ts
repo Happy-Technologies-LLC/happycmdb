@@ -5,12 +5,13 @@
  * REDISCLI_AUTH (the value travels in the environment); the k8s probes and the Redis init Job
  * derive it inside sh from the container env, as HAP-1379 (#188) did for the Compose
  * healthchecks. Unset password: abort-style scripts stop before any client call, check-style
- * scripts fail that check. Scripts only ever meet stubs here. HAP-1667: the scan reads every tracked command file, also
+ * scripts fail that check. HAP-1719: the k8s redis-server gets requirepass/masterauth from a
+ * config file, not argv. Scripts only ever meet stubs here. HAP-1667: the scan reads every tracked command file, also
  * flags a Neo4j password flag built apart from the client call, and excuses only exact throwaway literals.
  */
 import { spawnSync } from 'child_process';
 import { randomBytes } from 'crypto';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { gzipSync } from 'zlib';
@@ -137,7 +138,7 @@ function logicalLines(text: string): string[] {
   return out;
 }
 
-describe('HAP-1647 / HAP-1666: the Neo4j and Redis passwords never reach client argv', () => {
+describe('HAP-1647 / HAP-1666 / HAP-1667 / HAP-1719: the Neo4j and Redis passwords never reach client or server argv', () => {
   let dir: string;
   const stub = (name: string, body: string) => {
     writeFileSync(join(dir, name), `#!/bin/bash\n${body}\n`);
@@ -356,5 +357,90 @@ describe('HAP-1647 / HAP-1666: the Neo4j and Redis passwords never reach client 
     expect([redis, job].map((c) => c.env.map((e: { name: string }) => e.name).includes('REDIS_PASSWORD'))).toEqual([true, true]);
     expect({ statuses, argv: redisCalls().argv.includes(GENERATED), env: redisCalls().env })
       .toEqual({ statuses: [0, 0, 0], argv: false, env: [GENERATED, GENERATED, GENERATED] });
+  });
+
+  // HAP-1719 rows: redis-server takes requirepass/masterauth from a config file that an init
+  // container builds from the cmdb-secrets env into a shared volume, never from its own argv.
+  type Mount = { name: string; mountPath: string };
+  type Container = { name: string; command: string[]; args?: string[]; env?: { name: string }[]; volumeMounts?: Mount[] };
+  const redisPod = () => {
+    const manifest = readFileSync(join(REPO, 'infrastructure/kubernetes/statefulsets/redis-statefulset.yaml'), 'utf8');
+    const spec = parseAllDocuments(manifest).map((doc) => doc.toJS()).find((doc) => doc.kind === 'StatefulSet').spec.template.spec;
+    const redis: Container = spec.containers.find((c: Container) => c.name === 'redis');
+    // The init container that mounts a volume the redis container also mounts.
+    const init: Container | undefined = (spec.initContainers ?? []).find((c: Container) =>
+      c.volumeMounts?.some((m) => redis.volumeMounts?.some((r) => r.name === m.name)));
+    return { spec, redis, init };
+  };
+  // An exec array as the kubelet starts it: $(VAR) expanded from env, each volume mountPath
+  // mapped to one sandbox directory per volume name.
+  const podArgv = (c: Container, env: Record<string, string>) =>
+    [...c.command, ...(c.args ?? [])].map((arg) => {
+      let out = arg.replace(/\$\((\w+)\)/g, (ref, name) => env[name] ?? ref);
+      for (const m of c.volumeMounts ?? []) out = out.split(m.mountPath).join(join(dir, 'vol', m.name));
+      return out;
+    });
+  const runInPod = (c: Container, env: Record<string, string>) => {
+    const [cmd, ...args] = podArgv(c, env);
+    return spawnSync(cmd, args, { env, encoding: 'utf8' });
+  };
+  // Redis config parsing (sdssplitargs): a double-quoted value with \xHH, \n, \r, \t, \b, \a, \\ and \".
+  const redisConfig = (text: string) => {
+    const named: Record<string, string> = { n: '\n', r: '\r', t: '\t', b: '\b', a: '\x07' };
+    return Object.fromEntries(text.split('\n').filter((line) => line.trim()).map((line) => {
+      const m = /^(\S+) "((?:[^"\\]|\\.)*)"$/.exec(line);
+      if (!m) throw new Error(`unparsed config line: ${line}`);
+      return [m[1], Buffer.from(m[2].replace(/\\x([0-9a-fA-F]{2})|\\(.)/g, (_, hex, ch) =>
+        hex ? String.fromCharCode(parseInt(hex, 16)) : named[ch] ?? ch), 'latin1').toString('utf8')];
+    }));
+  };
+
+  it('HAP-1719: redis-server reads requirepass and masterauth from the init-built auth file, never argv', () => {
+    const { spec, redis, init } = redisPod();
+    expect(init).toBeDefined();
+    // A password with quotes, backslashes, a space, a non-ASCII char and a trailing newline.
+    const password = `${GENERATED} "\\' $x\u00e9\n`;
+    for (const m of [...(init?.volumeMounts ?? []), ...(redis.volumeMounts ?? [])]) mkdirSync(join(dir, 'vol', m.name), { recursive: true });
+    // Every external command the init script runs logs its argv, then runs the real binary.
+    for (const bin of ['od', 'tr', 'sed', 'cat', 'base64', 'xxd', 'awk']) {
+      const real = spawnSync('sh', ['-c', `command -v ${bin}`], { encoding: 'utf8' }).stdout.trim();
+      if (real) stub(bin, `printf '%s\\n' "$*" >> "$OUT.init-argv"\nexec ${real} "$@"`);
+    }
+    const env = { ...sandboxEnv(), REDIS_PASSWORD: password } as Record<string, string>;
+    const initRun = runInPod(init as Container, env);
+    const server = podArgv(redis, env);
+    const confPath = server[1];
+    const shared = (init?.volumeMounts ?? []).map((m) => m.name);
+    const volume = spec.volumes.find((v: { name: string }) => shared.includes(v.name));
+    const initArgv = existsSync(join(dir, 'out.init-argv')) ? readFileSync(join(dir, 'out.init-argv'), 'utf8') : '';
+
+    expect({
+      status: initRun.status,
+      initArgv: initArgv.includes(GENERATED) || podArgv(init as Container, env).join(' ').includes(GENERATED),
+      initOutput: `${initRun.stdout}${initRun.stderr}`.includes(GENERATED),
+      serverArgv: server.join(' ').includes(GENERATED),
+      // In memory, never on node disk, and readable by the owner only.
+      volume: volume?.emptyDir,
+      confMode: (statSync(confPath).mode & 0o777).toString(8),
+    }).toEqual({ status: 0, initArgv: false, initOutput: false, serverArgv: false, volume: { medium: 'Memory', sizeLimit: '1Mi' }, confMode: '600' });
+    // The config file is redis-server's first argument and carries both directives.
+    expect(server[0]).toBe('redis-server');
+    expect(redisConfig(readFileSync(confPath, 'latin1'))).toEqual({ requirepass: password, masterauth: password });
+  });
+
+  it.each([
+    ['unset', {}],
+    ['empty', { REDIS_PASSWORD: '' }],
+  ])('HAP-1719: the auth init container aborts, naming the variable, and writes no file when it is %s', (_, extra) => {
+    const { init } = redisPod();
+    expect(init).toBeDefined();
+    for (const m of init?.volumeMounts ?? []) mkdirSync(join(dir, 'vol', m.name), { recursive: true });
+    const run = runInPod(init as Container, { ...sandboxEnv(), ...extra });
+
+    expect({
+      status: run.status === 0 ? 0 : 'failed',
+      named: run.stderr.includes('REDIS_PASSWORD'),
+      files: (init?.volumeMounts ?? []).flatMap((m) => readdirSync(join(dir, 'vol', m.name))),
+    }).toEqual({ status: 'failed', named: true, files: [] });
   });
 });

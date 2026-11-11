@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Textarea } from '@/components/ui/textarea';
+import { SecretInput, SecretTextarea } from '@/components/ui/secret-input';
 import {
   Collapsible,
   CollapsibleContent,
@@ -145,9 +145,8 @@ export const DiscoverySettings: React.FC = () => {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="aws-secret-key">Secret Access Key</Label>
-                  <Input
+                  <SecretInput
                     id="aws-secret-key"
-                    type="password"
                     value={credentials.aws?.secretAccessKey || ''}
                     onChange={(e) => handleCredentialChange('aws', 'secretAccessKey', e.target.value)}
                   />
@@ -213,9 +212,8 @@ export const DiscoverySettings: React.FC = () => {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="azure-secret">Client Secret</Label>
-                  <Input
+                  <SecretInput
                     id="azure-secret"
-                    type="password"
                     value={credentials.azure?.clientSecret || ''}
                     onChange={(e) => handleCredentialChange('azure', 'clientSecret', e.target.value)}
                   />
@@ -257,7 +255,7 @@ export const DiscoverySettings: React.FC = () => {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="gcp-credentials">Service Account Credentials (JSON)</Label>
-                  <Textarea
+                  <SecretTextarea
                     id="gcp-credentials"
                     rows={4}
                     value={credentials.gcp?.credentials || ''}
@@ -301,7 +299,7 @@ export const DiscoverySettings: React.FC = () => {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="ssh-private-key">Private Key</Label>
-                  <Textarea
+                  <SecretTextarea
                     id="ssh-private-key"
                     rows={4}
                     value={credentials.ssh?.privateKey || ''}

@@ -11,6 +11,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
+import { SecretInput, SecretTextarea } from '../ui/secret-input';
 import { Switch } from '../ui/switch';
 import {
   Select,
@@ -90,6 +91,12 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
   const createSshCredential = provider === 'ssh' && credentialId === 'none';
   const setNewCredField = (key: keyof typeof newCred, value: string) =>
     setNewCred((current) => ({ ...current, [key]: value }));
+  // HAP-1213: an abandoned secret must not outlive the "Create a new SSH credential" section; non-secret fields stay.
+  const clearNewCredSecret = () => setNewCred((current) => (current.secret ? { ...current, secret: '' } : current));
+  const selectCredential = (value: string) => {
+    setCredentialId(value);
+    if (value !== 'none') clearNewCredSecret();
+  };
 
   useEffect(() => {
     // Reset config when provider changes
@@ -232,7 +239,11 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
             <Label htmlFor="provider">Provider *</Label>
             <Select
               value={provider}
-              onValueChange={(value) => setProvider(value as DiscoveryProvider)}
+              onValueChange={(value) => {
+                setProvider(value as DiscoveryProvider);
+                // The new-credential section is SSH-only, so leaving SSH abandons its secret.
+                if (value !== 'ssh') clearNewCredSecret();
+              }}
               disabled={isEditMode}
             >
               <SelectTrigger id="provider">
@@ -256,7 +267,7 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
           {provider === 'ssh' && (
             <div className="space-y-2">
               <Label htmlFor="credential">SSH Credential *</Label>
-              <Select value={credentialId} onValueChange={setCredentialId}>
+              <Select value={credentialId} onValueChange={selectCredential}>
                 <SelectTrigger id="credential">
                   <SelectValue />
                 </SelectTrigger>
@@ -309,23 +320,20 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
                 {newCred.auth === 'key' ? (
                   <>
                     <Label htmlFor="ssh-cred-secret">Private Key (PEM text) *</Label>
-                    <Textarea
+                    <SecretTextarea
                       id="ssh-cred-secret"
                       placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
                       value={newCred.secret}
                       onChange={(e) => setNewCredField('secret', e.target.value)}
                       rows={6}
-                      spellCheck={false}
                       className="font-mono text-xs"
                     />
                   </>
                 ) : (
                   <>
                     <Label htmlFor="ssh-cred-secret">Password *</Label>
-                    <Input
+                    <SecretInput
                       id="ssh-cred-secret"
-                      type="password"
-                      autoComplete="new-password"
                       value={newCred.secret}
                       onChange={(e) => setNewCredField('secret', e.target.value)}
                     />

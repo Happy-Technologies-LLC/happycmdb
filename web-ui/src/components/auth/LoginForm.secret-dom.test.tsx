@@ -35,8 +35,7 @@ describe('LoginForm password field (HAP-1893)', () => {
     const marker = secretMarker('login-reveal');
     const field = screen.getByPlaceholderText('Enter your password') as HTMLInputElement;
     fireEvent.change(field, { target: { value: marker } });
-    // The reveal toggle is the only button inside the password field wrapper.
-    fireEvent.click(field.parentElement!.querySelector('button') as HTMLButtonElement);
+    fireEvent.click(screen.getByRole('button', { name: /show password/i }));
 
     expect(container.querySelector('input[name="password"]')).toHaveAttribute('type', 'text');
     expect(field.value).toBe(marker);

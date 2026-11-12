@@ -17,6 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { apiClient } from '../../lib/api-client';
 import { useToast } from '../../contexts/ToastContext';
 import { logClientError } from '../../utils/logger';
+import { RequirePermission } from '@/components/common/RequirePermission';
 
 // HAP-1424 (PoR S3): offerings under one business service, as served by the C1
 // offering read. The tenant and ids are the server's; the UI never sends them.
@@ -200,80 +201,86 @@ export const ServiceOfferingsDialog: React.FC<ServiceOfferingsDialogProps> = ({ 
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant="outline">{offering.lifecycle}</Badge>
-                  <Button size="sm" variant="ghost" aria-label={`Edit ${offering.name}`} onClick={() => startEdit(offering)}>
-                    Edit
-                  </Button>
+                  {/* PATCH /service-offerings/:id requires 'write' */}
+                  <RequirePermission permission="write">
+                    <Button size="sm" variant="ghost" aria-label={`Edit ${offering.name}`} onClick={() => startEdit(offering)}>
+                      Edit
+                    </Button>
+                  </RequirePermission>
                 </div>
               </li>
             ))}
           </ul>
         )}
 
-        <div className="grid gap-3 pt-2">
-          <div className="grid gap-2">
-            <Label htmlFor="offering-name">Offering name</Label>
-            <Input id="offering-name" value={form.name} onChange={set('name')} placeholder="e.g. Standard access request" />
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor="offering-description">Description</Label>
-            <Input id="offering-description" value={form.description} onChange={set('description')} />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
+        {/* POST /business-services/:id/offerings requires 'write' */}
+        <RequirePermission permission="write">
+          <div className="grid gap-3 pt-2">
             <div className="grid gap-2">
-              <Label htmlFor="offering-audience">Audience</Label>
-              <Select value={form.audience} onValueChange={value => setForm(f => ({ ...f, audience: value as Audience }))}>
-                <SelectTrigger id="offering-audience" aria-label="Audience">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="internal">Internal</SelectItem>
-                  <SelectItem value="customer">Customer</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label htmlFor="offering-name">Offering name</Label>
+              <Input id="offering-name" value={form.name} onChange={set('name')} placeholder="e.g. Standard access request" />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="offering-lifecycle">Lifecycle</Label>
-              <Select value={form.lifecycle} onValueChange={value => setForm(f => ({ ...f, lifecycle: value as Lifecycle }))}>
-                <SelectTrigger id="offering-lifecycle" aria-label="Lifecycle">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {LIFECYCLES.map((option, index) => (
-                    <SelectItem key={option.value} value={option.value} disabled={index < lifecycleFloor}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label htmlFor="offering-description">Description</Label>
+              <Input id="offering-description" value={form.description} onChange={set('description')} />
             </div>
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            <div className="grid gap-2">
-              <Label htmlFor="offering-availability">Availability target (%)</Label>
-              <Input id="offering-availability" type="number" min={0} max={100} step="0.01"
-                value={form.availabilityTarget} onChange={set('availabilityTarget')} />
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-2">
+                <Label htmlFor="offering-audience">Audience</Label>
+                <Select value={form.audience} onValueChange={value => setForm(f => ({ ...f, audience: value as Audience }))}>
+                  <SelectTrigger id="offering-audience" aria-label="Audience">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="internal">Internal</SelectItem>
+                    <SelectItem value="customer">Customer</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="offering-lifecycle">Lifecycle</Label>
+                <Select value={form.lifecycle} onValueChange={value => setForm(f => ({ ...f, lifecycle: value as Lifecycle }))}>
+                  <SelectTrigger id="offering-lifecycle" aria-label="Lifecycle">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LIFECYCLES.map((option, index) => (
+                      <SelectItem key={option.value} value={option.value} disabled={index < lifecycleFloor}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="offering-response">Response target (hours)</Label>
-              <Input id="offering-response" type="number" min={0} max={8760}
-                value={form.responseTargetHours} onChange={set('responseTargetHours')} />
+            <div className="grid grid-cols-3 gap-3">
+              <div className="grid gap-2">
+                <Label htmlFor="offering-availability">Availability target (%)</Label>
+                <Input id="offering-availability" type="number" min={0} max={100} step="0.01"
+                  value={form.availabilityTarget} onChange={set('availabilityTarget')} />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="offering-response">Response target (hours)</Label>
+                <Input id="offering-response" type="number" min={0} max={8760}
+                  value={form.responseTargetHours} onChange={set('responseTargetHours')} />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="offering-support">Support hours</Label>
+                <Input id="offering-support" value={form.supportHours} onChange={set('supportHours')} placeholder="e.g. 24x7" />
+              </div>
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="offering-support">Support hours</Label>
-              <Input id="offering-support" value={form.supportHours} onChange={set('supportHours')} placeholder="e.g. 24x7" />
-            </div>
-          </div>
-          <div className="flex justify-end gap-2">
-            {editing && (
-              <Button variant="outline" onClick={resetForm} disabled={saving}>
-                Cancel edit
+            <div className="flex justify-end gap-2">
+              {editing && (
+                <Button variant="outline" onClick={resetForm} disabled={saving}>
+                  Cancel edit
+                </Button>
+              )}
+              <Button onClick={handleSave} disabled={saving || form.name.trim().length < 3}>
+                {editing ? 'Save offering' : 'Add offering'}
               </Button>
-            )}
-            <Button onClick={handleSave} disabled={saving || form.name.trim().length < 3}>
-              {editing ? 'Save offering' : 'Add offering'}
-            </Button>
+            </div>
           </div>
-        </div>
+        </RequirePermission>
       </DialogContent>
     </Dialog>
   );

@@ -16,6 +16,7 @@ import { LiquidGlass } from '../ui/liquid-glass';
 import JSONViewer from '../ui/JSONViewer';
 import '../ui/JSONViewer.css';
 import { statusColors } from '@/lib/brandColors';
+import { RequirePermission } from '@/components/common/RequirePermission';
 
 interface CIDetailProps {
   ciId: string;
@@ -121,24 +122,26 @@ export const CIDetail: React.FC<CIDetailProps> = ({
             </div>
           </div>
           <div className="flex gap-2 flex-none">
-            {onEdit && (
-              <button
-                onClick={onEdit}
-                className="p-2 hover:bg-sky-soft rounded-lg transition-colors"
-                title="Edit"
-              >
-                <Icon name="pencil-simple" size={20} className="text-sky-text" />
-              </button>
-            )}
-            {onDelete && (
-              <button
-                onClick={onDelete}
-                className="p-2 hover:bg-danger-soft rounded-lg transition-colors"
-                title="Delete"
-              >
-                <Icon name="trash" size={20} className="text-danger" />
-              </button>
-            )}
+            <RequirePermission permission="write">
+              {onEdit && (
+                <button
+                  onClick={onEdit}
+                  className="p-2 hover:bg-sky-soft rounded-lg transition-colors"
+                  title="Edit"
+                >
+                  <Icon name="pencil-simple" size={20} className="text-sky-text" />
+                </button>
+              )}
+              {onDelete && (
+                <button
+                  onClick={onDelete}
+                  className="p-2 hover:bg-danger-soft rounded-lg transition-colors"
+                  title="Delete"
+                >
+                  <Icon name="trash" size={20} className="text-danger" />
+                </button>
+              )}
+            </RequirePermission>
           </div>
         </div>
 

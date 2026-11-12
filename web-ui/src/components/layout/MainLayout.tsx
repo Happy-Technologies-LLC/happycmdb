@@ -8,6 +8,7 @@ import ErrorBoundary from '../common/ErrorBoundary';
 import LoadingSpinner from '../common/LoadingSpinner';
 import { AppRail } from './AppRail';
 import { AppTopbar } from './AppTopbar';
+import { ForbiddenHost } from './ForbiddenHost';
 import { SectionNav } from './SectionNav';
 
 /** The signed-in frame (N1): DS rail, topbar and the routed screen. Mounted once as the layout route in App.tsx. */
@@ -25,8 +26,9 @@ export default function MainLayout() {
       onMobileSidebarClose={() => setNavOpen(false)}
     >
       <SectionNav />
+      <ForbiddenHost />
       {/* Keyed by route: a crashed screen resets on navigation and the shell stays up. */}
-      <ErrorBoundary key={pathname}>
+      <ErrorBoundary key={pathname} className="min-h-[60vh]">
         <Suspense fallback={<LoadingSpinner fullScreen={false} />}>
           <Outlet />
         </Suspense>

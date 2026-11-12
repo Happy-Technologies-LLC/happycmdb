@@ -19,6 +19,8 @@ import CIList from '../components/ci/CIList';
 import CICard from '../components/ci/CICard';
 import CIForm from '../components/ci/CIForm';
 import { useCIs, useCIActions } from '../hooks/useCIs';
+import { usePermission } from '@/hooks/usePermission';
+import { RequirePermission } from '@/components/common/RequirePermission';
 import { CI, CreateCIRequest, UpdateCIRequest } from '../services/ci.service';
 
 type ViewMode = 'list' | 'grid';
@@ -34,6 +36,8 @@ export const Inventory: React.FC = () => {
 
   const { data: cisData, isLoading } = useCIs({ limit: 100 });
   const { createCI, updateCI, deleteCI, isCreating, isUpdating, isDeleting } = useCIActions();
+  // POST /ci, PUT /ci/:id, DELETE /ci/:id all require 'write'
+  const canWrite = usePermission('write');
 
   const handleCreateClick = () => {
     setCreateDialogOpen(true);
@@ -119,17 +123,19 @@ export const Inventory: React.FC = () => {
               <Icon name="squares-four" size={16} />
             </Button>
           </div>
-          <Button onClick={handleCreateClick}>
-            <Icon name="plus" size={16} className="mr-2" />
-            Add CI
-          </Button>
+          <RequirePermission permission="write">
+            <Button onClick={handleCreateClick}>
+              <Icon name="plus" size={16} className="mr-2" />
+              Add CI
+            </Button>
+          </RequirePermission>
         </div>
       </div>
 
       {viewMode === 'list' ? (
         <CIList
-          onEdit={handleEditClick}
-          onDelete={handleDeleteClick}
+          onEdit={canWrite ? handleEditClick : undefined}
+          onDelete={canWrite ? handleDeleteClick : undefined}
           onView={handleViewClick}
           showActions={true}
         />
@@ -148,8 +154,8 @@ export const Inventory: React.FC = () => {
               <CICard
                 key={ci.id}
                 ci={ci}
-                onEdit={handleEditClick}
-                onDelete={handleDeleteClick}
+                onEdit={canWrite ? handleEditClick : undefined}
+                onDelete={canWrite ? handleDeleteClick : undefined}
                 onView={handleViewClick}
                 showActions={true}
               />

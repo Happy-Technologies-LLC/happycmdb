@@ -15,6 +15,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Icon } from '@happy-technologies/design-system';
+import { RequirePermission } from '@/components/common/RequirePermission';
 import { formatDistanceToNow } from 'date-fns';
 import { logClientError } from '@/utils/logger';
 
@@ -246,14 +247,16 @@ export const AgentList: React.FC = () => {
                     </div>
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button
-                      onClick={() => handleDelete(agent.agent_id)}
-                      variant="ghost"
-                      size="sm"
-                      className="text-destructive hover:text-destructive"
-                    >
-                      <Icon name="trash" size={16} />
-                    </Button>
+                    <RequirePermission permission="write">
+                      <Button
+                        onClick={() => handleDelete(agent.agent_id)}
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:text-destructive"
+                      >
+                        <Icon name="trash" size={16} />
+                      </Button>
+                    </RequirePermission>
                   </TableCell>
                 </TableRow>
               ))}

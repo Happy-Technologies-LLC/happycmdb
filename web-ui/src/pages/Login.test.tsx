@@ -199,8 +199,8 @@ describe('Login Page', () => {
     // Initially password should be hidden
     expect(passwordInput.type).toBe('password');
 
-    // Find and click the show/hide button (Eye icon)
-    const toggleButton = passwordInput.parentElement?.querySelector('button[type="button"]');
+    // The reveal toggle is a named button next to the field.
+    const toggleButton = screen.getByRole('button', { name: /show password/i });
     expect(toggleButton).toBeInTheDocument();
 
     if (toggleButton) {

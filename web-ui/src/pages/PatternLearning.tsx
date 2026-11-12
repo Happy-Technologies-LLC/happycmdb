@@ -11,6 +11,7 @@ import { PatternLibrary } from '@/components/ai/PatternLibrary';
 import { DiscoverySessionsView } from '@/components/ai/DiscoverySessionsView';
 import { CostAnalyticsDashboard } from '@/components/ai/CostAnalyticsDashboard';
 import { PatternLearningOverview } from '@/components/ai/PatternLearningOverview';
+import { RequirePermission } from '@/components/common/RequirePermission';
 import { useDiscoverySessions } from '@/hooks/useDiscoverySessions';
 
 const PatternLearning: React.FC = () => {
@@ -39,19 +40,22 @@ const PatternLearning: React.FC = () => {
           </p>
         </div>
           <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleCompilePatterns}
-              disabled={compiling}
-            >
-              {compiling ? (
-                <Icon name="arrows-clockwise" size={16} className="mr-2 animate-spin" />
-              ) : (
-                <Icon name="arrows-clockwise" size={16} className="mr-2" />
-              )}
-              Compile Patterns
-            </Button>
+            {/* POST /ai/patterns/compile: requirePermission('write') */}
+            <RequirePermission permission="write">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCompilePatterns}
+                disabled={compiling}
+              >
+                {compiling ? (
+                  <Icon name="arrows-clockwise" size={16} className="mr-2 animate-spin" />
+                ) : (
+                  <Icon name="arrows-clockwise" size={16} className="mr-2" />
+                )}
+                Compile Patterns
+              </Button>
+            </RequirePermission>
             <Button variant="ghost" size="sm">
               <Icon name="question" size={20} />
             </Button>

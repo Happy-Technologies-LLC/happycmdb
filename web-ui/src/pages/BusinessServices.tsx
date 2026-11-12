@@ -28,6 +28,7 @@ import {
 import { apiClient } from '../lib/api-client';
 import { useToast } from '../contexts/ToastContext';
 import { logClientError } from '../utils/logger';
+import { RequirePermission } from '../components/common/RequirePermission';
 import { ServiceOfferingsDialog } from '../components/business-services/ServiceOfferingsDialog';
 
 /** Canonical business criticality accepted by /api/v1/business-services. */
@@ -308,22 +309,25 @@ export const BusinessServices: React.FC = () => {
         </div>
 
         <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-          <DialogTrigger asChild>
-            <Button onClick={() => {
-              setEditingService(null);
-              setFormData({
-                name: '',
-                description: '',
-                criticality: '',
-                revenueImpact: '',
-                userCount: '',
-                owner: '',
-              });
-            }}>
-              <Icon name="plus" size={16} className="mr-2" />
-              Create Service
-            </Button>
-          </DialogTrigger>
+          {/* POST/PATCH /business-services require 'write'; the dialog opens only from here or the gated edit button */}
+          <RequirePermission permission="write">
+            <DialogTrigger asChild>
+              <Button onClick={() => {
+                setEditingService(null);
+                setFormData({
+                  name: '',
+                  description: '',
+                  criticality: '',
+                  revenueImpact: '',
+                  userCount: '',
+                  owner: '',
+                });
+              }}>
+                <Icon name="plus" size={16} className="mr-2" />
+                Create Service
+              </Button>
+            </DialogTrigger>
+          </RequirePermission>
           <DialogContent className="max-w-2xl">
             <DialogHeader>
               <DialogTitle>{editingService ? 'Edit Business Service' : 'Create Business Service'}</DialogTitle>
@@ -578,13 +582,15 @@ export const BusinessServices: React.FC = () => {
                     </td>
                     <td className="py-3 px-4">
                       <div className="flex gap-2 justify-end">
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          onClick={() => handleEdit(service)}
-                        >
-                          <Icon name="pencil-simple" size={16} />
-                        </Button>
+                        <RequirePermission permission="write">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => handleEdit(service)}
+                          >
+                            <Icon name="pencil-simple" size={16} />
+                          </Button>
+                        </RequirePermission>
                         <Button
                           size="icon"
                           variant="ghost"
@@ -593,13 +599,15 @@ export const BusinessServices: React.FC = () => {
                         >
                           <Icon name="package" size={16} />
                         </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          onClick={() => handleDelete(service.id)}
-                        >
-                          <Icon name="trash" size={16} />
-                        </Button>
+                        <RequirePermission permission="write">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => handleDelete(service.id)}
+                          >
+                            <Icon name="trash" size={16} />
+                          </Button>
+                        </RequirePermission>
                       </div>
                     </td>
                   </tr>

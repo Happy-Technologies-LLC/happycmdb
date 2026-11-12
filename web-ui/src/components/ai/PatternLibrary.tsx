@@ -14,6 +14,7 @@ import { Icon } from '@happy-technologies/design-system';
 import { useAIPatterns } from '@/hooks/useAIPatterns';
 import { AIPattern } from '@/services/ai-pattern.service';
 import LoadingSpinner from '@/components/common/LoadingSpinner';
+import { RequirePermission } from '@/components/common/RequirePermission';
 import { PatternDetailModal } from './PatternDetailModal';
 
 export const PatternLibrary: React.FC = () => {
@@ -210,34 +211,40 @@ export const PatternLibrary: React.FC = () => {
                     <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                       <div className="flex justify-end gap-1">
                         {pattern.status === 'review' && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleApprove(pattern)}
-                            title="Approve"
-                          >
-                            <Icon name="check-circle" size={16} className="text-success" />
-                          </Button>
+                          <RequirePermission permission="admin">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleApprove(pattern)}
+                              title="Approve"
+                            >
+                              <Icon name="check-circle" size={16} className="text-success" />
+                            </Button>
+                          </RequirePermission>
                         )}
                         {pattern.status === 'approved' && !pattern.isActive && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleActivate(pattern)}
-                            title="Activate"
-                          >
-                            <Icon name="play" size={16} className="text-sky-text" />
-                          </Button>
+                          <RequirePermission permission="admin">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleActivate(pattern)}
+                              title="Activate"
+                            >
+                              <Icon name="play" size={16} className="text-sky-text" />
+                            </Button>
+                          </RequirePermission>
                         )}
                         {pattern.isActive && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleDeactivate(pattern)}
-                            title="Deactivate"
-                          >
-                            <Icon name="pause" size={16} className="text-warning" />
-                          </Button>
+                          <RequirePermission permission="write">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDeactivate(pattern)}
+                              title="Deactivate"
+                            >
+                              <Icon name="pause" size={16} className="text-warning" />
+                            </Button>
+                          </RequirePermission>
                         )}
                         <Button
                           variant="ghost"
@@ -248,14 +255,16 @@ export const PatternLibrary: React.FC = () => {
                           <Icon name="eye" size={16} />
                         </Button>
                         {pattern.status === 'draft' && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleDelete(pattern)}
-                            title="Delete"
-                          >
-                            <Icon name="trash" size={16} className="text-destructive" />
-                          </Button>
+                          <RequirePermission permission="write">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDelete(pattern)}
+                              title="Delete"
+                            >
+                              <Icon name="trash" size={16} className="text-destructive" />
+                            </Button>
+                          </RequirePermission>
                         )}
                       </div>
                     </TableCell>

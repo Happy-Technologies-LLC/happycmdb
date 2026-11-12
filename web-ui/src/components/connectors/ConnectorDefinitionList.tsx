@@ -9,6 +9,7 @@ import { LiquidGlass } from '../ui/liquid-glass';
 import { Icon } from '@happy-technologies/design-system';
 import { ConnectorConfigModal } from './ConnectorConfigModal';
 import { toast } from 'sonner';
+import { RequirePermission } from '@/components/common/RequirePermission';
 import { Badge } from '../ui/badge';
 import { Switch } from '../ui/switch';
 import {
@@ -197,10 +198,13 @@ export const ConnectorDefinitionList: React.FC = () => {
             Manage deployed connector configurations
           </p>
         </div>
-        <Button onClick={() => setShowMarketplace(true)} size="lg">
-          <Icon name="plus" size={16} className="mr-2" />
-          Install Connector
-        </Button>
+        {/* Deploys via POST /connector-configs (requirePermission('write')) */}
+        <RequirePermission permission="write">
+          <Button onClick={() => setShowMarketplace(true)} size="lg">
+            <Icon name="plus" size={16} className="mr-2" />
+            Install Connector
+          </Button>
+        </RequirePermission>
       </div>
 
       <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
@@ -335,29 +339,31 @@ export const ConnectorDefinitionList: React.FC = () => {
                       </span>
                     </TableCell>
                     <TableCell className="px-4 py-3 text-right">
-                      <div className="flex justify-end gap-1">
-                        <button
-                          onClick={() => runMutation.mutate(connector.id)}
-                          className="p-1.5 hover:bg-primary/10 rounded transition-colors"
-                          title="Run Now"
-                        >
-                          <Icon name="play" size={16} className="text-primary" />
-                        </button>
-                        <button
-                          onClick={() => {/* TODO: Open edit modal */}}
-                          className="p-1.5 hover:bg-primary/10 rounded transition-colors"
-                          title="Edit"
-                        >
-                          <Icon name="pencil-simple" size={16} className="text-primary" />
-                        </button>
-                        <button
-                          onClick={() => setDeletingConnector(connector)}
-                          className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
-                          title="Delete"
-                        >
-                          <Icon name="trash" size={16} className="text-destructive" />
-                        </button>
-                      </div>
+                      <RequirePermission permission="write">
+                        <div className="flex justify-end gap-1">
+                          <button
+                            onClick={() => runMutation.mutate(connector.id)}
+                            className="p-1.5 hover:bg-primary/10 rounded transition-colors"
+                            title="Run Now"
+                          >
+                            <Icon name="play" size={16} className="text-primary" />
+                          </button>
+                          <button
+                            onClick={() => {/* TODO: Open edit modal */}}
+                            className="p-1.5 hover:bg-primary/10 rounded transition-colors"
+                            title="Edit"
+                          >
+                            <Icon name="pencil-simple" size={16} className="text-primary" />
+                          </button>
+                          <button
+                            onClick={() => setDeletingConnector(connector)}
+                            className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
+                            title="Delete"
+                          >
+                            <Icon name="trash" size={16} className="text-destructive" />
+                          </button>
+                        </div>
+                      </RequirePermission>
                     </TableCell>
                   </TableRow>
                 ))

@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { LiquidGlass } from "@/components/ui/liquid-glass";
+import { RequirePermission } from "@/components/common/RequirePermission";
 import { Badge } from "@/components/ui/badge";
 /**
  * Configuration Drift Timeline Component
@@ -113,22 +114,25 @@ export const ConfigurationDriftTimeline: React.FC<ConfigurationDriftTimelineProp
 
       {/* Actions */}
       <div className="flex gap-3">
-        <button
-          onClick={() => detectDriftMutation.mutate()}
-          disabled={detectDriftMutation.isPending}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
-        >
-          <Icon name="git-diff" size={16} />
-          {detectDriftMutation.isPending ? 'Detecting...' : 'Detect Drift Now'}
-        </button>
-        <button
-          onClick={() => createBaselineMutation.mutate()}
-          disabled={createBaselineMutation.isPending}
-          className="flex items-center gap-2 px-4 py-2 border rounded hover:bg-accent/50 transition-colors"
-        >
-          <Icon name="calendar" size={16} />
-          Create Baseline
-        </button>
+        {/* POST /drift/detect/:ciId and /drift/baseline require 'write' */}
+        <RequirePermission permission="write">
+          <button
+            onClick={() => detectDriftMutation.mutate()}
+            disabled={detectDriftMutation.isPending}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+          >
+            <Icon name="git-diff" size={16} />
+            {detectDriftMutation.isPending ? 'Detecting...' : 'Detect Drift Now'}
+          </button>
+          <button
+            onClick={() => createBaselineMutation.mutate()}
+            disabled={createBaselineMutation.isPending}
+            className="flex items-center gap-2 px-4 py-2 border rounded hover:bg-accent/50 transition-colors"
+          >
+            <Icon name="calendar" size={16} />
+            Create Baseline
+          </button>
+        </RequirePermission>
         <button
           onClick={() => setShowBaselines(!showBaselines)}
           className="flex items-center gap-2 px-4 py-2 border rounded hover:bg-accent/50 transition-colors"

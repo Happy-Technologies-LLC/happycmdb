@@ -23,6 +23,7 @@ const Connectors = React.lazy(() => import('./pages/Connectors'));
 const ConnectorCatalog = React.lazy(() => import('./pages/ConnectorCatalog'));
 const PatternLearning = React.lazy(() => import('./pages/PatternLearning'));
 const Login = React.lazy(() => import('./pages/Login'));
+const NotFound = React.lazy(() => import('./pages/NotFound'));
 
 // v3.0 Phase 4 - Multi-Stakeholder Dashboards
 const ExecutiveDashboard = React.lazy(() => import('./pages/dashboards/ExecutiveDashboard'));
@@ -138,7 +139,8 @@ const App: React.FC = () => {
               <Route path="/financial-management" element={<FinancialManagement />} />
               <Route path="/settings" element={<Settings />} />
 
-              <Route path="*" element={<Navigate to="/" replace />} />
+              {/* Unknown address: signed-out users go to /login via the guard, signed-in users see this */}
+              <Route path="*" element={<NotFound />} />
             </Route>
           </Routes>
         </React.Suspense>

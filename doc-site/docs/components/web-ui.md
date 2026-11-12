@@ -116,6 +116,16 @@ const { theme, setTheme } = useTheme(); // 'light' | 'dark'
 ```
 **Behaviour**: light and dark on the design-system tokens. First load follows `prefers-color-scheme`; once the user picks a theme (account menu) the choice is stored in `localStorage` key `hh-theme` and wins over the OS setting.
 
+### Role gating and 403 (`lib/permissions.ts`, `lib/forbidden.ts`)
+```typescript
+import { RequirePermission } from '@/components/common/RequirePermission';
+import { usePermission } from '@/hooks/usePermission';
+
+<RequirePermission permission="write"><Button>Create</Button></RequirePermission>
+const canWrite = usePermission('write');
+```
+**Behaviour**: `lib/permissions.ts` copies the server's `ROLE_PERMISSIONS` (`admin`: read, write, discover, admin; `operator`: read, write, discover; `viewer`: read; `agent`: discover, write). Controls whose route needs `write` or `admin` are hidden from roles without it; an unknown role or no user sees none. This is display only: the server still decides, and its 403 reason (`_message`, else `message`) is shown verbatim, as a banner above the page for a refused read and as a toast for a refused write (`ForbiddenHost`). Checks the API does not expose (platform administrator, organization) are not modelled, so those controls stay visible and the server's refusal is shown. An unknown address renders `NotFound` inside the shell.
+
 ### LoadingSpinner
 ```typescript
 import LoadingSpinner from '@components/common/LoadingSpinner';

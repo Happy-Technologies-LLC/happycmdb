@@ -23,7 +23,7 @@ import { Textarea } from '@/components/ui/textarea';
 
 type FieldElement = HTMLInputElement | HTMLTextAreaElement;
 
-function useUnmirroredValue<T extends FieldElement>(
+export function useUnmirroredValue<T extends FieldElement>(
   value: string,
   forwardedRef: React.ForwardedRef<T>,
   onChange: React.ChangeEventHandler<T> | undefined

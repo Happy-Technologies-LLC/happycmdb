@@ -10,6 +10,7 @@ import {
 import { Button } from '../ui/button';
 import { LiquidGlass } from '../ui/liquid-glass';
 import { Icon } from '@happy-technologies/design-system';
+import { RequirePermission } from '@/components/common/RequirePermission';
 import DiscoveryDefinitionForm from './DiscoveryDefinitionForm';
 import {
   Dialog,
@@ -157,10 +158,12 @@ export const DiscoveryDefinitionList: React.FC<DiscoveryDefinitionListProps> = (
             Manage reusable discovery configurations
           </p>
         </div>
-        <Button onClick={() => setShowCreateDialog(true)}>
-          <Icon name="plus" size={16} className="mr-2" />
-          Create Definition
-        </Button>
+        <RequirePermission permission="write">
+          <Button onClick={() => setShowCreateDialog(true)}>
+            <Icon name="plus" size={16} className="mr-2" />
+            Create Definition
+          </Button>
+        </RequirePermission>
       </div>
 
       <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
@@ -299,27 +302,29 @@ export const DiscoveryDefinitionList: React.FC<DiscoveryDefinitionListProps> = (
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex justify-end gap-1">
-                        <button
-                          onClick={() => onRunDefinition(definition.id)}
-                          className="p-1.5 hover:bg-primary/10 rounded transition-colors"
-                          title="Run Now"
-                        >
-                          <Icon name="play" size={16} className="text-primary" />
-                        </button>
-                        <button
-                          onClick={() => handleEdit(definition)}
-                          className="p-1.5 hover:bg-primary/10 rounded transition-colors"
-                          title="Edit"
-                        >
-                          <Icon name="pencil-simple" size={16} className="text-primary" />
-                        </button>
-                        <button
-                          onClick={() => setDeletingDefinition(definition)}
-                          className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
-                          title="Delete"
-                        >
-                          <Icon name="trash" size={16} className="text-destructive" />
-                        </button>
+                        <RequirePermission permission="write">
+                          <button
+                            onClick={() => onRunDefinition(definition.id)}
+                            className="p-1.5 hover:bg-primary/10 rounded transition-colors"
+                            title="Run Now"
+                          >
+                            <Icon name="play" size={16} className="text-primary" />
+                          </button>
+                          <button
+                            onClick={() => handleEdit(definition)}
+                            className="p-1.5 hover:bg-primary/10 rounded transition-colors"
+                            title="Edit"
+                          >
+                            <Icon name="pencil-simple" size={16} className="text-primary" />
+                          </button>
+                          <button
+                            onClick={() => setDeletingDefinition(definition)}
+                            className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
+                            title="Delete"
+                          >
+                            <Icon name="trash" size={16} className="text-destructive" />
+                          </button>
+                        </RequirePermission>
                       </div>
                     </td>
                   </tr>

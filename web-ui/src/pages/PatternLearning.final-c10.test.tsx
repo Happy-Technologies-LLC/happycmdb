@@ -49,6 +49,8 @@ vi.mock('@/hooks/useAIPatterns');
 vi.mock('@/components/ai/PatternLearningOverview', () => ({
   PatternLearningOverview: () => <div data-testid="overview-stub">Overview stub</div>,
 }));
+// These screens gate their write controls on the signed-in role (HAP-1252 S1); this test is about the writes, so the user may write.
+vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
 
 function makeSession(overrides: Partial<AIDiscoverySession> = {}): AIDiscoverySession {
   return {

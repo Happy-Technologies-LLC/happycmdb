@@ -26,6 +26,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import DataTable from '@/components/common/DataTable';
 import LoadingSpinner from '@/components/common/LoadingSpinner';
+import { RequirePermission } from '@/components/common/RequirePermission';
 import {
   connectorService,
   ConnectorConfiguration,
@@ -222,33 +223,36 @@ export default function ConnectorConfigDetail() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          <Button onClick={handleRunNow} disabled={running || !config.enabled}>
-            <Icon name="play-circle" size={16} className="mr-2" />
-            {running ? 'Running...' : 'Run Now'}
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="icon">
-                <Icon name="dots-three-vertical" size={16} />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => navigate(`/connectors/configs/${id}/edit`)}>
-                <Icon name="pencil-simple" size={16} className="mr-2" />
-                Edit Configuration
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleToggleEnabled}>
-                {config.enabled ? 'Disable' : 'Enable'}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => setShowDeleteDialog(true)}
-                className="text-destructive"
-              >
-                <Icon name="trash" size={16} className="mr-2" />
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {/* Connector config run/edit/enable/delete: requirePermission('write') (GraphQL + REST) */}
+          <RequirePermission permission="write">
+            <Button onClick={handleRunNow} disabled={running || !config.enabled}>
+              <Icon name="play-circle" size={16} className="mr-2" />
+              {running ? 'Running...' : 'Run Now'}
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon">
+                  <Icon name="dots-three-vertical" size={16} />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => navigate(`/connectors/configs/${id}/edit`)}>
+                  <Icon name="pencil-simple" size={16} className="mr-2" />
+                  Edit Configuration
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleToggleEnabled}>
+                  {config.enabled ? 'Disable' : 'Enable'}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setShowDeleteDialog(true)}
+                  className="text-destructive"
+                >
+                  <Icon name="trash" size={16} className="mr-2" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </RequirePermission>
         </div>
       </div>
 

@@ -18,6 +18,7 @@ import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Badge } from '@/components/ui/badge';
 import { useNavigate } from 'react-router-dom';
 import { ConnectorConfigModal } from './ConnectorConfigModal';
+import { RequirePermission } from '@/components/common/RequirePermission';
 
 interface ConnectorTemplate {
   type: string;
@@ -245,33 +246,35 @@ export const ConnectorMarketplace: React.FC = () => {
                   Updated: {new Date(connector.updated_at).toLocaleString()}
                 </div>
 
-                <div className="flex gap-2">
-                  <Button
-                    onClick={() => runMutation.mutate(connector.id)}
-                    disabled={runMutation.isPending}
-                    className="flex-1"
-                    size="sm"
-                  >
-                    <Icon name="play" size={16} />
-                    Run Now
-                  </Button>
-                  <Button
-                    onClick={() => {
-                      /* TODO: Open config modal */
-                    }}
-                    variant="outline"
-                    size="sm"
-                  >
-                    <Icon name="gear-six" size={16} />
-                  </Button>
-                  <Button
-                    onClick={() => deleteMutation.mutate(connector.id)}
-                    variant="destructive"
-                    size="sm"
-                  >
-                    <Icon name="trash" size={16} />
-                  </Button>
-                </div>
+                <RequirePermission permission="write">
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={() => runMutation.mutate(connector.id)}
+                      disabled={runMutation.isPending}
+                      className="flex-1"
+                      size="sm"
+                    >
+                      <Icon name="play" size={16} />
+                      Run Now
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        /* TODO: Open config modal */
+                      }}
+                      variant="outline"
+                      size="sm"
+                    >
+                      <Icon name="gear-six" size={16} />
+                    </Button>
+                    <Button
+                      onClick={() => deleteMutation.mutate(connector.id)}
+                      variant="destructive"
+                      size="sm"
+                    >
+                      <Icon name="trash" size={16} />
+                    </Button>
+                  </div>
+                </RequirePermission>
               </div>
             ))}
           </div>
@@ -294,12 +297,15 @@ export const ConnectorMarketplace: React.FC = () => {
                   <p className="text-sm text-muted-foreground mt-1">{template.description}</p>
                 </div>
               </div>
-              <Button
-                onClick={() => setConfiguring(template)}
-                className="w-full"
-              >
-                Deploy Connector
-              </Button>
+              {/* Deploys via POST /connector-configs (requirePermission('write')) */}
+              <RequirePermission permission="write">
+                <Button
+                  onClick={() => setConfiguring(template)}
+                  className="w-full"
+                >
+                  Deploy Connector
+                </Button>
+              </RequirePermission>
             </div>
           ))}
         </div>

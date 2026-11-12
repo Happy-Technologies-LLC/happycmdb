@@ -3,51 +3,82 @@
 
 /**
  * Login form component
- * Email/password form with validation using React Hook Form and Zod
+ * Username/password form with validation using React Hook Form and Zod, on the design-system field components.
+ * The password lives in the input's value property only (HAP-1213 / HAP-1893): see useUnmirroredValue.
  */
 
 import React, { useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Icon } from '@happy-technologies/design-system';
+import { Banner, Button, FieldHint, IconButton, Input, Label } from '@happy-technologies/design-system';
 import { useAuth } from '../../contexts/AuthContext';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { SecretInput } from '@/components/ui/secret-input';
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from '@/components/ui/form';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { useUnmirroredValue } from '@/components/ui/secret-input';
 
 const loginSchema = z.object({
   username: z.string().min(3, 'Username must be at least 3 characters'),
   password: z.string().min(8, 'Password must be at least 8 characters'),
-  rememberMe: z.boolean().optional(),
 });
 
 type LoginFormData = z.infer<typeof loginSchema>;
 
+interface PasswordFieldProps {
+  value: string;
+  onChange: React.ChangeEventHandler<HTMLInputElement>;
+  onBlur: () => void;
+  name: string;
+  fieldRef: React.Ref<HTMLInputElement>;
+  error?: string;
+  disabled: boolean;
+}
+
+// The DS Input would mirror `value` into the DOM; useUnmirroredValue writes the property only.
+const PasswordField: React.FC<PasswordFieldProps> = ({ value, onChange, onBlur, name, fieldRef, error, disabled }) => {
+  const [shown, setShown] = useState(false);
+  const { ref, handleChange } = useUnmirroredValue<HTMLInputElement>(value, fieldRef as React.ForwardedRef<HTMLInputElement>, onChange);
+  return (
+    <div className="flex flex-col gap-2">
+      <Label htmlFor="login-password">Password</Label>
+      <div className="relative">
+        <Input
+          ref={ref}
+          id="login-password"
+          name={name}
+          type={shown ? 'text' : 'password'}
+          autoComplete="current-password"
+          placeholder="Enter your password"
+          disabled={disabled}
+          onChange={handleChange}
+          onBlur={onBlur}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? 'login-password-error' : undefined}
+          className="pr-12"
+        />
+        <IconButton
+          icon={shown ? 'eye-slash' : 'eye'}
+          aria-label={shown ? 'Hide password' : 'Show password'}
+          variant="ghost"
+          size="sm"
+          disabled={disabled}
+          onClick={() => setShown((s) => !s)}
+          className="absolute top-1/2 right-2 -translate-y-1/2"
+        />
+      </div>
+      <FieldHint id="login-password-error" error={error} />
+    </div>
+  );
+};
+
 export const LoginForm: React.FC = () => {
   const { login } = useAuth();
-  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const form = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
-    defaultValues: {
-      username: '',
-      password: '',
-      rememberMe: false,
-    },
+    defaultValues: { username: '', password: '' },
   });
+  const { errors } = form.formState;
 
   const onSubmit = async (data: LoginFormData) => {
     setError(null);
@@ -67,117 +98,42 @@ export const LoginForm: React.FC = () => {
   };
 
   return (
-    <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 w-full">
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
+    <form onSubmit={form.handleSubmit(onSubmit)} className="flex w-full flex-col gap-4" noValidate>
+      {error && (
+        <Banner tone="danger" icon="warning-circle">
+          {error}
+        </Banner>
+      )}
+
+      <Input
+        {...form.register('username')}
+        label="Username"
+        autoComplete="username"
+        autoFocus
+        disabled={isSubmitting}
+        placeholder="Enter your username"
+        error={errors.username?.message}
+      />
+
+      <Controller
+        control={form.control}
+        name="password"
+        render={({ field }) => (
+          <PasswordField
+            value={field.value}
+            onChange={field.onChange}
+            onBlur={field.onBlur}
+            name={field.name}
+            fieldRef={field.ref}
+            error={errors.password?.message}
+            disabled={isSubmitting}
+          />
         )}
+      />
 
-        <FormField
-          control={form.control}
-          name="username"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Username</FormLabel>
-              <FormControl>
-                <Input
-                  {...field}
-                  autoComplete="username"
-                  autoFocus
-                  disabled={isSubmitting}
-                  placeholder="Enter your username"
-                />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="password"
-          render={({ field }) => (
-            <FormItem>
-              <div className="flex items-center justify-between">
-                <FormLabel>Password</FormLabel>
-                <Button
-                  variant="link"
-                  className="px-0 font-normal h-auto text-xs text-muted-foreground hover:text-primary"
-                  type="button"
-                  disabled={isSubmitting}
-                >
-                  Forgot password?
-                </Button>
-              </div>
-              <FormControl>
-                <div className="relative">
-                  <SecretInput
-                    {...field}
-                    type={showPassword ? 'text' : 'password'}
-                    autoComplete="current-password"
-                    disabled={isSubmitting}
-                    placeholder="Enter your password"
-                    className="pr-10"
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
-                    onClick={() => setShowPassword(!showPassword)}
-                    disabled={isSubmitting}
-                  >
-                    {showPassword ? (
-                      <Icon name="eye-slash" size={16} className="text-muted-foreground" />
-                    ) : (
-                      <Icon name="eye" size={16} className="text-muted-foreground" />
-                    )}
-                  </Button>
-                </div>
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-
-        <FormField
-          control={form.control}
-          name="rememberMe"
-          render={({ field }) => (
-            <FormItem className="flex flex-row items-start space-x-3 space-y-0">
-              <FormControl>
-                <Checkbox
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                  disabled={isSubmitting}
-                />
-              </FormControl>
-              <div className="space-y-1 leading-none">
-                <FormLabel className="text-sm font-normal cursor-pointer">
-                  Remember me for 30 days
-                </FormLabel>
-              </div>
-            </FormItem>
-          )}
-        />
-
-        <Button
-          type="submit"
-          className="w-full"
-          disabled={isSubmitting}
-        >
-          {isSubmitting ? (
-            <>
-              <Icon name="spinner-gap" size={16} className="mr-2 animate-spin" />
-              Signing in...
-            </>
-          ) : (
-            'Sign In'
-          )}
-        </Button>
-      </form>
-    </Form>
+      <Button type="submit" size="lg" fullWidth disabled={isSubmitting}>
+        {isSubmitting ? 'Signing in...' : 'Sign In'}
+      </Button>
+    </form>
   );
 };

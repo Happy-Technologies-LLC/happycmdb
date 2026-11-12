@@ -10,6 +10,8 @@ vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null, Eyebrow:
 import { CredentialForm } from './CredentialForm';
 import { Credentials } from '@/pages/Credentials';
 import { PROTOCOL_DISPLAY_NAMES } from '@/lib/credential-display';
+// These screens gate their write controls on the signed-in role (HAP-1252 S1); this test is about the writes, so the user may write.
+vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
 
 const save = () => fireEvent.submit(screen.getByRole('button', { name: /save credential/i }).closest('form')!);
 const submitPort = async (protocol: string, port: string) => {

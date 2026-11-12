@@ -7,6 +7,8 @@ import axios from 'axios';
 import type { InternalAxiosRequestConfig } from 'axios';
 import { setToken } from '../../utils/token';
 vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null, Eyebrow: () => null }));
+// These screens gate their write controls on the signed-in role (HAP-1252 S1); this test is about the writes, so the user may write.
+vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
 // Built at runtime from neutral parts; it only has to round-trip from the in-memory token store into the header.
 const SEEDED = ['h1234', 'agents', Date.now().toString(36)].join('-');
 const AGENTS = ['alpha', 'bravo'].map((n, i) => ({ id: n, agent_id: `agent-${n}`, hostname: `syn-${n}.example.invalid`, status: i ? 'offline' : 'active', provider_capabilities: ['nmap'], reachable_networks: ['10.0.0.0/8'], last_heartbeat_at: new Date().toISOString(), registered_at: new Date().toISOString(), total_jobs_completed: 1, total_jobs_failed: 0, total_cis_discovered: 0 }));

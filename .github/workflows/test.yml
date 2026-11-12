@@ -100,24 +100,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Require private design-system read token
-        env:
-          DESIGN_SYSTEM_REPO_TOKEN: ${{ secrets.DESIGN_SYSTEM_REPO_TOKEN }}
-        run: |
-          if [ -z "$DESIGN_SYSTEM_REPO_TOKEN" ]; then
-            echo "DESIGN_SYSTEM_REPO_TOKEN missing" >&2
-            exit 1
-          fi
-      - name: Checkout pinned private design system (0.7.3)
-        uses: actions/checkout@v4
-        with:
-          repository: Happy-Technologies-LLC/happy-technologies-design-system
-          ref: b58a68c8f7e64171facb72f4657fb1f54212f07d
-          token: ${{ secrets.DESIGN_SYSTEM_REPO_TOKEN }}
-          persist-credentials: false
-          path: happy-technologies-design-system
-      - name: Link design system at npm file dependency path
-        run: ln -s "$GITHUB_WORKSPACE/happy-technologies-design-system" "$GITHUB_WORKSPACE/../happy-technologies-design-system"
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -127,6 +109,16 @@ jobs:
         run: npm ci
       - name: Typecheck and bundle web UI
         run: npm run build --workspace=web-ui
+      - name: Design-system token check, hard gate (HAP-1252 S0)
+        run: npm run check:ds-tokens --workspace=web-ui
+      - name: Design-system adherence lint, warn-first (HAP-1252 S0; --deny-warnings from S2)
+        run: npm run lint:ds --workspace=web-ui
+      - name: Design-system share (HAP-1252 S0; N10 target 80% by end of S8)
+        run: |
+          echo '### web-ui design-system share' >> "$GITHUB_STEP_SUMMARY"
+          npm run --silent ds-share --workspace=web-ui | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Design-system gate scripts behave (HAP-1252 S0)
+        run: npm run test:scripts --workspace=web-ui
       - name: Verify built web UI references no Google Fonts or api.happycmdb.io and has no inline script (HAP-1211 H0, HAP-1210 S2b)
         run: |
           test -f web-ui/dist/index.html || { echo "web-ui/dist/index.html missing" >&2; exit 1; }
@@ -135,18 +127,10 @@ jobs:
           if tr '\n' ' ' < web-ui/dist/index.html | grep -oiE '<script(\s[^>]*)?>' | grep -viqE '\ssrc\s*='; then echo "inline <script> in web-ui/dist/index.html" >&2; exit 1; fi
       - name: Verify every tracked web-ui test file is discovered by vitest (HAP-1687, fails closed)
         run: node web-ui/scripts/check-test-discovery.mjs
-      - name: Run the whole web-ui vitest suite against the pinned design system (HAP-1687)
+      - name: Run the whole web-ui vitest suite (HAP-1687)
         run: npm run test:run --workspace=web-ui
-      - name: Build the web image from a design-system checkout that carries its own node_modules (HAP-1754)
-        run: |
-          set -euo pipefail
-          # Decoy `react` with no entry point. Dockerfile.web must replace the design system's node_modules
-          # with a link to the workspace's; if the decoy stayed, the design system's react import would
-          # resolve to it and the vite build would fail.
-          mkdir -p happy-technologies-design-system/node_modules/react
-          echo '{"name":"react","version":"0.0.0-decoy"}' > happy-technologies-design-system/node_modules/react/package.json
-          docker build -f infrastructure/docker/Dockerfile.web \
-            --build-context design-system=./happy-technologies-design-system -t web-ui-image:ci .
+      - name: Build the web image (design system from public npm; no sibling checkout or build context)
+        run: docker build -f infrastructure/docker/Dockerfile.web -t web-ui-image:ci .
       - name: The web image starts and serves the bundle (HAP-1754)
         run: deploy/test-web-image-start.sh web-ui-image:ci
 

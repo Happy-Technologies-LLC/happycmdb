@@ -7,25 +7,9 @@ WORKDIR /app
 COPY package*.json ./
 COPY web-ui/package.json ./web-ui/
 
-# web-ui depends on `file:../../happy-technologies-design-system`, a sibling repo
-# outside this build context, supplied as the `design-system` build context
-# (compose build.additional_contexts, or
-# `--build-context design-system=../happy-technologies-design-system`).
-# From /app/web-ui, ../../ resolves to /happy-technologies-design-system.
-COPY --from=design-system . /happy-technologies-design-system
-
-# Install ALL dependencies (including devDependencies) exactly as package-lock.json pins them
+# Install ALL dependencies (including devDependencies) exactly as package-lock.json pins them.
+# @happy-technologies/design-system comes from the public npm registry like any other dependency.
 RUN npm ci
-
-# The design system ships TypeScript source and imports react etc. from its own
-# location; resolve those from the workspace's node_modules, as a sibling
-# checkout with installed dependencies would locally. A checkout supplied as the
-# `design-system` context may carry its own node_modules (`COPY --from` copies
-# whatever the context holds): remove it first, because `ln -s` onto an existing
-# directory creates the link inside it and the design system would keep resolving
-# react from its own copy instead of the workspace's.
-RUN rm -rf /happy-technologies-design-system/node_modules && \
-    ln -s /app/node_modules /happy-technologies-design-system/node_modules
 
 # Copy tsconfig files
 COPY tsconfig.base.json ./

@@ -23,6 +23,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../ui/card';
 import { Alert, AlertDescription } from '../ui/alert';
 import { Icon } from '@happy-technologies/design-system';
+import { RequirePermission } from '@/components/common/RequirePermission';
 import DiscoveryConfigForm, { DiscoveryConfigFormRef } from './DiscoveryConfigForm';
 import { AgentSelector } from './AgentSelector';
 import { useCredentials } from '../../hooks/useCredentials';
@@ -492,16 +493,19 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
           </Button>
         )}
         {showAdHocAction && onAdHocRun && createSshCredential && <p className="text-xs text-muted-foreground self-center">Save the credential first to run once</p>}
-        <Button type="submit">
-          {showAdHocAction ? (
-            <>
-              <Icon name="floppy-disk" size={16} className="mr-2" />
-              Save & Run
-            </>
-          ) : (
-            isEditMode ? 'Update Definition' : 'Create Definition'
-          )}
-        </Button>
+        {/* POST/PUT /discovery/definitions need write; Run Once (platform-admin /jobs) stays visible */}
+        <RequirePermission permission="write">
+          <Button type="submit">
+            {showAdHocAction ? (
+              <>
+                <Icon name="floppy-disk" size={16} className="mr-2" />
+                Save & Run
+              </>
+            ) : (
+              isEditMode ? 'Update Definition' : 'Create Definition'
+            )}
+          </Button>
+        </RequirePermission>
       </div>
     </form>
   );

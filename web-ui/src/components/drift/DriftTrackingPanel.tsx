@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { LiquidGlass } from "@/components/ui/liquid-glass";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { RequirePermission } from "@/components/common/RequirePermission";
 /**
  * Drift Tracking Panel Component
  * Enhanced configuration drift tracking with calendar visualization and timeline
@@ -195,23 +196,26 @@ export const DriftTrackingPanel: React.FC<DriftTrackingPanelProps> = ({
             {viewMode === 'calendar' ? <Icon name="pulse" size={16} className="mr-2" /> : <Icon name="calendar" size={16} className="mr-2" />}
             {viewMode === 'calendar' ? 'Timeline View' : 'Calendar View'}
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => createBaselineMutation.mutate()}
-            disabled={createBaselineMutation.isPending}
-          >
-            <Icon name="calendar" size={16} className="mr-2" />
-            Create Baseline
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => detectDriftMutation.mutate()}
-            disabled={detectDriftMutation.isPending}
-          >
-            <Icon name="git-diff" size={16} className="mr-2" />
-            {detectDriftMutation.isPending ? 'Detecting...' : 'Detect Now'}
-          </Button>
+          {/* POST /drift/baseline and /drift/detect/:ciId require 'write' */}
+          <RequirePermission permission="write">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => createBaselineMutation.mutate()}
+              disabled={createBaselineMutation.isPending}
+            >
+              <Icon name="calendar" size={16} className="mr-2" />
+              Create Baseline
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => detectDriftMutation.mutate()}
+              disabled={detectDriftMutation.isPending}
+            >
+              <Icon name="git-diff" size={16} className="mr-2" />
+              {detectDriftMutation.isPending ? 'Detecting...' : 'Detect Now'}
+            </Button>
+          </RequirePermission>
         </div>
       </div>
 

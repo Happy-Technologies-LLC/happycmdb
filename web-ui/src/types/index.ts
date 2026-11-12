@@ -1,6 +1,8 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
+import type { ServerRole } from '@/lib/permissions';
+
 // CI Types
 export type CIType =
   | 'server'
@@ -83,7 +85,7 @@ export interface User {
   email: string;
   full_name: string;
   avatar?: string;
-  role: 'admin' | 'user' | 'viewer';
+  role: ServerRole; // the server's UserRole (packages/api-server/src/auth/types.ts), see lib/permissions.ts
   created_at: string;
   last_login?: string;
 }

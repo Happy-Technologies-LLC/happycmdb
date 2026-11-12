@@ -23,6 +23,8 @@ vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null, Eyebrow:
 
 import { AxiosError, AxiosHeaders } from 'axios';
 import { Credentials } from './Credentials';
+// These screens gate their write controls on the signed-in role (HAP-1252 S1); this test is about the writes, so the user may write.
+vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
 
 const STORED = { id: 'cred-1', name: 'aws-main', protocol: 'aws_iam', scope: 'universal', credentials: {}, tags: [] };
 

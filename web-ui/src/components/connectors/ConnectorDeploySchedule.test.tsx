@@ -13,6 +13,8 @@ vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null }));
 import { ConnectorDefinitionList } from './ConnectorDefinitionList';
 import { ConnectorMarketplace } from './ConnectorMarketplace';
 import { ConnectorDashboard } from './ConnectorDashboard';
+// These screens gate their write controls on the signed-in role (HAP-1252 S1); this test is about the writes, so the user may write.
+vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
 
 const template = {
   connector_type: 'servicenow', name: 'ServiceNow CMDB', category: 'connector',

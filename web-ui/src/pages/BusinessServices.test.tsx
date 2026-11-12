@@ -33,6 +33,8 @@ const { apiClient } = vi.hoisted(() => ({
 vi.mock('../lib/api-client', () => ({ apiClient }));
 
 import BusinessServices from './BusinessServices';
+// These screens gate their write controls on the signed-in role (HAP-1252 S1); this test is about the writes, so the user may write.
+vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
 
 // Backend rows use the real REST envelope ({success, items, next_cursor, as_of}
 // for the C1 list, {success, data} for writes) and the canonical business_criticality

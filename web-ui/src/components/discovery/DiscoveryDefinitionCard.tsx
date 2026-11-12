@@ -7,6 +7,7 @@ import { Avatar, AvatarFallback } from '../ui/avatar';
 import { Separator } from '../ui/separator';
 import { Switch } from '../ui/switch';
 import { Icon } from '@happy-technologies/design-system';
+import { RequirePermission } from '@/components/common/RequirePermission';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -203,45 +204,47 @@ export const DiscoveryDefinitionCard: React.FC<DiscoveryDefinitionCardProps> = (
       </CardContent>
 
       <CardFooter className="flex gap-2">
-        <Button
-          className="flex-1"
-          onClick={handleRun}
-          disabled={!definition.active}
-        >
-          <Icon name="play" size={16} className="mr-2" />
-          Run Now
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => onEdit(definition.id)}
-        >
-          <Icon name="pencil-simple" size={16} />
-        </Button>
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button variant="outline">
-              <Icon name="trash" size={16} className="text-destructive" />
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete Discovery Definition</AlertDialogTitle>
-              <AlertDialogDescription>
-                Are you sure you want to delete "{definition.name}"? This action cannot be
-                undone. Any scheduled jobs will be cancelled.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={() => onDelete(definition.id)}
-                className="bg-destructive text-destructive-foreground"
-              >
-                Delete
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        <RequirePermission permission="write">
+          <Button
+            className="flex-1"
+            onClick={handleRun}
+            disabled={!definition.active}
+          >
+            <Icon name="play" size={16} className="mr-2" />
+            Run Now
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => onEdit(definition.id)}
+          >
+            <Icon name="pencil-simple" size={16} />
+          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="outline">
+                <Icon name="trash" size={16} className="text-destructive" />
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete Discovery Definition</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Are you sure you want to delete "{definition.name}"? This action cannot be
+                  undone. Any scheduled jobs will be cancelled.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={() => onDelete(definition.id)}
+                  className="bg-destructive text-destructive-foreground"
+                >
+                  Delete
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </RequirePermission>
       </CardFooter>
     </Card>
   );

@@ -3,6 +3,7 @@ import { Icon } from '@happy-technologies/design-system';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { RequirePermission } from '@/components/common/RequirePermission';
 import { Separator } from '@/components/ui/separator';
 import type { UnifiedCredential } from '@/services/credential.service';
 import { formatProtocol } from '@/lib/credential-display';
@@ -167,22 +168,24 @@ export const CredentialDetail: React.FC<CredentialDetailProps> = ({
             <p className="text-muted-foreground">{credential.description}</p>
           )}
         </div>
-        <div className="flex gap-2">
-          {onTest && (
-            <Button variant="outline" size="sm" onClick={onTest}>
-              <Icon name="test-tube" size={16} className="mr-2" />
-              Test
+        <RequirePermission permission="write">
+          <div className="flex gap-2">
+            {onTest && (
+              <Button variant="outline" size="sm" onClick={onTest}>
+                <Icon name="test-tube" size={16} className="mr-2" />
+                Test
+              </Button>
+            )}
+            <Button variant="outline" size="sm" onClick={onEdit}>
+              <Icon name="pencil-simple" size={16} className="mr-2" />
+              Edit
             </Button>
-          )}
-          <Button variant="outline" size="sm" onClick={onEdit}>
-            <Icon name="pencil-simple" size={16} className="mr-2" />
-            Edit
-          </Button>
-          <Button variant="destructive" size="sm" onClick={onDelete}>
-            <Icon name="trash" size={16} className="mr-2" />
-            Delete
-          </Button>
-        </div>
+            <Button variant="destructive" size="sm" onClick={onDelete}>
+              <Icon name="trash" size={16} className="mr-2" />
+              Delete
+            </Button>
+          </div>
+        </RequirePermission>
       </div>
 
       <Separator className="mb-6" />

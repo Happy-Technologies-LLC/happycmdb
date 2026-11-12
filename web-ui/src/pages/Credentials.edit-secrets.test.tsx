@@ -9,6 +9,8 @@ vi.mock('@/contexts/ToastContext', () => ({ useToast: () => ({ showToast }) }));
 vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null, Eyebrow: () => null }));
 import { Credentials } from './Credentials';
 import { PROTOCOL_DISPLAY_NAMES } from '@/lib/credential-display';
+// These screens gate their write controls on the signed-in role (HAP-1252 S1); this test is about the writes, so the user may write.
+vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
 
 // Built at runtime from neutral parts. It stands in for the server's redaction string, which the web-ui cannot import;
 // any string spread into an object reproduces the defect, and the api-server test pins the real constant.

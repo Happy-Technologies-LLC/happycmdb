@@ -187,7 +187,8 @@ class DiscoveryService {
     if (filters?.sortBy) params.append('sortBy', filters.sortBy);
     if (filters?.sortOrder) params.append('sortOrder', filters.sortOrder);
 
-    const { data } = await api.get(`/jobs/discovery?${params.toString()}`);
+    // A side read: GET /jobs/discovery needs platform admin (jobs.routes.ts), the pages around it do not.
+    const { data } = await api.get(`/jobs/discovery?${params.toString()}`, { sideRead: true });
 
     // Transform API response to match expected format
     const jobs = (data.data || []).map((job: {

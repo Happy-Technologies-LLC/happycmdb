@@ -22,6 +22,8 @@ vi.mock('@/hooks/useCredentials', () => ({
 vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null }));
 
 import { ConnectorDefinitionList } from './ConnectorDefinitionList';
+// These screens gate their write controls on the signed-in role (HAP-1252 S1); this test is about the writes, so the user may write.
+vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
 
 const manifest = JSON.parse(
   fs.readFileSync(path.resolve(__dirname, '../../../../packages/connectors/oracle-cloud/connector.json'), 'utf-8')

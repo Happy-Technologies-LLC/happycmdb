@@ -16,6 +16,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { Button } from '@/components/ui/button';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Badge } from '@/components/ui/badge';
+import { RequirePermission } from '@/components/common/RequirePermission';
 
 export const AnomalyDetectionView: React.FC = () => {
   const [selectedSeverity, setSelectedSeverity] = useState<string>('all');
@@ -206,41 +207,44 @@ export const AnomalyDetectionView: React.FC = () => {
 
               {/* Actions */}
               <div className="flex gap-2 flex-wrap">
-                {anomaly.status === 'detected' && (
-                  <Button
-                    onClick={() =>
-                      updateStatusMutation.mutate({ id: anomaly.id, status: 'investigating' })
-                    }
-                    size="sm"
-                    disabled={updateStatusMutation.isPending}
-                  >
-                    Investigate
-                  </Button>
-                )}
-                {(anomaly.status === 'detected' || anomaly.status === 'investigating') && (
-                  <>
+                {/* PATCH /anomalies/:id/status requires 'write' */}
+                <RequirePermission permission="write">
+                  {anomaly.status === 'detected' && (
                     <Button
                       onClick={() =>
-                        updateStatusMutation.mutate({ id: anomaly.id, status: 'resolved' })
+                        updateStatusMutation.mutate({ id: anomaly.id, status: 'investigating' })
                       }
                       size="sm"
-                      variant="default"
                       disabled={updateStatusMutation.isPending}
                     >
-                      Resolve
+                      Investigate
                     </Button>
-                    <Button
-                      onClick={() =>
-                        updateStatusMutation.mutate({ id: anomaly.id, status: 'false_positive' })
-                      }
-                      size="sm"
-                      variant="outline"
-                      disabled={updateStatusMutation.isPending}
-                    >
-                      Mark False Positive
-                    </Button>
-                  </>
-                )}
+                  )}
+                  {(anomaly.status === 'detected' || anomaly.status === 'investigating') && (
+                    <>
+                      <Button
+                        onClick={() =>
+                          updateStatusMutation.mutate({ id: anomaly.id, status: 'resolved' })
+                        }
+                        size="sm"
+                        variant="default"
+                        disabled={updateStatusMutation.isPending}
+                      >
+                        Resolve
+                      </Button>
+                      <Button
+                        onClick={() =>
+                          updateStatusMutation.mutate({ id: anomaly.id, status: 'false_positive' })
+                        }
+                        size="sm"
+                        variant="outline"
+                        disabled={updateStatusMutation.isPending}
+                      >
+                        Mark False Positive
+                      </Button>
+                    </>
+                  )}
+                </RequirePermission>
                 {anomaly.status === 'resolved' && (
                   <div className="flex items-center gap-2 text-success text-sm">
                     <Icon name="check-circle" size={16} />

@@ -19,6 +19,7 @@ import {
   FormDialogTitle,
 } from '@/components/ui/form-dialog';
 import CredentialSetForm from './CredentialSetForm';
+import { RequirePermission } from '@/components/common/RequirePermission';
 import {
   credentialService,
   type CredentialSetSummary,
@@ -136,10 +137,12 @@ export const CredentialSetList: React.FC = () => {
             Manage groups of credentials for sequential or parallel authentication
           </p>
         </div>
-        <Button onClick={() => setCreateDialogOpen(true)}>
-          <Icon name="plus" size={16} className="mr-2" />
-          Create Set
-        </Button>
+        <RequirePermission permission="write">
+          <Button onClick={() => setCreateDialogOpen(true)}>
+            <Icon name="plus" size={16} className="mr-2" />
+            Create Set
+          </Button>
+        </RequirePermission>
       </div>
 
       <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
@@ -247,28 +250,30 @@ export const CredentialSetList: React.FC = () => {
                         >
                           <Icon name="eye" size={16} className="text-muted-foreground" />
                         </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedSet(set);
-                            setEditDialogOpen(true);
-                          }}
-                          className="p-1.5 hover:bg-primary/10 rounded transition-colors"
-                          title="Edit"
-                        >
-                          <Icon name="pencil-simple" size={16} className="text-primary" />
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedSet(set);
-                            setDeleteDialogOpen(true);
-                          }}
-                          className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
-                          title="Delete"
-                        >
-                          <Icon name="trash" size={16} className="text-destructive" />
-                        </button>
+                        <RequirePermission permission="write">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedSet(set);
+                              setEditDialogOpen(true);
+                            }}
+                            className="p-1.5 hover:bg-primary/10 rounded transition-colors"
+                            title="Edit"
+                          >
+                            <Icon name="pencil-simple" size={16} className="text-primary" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedSet(set);
+                              setDeleteDialogOpen(true);
+                            }}
+                            className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
+                            title="Delete"
+                          >
+                            <Icon name="trash" size={16} className="text-destructive" />
+                          </button>
+                        </RequirePermission>
                       </div>
                     </td>
                   </tr>

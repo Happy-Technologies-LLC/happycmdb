@@ -12,6 +12,7 @@
  */
 
 import axios, { type AxiosError, type AxiosInstance, type InternalAxiosRequestConfig } from 'axios';
+import { forbiddenReason, reportForbidden } from './forbidden';
 import { redactAxiosError } from './redact-axios-error';
 import { getToken, removeToken, setToken } from '../utils/token';
 
@@ -62,7 +63,10 @@ export function endSession(logout: () => Promise<unknown>): Promise<void> {
 
 type ReplayableConfig = InternalAxiosRequestConfig & { _sessionReplayed?: boolean };
 
-/** Bearer from memory on every request; on a 401, renew once and replay once, else sign out to /login. */
+/**
+ * Bearer from memory on every request; on a 401, renew once and replay once, else sign out to /login. A 403 is not
+ * a session problem: the server's reason is reported (lib/forbidden.ts) and the error still rejects to the caller.
+ */
 export function attachSession(client: AxiosInstance): void {
   client.interceptors.request.use((config) => {
     const token = getToken();
@@ -71,6 +75,13 @@ export function attachSession(client: AxiosInstance): void {
   });
   client.interceptors.response.use(undefined, async (error: AxiosError) => {
     const config = error.config as ReplayableConfig | undefined;
+    if (error.response?.status === 403) {
+      reportForbidden({
+        reason: forbiddenReason(error.response.data),
+        method: (config?.method ?? 'get').toUpperCase(),
+        sideRead: config?.sideRead === true,
+      });
+    }
     if (error.response?.status !== 401 || !config || SESSION_ENDPOINT.test(config.url ?? '')) {
       return Promise.reject(redactAxiosError(error));
     }

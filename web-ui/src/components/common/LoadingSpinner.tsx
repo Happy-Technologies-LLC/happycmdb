@@ -1,8 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import React from 'react';
-import { Icon } from '@happy-technologies/design-system';
+import { FullPageState, Spinner } from '@happy-technologies/design-system';
 import { cn } from '@/lib/utils';
 
 interface LoadingSpinnerProps {
@@ -12,32 +11,17 @@ interface LoadingSpinnerProps {
   className?: string;
 }
 
-const LoadingSpinner: React.FC<LoadingSpinnerProps> = ({
+export default function LoadingSpinner({
   message = 'Loading...',
   size = 40,
   fullScreen = true,
   className,
-}) => {
-  const content = (
+}: LoadingSpinnerProps) {
+  if (fullScreen) return <FullPageState loading title={message} className={className} />;
+  return (
     <div className={cn('flex flex-col items-center justify-center gap-4', className)}>
-      <Icon name="spinner-gap" size={size} className="animate-spin text-primary" />
-      {message && (
-        <p className="text-sm text-muted-foreground">
-          {message}
-        </p>
-      )}
+      <Spinner size={size} aria-label={message} />
+      {message && <p className="text-sm text-[var(--hh-text-body)]">{message}</p>}
     </div>
   );
-
-  if (fullScreen) {
-    return (
-      <div className="flex items-center justify-center min-h-screen w-full bg-background">
-        {content}
-      </div>
-    );
-  }
-
-  return content;
-};
-
-export default LoadingSpinner;
+}

@@ -25,6 +25,8 @@ const { apiClient } = vi.hoisted(() => ({
 vi.mock('../lib/api-client', () => ({ apiClient }));
 
 import Connectors from './Connectors';
+// These screens gate their write controls on the signed-in role (HAP-1252 S1); this test is about the writes, so the user may write.
+vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
 
 function renderConnectors(initialEntry: string) {
   const queryClient = new QueryClient({

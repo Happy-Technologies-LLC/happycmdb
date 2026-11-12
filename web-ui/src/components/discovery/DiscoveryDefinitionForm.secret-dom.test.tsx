@@ -33,6 +33,8 @@ vi.mock('../ui/select', async () => {
 
 import DiscoveryDefinitionForm from './DiscoveryDefinitionForm';
 import type { DiscoveryDefinitionInput } from '../../services/discovery.service';
+// These screens gate their write controls on the signed-in role (HAP-1252 S1); this test is about the writes, so the user may write.
+vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
 
 const onSubmit = vi.fn<(data: DiscoveryDefinitionInput) => void>();
 beforeEach(() => {

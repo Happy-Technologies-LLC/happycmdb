@@ -14,6 +14,7 @@ import { Icon } from '@happy-technologies/design-system';
 import { LiquidGlass } from '@/components/ui/liquid-glass';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { RequirePermission } from '@/components/common/RequirePermission';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import CITypeBadge from '../ci/CITypeBadge';
@@ -356,24 +357,27 @@ export const ImpactPredictionPanel: React.FC<ImpactPredictionPanelProps> = ({
           <h4 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
             Select Change Type
           </h4>
-          <Button
-            onClick={handleRunPrediction}
-            disabled={isPredicting}
-            size="lg"
-            className="shadow-lg"
-          >
-            {isPredicting ? (
-              <>
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                Analyzing...
-              </>
-            ) : (
-              <>
-                <Icon name="lightning" size={16} className="mr-2" />
-                Run Impact Prediction
-              </>
-            )}
-          </Button>
+          {/* POST /impact/predict requires 'write' */}
+          <RequirePermission permission="write">
+            <Button
+              onClick={handleRunPrediction}
+              disabled={isPredicting}
+              size="lg"
+              className="shadow-lg"
+            >
+              {isPredicting ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  Analyzing...
+                </>
+              ) : (
+                <>
+                  <Icon name="lightning" size={16} className="mr-2" />
+                  Run Impact Prediction
+                </>
+              )}
+            </Button>
+          </RequirePermission>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
           {CHANGE_TYPES.map((type) => (

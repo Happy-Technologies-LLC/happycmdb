@@ -7,7 +7,11 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { ThemeProvider } from '@/contexts/ThemeContext';
+import NotFound from '@/pages/NotFound';
 import MainLayout from './MainLayout';
+import { useEffect } from 'react';
+import axios, { AxiosError, type AxiosAdapter } from 'axios';
+import { attachSession } from '@/lib/session';
 
 const auth = vi.hoisted(() => ({
   user: { username: 'ada', full_name: 'Ada Lovelace', role: 'operator' } as Record<string, string> | null,
@@ -25,6 +29,28 @@ const Where = () => {
   const { pathname, search } = useLocation();
   return <output data-testid="where">{pathname + search}</output>;
 };
+const Crash = () => {
+  throw new Error('screen blew up');
+};
+/** A screen whose request the server refuses with a 403 carrying a reason, through the app's session interceptors. */
+const Refused = () => {
+  useEffect(() => {
+    const adapter: AxiosAdapter = (config) =>
+      Promise.reject(
+        new AxiosError('Request failed with status code 403', 'ERR_BAD_REQUEST', config, {}, {
+          status: 403,
+          statusText: 'Forbidden',
+          data: { _error: 'Forbidden', _message: "Permission 'admin' required" },
+          headers: {},
+          config,
+        }),
+      );
+    const client = axios.create({ adapter });
+    attachSession(client);
+    client.get('/anything').catch(() => undefined);
+  }, []);
+  return <p>Refused screen</p>;
+};
 
 function renderShell(path: string) {
   return render(
@@ -39,6 +65,9 @@ function renderShell(path: string) {
               <Route path="/discovery" element={<p>Discovery screen</p>} />
               <Route path="/agents" element={<p>Agents screen</p>} />
               <Route path="/settings" element={<p>Settings screen</p>} />
+              <Route path="/crash" element={<Crash />} />
+              <Route path="/refused" element={<Refused />} />
+              <Route path="*" element={<NotFound />} />
             </Route>
           </Routes>
           <Where />
@@ -185,5 +214,30 @@ describe('account menu', () => {
     await open(user);
     await user.click(await screen.findByRole('menuitem', { name: 'Sign out' }));
     expect(auth.logout).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('error and unknown-route states', () => {
+  it('an unknown route renders the designed not-found state inside the shell, not a redirect', () => {
+    renderShell('/no/such/screen');
+    expect(screen.getByText('Page not found')).toBeInTheDocument();
+    expect(screen.getByTestId('where')).toHaveTextContent('/no/such/screen');
+    expect(rail()).toBeInTheDocument();
+  });
+
+  it('a screen that throws shows the error state with the shell still up, and navigating away recovers', async () => {
+    const user = userEvent.setup();
+    renderShell('/crash');
+    expect(await screen.findByText('Something went wrong')).toBeInTheDocument();
+    expect(screen.getByText('screen blew up')).toBeInTheDocument();
+    await user.click(within(rail()).getByRole('link', { name: /^discovery/i }));
+    expect(screen.getByText('Discovery screen')).toBeInTheDocument();
+  });
+
+  it('a refused read shows the server reason above the screen, inside the shell', async () => {
+    renderShell('/refused');
+    expect(await screen.findByRole('alert')).toHaveTextContent("Permission 'admin' required");
+    expect(screen.getByText('Refused screen')).toBeInTheDocument();
+    expect(rail()).toBeInTheDocument();
   });
 });

@@ -23,6 +23,7 @@ import {
   FormDialogTitle,
 } from '@/components/ui/form-dialog';
 import CredentialForm, { hasSecretEntry } from '@/components/credentials/CredentialForm';
+import { RequirePermission } from '@/components/common/RequirePermission';
 import CredentialDetail from '@/components/credentials/CredentialDetail';
 import {
   credentialService,
@@ -228,10 +229,12 @@ export const Credentials: React.FC = () => {
             Manage reusable credentials for discovery definitions
           </p>
         </div>
-        <Button onClick={() => setCreateDialogOpen(true)}>
-          <Icon name="plus" size={16} className="mr-2" />
-          Create Credential
-        </Button>
+        <RequirePermission permission="write">
+          <Button onClick={() => setCreateDialogOpen(true)}>
+            <Icon name="plus" size={16} className="mr-2" />
+            Create Credential
+          </Button>
+        </RequirePermission>
       </div>
 
       <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
@@ -401,26 +404,28 @@ export const Credentials: React.FC = () => {
                         >
                           <Icon name="eye" size={16} className="text-muted-foreground" />
                         </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openEditDialog(credential);
-                          }}
-                          className="p-1.5 hover:bg-primary/10 rounded transition-colors"
-                          title="Edit"
-                        >
-                          <Icon name="pencil-simple" size={16} className="text-primary" />
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openDeleteDialog(credential);
-                          }}
-                          className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
-                          title="Delete"
-                        >
-                          <Icon name="trash" size={16} className="text-destructive" />
-                        </button>
+                        <RequirePermission permission="write">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openEditDialog(credential);
+                            }}
+                            className="p-1.5 hover:bg-primary/10 rounded transition-colors"
+                            title="Edit"
+                          >
+                            <Icon name="pencil-simple" size={16} className="text-primary" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openDeleteDialog(credential);
+                            }}
+                            className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
+                            title="Delete"
+                          >
+                            <Icon name="trash" size={16} className="text-destructive" />
+                          </button>
+                        </RequirePermission>
                       </div>
                     </td>
                   </tr>

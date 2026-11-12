@@ -79,7 +79,7 @@ export function attachSession(client: AxiosInstance): void {
       reportForbidden({
         reason: forbiddenReason(error.response.data),
         method: (config?.method ?? 'get').toUpperCase(),
-        url: config?.url ?? '',
+        sideRead: config?.sideRead === true,
       });
     }
     if (error.response?.status !== 401 || !config || SESSION_ENDPOINT.test(config.url ?? '')) {

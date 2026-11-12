@@ -9,7 +9,9 @@ import { isReadMethod, onForbidden, type ForbiddenEvent } from '@/lib/forbidden'
 
 /**
  * N8 a, F10: shows the server's 403 reason as the server wrote it. A refused write is a toast (the user stays where
- * they are); a refused read is a banner above the page until the route changes.
+ * they are); a refused primary read is a banner above the page until the pathname changes. A refused side read
+ * (`sideRead` on the request) shows nothing here: it does not refuse the page, and the caller that asked reports
+ * its own failure (polling would otherwise repeat a toast every interval).
  */
 export function ForbiddenHost() {
   const { pathname } = useLocation();
@@ -18,7 +20,9 @@ export function ForbiddenHost() {
   useEffect(
     () =>
       onForbidden((event) => {
-        if (isReadMethod(event.method)) setDenied(event);
+        if (isReadMethod(event.method)) {
+          if (!event.sideRead) setDenied(event);
+        }
         else toast.error('Not permitted', { description: event.reason });
       }),
     [],

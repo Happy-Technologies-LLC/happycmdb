@@ -32,7 +32,7 @@ const controls = async () => {
   };
 };
 
-// The server needs 'write' for credential create, update and delete (credential.routes.ts); read-only roles only look.
+// The server needs 'write' for credential create, update and delete (rest/routes/unified-credential.routes.ts); read-only roles only look.
 describe('Credentials write controls by role', () => {
   it('a viewer can open a credential but sees no create, edit or delete', async () => {
     auth.role = 'viewer';

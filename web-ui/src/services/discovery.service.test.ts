@@ -37,7 +37,7 @@ describe('discoveryService', () => {
 
     await discoveryService.getJobs({ provider: 'nmap' });
 
-    expect(request.get).toHaveBeenCalledWith('/jobs/discovery?provider=nmap');
+    expect(request.get).toHaveBeenCalledWith('/jobs/discovery?provider=nmap', { sideRead: true });
   });
 
   it('gets a job by id via the dedicated legacy discovery API, needing no queue name', async () => {

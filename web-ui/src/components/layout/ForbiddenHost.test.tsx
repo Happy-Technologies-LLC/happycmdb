@@ -72,6 +72,33 @@ describe('a 403 from the server', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  it('a refused side read shows neither a banner nor a toast, however often it is polled, and the caller still sees the failure', async () => {
+    mount();
+    const client = clientRefusing({ success: false, error: 'Forbidden', message: 'Platform administrator required' });
+    let rejections = 0;
+    await act(async () => {
+      for (let i = 0; i < 3; i += 1) {
+        await client.get('/jobs/discovery', { sideRead: true }).catch(() => {
+          rejections += 1;
+        });
+      }
+    });
+    expect(rejections).toBe(3);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('Platform administrator required')).toBeNull();
+    expect(screen.queryByText('Not permitted')).toBeNull();
+  });
+
+  it('a side read does not hide a refused primary read: the same page still gets its banner', async () => {
+    mount();
+    const client = clientRefusing({ success: false, error: 'Forbidden', message: 'Platform administrator required' });
+    await act(async () => {
+      await client.get('/jobs/discovery', { sideRead: true }).catch(() => undefined);
+      await client.get('/audit').catch(() => undefined);
+    });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Platform administrator required');
+  });
+
   it('falls back to "Forbidden" when the body carries no reason', async () => {
     mount();
     const client = clientRefusing('');

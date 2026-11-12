@@ -36,7 +36,7 @@ export const Inventory: React.FC = () => {
 
   const { data: cisData, isLoading } = useCIs({ limit: 100 });
   const { createCI, updateCI, deleteCI, isCreating, isUpdating, isDeleting } = useCIActions();
-  // POST /ci, PUT /ci/:id, DELETE /ci/:id all require 'write'
+  // POST /api/v1/cis, PUT /api/v1/cis/:id, DELETE /api/v1/cis/:id all require 'write' (ci.routes.ts)
   const canWrite = usePermission('write');
 
   const handleCreateClick = () => {

@@ -43,7 +43,7 @@ describe('RequirePermission', () => {
     if (!expected) expect(screen.getByText('denied')).toBeInTheDocument();
   });
 
-  it('hides everything from a role the server does not define, and from no user', () => {
+  it('hides everything from a role the server does not define', () => {
     auth.role = 'superuser';
     expect(shown('read')).toBe(false);
   });

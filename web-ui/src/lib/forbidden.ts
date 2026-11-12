@@ -8,11 +8,23 @@
  * who may do what. lib/session.ts reports every 403 here; the shell (components/layout/ForbiddenHost.tsx) shows it.
  */
 
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    /**
+     * Marks a GET as a side read: data the page can do without (a recent-jobs widget, a badge). The server may refuse
+     * it on its own rules, and that must not read as a refusal of the whole page. A refused side read is not shown
+     * by the shell (components/layout/ForbiddenHost.tsx); the caller shows its own failure, if it has one.
+     */
+    sideRead?: boolean;
+  }
+}
+
 export interface ForbiddenEvent {
   /** The server's reason, e.g. "Permission 'write' required"; "Forbidden" when the body carried none. */
   reason: string;
   method: string;
-  url: string;
+  /** The request was marked `sideRead` (AxiosRequestConfig). */
+  sideRead: boolean;
 }
 
 const FALLBACK = 'Forbidden';
@@ -27,7 +39,7 @@ export function forbiddenReason(body: unknown): string {
   return text(_message) ?? text(message) ?? text(_error) ?? text(error) ?? FALLBACK;
 }
 
-/** Reads, not writes: a refused GET blocks what the page shows, a refused write only the action. */
+/** Reads, not writes: a refused primary GET blocks what the page shows, a refused write only the action. */
 export const isReadMethod = (method: string): boolean => /^(get|head|options)$/i.test(method);
 
 type Listener = (event: ForbiddenEvent) => void;

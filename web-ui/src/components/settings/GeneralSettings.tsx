@@ -176,7 +176,7 @@ export const GeneralSettings: React.FC = () => {
                   <SelectContent>
                     <SelectItem value="/dashboard">Dashboard</SelectItem>
                     <SelectItem value="/cis">Configuration Items</SelectItem>
-                    <SelectItem value="/topology">Topology</SelectItem>
+                    <SelectItem value="/?view=graph">Estate graph</SelectItem>
                     <SelectItem value="/discovery">Discovery</SelectItem>
                     <SelectItem value="/jobs">Jobs</SelectItem>
                   </SelectContent>

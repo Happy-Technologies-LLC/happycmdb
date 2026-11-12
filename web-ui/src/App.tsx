@@ -138,6 +138,8 @@ const App: React.FC = () => {
               <Route path="/business-services" element={<BusinessServices />} />
               <Route path="/financial-management" element={<FinancialManagement />} />
               <Route path="/settings" element={<Settings />} />
+              {/* HAP-1252 S2: TopologyMap and ServiceMap are retired; their address opens the estate hub's Graph view */}
+              <Route path="/topology" element={<Navigate to="/?view=graph" replace />} />
 
               {/* Unknown address: signed-out users go to /login via the guard, signed-in users see this */}
               <Route path="*" element={<NotFound />} />

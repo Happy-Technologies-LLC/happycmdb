@@ -11,7 +11,7 @@ export function publicInstalledConnector(row: Record<string, any>): Record<strin
       const field = raw as Record<string, unknown>;
       properties[name] = {
         type: field['type'], title: field['title'], description: field['description'],
-        format: field['format'], required: field['required'] === true ||
+        format: field['format'], sensitive: field['sensitive'] === true ? true : undefined, required: field['required'] === true ||
           (Array.isArray(schema.required) && schema.required.includes(name)),
         enum: Array.isArray(field['enum']) ? field['enum'] : undefined,
       };

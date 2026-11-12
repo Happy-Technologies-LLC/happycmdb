@@ -12,7 +12,7 @@ vi.mock('axios', () => ({ default: { create: () => ({
 }) } }));
 vi.mock('@happy-technologies/design-system', () => ({ Icon: ({ name }: { name: string }) => <span data-icon={name} /> }));
 import { HealthDashboard } from './HealthDashboard';
-import Header from '../common/Header';
+import { ServiceHealthDots } from '../layout/ServiceHealthDots';
 
 const at = '2026-01-01T00:00:00Z';
 const renderWithQuery = (ui: ReactNode) => render(
@@ -39,12 +39,12 @@ it('HealthDashboard shows an unknown component as not probed, never as failed or
   expect(within(card('Neo4j')).getByText('3ms')).toBeInTheDocument();
 });
 
-it('Header paints an unknown graph dot neutral and without the live pulse', async () => {
+it('the topbar service dots paint an unknown graph dot neutral and without the live pulse', async () => {
   get.mockResolvedValue({ data: [
     { service: 'Neo4j', status: 'unknown', last_check: at },
     { service: 'Data Mart', status: 'down', last_check: at },
   ] });
-  renderWithQuery(<Header />);
+  renderWithQuery(<ServiceHealthDots />);
   const dot = (title: string) => screen.getByTitle(title).firstElementChild!.className;
   // The mart dot turning red proves the services query has rendered.
   await waitFor(() => expect(dot('Data mart: down')).toContain('hh-danger'));

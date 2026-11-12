@@ -31,8 +31,9 @@ Target per N10: 80% by end of S8. CI prints the number on every run (job summary
 
 ## Screenshots
 
-`*.png` here, 1440x900 viewport, full page, `prefers-color-scheme: light`, Vite dev server, headless Chromium.
-**No backend was available**, so the API is stubbed at the network layer (`/api/v1/**` fulfilled with fixtures; session restored from a stubbed `/auth/refresh` + `/auth/me`, user "Admin User"). Screens with a fixture show data (dashboard, CIs, CI detail, analytics, anomalies, executive, CIO, business services); the others render their real empty state. Numbers and names are invented. The point of the set is layout, typography and component look, not data.
+`*.png` here, 1440 px wide, light (`prefers-color-scheme: light`), Vite dev server, headless Chromium.
+**Re-captured in S1 (review finding L5).** The first S0 set used full-page capture, which mishandles fixed-position elements (the old sidebar background stopped at 900 px). Every shot is now taken by loading the route at 1440x900, measuring the document height, resizing the viewport to that height (900 to 5000 px) and taking a normal screenshot, so fixed and sticky parts span the whole page. `docs/ux/after-s1/` uses the identical method, so before and after compare one to one. Code: `origin/main` @ `7ccc5a52` (S0 merged), a worktree of it, not the S1 branch. Observed, cause not investigated: body text in these shots renders in a different sans face than in `after-s1`; layout is unaffected.
+**No backend was available**, so the API is stubbed at the network layer (`/api/v1/**` fulfilled with fixtures; session restored from a stubbed `/auth/refresh` + `/auth/me`, user "Admin User"; `00-login` answers `/auth/refresh` with 401). Screens with a fixture show data (dashboard, CIs, CI detail, inventory, executive); the others render their real empty state. Numbers and names are invented and are the same fixtures as in `after-s1`. The point of the set is layout, typography and component look, not data.
 
 | File | Route |
 |---|---|

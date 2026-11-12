@@ -133,3 +133,49 @@
     letter-spacing: var(--tracking-tight);
   }
 }
+
+/* ============================================================
+   Dark theme (HAP-1252 S1, N6)
+   The DS scopes dark tokens under .hh-theme[data-theme='dark']. The
+   legacy light-only variables above are static :root values, so each
+   one that carries a surface, border or text role is re-pointed at its
+   --hh-* equivalent here. --primary and the other brand fills stay as
+   they are (they paint navy blocks that keep white text). Each rule
+   goes when the screens using that legacy class move onto DS components
+   (UX-4b S2-S8).
+   ============================================================ */
+.hh-theme[data-theme='dark'] {
+  --white: var(--hh-bg-surface);
+  --warm-bg: var(--hh-bg-page);
+  --warm-bg-alt: var(--hh-bg-elevated);
+  --gray-100: var(--hh-bg-elevated);
+  --gray-200: var(--hh-border);
+  --gray-300: var(--hh-border-strong);
+  --gray-600: var(--hh-text-body);
+  --gray-800: var(--hh-text-primary);
+  --accent-bg: var(--hh-accent-bg);
+  --accent-text: var(--hh-accent-text);
+  --accent-text-hover: var(--hh-accent-text-hover);
+  --warning-text: var(--hh-warning-text);
+  /* Declared on :root as var() of the values above, so they resolve there; restate them for dark. */
+  --surface-page: var(--hh-bg-page);
+  --surface-card: var(--hh-bg-surface);
+  --surface-alt: var(--hh-bg-elevated);
+  --border-default: var(--hh-border);
+  --border-strong: var(--hh-border-strong);
+  --text-heading: var(--hh-text-primary);
+  --text-body: var(--hh-text-body);
+  --text-strong: var(--hh-text-primary);
+  --text-link: var(--hh-accent-text);
+  --info: var(--hh-accent-text);
+  --info-bg: var(--hh-accent-bg);
+}
+
+/* Palette utilities that do not read a variable. */
+.hh-theme[data-theme='dark'] .bg-white {
+  background-color: var(--hh-bg-surface);
+}
+.hh-theme[data-theme='dark'] .text-navy,
+.hh-theme[data-theme='dark'] .text-secondary-foreground {
+  color: var(--hh-text-primary);
+}

@@ -196,14 +196,30 @@ import { DependencyGraph } from '@components/visualization';
 ```
 **Note**: Container must have explicit height
 
-### TopologyMap
-```typescript
-import { TopologyMap } from '@components/visualization';
+### Estate hub (Dashboard, `/`)
 
-<Box sx={{ height: 500 }}>
-  <TopologyMap nodes={nodes} edges={edges} />
-</Box>
-```
+`TopologyMap` and `ServiceMap` are retired (HAP-1252 S2). The old `/topology` address redirects to `/?view=graph`. The
+Dashboard now opens on the estate hub, `web-ui/src/components/estate/EstateHub.tsx`:
+
+| Part | Component | Data |
+| --- | --- | --- |
+| Incident ribbon | `IncidentRibbon` | `GET /api/v1/itil/incidents` (one request per open status, read as a side read) |
+| Stage: Orbit | `OrbitMap` (SVG) | `GET /api/v1/cis` (first 150 by name) plus the endpoints of `GET /api/v1/relationships` |
+| Stage: Graph | `GraphMap` (Cytoscape) | the same sample |
+| Stage: List | DS `DataTable` | the same CI records, filtered by category |
+| KPI stack | `EstateKpis` | `total_cis` and `by_status.active` of `GET /api/v1/analytics/dashboard` |
+
+The view is the `?view=orbit|graph|list` search parameter. The Stage draws a capped sample and labels it
+("Showing N of M CIs"); the category counts on the chips are the full-estate `by_type` counts.
+
+Health, config drift, coverage, live changes and top services render a "Not available yet" state that names the missing
+backend capability instead of a number: the server has no CI health state, drift count, coverage metric, KPI history,
+tenant-wide change feed or per-service availability on `main`, and the dashboard's `health_score` is a hardcoded `0`.
+Do not wire a number to those cards until the endpoint exists.
+
+Every surface has loading, error and 403 states (`SurfaceState.tsx`). Reads that must not refuse the page (incidents,
+relationships) are sent with `sideRead: true`, so a 403 shows on that surface only. "Run discovery" is gated with
+`RequirePermission permission="write"`.
 
 ## Analytics Components
 

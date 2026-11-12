@@ -26,6 +26,13 @@
  * label expressions without `:User` or `&User`, such as (u:Admin|User)
  * (CREATE and MERGE accept only `:` and `&`; both are gated, HAP-1673).
  *
+ * Rotation decisions (HAP-1674, matchesThenMutatesRotationDecision): aliases are not tracked, so any SET, REMOVE or DELETE
+ * after a MATCHed :CredentialRotationDecision in one statement fails the gate, even on another node (fail closed, as on
+ * main; a legitimate read-modify-write of another node in the same statement as a decision match needs its own review).
+ * Not covered: a decision label first named after a WITH, CREATE, MERGE, RETURN, UNWIND, CALL or FOREACH keyword of that
+ * statement's MATCH (MATCH (d) WITH d WHERE d:CredentialRotationDecision SET d.x = 1), and the limits above (dynamic
+ * labels, runtime-built strings, a `;` inside a string value).
+ *
  * Fails closed (HAP-1673): `& User` counts as the label even in a TypeScript
  * intersection type, so `X & User` in the same `;`-delimited text as a write
  * shape (`, x =`, `scopes:`) fails the gate. Write such code by naming the
@@ -164,14 +171,33 @@ const KEYWORD_BEFORE_ROTATION_LABEL = new RegExp(
   'i',
 );
 
-/** `MATCH (v:CredentialRotationDecision` and, later in the same statement, `SET|REMOVE|DELETE v`; the variables are collected in one pass, as a backreference regex is quadratic. */
-function mutatesBoundRotationDecision(text: string): boolean {
+/**
+ * Per `;`/backtick statement, one pass: a `:CredentialRotationDecision` node in a MATCH or OPTIONAL MATCH clause, then any
+ * later `SET|REMOVE|DELETE` followed by whitespace, in any keyword case. Aliases are not tracked (`WITH d AS k SET k...`,
+ * `FOREACH (x IN [d] | SET x...)`, a second SET item and a SET on another variable all fire): the statement is forbidden
+ * whatever the target, so it fails closed. A label right after `MATCH (v` is always a match (main's rule, which as a
+ * backreference regex never bound `v`: its `\1` was an unset group and matched empty); a label further into the pattern
+ * (`MATCH (u:User)-[:R]->(d:...)`, `MATCH (u:User), (d:...)`) counts while the clause is still the MATCH that opened it.
+ */
+const ROTATION_EVENT = new RegExp(
+  String.raw`(?<match>MATCH\s*\(\s*\w*${ROTATION_LABEL})|(?<mutation>\b(?:SET|REMOVE|DELETE)\s)|(?<open>MATCH)|(?<close>\b(?:CREATE|MERGE|WITH|RETURN|UNWIND|CALL|FOREACH)\b)|(?<label>${ROTATION_LABEL})`,
+  'gi',
+);
+
+function matchesThenMutatesRotationDecision(text: string): boolean {
   for (const statement of text.split(/[;\x60]/)) {
-    const bound = new Set<string>();
-    const events = /MATCH\s*\(\s*(\w+):CredentialRotationDecision|\b(?:SET|REMOVE|DELETE)(?=\s+(\w+)\b)/gi;
-    for (let event = events.exec(statement); event; event = events.exec(statement)) {
-      if (event[1] !== undefined) bound.add(event[1].toLowerCase());
-      else if (bound.has(event[2].toLowerCase())) return true;
+    let inMatch = false;
+    let matched = false;
+    ROTATION_EVENT.lastIndex = 0;
+    for (let event = ROTATION_EVENT.exec(statement); event; event = ROTATION_EVENT.exec(statement)) {
+      const { match, mutation, open, close, label } = event.groups!;
+      if (match !== undefined) matched = true;
+      else if (mutation !== undefined) {
+        if (matched) return true;
+        inMatch = false;
+      } else if (open !== undefined) inMatch = true;
+      else if (close !== undefined) inMatch = false;
+      else if (label !== undefined && inMatch) matched = true;
     }
   }
   return false;
@@ -179,7 +205,7 @@ function mutatesBoundRotationDecision(text: string): boolean {
 
 /** Rules that forbid an operation everywhere, whatever the file. */
 const FORBIDDEN: Array<{ name: string; found: (text: string) => boolean }> = [
-  { name: 'mutating a rotation decision', found: text => KEYWORD_BEFORE_ROTATION_LABEL.test(text) || mutatesBoundRotationDecision(text) },
+  { name: 'mutating a rotation decision', found: text => KEYWORD_BEFORE_ROTATION_LABEL.test(text) || matchesThenMutatesRotationDecision(text) },
   { name: 'an APOC call outside the read-only allowlist', found: text => /\bapoc\s*\.\s*(?!convert\s*\.\s*fromJsonMap\b|cypher\s*\.\s*run\b)\w+/i.test(text) },
   { name: 'a built-in vector property write (db.create.set*VectorProperty)', found: text => /\bdb\s*\.\s*create\s*\.\s*set\w*VectorProperty\b/i.test(text) },
   { name: 'a Graph Data Science procedure (gds.*, which includes the write procedures)', found: text => /\bgds\s*\./i.test(text) },
@@ -372,10 +398,19 @@ describe('inventory gate 4: user-security property writers', () => {
     ['second list item', key => `'MATCH (u:User {_id: $id}) REMOVE u.name, u.${key}'`],
     ['spaces around the dot', key => `'MATCH (u:User {_id: $id}) REMOVE u . ${key}'`],
   ];
+  const REMOVE_RULE: Record<string, string> = {
+    passwordHash: 'password hash (rotation, guarded self-service change, seed writers)',
+    platformAdmin: 'platformAdmin (set only by the reviewed operator grant)',
+    seedProvenance: 'seedProvenance (seed writers and the window stamp; never cleared)',
+    defaultPasswordSuspect: 'defaultPasswordSuspect cleared (the operator rotation only)',
+    credentialEpoch: 'credentialEpoch (the operator rotation and the guarded self-service password change)',
+    scopes: 'scopes (no writer; the HAP-1632 operator grant only)',
+    organizationId: 'organizationId (seed writers and the FD-5 operator assignment only)',
+  };
   it.each(REMOVE_KEYS.flatMap(key => REMOVE_SHAPES.map(([shape, line]): [string, string, string] => [key, shape, line(key)])))(
     'HAP-1674 fails on a %s REMOVE: %s',
-    (_key, _shape, line) => {
-      expect(violations(new Map([[USERS, line]]))).toEqual([expect.stringMatching(/ \(found 1, reviewed 0\)$/)]);
+    (key, _shape, line) => {
+      expect(violations(new Map([[USERS, line]]))).toEqual([`${USERS}: ${REMOVE_RULE[key]} (found 1, reviewed 0)`]);
     },
   );
 
@@ -406,14 +441,33 @@ describe('inventory gate 4: user-security property writers', () => {
     ['a lowercase MERGE of a decision (P5)', 'merge (d:CredentialRotationDecision {id: $i})'],
     ['a SET on the matched variable', 'MATCH (d:CredentialRotationDecision {id: $i}) SET d.note = $n'],
     ['a MERGE whose label is on the next line', 'MERGE (\n    d:CredentialRotationDecision {id: $i})'],
+    // Main's rule fired on any keyword after the match, whatever its target; the gate must not be weaker.
+    ['a SET on another variable than the matched decision', 'MATCH (d:CredentialRotationDecision {id: $i}), (e:Other) SET e.note = $n'],
+    ['the second SET list item', 'MATCH (d:CredentialRotationDecision {id: $i}) SET e.x = 1, d.y = 2'],
+    ['a DETACH DELETE of the second item', 'MATCH (d:CredentialRotationDecision {id: $i}) DETACH DELETE e, d'],
+    ['a SET through a WITH alias', "MATCH (d:CredentialRotationDecision {id: $i}) WITH d AS k SET k.outcome = 'applied'"],
+    ['a SET through a FOREACH variable', 'MATCH (d:CredentialRotationDecision) FOREACH (x IN [d] | SET x.outcome = $o)'],
+    ['a SET after an OPTIONAL MATCH of another node', "MATCH (d:CredentialRotationDecision {id: $i}) OPTIONAL MATCH (e:Other) SET e.seen = true, d.outcome = 'applied'"],
+    ['a SET after a label-first OPTIONAL MATCH of a decision', "OPTIONAL MATCH (d:CredentialRotationDecision {id: $i}) SET d.outcome = 'applied'"],
+    ['a parenthesised SET target', "MATCH (d:CredentialRotationDecision {id: $i}) SET (d).outcome = 'applied'"],
+    ['a REMOVE of a property', 'MATCH (d:CredentialRotationDecision {id: $i}) REMOVE d.outcome'],
+    ['a lowercase SET on another variable (P5)', 'match (d:CredentialRotationDecision {id: $i}) set e.x = 1'],
+    ['a decision matched in a second MATCH clause', 'MATCH (e:Other) MATCH (d:CredentialRotationDecision) SET d.x = 1'],
+    // I1 (reviewer): the label is inside the pattern, not right after `MATCH (`.
+    ['I1 a decision at the end of a relationship pattern', 'MATCH (u:User)-[:R]->(d:CredentialRotationDecision) SET d.x = 1'],
+    ['I1 a decision as the second pattern of a MATCH', 'MATCH (u:User), (d:CredentialRotationDecision) DELETE d'],
+    ['I1 a lowercase second pattern', 'match (u:User), (d:CredentialRotationDecision) detach delete d'],
+    ['I1 an OPTIONAL MATCH second pattern', 'OPTIONAL MATCH (u:User), (d:CredentialRotationDecision) REMOVE d.outcome'],
+    ['the mutation on the next line', 'MATCH (d:CredentialRotationDecision)\n  SET d.x = 1'],
   ])('HAP-1674 forbids %s', (_label, line) => {
     expect(forbiddenIn(ROTATION_DECISION, line)).toHaveLength(1);
   });
 
   it.each([
-    ['a read of a decision', 'MATCH (d:CredentialRotationDecision {id: $i}) RETURN d'],
-    ['a SET on another variable than the matched decision', 'MATCH (d:CredentialRotationDecision {id: $i}), (e:Other) SET e.note = $n'],
-    ['a SET in an earlier statement than the decision', 'SET e.note = $n; MATCH (d:CredentialRotationDecision) RETURN d'],
+    ['a read of a decision', 'MATCH (d:CredentialRotationDecision {id: $i}) RETURN d.outcome'],
+    ['a read of a decision after another node', 'MATCH (u:User)-[:R]->(d:CredentialRotationDecision {id: $i}) RETURN d.outcome, u.name'],
+    ['a SET in an earlier statement than the decision', 'SET e.note = $n; MATCH (d:CredentialRotationDecision) RETURN d.outcome'],
+    ['a decision created, not matched, then returned', 'CREATE (d:CredentialRotationDecision {id: $i}) RETURN d.outcome'],
   ])('HAP-1674 does not forbid %s', (_label, line) => {
     expect(forbiddenIn(ROTATION_DECISION, line)).toEqual([]);
   });
@@ -424,6 +478,9 @@ describe('inventory gate 4: user-security property writers', () => {
     ['a keyword line', 'SET '.repeat(13_000)],
     ['a keyword word', 'SET'.repeat(17_000)],
     ['repeated MATCH (v:CredentialRotationDecision', 'MATCH (a:CredentialRotationDecision '.repeat(5_500)],
+    ['repeated MATCH, label and no mutation (rotation-decision rule)', 'MATCH (u:User), (d:CredentialRotationDecision '.repeat(2_400)],
+    ['repeated MATCH with no label (rotation-decision rule)', 'MATCH (a:Other) WITH a '.repeat(2_300)],
+    ['a decision at the end of a 50k+ char MATCH pattern', `MATCH (a:Other${')-[:R]->(b'.repeat(5_200)}), (d:CredentialRotationDecision SET`],
     ['repeated UPDATE api_keys SET', 'UPDATE api_keys SET '.repeat(10_000)],
     ['a :User label chain', ':User:A'.repeat(14_000)],
   ])('HAP-1674 gates %s of 50k+ chars in under 200 ms', (_label, hostile) => {

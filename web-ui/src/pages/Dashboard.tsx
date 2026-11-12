@@ -17,19 +17,14 @@ import {
   Tooltip as RechartsTooltip,
   Legend,
 } from 'recharts';
-import {
-  PageHeader,
-  MetricCard,
-  Card,
-  Button,
-  Icon,
-  StatusBadge,
-  ErrorBanner,
-} from '@happy-technologies/design-system';
+import { PageHeader, Card, Button, Icon, StatusBadge } from '@happy-technologies/design-system';
 import { brand } from '@/lib/brandColors';
 import ciService from '../services/ci.service';
 import CITypeBadge from '../components/ci/CITypeBadge';
 import CIStatusBadge from '../components/ci/CIStatusBadge';
+import { RequirePermission } from '../components/common/RequirePermission';
+import { EstateHub } from '../components/estate/EstateHub';
+import { QueryState } from '../components/estate/SurfaceState';
 
 const STATUS_COLORS: Record<string, string> = {
   active: brand.success,
@@ -55,13 +50,14 @@ const typeGlyph = (type: string): string =>
         ? 'app-window'
         : 'desktop';
 
-export const Dashboard: React.FC = () => {
+const DashboardBreakdown: React.FC = () => {
   const navigate = useNavigate();
 
   const {
     data: stats,
     isLoading,
     error,
+    refetch,
   } = useQuery({
     queryKey: ['dashboard-stats'],
     queryFn: () => ciService.getDashboardStats(),
@@ -79,15 +75,14 @@ export const Dashboard: React.FC = () => {
     });
   };
 
-  if (error) {
-    return <ErrorBanner message={`Failed to load dashboard data. ${(error as Error).message}`} />;
-  }
-
-  if (isLoading || !stats) {
+  if (error || isLoading || !stats) {
     return (
-      <div className="flex justify-center py-20">
-        <Icon name="spinner-gap" size={40} className="animate-spin text-[var(--hh-accent-text)]" />
-      </div>
+      <QueryState
+        what="the estate breakdown"
+        loading={isLoading}
+        error={error}
+        onRetry={() => void refetch()}
+      />
     );
   }
 
@@ -114,80 +109,8 @@ export const Dashboard: React.FC = () => {
     .sort((a, b) => b.count - a.count)
     .slice(0, 10);
 
-  const healthTone: 'success' | 'amber' | 'danger' =
-    stats.health_score >= 0.8 ? 'success' : stats.health_score >= 0.5 ? 'amber' : 'danger';
-
   return (
-    <div className="mx-auto max-w-[1280px]">
-      <PageHeader
-        size="lg"
-        eyebrow="Configuration Plane · Overview"
-        title="CMDB Dashboard"
-        lede={`Your service graph is healthy. ${stats.total_cis} configuration items reconciled across the estate.`}
-        actions={
-          <>
-            <Button size="md" icon="broadcast" onClick={() => navigate('/discovery')}>
-              Run discovery
-            </Button>
-            <Button size="md" variant="secondary" icon="database" onClick={() => navigate('/cis')}>
-              Inventory
-            </Button>
-          </>
-        }
-      />
-
-      {/* KPI row */}
-      <div className="mt-7 mb-[22px] grid grid-cols-2 gap-[18px] lg:grid-cols-4">
-        <button
-          type="button"
-          onClick={() => navigate('/cis')}
-          className="hh-focus block w-full text-left transition-transform hover:-translate-y-0.5"
-        >
-          <MetricCard
-            icon="desktop"
-            tone="accent"
-            value={stats.total_cis}
-            label="Total configuration items"
-          />
-        </button>
-        <button
-          type="button"
-          onClick={() => navigate('/cis?status=active')}
-          className="hh-focus block w-full text-left transition-transform hover:-translate-y-0.5"
-        >
-          <MetricCard
-            icon="check-circle"
-            tone="success"
-            value={stats.by_status.active || 0}
-            label="Active CIs"
-          />
-        </button>
-        <button
-          type="button"
-          onClick={() => navigate('/cmdb-health')}
-          className="hh-focus block w-full text-left transition-transform hover:-translate-y-0.5"
-        >
-          <MetricCard
-            icon="trend-up"
-            tone={healthTone}
-            value={`${(stats.health_score * 100).toFixed(0)}%`}
-            label="Health score"
-          />
-        </button>
-        <button
-          type="button"
-          onClick={() => navigate('/anomalies')}
-          className="hh-focus block w-full text-left transition-transform hover:-translate-y-0.5"
-        >
-          <MetricCard
-            icon="warning"
-            tone="amber"
-            value={stats.critical_relationships}
-            label="Critical relationships"
-          />
-        </button>
-      </div>
-
+    <>
       {/* Distributions */}
       <div className="mb-[18px] grid gap-[18px] md:grid-cols-2">
         <Card className="p-6">
@@ -261,7 +184,9 @@ export const Dashboard: React.FC = () => {
                 fill={brand.sky}
                 name="Count"
                 radius={[6, 6, 0, 0]}
-                onClick={(d) => navigate(`/cis?type=${String(d.name).toLowerCase().replace(/ /g, '-')}`)}
+                onClick={(d) =>
+                  navigate(`/cis?type=${String(d.name).toLowerCase().replace(/ /g, '-')}`)
+                }
                 style={{ cursor: 'pointer' }}
               />
             </BarChart>
@@ -326,6 +251,36 @@ export const Dashboard: React.FC = () => {
           })}
         </div>
       </Card>
+    </>
+  );
+};
+
+export const Dashboard: React.FC = () => {
+  const navigate = useNavigate();
+  return (
+    <div className="mx-auto max-w-[1280px]">
+      <PageHeader
+        size="lg"
+        eyebrow="Configuration Plane · Estate"
+        title="CMDB Dashboard"
+        lede="The estate at a glance: open incidents, topology and the counts the CMDB can stand behind."
+        actions={
+          <>
+            <RequirePermission permission="write">
+              <Button size="md" icon="broadcast" onClick={() => navigate('/discovery')}>
+                Run discovery
+              </Button>
+            </RequirePermission>
+            <Button size="md" variant="secondary" icon="database" onClick={() => navigate('/cis')}>
+              Inventory
+            </Button>
+          </>
+        }
+      />
+      <div className="mt-7 mb-[22px]">
+        <EstateHub />
+      </div>
+      <DashboardBreakdown />
     </div>
   );
 };

@@ -15,6 +15,7 @@ export function AccountMenu() {
 
   const items: MenuItem[] = [
     { label: `${name} · ${user?.role ?? 'unknown role'}`, icon: 'user-circle', disabled: true },
+    ...(user?.email ? [{ label: user.email, icon: 'envelope-simple', disabled: true }] : []),
     { label: 'Profile', icon: 'user', onClick: () => navigate('/settings?tab=profile') },
     { label: 'Settings', icon: 'gear-six', onClick: () => navigate('/settings') },
     {

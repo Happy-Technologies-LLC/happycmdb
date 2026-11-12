@@ -139,10 +139,12 @@
    The DS scopes dark tokens under .hh-theme[data-theme='dark']. The
    legacy light-only variables above are static :root values, so each
    one that carries a surface, border or text role is re-pointed at its
-   --hh-* equivalent here. --primary and the other brand fills stay as
-   they are (they paint navy blocks that keep white text). Each rule
-   goes when the screens using that legacy class move onto DS components
-   (UX-4b S2-S8).
+   --hh-* equivalent here. --white therefore becomes the dark surface, and
+   text-primary-foreground / text-destructive-foreground read --white at
+   the element (@theme inline), so they are restated below as the DS
+   --hh-on-solid white. --primary and the other brand fills stay as they
+   are. Each rule goes when the screens using that legacy class move onto
+   DS components (UX-4b S2-S8).
    ============================================================ */
 .hh-theme[data-theme='dark'] {
   --white: var(--hh-bg-surface);
@@ -178,4 +180,8 @@
 .hh-theme[data-theme='dark'] .text-navy,
 .hh-theme[data-theme='dark'] .text-secondary-foreground {
   color: var(--hh-text-primary);
+}
+.hh-theme[data-theme='dark'] .text-primary-foreground,
+.hh-theme[data-theme='dark'] .text-destructive-foreground {
+  color: var(--hh-on-solid);
 }

@@ -42,6 +42,7 @@ export function AppTopbar({ navOpen, onToggleNav }: { navOpen: boolean; onToggle
         onChange={setQuery}
         onKeyDown={search}
         placeholder="Search CIs, services, hostnames, IPs"
+        aria-label="Search CIs, services, hostnames, IPs"
         className="mx-auto hidden w-[min(420px,36cqi)] sm:block"
       />
       <div className="ml-auto flex items-center gap-4 sm:ml-0">

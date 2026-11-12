@@ -106,7 +106,7 @@ React hooks for data fetching and business logic:
 // MainLayout is the single layout route: ProtectedRoute > MainLayout > screen
 import MainLayout from '@/components/layout/MainLayout';
 ```
-**Features**: DS icon rail (`AppRail`, items and section tabs from `navigation.ts`), topbar with greeting, CI search and account menu (`AppTopbar`, `AccountMenu`), per-section tab strip (`SectionNav`). Each rail item opens its section's first screen; the section's other screens are tabs. Add a route by adding it to `navigation.ts` (the rail, the tabs and the active-state test read that one table).
+**Features**: DS icon rail (`AppRail`, items and section tabs from `navigation.ts`), topbar with greeting, CI search and account menu (`AppTopbar`, `AccountMenu`: name and role, the signed-in `email`, Profile, Settings, theme, Sign out), per-section tab strip (`SectionNav`). Each rail item opens its section's first screen; the section's other screens are tabs. A plain left click routes in place; a Ctrl, Cmd, Shift or Alt click, or a non-primary button, is left to the browser so a rail item opens in a new tab (`isPlainLeftClick` in `AppRail.tsx`). Add a route by adding it to `navigation.ts` (the rail, the tabs and the active-state test read that one table).
 
 ### Theme (`contexts/ThemeContext.tsx`)
 ```typescript

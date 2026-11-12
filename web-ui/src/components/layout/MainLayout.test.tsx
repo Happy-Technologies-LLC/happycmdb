@@ -3,7 +3,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { ThemeProvider } from '@/contexts/ThemeContext';
@@ -100,12 +100,32 @@ describe('shell rail', () => {
     expect(screen.getByTestId('where')).toHaveTextContent('/agents');
     expect(screen.getByText('Agents screen')).toBeInTheDocument();
   });
+
+  it.each([
+    ['Ctrl held', { ctrlKey: true }],
+    ['Cmd held', { metaKey: true }],
+    ['Shift held', { shiftKey: true }],
+    ['Alt held', { altKey: true }],
+    ['a non-primary button', { button: 1 }],
+  ])('leaves a click with %s to the browser (open in a new tab) instead of routing in place', (_label, init) => {
+    renderShell('/');
+    const link = within(rail()).getByRole('link', { name: /^discovery/i });
+    // fireEvent returns false when a handler called preventDefault: the browser would then not open the link.
+    expect(fireEvent.click(link, init)).toBe(true);
+    expect(screen.getByTestId('where')).toHaveTextContent(/^\/$/);
+    expect(link).toHaveAttribute('href', '/discovery');
+  });
 });
 
 describe('shell topbar', () => {
   it('greets the signed-in user by first name', () => {
     renderShell('/');
     expect(screen.getByText(/^Good (morning|afternoon|evening), Ada$/)).toBeInTheDocument();
+  });
+
+  it('names the search box for assistive tech', () => {
+    renderShell('/');
+    expect(screen.getByRole('searchbox', { name: 'Search CIs, services, hostnames, IPs' })).toBeInTheDocument();
   });
 
   it('Enter in search opens the CI list filtered by the text; empty search opens the plain list', async () => {
@@ -129,6 +149,14 @@ describe('account menu', () => {
     renderShell('/');
     await open(user);
     expect(await screen.findByText('Ada Lovelace · operator')).toBeInTheDocument();
+  });
+
+  it('shows the signed-in email under the name, as the old sidebar menu did', async () => {
+    const user = userEvent.setup();
+    auth.user = { username: 'ada', full_name: 'Ada Lovelace', role: 'operator', email: 'ada@example.com' };
+    renderShell('/');
+    await open(user);
+    expect(await screen.findByText('ada@example.com')).toBeInTheDocument();
   });
 
   it('Profile and Settings navigate to the settings screen', async () => {

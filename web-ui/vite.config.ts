@@ -22,12 +22,6 @@ export default defineConfig({
   server: {
     port: 3000,
     host: true,
-    // The design-system is a file-linked sibling package that lives outside this
-    // app's root; allow vite dev to serve its bundled fonts/assets (the Phosphor
-    // duotone icon font and the Inter/Jost faces) instead of 403-ing them.
-    fs: {
-      allow: ['..', '../../happy-technologies-design-system'],
-    },
     watch: {
       usePolling: true,
     },

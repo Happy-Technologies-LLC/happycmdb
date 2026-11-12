@@ -48,7 +48,8 @@ web-ui/src/
 │   ├── analytics/  # Charts, metrics, reports
 │   ├── auth/       # Login, user menu, protected routes
 │   ├── ci/         # CI cards, lists, forms, badges
-│   ├── common/     # Reusable components (Header, Sidebar, etc.)
+│   ├── common/     # Reusable components (LoadingSpinner, ErrorBoundary, etc.)
+│   ├── layout/     # App shell: AppRail, AppTopbar, AccountMenu, SectionNav, MainLayout
 │   ├── discovery/  # Provider cards, job monitoring
 │   ├── jobs/       # Job lists, queue stats, workers
 │   ├── settings/   # Settings pages and forms
@@ -56,7 +57,7 @@ web-ui/src/
 ├── pages/          # Route components (Dashboard, Inventory, etc.)
 ├── services/       # API clients (REST & GraphQL)
 ├── hooks/          # Custom React hooks (useCIs, useJobs, etc.)
-├── contexts/       # React Context providers (AuthContext)
+├── contexts/       # React Context providers (AuthContext, ThemeContext)
 ├── types/          # TypeScript type definitions
 ├── styles/         # Theme and global styles
 ├── utils/          # Helper functions
@@ -100,21 +101,20 @@ React hooks for data fetching and business logic:
 
 ## Common Components
 
-### Header
+### App shell (`components/layout`)
 ```typescript
-import Header from '@components/common/Header';
-
-<Header />
+// MainLayout is the single layout route: ProtectedRoute > MainLayout > screen
+import MainLayout from '@/components/layout/MainLayout';
 ```
-**Features**: Logo, search bar, notifications, user menu
+**Features**: DS icon rail (`AppRail`, items and section tabs from `navigation.ts`), topbar with greeting, CI search and account menu (`AppTopbar`, `AccountMenu`: name and role, the signed-in `email`, Profile, Settings, theme, Sign out), per-section tab strip (`SectionNav`). Each rail item opens its section's first screen; the section's other screens are tabs. A plain left click routes in place; a Ctrl, Cmd, Shift or Alt click, or a non-primary button, is left to the browser so a rail item opens in a new tab (`isPlainLeftClick` in `AppRail.tsx`). Add a route by adding it to `navigation.ts` (the rail, the tabs and the active-state test read that one table).
 
-### Sidebar
+### Theme (`contexts/ThemeContext.tsx`)
 ```typescript
-import Sidebar from '@components/common/Sidebar';
+import { useTheme } from '@/contexts/ThemeContext';
 
-<Sidebar />
+const { theme, setTheme } = useTheme(); // 'light' | 'dark'
 ```
-**Features**: Navigation menu, route highlighting
+**Behaviour**: light and dark on the design-system tokens. First load follows `prefers-color-scheme`; once the user picks a theme (account menu) the choice is stored in `localStorage` key `hh-theme` and wins over the OS setting.
 
 ### LoadingSpinner
 ```typescript

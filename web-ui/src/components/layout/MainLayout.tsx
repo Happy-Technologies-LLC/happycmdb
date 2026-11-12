@@ -1,32 +1,36 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import React, { useState } from 'react';
-import Header from '../common/Header';
-import Sidebar from '../common/Sidebar';
+import { Suspense, useEffect, useState } from 'react';
+import { Outlet, useLocation } from 'react-router-dom';
+import { AppShell } from '@happy-technologies/design-system';
+import ErrorBoundary from '../common/ErrorBoundary';
+import LoadingSpinner from '../common/LoadingSpinner';
+import { AppRail } from './AppRail';
+import { AppTopbar } from './AppTopbar';
+import { SectionNav } from './SectionNav';
 
-interface MainLayoutProps {
-  children: React.ReactNode;
-}
-
-const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
-  const [mobileOpen, setMobileOpen] = useState(false);
+/** The signed-in frame (N1): DS rail, topbar and the routed screen. Mounted once as the layout route in App.tsx. */
+export default function MainLayout() {
+  const { pathname } = useLocation();
+  const [navOpen, setNavOpen] = useState(false);
+  useEffect(() => setNavOpen(false), [pathname]);
 
   return (
-    <div className="flex min-h-screen bg-warm font-body text-ink">
-      {/* Permanent sidebar (desktop) */}
-      <Sidebar variant="permanent" />
-
-      {/* Temporary sidebar (mobile drawer) */}
-      <Sidebar variant="temporary" open={mobileOpen} onClose={() => setMobileOpen(false)} />
-
-      {/* Main column */}
-      <div className="flex min-w-0 flex-1 flex-col">
-        <Header onMenuClick={() => setMobileOpen(true)} />
-        <main className="flex-1 overflow-y-auto px-5 py-7 md:px-8">{children}</main>
-      </div>
-    </div>
+    <AppShell
+      padded
+      sidebar={<AppRail />}
+      topbar={<AppTopbar navOpen={navOpen} onToggleNav={() => setNavOpen((open) => !open)} />}
+      mobileSidebarOpen={navOpen}
+      onMobileSidebarClose={() => setNavOpen(false)}
+    >
+      <SectionNav />
+      {/* Keyed by route: a crashed screen resets on navigation and the shell stays up. */}
+      <ErrorBoundary key={pathname}>
+        <Suspense fallback={<LoadingSpinner fullScreen={false} />}>
+          <Outlet />
+        </Suspense>
+      </ErrorBoundary>
+    </AppShell>
   );
-};
-
-export default MainLayout;
+}

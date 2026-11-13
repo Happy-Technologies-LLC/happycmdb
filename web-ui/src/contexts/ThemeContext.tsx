@@ -9,7 +9,16 @@
  * preference is persisted; the session itself stays memory-only (HAP-1210).
  */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 import { HappyTheme } from '@happy-technologies/design-system';
 
 export type Theme = 'light' | 'dark';
@@ -37,6 +46,9 @@ interface ThemeContextValue {
   toggleTheme: () => void;
 }
 
+/** The themed `.hh-theme` element Radix portals mount into; `undefined` outside a ThemeProvider (Radix uses body). */
+const PortalContainerContext = createContext<HTMLElement | undefined>(undefined);
+
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
@@ -58,6 +70,23 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     document.documentElement.style.colorScheme = theme;
   }, [theme]);
 
+  // Radix portals leave the .hh-theme wrapper for document.body, so the dark tokens would not reach them. They mount
+  // into this element instead, which carries the same class and data-theme as the wrapper and follows the theme live.
+  const [portalRoot] = useState<HTMLElement | undefined>(() =>
+    typeof document === 'undefined' ? undefined : document.createElement('div'),
+  );
+
+  useLayoutEffect(() => {
+    if (!portalRoot) return;
+    document.body.appendChild(portalRoot);
+    portalRoot.className = 'hh-theme';
+    return () => portalRoot.remove();
+  }, [portalRoot]);
+
+  useLayoutEffect(() => {
+    portalRoot?.setAttribute('data-theme', theme);
+  }, [portalRoot, theme]);
+
   const setTheme = useCallback((next: Theme) => {
     setChosen(next);
     try {
@@ -74,9 +103,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   return (
     <ThemeContext.Provider value={value}>
-      <HappyTheme theme={theme} className="min-h-screen bg-[var(--hh-bg-page)]">
-        {children}
-      </HappyTheme>
+      <PortalContainerContext.Provider value={portalRoot}>
+        <HappyTheme theme={theme} className="min-h-screen bg-[var(--hh-bg-page)]">
+          {children}
+        </HappyTheme>
+      </PortalContainerContext.Provider>
     </ThemeContext.Provider>
   );
 }
@@ -85,4 +116,9 @@ export function useTheme(): ThemeContextValue {
   const context = useContext(ThemeContext);
   if (!context) throw new Error('useTheme must be used within a ThemeProvider');
   return context;
+}
+
+/** Container for a Radix `Portal` so the portalled content renders in the active theme. */
+export function usePortalContainer(): HTMLElement | undefined {
+  return useContext(PortalContainerContext);
 }

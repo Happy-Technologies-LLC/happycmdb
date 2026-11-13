@@ -6,6 +6,7 @@ import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { Icon } from '@happy-technologies/design-system';
 import { cn } from '@/lib/utils';
+import { themedPortal } from '@/components/ui/themed-portal';
 
 const Sheet = DialogPrimitive.Root;
 
@@ -13,7 +14,7 @@ const SheetTrigger = DialogPrimitive.Trigger;
 
 const SheetClose = DialogPrimitive.Close;
 
-const SheetPortal = DialogPrimitive.Portal;
+const SheetPortal = themedPortal(DialogPrimitive.Portal);
 
 const SheetOverlay = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Overlay>,

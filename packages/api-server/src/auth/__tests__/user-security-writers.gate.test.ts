@@ -29,6 +29,10 @@
  * Rotation decisions (HAP-1674, matchesThenMutatesRotationDecision): aliases are not tracked, so any SET, REMOVE or DELETE
  * after a MATCHed :CredentialRotationDecision in one statement fails the gate, even on another node (fail closed, as on
  * main; a legitimate read-modify-write of another node in the same statement as a decision match needs its own review).
+ * HAP-1903: the keyword is a whole word (`\b`), not a keyword plus whitespace, so a `/* *\/` comment or a paren right after
+ * it (SET/**\/d.x = 1, SET(d).x = 1, DETACH DELETE(d)) is caught. Known false-positive class, kept failing closed: a JS
+ * `new Set(...)`, `Set(`, or `.delete(` in the same `;`/backtick statement as a decision MATCH also fires; the real tree has
+ * none, and new code must keep such calls out of the statement that holds the MATCH (words like `settings` do not fire).
  * Not covered: a decision label first named after a WITH, CREATE, MERGE, RETURN, UNWIND, CALL or FOREACH keyword of that
  * statement's MATCH (MATCH (d) WITH d WHERE d:CredentialRotationDecision SET d.x = 1), and the limits above (dynamic
  * labels, runtime-built strings, a `;` inside a string value).
@@ -180,7 +184,7 @@ const KEYWORD_BEFORE_ROTATION_LABEL = new RegExp(
  * (`MATCH (u:User)-[:R]->(d:...)`, `MATCH (u:User), (d:...)`) counts while the clause is still the MATCH that opened it.
  */
 const ROTATION_EVENT = new RegExp(
-  String.raw`(?<match>MATCH\s*\(\s*\w*${ROTATION_LABEL})|(?<mutation>\b(?:SET|REMOVE|DELETE)\s)|(?<open>MATCH)|(?<close>\b(?:CREATE|MERGE|WITH|RETURN|UNWIND|CALL|FOREACH)\b)|(?<label>${ROTATION_LABEL})`,
+  String.raw`(?<match>MATCH\s*\(\s*\w*${ROTATION_LABEL})|(?<mutation>\b(?:SET|REMOVE|DELETE)\b)|(?<open>MATCH)|(?<close>\b(?:CREATE|MERGE|WITH|RETURN|UNWIND|CALL|FOREACH)\b)|(?<label>${ROTATION_LABEL})`,
   'gi',
 );
 
@@ -458,6 +462,15 @@ describe('inventory gate 4: user-security property writers', () => {
     ['I1 a decision as the second pattern of a MATCH', 'MATCH (u:User), (d:CredentialRotationDecision) DELETE d'],
     ['I1 a lowercase second pattern', 'match (u:User), (d:CredentialRotationDecision) detach delete d'],
     ['I1 an OPTIONAL MATCH second pattern', 'OPTIONAL MATCH (u:User), (d:CredentialRotationDecision) REMOVE d.outcome'],
+    // HAP-1903: a comment or paren right after the keyword is not whitespace, but Cypher still parses it as the keyword.
+    ['HAP-1903 a block comment after SET', "MATCH (d:CredentialRotationDecision {eventId:$e}) SET/**/d.outcome='applied'"],
+    ['HAP-1903 a paren after SET', "MATCH (d:CredentialRotationDecision {eventId:$e}) SET(d).outcome = 'applied'"],
+    ['HAP-1903 a paren after DETACH DELETE', 'MATCH (d:CredentialRotationDecision {eventId:$e}) DETACH DELETE(d)'],
+    ['HAP-1903 a paren after REMOVE', 'MATCH (d:CredentialRotationDecision {eventId:$e}) REMOVE(d).outcome'],
+    // HAP-1903 known false-positive class, kept failing closed: JS `Set(` / `.delete(` in the SAME statement as a decision
+    // MATCH is indistinguishable from the Cypher keyword without parsing, so it is forbidden and the code must be split.
+    ['HAP-1903 a JS new Set( in the same statement as a decision MATCH', "const Q = 'MATCH (d:CredentialRotationDecision {id: $i}) RETURN d.outcome', ids = new Set(list)"],
+    ['HAP-1903 a JS .delete( in the same statement as a decision MATCH', "const Q = 'MATCH (d:CredentialRotationDecision {id: $i}) RETURN d.outcome', gone = seen.delete(id)"],
     ['the mutation on the next line', 'MATCH (d:CredentialRotationDecision)\n  SET d.x = 1'],
   ])('HAP-1674 forbids %s', (_label, line) => {
     expect(forbiddenIn(ROTATION_DECISION, line)).toHaveLength(1);
@@ -468,6 +481,11 @@ describe('inventory gate 4: user-security property writers', () => {
     ['a read of a decision after another node', 'MATCH (u:User)-[:R]->(d:CredentialRotationDecision {id: $i}) RETURN d.outcome, u.name'],
     ['a SET in an earlier statement than the decision', 'SET e.note = $n; MATCH (d:CredentialRotationDecision) RETURN d.outcome'],
     ['a decision created, not matched, then returned', 'CREATE (d:CredentialRotationDecision {id: $i}) RETURN d.outcome'],
+    // HAP-1903: words that merely contain a keyword have no \b on one side; only a whole SET/REMOVE/DELETE token counts.
+    ['a read of properties named settings, dataset, deleted, removed_at and set_at (HAP-1903)',
+      'MATCH (d:CredentialRotationDecision {id: $i}) RETURN d.settings, d.dataset, d.deleted, d.removed_at, d.set_at'],
+    ['a JS Set( and delete( in a later statement than the decision read (HAP-1903)',
+      "const Q = 'MATCH (d:CredentialRotationDecision {id: $i}) RETURN d.outcome'; const seen = new Set(ids); seen.delete(id);"],
   ])('HAP-1674 does not forbid %s', (_label, line) => {
     expect(forbiddenIn(ROTATION_DECISION, line)).toEqual([]);
   });

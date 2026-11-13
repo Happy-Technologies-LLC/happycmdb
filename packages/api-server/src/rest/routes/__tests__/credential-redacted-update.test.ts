@@ -94,3 +94,41 @@ it('(c) no validator logs a Joi message, even one that quotes the refused value'
   const logged = logs();
   expect([statuses, logged.includes('Request validation failed'), logged.includes(PM)]).toEqual([[400, 400, 400], true, false]);
 });
+
+// HAP-1279 F-1: the pre-HAP-1227 dialog spread '***REDACTED***' into index keys of '*' values; a stale tab can still send that shape.
+it('(d) an update with the old UI junk-key shape or any star-only value gets the fixed 400, writes nothing and echoes/logs no key', async () => {
+  const id = (await post(stored)).body.data.id;
+  const before = await row(id);
+  const KEY = `9${randomBytes(6).readUIntBE(0, 6)}`;
+  const junk = Object.fromEntries([...REDACTED_PLACEHOLDER].map((c, i) => [i, c]));
+  const refused: unknown[] = [{ ...junk, password: rnd() }, { 0: '*', 1: '*', 2: '*', password: rnd() }, { [KEY]: rnd(), username: 'svc' }, { 0: rnd() }, { '0': 'x' }, { username: 'svc', password: '*' },
+    { username: 'svc', password: '*'.repeat(40) }, { username: 'svc', extra: { deep: ['ok', { n: '**' }] } }];
+  const logs = capture();
+  const results: unknown[] = [];
+  for (const credentials of refused) {
+    const from = seen.length;
+    const res = await put(id, { credentials });
+    results.push([res.status, res.body._message, res.body._details, seen.length - from, JSON.stringify(res.body).includes(KEY)]);
+  }
+  const logged = logs();
+  expect(results).toEqual(refused.map(() => [400, INVALID_CREDENTIALS_UPDATE, undefined, 0, false]));
+  expect([logged.includes('Request validation failed'), logged.includes(KEY), logged.includes(MARK)]).toEqual([true, false, false]);
+  expect(await row(id)).toEqual(before);
+});
+
+it('(e) legitimate payloads still update and are stored verbatim', async () => {
+  const id = (await post(stored)).body.data.id;
+  const legit: Record<string, unknown>[] = [{ username: 'svc', password: rnd() }, { private_key: rnd(), port: 2222 }, { community_string: rnd() }, { nested: { a: { b: rnd() } }, list: [rnd(), { k: rnd() }] },
+    { k0: rnd(), '01': rnd(), '-1': rnd(), '1.5': rnd() }, { a: '*x', b: 'x*', c: '', d: '* *', e: 7 }];
+  for (const credentials of legit) {
+    const res = await put(id, { credentials });
+    expect([res.status, (await crud.getById(id, 'a', A))?.credentials]).toEqual([200, credentials]);
+  }
+});
+
+it('(f) a rename with an empty description succeeds and stores NULL (F-2, HAP-1233)', async () => {
+  const id = (await post(stored)).body.data.id;
+  await put(id, { description: 'was set' });
+  const res = await put(id, { name: 'renamed-blank', description: '' });
+  expect([res.status, JSON.parse(String((await row(id)).r)).name, JSON.parse(String((await row(id)).r)).description]).toEqual([200, 'renamed-blank', null]);
+});

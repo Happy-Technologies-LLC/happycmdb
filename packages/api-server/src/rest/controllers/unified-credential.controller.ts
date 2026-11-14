@@ -14,6 +14,7 @@ import {
   CredentialProtocolAdapter,
   DuplicateCredentialNameError,
   CredentialInUseError,
+  CredentialNotFoundError,
 } from '@cmdb/common';
 import { ROLE_PERMISSIONS, type AuthenticatedRequest } from '../../auth/types';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
@@ -248,8 +249,8 @@ export class UnifiedCredentialController {
       }
       logger.error('Error updating credential', { error: errorClassFields(error), id: req.params['id'] });
 
-      // Check for not found error
-      if (error instanceof Error && error.message.includes('not found')) {
+      // Typed only: an unrelated error whose text contains 'not found' stays a 500
+      if (error instanceof CredentialNotFoundError) {
         res.status(404).json({
           success: false,
           error: 'Not Found',
@@ -301,8 +302,8 @@ export class UnifiedCredentialController {
       }
       logger.error('Error deleting credential', { error: errorClassFields(error), id: req.params['id'] });
 
-      // Check for not found error
-      if (error instanceof Error && error.message.includes('not found')) {
+      // Typed only: an unrelated error whose text contains 'not found' stays a 500
+      if (error instanceof CredentialNotFoundError) {
         res.status(404).json({
           success: false,
           error: 'Not Found',

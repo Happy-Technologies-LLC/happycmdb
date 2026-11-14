@@ -107,8 +107,8 @@ beforeAll(async () => {
   await sql(`${tables.join('\n')}
 CREATE UNIQUE INDEX idx_credentials_unique_name ON credentials(name, created_by);
 CREATE UNIQUE INDEX idx_credential_sets_unique_name ON credential_sets(name, created_by);
-CREATE TABLE discovery_definitions (credential_id UUID, credential_set_id UUID);
-CREATE TABLE connector_configurations (credential_id UUID);`, [], 'exec');
+CREATE TABLE discovery_definitions (credential_id UUID, credential_set_id UUID, created_by VARCHAR(255));
+CREATE TABLE connector_configurations (credential_id UUID, created_by VARCHAR(255));`, [], 'exec');
   await sql(readFileSync(join(migrations, '021_credential_organization_scope.sql'), 'utf8'), [], 'exec');
 });
 afterEach(() => { failOn = []; releases.length = 0; });

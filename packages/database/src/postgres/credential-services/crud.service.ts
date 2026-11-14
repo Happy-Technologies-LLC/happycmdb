@@ -14,7 +14,7 @@ import {
   UnifiedCredentialUpdateInput,
   UnifiedCredentialSummary,
 } from '@cmdb/common';
-import { getEncryptionService, CredentialProtocolAdapter, DuplicateCredentialNameError, CredentialInUseError } from '@cmdb/common';
+import { getEncryptionService, CredentialProtocolAdapter, DuplicateCredentialNameError, CredentialInUseError, CredentialNotFoundError } from '@cmdb/common';
 import { logger, errorClassFields } from '@cmdb/common';
 
 export interface CredentialFilters {
@@ -424,7 +424,7 @@ export class CredentialCRUDService {
         inTransaction = false;
         const existing = await this.getById(id, createdBy, organizationId);
         if (!existing) {
-          throw new Error(`Credential with id ${id} not found`);
+          throw new CredentialNotFoundError(id);
         }
         return existing;
       }
@@ -440,7 +440,7 @@ export class CredentialCRUDService {
       );
 
       if (result.rows.length === 0) {
-        throw new Error(`Credential with id ${id} not found`);
+        throw new CredentialNotFoundError(id);
       }
 
       const row = result.rows[0];
@@ -502,53 +502,50 @@ export class CredentialCRUDService {
         [id, createdBy, organizationId]
       );
       if (owned.rows.length === 0) {
-        throw new Error(`Credential with id ${id} not found`);
+        throw new CredentialNotFoundError(id);
       }
       // HAP-1613: deleting the C4 principal removes the tag; the final delete query repeats this check atomically.
       if (isOrgAdmin !== true && carriesC4Tag(owned.rows[0]?.tags)) {
         throw c4AdminRequired();
       }
-      // Check usage
-      const discoveryUsageResult = await client.query(
-        `SELECT COUNT(*) as count FROM discovery_definitions dd
+      // Check usage. A reference by another user of the organization blocks the delete but is only counted when the
+      // caller created it (`own`): the refusal never tells the caller how many foreign objects use its credential.
+      const usage = (result: { rows: Array<{ total: string; own: string }> }) => {
+        const row = result.rows[0];
+        return { total: parseInt(row?.total ?? '0', 10), own: parseInt(row?.own ?? '0', 10) };
+      };
+      const discoveryUsage = usage(await client.query<{ total: string; own: string }>(
+        `SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE dd.created_by = $2) AS own
+         FROM discovery_definitions dd
          JOIN credentials c ON c.id = dd.credential_id
          WHERE c.id = $1 AND c.created_by = $2 AND c.organization_id = $3`,
         [id, createdBy, organizationId]
-      );
-      const discoveryUsageCount = parseInt(
-        discoveryUsageResult.rows[0].count,
-        10
-      );
-
-      const connectorUsageResult = await client.query(
-        `SELECT COUNT(*) as count FROM connector_configurations cc
+      ));
+      const connectorUsage = usage(await client.query<{ total: string; own: string }>(
+        `SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE cc.created_by = $2) AS own
+         FROM connector_configurations cc
          JOIN credentials c ON c.id = cc.credential_id
          WHERE c.id = $1 AND c.created_by = $2 AND c.organization_id = $3`,
         [id, createdBy, organizationId]
-      );
-      const connectorUsageCount = parseInt(
-        connectorUsageResult.rows[0].count,
-        10
-      );
+      ));
 
-      const totalUsage = discoveryUsageCount + connectorUsageCount;
-      if (totalUsage > 0) {
+      if (discoveryUsage.total + connectorUsage.total > 0) {
         throw new CredentialInUseError({
-          discoveryDefinitions: discoveryUsageCount,
-          connectorConfigurations: connectorUsageCount,
+          discoveryDefinitions: discoveryUsage.own,
+          connectorConfigurations: connectorUsage.own,
         });
       }
 
-      const setUsageResult = await client.query(
-        `SELECT COUNT(*) as count FROM credential_sets cs
+      const setUsage = usage(await client.query<{ total: string; own: string }>(
+        `SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE cs.created_by = $2) AS own
+         FROM credential_sets cs
          JOIN credentials c ON c.id = ANY(cs.credential_ids)
          WHERE c.id = $1 AND c.created_by = $2 AND c.organization_id = $3`,
         [id, createdBy, organizationId]
-      );
-      const setUsageCount = parseInt(setUsageResult.rows[0].count, 10);
+      ));
 
-      if (setUsageCount > 0) {
-        throw new CredentialInUseError({ credentialSets: setUsageCount });
+      if (setUsage.total > 0) {
+        throw new CredentialInUseError({ credentialSets: setUsage.own });
       }
 
       const result = await client.query(
@@ -558,7 +555,7 @@ export class CredentialCRUDService {
       );
 
       if (result.rows.length === 0) {
-        throw new Error(`Credential with id ${id} not found`);
+        throw new CredentialNotFoundError(id);
       }
 
       logger.info('Unified credential deleted', {

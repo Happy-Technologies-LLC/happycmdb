@@ -90,8 +90,8 @@ beforeAll(async () => {
   await sql(`${tables.join('\n')}
 CREATE UNIQUE INDEX idx_credentials_unique_name ON credentials(name, created_by);
 CREATE UNIQUE INDEX idx_credential_sets_unique_name ON credential_sets(name, created_by);
-CREATE TABLE discovery_definitions (credential_id UUID, credential_set_id UUID);
-CREATE TABLE connector_configurations (credential_id UUID);`, [], 'exec');
+CREATE TABLE discovery_definitions (credential_id UUID, credential_set_id UUID, created_by VARCHAR(255));
+CREATE TABLE connector_configurations (credential_id UUID, created_by VARCHAR(255));`, [], 'exec');
   await sql(`INSERT INTO credentials (id, name, protocol, scope, credentials, created_by)
     VALUES ($1, 'legacy', 'api_key', 'api', '{"key":"legacy-secret"}', 'a')`, [legacyId]);
   await sql(readFileSync(join(migrations, '021_credential_organization_scope.sql'), 'utf8'), [], 'exec');
@@ -139,7 +139,9 @@ it('org A and same-org nonowner cannot enumerate or read B; B owner reads redact
 
 it('foreign and missing writes/deletes are indistinguishable with no mutation; owner succeeds', async () => {
   const before = await sql('SELECT credentials::text AS encrypted FROM credentials WHERE id = $1', [bId]);
-  await sql('INSERT INTO discovery_definitions (credential_id) VALUES ($1)', [bId]);
+  // One reference by the owner (b), two by same-org non-owner c: all three block the delete, only b's is counted.
+  await sql(`INSERT INTO discovery_definitions (credential_id, created_by) VALUES ($1, 'b'), ($1, 'c'), ($1, 'c')`, [bId]);
+  await sql(`INSERT INTO connector_configurations (credential_id, created_by) VALUES ($1, 'c')`, [bId]);
   for (const principal of ['a', 'c']) {
     const foreignPut = await request(app).put(`/api/v1/credentials/${bId}`).set(as(principal)).send({ credentials: { key: 'poison' } });
     const missingPut = await request(app).put(`/api/v1/credentials/${missing}`).set(as(principal)).send({ credentials: { key: 'poison' } });
@@ -154,7 +156,11 @@ it('foreign and missing writes/deletes are indistinguishable with no mutation; o
   expect((await sql('SELECT name FROM credentials WHERE id = $1', [bId]))[0].name).toBe('B-private');
   const inUse = await request(app).delete(`/api/v1/credentials/${bId}`).set(as('b'));
   expect([inUse.status, inUse.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently used by 1 discovery definition(s)' }]);
+  await sql(`DELETE FROM discovery_definitions WHERE credential_id = $1 AND created_by = 'b'`, [bId]);
+  const foreignOnly = await request(app).delete(`/api/v1/credentials/${bId}`).set(as('b'));
+  expect([foreignOnly.status, foreignOnly.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently in use' }]);
   await sql('DELETE FROM discovery_definitions WHERE credential_id = $1', [bId]);
+  await sql('DELETE FROM connector_configurations WHERE credential_id = $1', [bId]);
   const ownerPut = await request(app).put(`/api/v1/credentials/${bId}`).set(as('b'))
     .send({ name: 'B-renamed', credentials: { key: 'owner-test-only' } });
   expect(ownerPut.status).toBe(200);

@@ -1304,6 +1304,30 @@ HappyCMDB Metabase
 
 ---
 
+## Tenancy
+
+**The BI views span all tenants.** Every view on the `metabase_readonly` allowlist reads `cmdb.dim_ci` and the ITIL, audit and service tables across every organization. The `metabase_readonly` role has no row-level security, and Metabase does not filter by tenant on its own. Anyone who can run a question against these views sees every tenant's rows, unless Metabase is configured to restrict them.
+
+Each allowlisted view carries `organization_id uuid` as its last column (migration `052_bi_views_organization_id.sql`), so Metabase can filter on it:
+
+- **16 views carry the owning tenant:** `recent_audit_activity`, `cmdb.v_ci_discovery_summary`, `v_itil_incident_summary`, `v_itil_change_summary`, `v_criticality_distribution`, `v_cost_by_tower`, `v_cost_trends`, `v_cloud_vs_onprem_costs`, `v_top_cost_drivers_bi`, `v_underutilized_resources`, `v_incident_summary`, `v_incident_trends`, `v_change_success_rates`, `v_change_calendar`, `v_configuration_accuracy`, `v_baseline_drift_detection`.
+- **21 views always return `NULL`.** They read the v3.0 service, capability, dependency and TBM tables, which have no tenant column. A filter `organization_id = <tenant>` matches none of their rows. Only an unsandboxed, platform-internal collection shows them.
+
+Rows in `audit_log` and the ITIL tables written before tenant scoping also have a `NULL` organization.
+
+### Required posture for a shared Metabase
+
+The Metabase ingress (`metabase.happycmdb.io`) is public. A Metabase that tenant users can reach MUST be run in one of two ways:
+
+1. **One Metabase instance per tenant**, each with its own application database and its own `metabase_readonly` connection restricted to that tenant's rows. The shared instance stays internal to the platform team.
+2. **A shared instance with row-level data sandboxing on `organization_id`.** In Admin → Permissions → Data, give each tenant group "Sandboxed" access to every allowlisted view and map `organization_id` to the user attribute that carries the tenant's organization. Sandbox every view, the `NULL` ones too (the sandbox returns no rows for them). Disable native (SQL) query access for tenant groups, because a native query bypasses sandboxing.
+
+Tenant users MUST NEVER be exposed to an unsandboxed collection or database. That covers the pre-built dashboards, which are built on the unfiltered views, and any collection, question or dashboard saved by an administrator. Keep those in collections only platform staff can see, and check Admin → Permissions for a tenant group with View access to such a collection or "Unrestricted" data access on the CMDB database.
+
+The repository does not configure sandboxing, users or ingress access. The sandbox is Metabase application state and is set up per deployment.
+
+---
+
 ## Scheduled Reports & Exports
 
 Metabase supports automated report delivery via email.

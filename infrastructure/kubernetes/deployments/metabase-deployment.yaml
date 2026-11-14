@@ -106,6 +106,10 @@ spec:
   selector:
     app: metabase
 ---
+# PUBLIC: metabase.happycmdb.io is reachable from the internet. The BI views behind it span ALL tenants
+# (organization_id is a column, not a filter), so a Metabase that tenant users can reach needs row-level data
+# sandboxing on organization_id, or one instance per tenant, and tenant users must never see an unsandboxed
+# collection. See infrastructure/metabase/README.md, Tenancy.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

@@ -35,7 +35,8 @@ SELECT
     bs.bsm_attributes->>'business_criticality' AS business_criticality,
     bs.operational_status,
     bs.technical_owner,
-    bs.updated_at
+    bs.updated_at,
+    NULL::uuid AS organization_id
 FROM business_services bs
 LEFT JOIN service_dependencies sd ON sd.source_id = bs.id AND sd.source_type = 'business_service' AND sd.dependency_type = 'ENABLED_BY'
 LEFT JOIN business_capabilities bc ON bc.id = sd.target_id AND sd.target_type = 'business_capability'
@@ -62,9 +63,11 @@ SELECT
     -- Calculate percentage of total cost
     ROUND(
         100.0 * SUM(COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0)) /
-        NULLIF((SELECT SUM(COALESCE((tbm_attributes->>'monthly_cost')::DECIMAL, 0)) FROM cmdb.dim_ci WHERE is_current = TRUE AND ci_status = 'active'), 0),
+        NULLIF((SELECT SUM(COALESCE((t.tbm_attributes->>'monthly_cost')::DECIMAL, 0)) FROM cmdb.dim_ci t
+                WHERE t.is_current = TRUE AND t.ci_status = 'active' AND t.organization_id = ci.organization_id), 0),
         2
-    ) AS pct_of_total_cost
+    ) AS pct_of_total_cost,
+    ci.organization_id
 FROM cmdb.dim_ci ci
 WHERE ci.is_current = TRUE
   AND ci.ci_status = 'active'
@@ -73,7 +76,8 @@ GROUP BY
     ci.tbm_attributes->>'resource_tower',
     ci.tbm_attributes->>'cost_pool',
     ci.ci_type,
-    ci.environment
+    ci.environment,
+    ci.organization_id
 ORDER BY total_monthly_cost DESC;
 
 COMMENT ON VIEW v_cost_by_tower IS 'TBM cost breakdown by resource tower and cost pool';
@@ -89,7 +93,8 @@ SELECT
     ci.ci_type,
     ci.environment,
     SUM(COALESCE((fc.new_value)::DECIMAL, 0)) AS monthly_cost,
-    COUNT(DISTINCT ci.ci_id) AS ci_count
+    COUNT(DISTINCT ci.ci_id) AS ci_count,
+    ci.organization_id
 FROM cmdb.fact_ci_changes fc
 JOIN cmdb.dim_ci ci ON fc.ci_key = ci.ci_key
 WHERE fc.field_name = 'monthly_cost'
@@ -99,7 +104,8 @@ GROUP BY
     DATE_TRUNC('month', fc.changed_at),
     ci.tbm_attributes->>'resource_tower',
     ci.ci_type,
-    ci.environment
+    ci.environment,
+    ci.organization_id
 ORDER BY month DESC, monthly_cost DESC;
 
 COMMENT ON VIEW v_cost_trends IS 'Monthly cost trends over time by tower and CI type';
@@ -143,7 +149,8 @@ SELECT
     -- Business context
     bs.bsm_attributes->>'business_criticality' AS business_criticality,
     bs.technical_owner,
-    bs.updated_at
+    bs.updated_at,
+    NULL::uuid AS organization_id
 FROM business_services bs
 WHERE bs.operational_status IN ('operational', 'degraded')
 ORDER BY revenue_ratio DESC;
@@ -166,9 +173,11 @@ SELECT
     -- Calculate percentage of total
     ROUND(
         100.0 * SUM(COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0)) /
-        NULLIF((SELECT SUM(COALESCE((tbm_attributes->>'monthly_cost')::DECIMAL, 0)) FROM cmdb.dim_ci WHERE is_current = TRUE), 0),
+        NULLIF((SELECT SUM(COALESCE((t.tbm_attributes->>'monthly_cost')::DECIMAL, 0)) FROM cmdb.dim_ci t
+                WHERE t.is_current = TRUE AND t.organization_id = ci.organization_id), 0),
         2
-    ) AS pct_of_total
+    ) AS pct_of_total,
+    ci.organization_id
 FROM cmdb.dim_ci ci
 WHERE ci.is_current = TRUE
   AND ci.ci_status = 'active'
@@ -176,7 +185,8 @@ WHERE ci.is_current = TRUE
 GROUP BY
     ci.tbm_attributes->>'cost_pool',
     ci.environment,
-    ci.ci_type
+    ci.ci_type,
+    ci.organization_id
 ORDER BY monthly_cost DESC;
 
 COMMENT ON VIEW v_cloud_vs_onprem_costs IS 'Cloud vs on-premises cost comparison';
@@ -205,7 +215,8 @@ SELECT
         ELSE 0
     END AS variance_pct,
     cp.owner AS cost_pool_owner,
-    cp.is_active
+    cp.is_active,
+    NULL::uuid AS organization_id
 FROM tbm_cost_pools cp
 LEFT JOIN cmdb.dim_ci ci ON
     ci.tbm_attributes->>'cost_pool' = cp.name AND
@@ -249,7 +260,8 @@ SELECT
     ROUND(100.0 * ds.accumulated_depreciation / NULLIF(ds.purchase_cost, 0), 2) AS depreciation_pct,
     ds.fully_depreciated,
     ds.fully_depreciated_at,
-    ds.is_active
+    ds.is_active,
+    NULL::uuid AS organization_id
 FROM tbm_depreciation_schedules ds
 LEFT JOIN cmdb.dim_ci ci ON ds.ci_id = ci.ci_id AND ci.is_current = TRUE
 WHERE ds.is_active = TRUE
@@ -290,26 +302,46 @@ COMMENT ON VIEW v_top_cost_drivers IS 'Top 20 configuration items by monthly cos
 -- HAP-659: the BI-readable top cost drivers: v_top_cost_drivers without ci.metadata. A new name, so no database
 -- that ever held the metadata shape of v_top_cost_drivers has this view in that shape.
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_top_cost_drivers_bi AS
+CREATE OR REPLACE VIEW v_top_cost_drivers_bi WITH (security_barrier) AS
 SELECT
-    ci.ci_id,
-    ci.ci_name,
-    ci.ci_type,
-    ci.environment,
-    ci.tbm_attributes->>'resource_tower' AS tbm_resource_tower,
-    ci.tbm_attributes->>'cost_pool' AS tbm_cost_pool,
-    COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) AS monthly_cost,
-    COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) * 12 AS annual_cost,
-    ci.bsm_attributes->>'business_criticality' AS business_criticality,
-    ci.updated_at
-FROM cmdb.dim_ci ci
-WHERE ci.is_current = TRUE
-  AND ci.ci_status = 'active'
-  AND COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) > 0
-ORDER BY monthly_cost DESC
-LIMIT 20;
+    r.ci_id,
+    r.ci_name,
+    r.ci_type,
+    r.environment,
+    r.tbm_resource_tower,
+    r.tbm_cost_pool,
+    r.monthly_cost,
+    r.annual_cost,
+    r.business_criticality,
+    r.updated_at,
+    r.organization_id
+FROM (
+    SELECT
+        ci.ci_id,
+        ci.ci_name,
+        ci.ci_type,
+        ci.environment,
+        ci.tbm_attributes->>'resource_tower' AS tbm_resource_tower,
+        ci.tbm_attributes->>'cost_pool' AS tbm_cost_pool,
+        COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) AS monthly_cost,
+        COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) * 12 AS annual_cost,
+        ci.bsm_attributes->>'business_criticality' AS business_criticality,
+        ci.updated_at,
+        ci.organization_id,
+        -- Top 20 per organization: a row filter on organization_id (BI data sandboxing) must still leave 20 rows.
+        row_number() OVER (
+            PARTITION BY ci.organization_id
+            ORDER BY COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) DESC
+        ) AS cost_rank
+    FROM cmdb.dim_ci ci
+    WHERE ci.is_current = TRUE
+      AND ci.ci_status = 'active'
+      AND COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) > 0
+) r
+WHERE r.cost_rank <= 20
+ORDER BY r.monthly_cost DESC;
 
-COMMENT ON VIEW v_top_cost_drivers_bi IS 'Top 20 configuration items by monthly cost, without ci.metadata (BI-readable)';
+COMMENT ON VIEW v_top_cost_drivers_bi IS 'Top 20 configuration items per organization by monthly cost, without ci.metadata (BI-readable)';
 
 -- ----------------------------------------
 -- v_underutilized_resources
@@ -325,7 +357,8 @@ SELECT
     u.environment,
     u.monthly_cost,
     u.utilization_pct,
-    u.monthly_cost * (1 - u.utilization_pct / 100) AS potential_savings
+    u.monthly_cost * (1 - u.utilization_pct / 100) AS potential_savings,
+    u.organization_id
 FROM (
     SELECT
         ci.ci_id,
@@ -335,7 +368,8 @@ FROM (
         COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) AS monthly_cost,
         CASE WHEN ci.metadata->>'utilization_pct' ~ '^[0-9]+(\.[0-9]+)?$'
             THEN (ci.metadata->>'utilization_pct')::DECIMAL
-        END AS utilization_pct
+        END AS utilization_pct,
+        ci.organization_id
     FROM cmdb.dim_ci ci
     WHERE ci.is_current = TRUE
       AND ci.ci_status = 'active'

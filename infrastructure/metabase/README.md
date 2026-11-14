@@ -20,6 +20,7 @@ Metabase provides advanced business intelligence and ad-hoc reporting capabiliti
 - [Creating Custom Dashboards](#creating-custom-dashboards)
 - [Scheduling Reports](#scheduling-reports)
 - [User Access Management](#user-access-management)
+- [Tenancy](#tenancy)
 - [Troubleshooting](#troubleshooting)
 
 ## Quick Start
@@ -384,6 +385,30 @@ Best practice: Organize by team/function
 1. Admin → Collections
 2. Click collection → Permissions
 3. Set group access (View/Edit/Curate)
+
+## Tenancy
+
+**The BI views span all tenants.** Every view on the `metabase_readonly` allowlist (`infrastructure/database/metabase-init.sql`) reads `cmdb.dim_ci` and the ITIL, audit and service tables across every organization. The `metabase_readonly` role has no row-level security, and Metabase itself does not filter by tenant. Anyone who can run a question against these views sees every tenant's rows, unless Metabase is configured to restrict them.
+
+Each allowlisted view carries `organization_id uuid` as its last column (migration `052_bi_views_organization_id.sql`), so Metabase can filter on it:
+
+| `organization_id` is | Views |
+|---|---|
+| The owning tenant (16) | `recent_audit_activity`, `cmdb.v_ci_discovery_summary`, `v_itil_incident_summary`, `v_itil_change_summary`, `v_criticality_distribution`, `v_cost_by_tower`, `v_cost_trends`, `v_cloud_vs_onprem_costs`, `v_top_cost_drivers_bi`, `v_underutilized_resources`, `v_incident_summary`, `v_incident_trends`, `v_change_success_rates`, `v_change_calendar`, `v_configuration_accuracy`, `v_baseline_drift_detection` |
+| Always `NULL` (21) | The views over the v3.0 service, capability, dependency and TBM tables, which have no tenant column: `v_business_service_summary`, `v_application_service_summary`, `v_business_capability_summary`, `v_service_dependency_graph`, `v_tbm_cost_pool_summary`, `v_tbm_depreciation_tracking`, `v_unified_service_health`, `v_revenue_at_risk`, `v_compliance_summary`, `v_sox_pci_inventory`, `v_disaster_recovery_tiers`, `v_business_capability_health`, `v_service_dependency_map`, `v_customer_impact_analysis`, `v_executive_cost_summary`, `v_unit_economics`, `v_cost_allocation_summary`, `v_depreciation_summary`, `v_sla_compliance`, `v_service_health_scorecard`, `v_mttr_mtbf_analysis` |
+
+A `NULL` row is attributed to no tenant, so a filter `organization_id = <tenant>` matches none of it. Rows in `audit_log` and the ITIL tables written before tenant scoping also have a `NULL` organization.
+
+### Required posture for a shared Metabase
+
+The Metabase ingress (`metabase.happycmdb.io`, `infrastructure/kubernetes/deployments/metabase-deployment.yaml`) is public. A Metabase that tenant users can reach MUST be run in one of two ways:
+
+1. **One Metabase instance per tenant**, each with its own application database and its own `metabase_readonly` connection, restricted to that tenant's rows by a row filter or a per-tenant database role. The shared instance stays internal to the platform team.
+2. **A shared instance with row-level data sandboxing on `organization_id`.** In Admin → Permissions → Data, give each tenant group "Sandboxed" access to every allowlisted view and map `organization_id` to the user attribute that carries the tenant's organization. Sandbox every view, including the `NULL` ones (the sandbox then returns no rows for them). Disable native (SQL) query access for tenant groups: a native query bypasses sandboxing.
+
+Tenant users MUST NEVER be exposed to an unsandboxed collection or database. That includes the pre-built dashboards in this directory, which are built on the unfiltered views, and any collection, question or dashboard saved by an administrator. Keep those in collections that only platform staff can see. Check Admin → Permissions for a tenant group having View access to a collection or "Unrestricted" data access on the CMDB database.
+
+This repository does not configure sandboxing, users or ingress access. The sandbox is Metabase application state and has to be set up per deployment.
 
 ## Troubleshooting
 

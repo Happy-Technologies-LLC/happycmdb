@@ -200,7 +200,8 @@ describe('Metabase assets query only what the BI role can read (HAP-659)', () =>
       await exec(`CREATE ROLE metabase_readonly;
         CREATE SCHEMA cmdb;
         CREATE TABLE cmdb.dim_ci (ci_key serial, ci_id text, ci_name text, ci_type text, ci_status text, environment text,
-          is_current boolean, tbm_attributes jsonb, bsm_attributes jsonb, metadata jsonb, updated_at timestamptz DEFAULT now());
+          is_current boolean, tbm_attributes jsonb, bsm_attributes jsonb, metadata jsonb, updated_at timestamptz DEFAULT now(),
+          organization_id uuid);
         INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, environment, is_current, tbm_attributes, bsm_attributes, metadata)
         VALUES ${[
           ...Array.from({ length: 25 }, (_, i) => row(i, 1000 + i, 90)), // 25 active, costed, well utilized

@@ -34,7 +34,7 @@ Response:
 {
   "success": true,
   "data": {
-    "_accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+    "_accessToken": "<access-token>",
     "_expiresIn": 900,
     "_user": { "_id": "...", "_username": "admin", "_role": "admin" }
   }

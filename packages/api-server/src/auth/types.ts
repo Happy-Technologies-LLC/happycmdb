@@ -102,6 +102,8 @@ export interface TokenPayload {
   exp?: number;
   iss?: string;
   aud?: string;
+  /** Refresh tokens only: a unique token id, so same-second tokens for one user differ. Not stored or checked. */
+  jti?: string;
 }
 
 export interface AuthenticatedRequest extends Request {

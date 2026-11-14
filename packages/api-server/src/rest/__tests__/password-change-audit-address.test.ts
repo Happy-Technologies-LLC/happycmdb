@@ -55,6 +55,8 @@ function sql(text: string, params: unknown[] = [], op: 'query' | 'exec' = 'query
 /** The users and the rest of the AuthRepository are in memory; recordAudit is the production writer on PGlite. */
 class Repository {
   user!: User;
+  /** Further users (another organization's), found by id like `user`. */
+  extraUsers: User[] = [];
   /** Whether the guarded password write wins (a success) or loses to a rotation (credentials changed). */
   written = false;
   /** How many reads find the user before it vanishes: authentication finds it, the service's own read then misses. */
@@ -69,9 +71,10 @@ class Repository {
   /** recordAudit, once started, waits for this (a slow write); a write fails or succeeds as `failAudit` was when it started. */
   auditGate: Promise<void> | undefined;
   async findUserById(id: string) {
-    if (id !== this.user._id || this.readsThatFind-- <= 0) return null;
+    const user = id === this.user._id ? this.user : this.extraUsers.find(other => other._id === id);
+    if (!user || this.readsThatFind-- <= 0) return null;
     const epoch = this.epochs.shift();
-    return epoch === undefined ? this.user : { ...this.user, _credentialEpoch: epoch };
+    return epoch === undefined ? user : { ...user, _credentialEpoch: epoch };
   }
   async updatePasswordHashGuarded() { return this.written; }
   async recordCredentialEvent() {}
@@ -616,5 +619,72 @@ describe('rate_limited rows: the first refusal per user and refusing bucket per 
       errors.mockRestore();
     }
     expect(await rateLimitedRows()).toBe(before);
+  });
+
+  /**
+   * Isolation of the refusal-audit claim (#346 follow-up L1): two users in two organizations never share, take over or
+   * collide on a claim. The claim key carries the user id (and the refusing bucket), the row carries the user's own
+   * organization.
+   */
+  describe('two users in two organizations', () => {
+    const ORG_B = '9a1d3c7e-6b24-4f08-8e35-0c7d2b9f4a16';
+    const CLAIM_1 = 'rate-limit:auth-user-refused:user-1';
+    const CLAIM_2 = 'rate-limit:auth-user-refused:user-2';
+    const tokenTwo = () => new JWTService(authConfig.jwt as any).generateAccessToken('user-2', 'bob', 'operator', ORG_B);
+    beforeEach(() => {
+      repository.extraUsers = [{ ...repository.user, _id: 'user-2', _username: 'bob', _email: 'bob@example.com', _organizationId: ORG_B } as User];
+    });
+    afterEach(() => { repository.extraUsers = []; });
+    const refusedRows = async (before: number) => (await rows()).slice(before).filter(row => row['outcome'] === 'rate_limited')
+      .map(row => [row['entity_id'], row['organization_id'], row['record'].metadata.bucket]);
+
+    it('each one\'s first refusal is audited under its own organization, and one claim never suppresses the other', async () => {
+      const store = new FakeRedis();
+      const target = mount(limiterOver(store, { client: 100, user: 1 }));
+      const before = (await rows()).length;
+      const two = tokenTwo();
+      expect((await attempt(target, '198.51.100.1')).status).toBe(400);
+      expect((await attempt(target, '198.51.100.1')).status).toBe(429);
+      // User 1 holds its claim; user 2's first refusal is still its own first.
+      expect((await attempt(target, '198.51.100.2', two)).status).toBe(400);
+      expect((await attempt(target, '198.51.100.2', two)).status).toBe(429);
+      expect(await refusedRows(before)).toEqual([['user-1', ORG, 'user'], ['user-2', ORG_B, 'user']]);
+      expect([store.holds(CLAIM_1), store.holds(CLAIM_2), store.heldClaims()]).toEqual([true, true, 2]);
+      // The rest of the window: neither is audited again.
+      expect(await statuses(target, '198.51.100.1', 2)).toEqual([429, 429]);
+      expect(await statuses(target, '198.51.100.2', 2, two)).toEqual([429, 429]);
+      expect(await refusedRows(before)).toHaveLength(2);
+    });
+
+    it('one user\'s failed audit write backs off only that user\'s claim: the other\'s row and window are untouched', async () => {
+      const store = new FakeRedis();
+      const target = mount(limiterOver(store, { client: 100, user: 1 }));
+      const before = (await rows()).length;
+      const two = tokenTwo();
+      expect((await attempt(target, '198.51.100.1')).status).toBe(400);
+      expect((await attempt(target, '198.51.100.2', two)).status).toBe(400);
+      await failingAudit(async () => { expect((await attempt(target, '198.51.100.1')).status).toBe(429); });
+      expect((await attempt(target, '198.51.100.2', two)).status).toBe(429);
+      expect([store.ttl(CLAIM_1), store.ttl(CLAIM_2)]).toEqual([REFUSAL_AUDIT_BACKOFF_MS, WINDOW]);
+      expect(await refusedRows(before)).toEqual([['user-2', ORG_B, 'user']]);
+      // After user 1's backoff it writes its own row, under its own organization, and user 2's claim is not retaken.
+      now += REFUSAL_AUDIT_BACKOFF_MS + 1;
+      expect((await attempt(target, '198.51.100.1')).status).toBe(429);
+      expect((await attempt(target, '198.51.100.2', two)).status).toBe(429);
+      expect(await refusedRows(before)).toEqual([['user-2', ORG_B, 'user'], ['user-1', ORG, 'user']]);
+    });
+
+    it('behind one client address both users\' per-client refusals are audited, each under its own claim', async () => {
+      const store = new FakeRedis();
+      const target = mount(limiterOver(store, { client: 1, user: 1 }));
+      const before = (await rows()).length;
+      const two = tokenTwo();
+      expect((await attempt(target, '198.51.100.1')).status).toBe(400); // spends the address's one request
+      expect((await attempt(target, '198.51.100.1', two)).status).toBe(429);
+      expect((await attempt(target, '198.51.100.1')).status).toBe(429);
+      expect((await attempt(target, '198.51.100.1', two)).status).toBe(429);
+      expect(await refusedRows(before)).toEqual([['user-2', ORG_B, 'client'], ['user-1', ORG, 'client']]);
+      expect([store.holds(`${CLAIM_1}:client`), store.holds(`${CLAIM_2}:client`), store.heldClaims()]).toEqual([true, true, 2]);
+    });
   });
 });

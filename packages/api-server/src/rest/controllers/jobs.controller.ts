@@ -43,7 +43,11 @@ function nonNegativePageInteger(value: unknown, fallback: number): number | null
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-function jobPage(query: Request['query']): { start: number; end: number; limit: number } | 'deep' | null {
+/**
+ * `readEnd` is the inclusive last queue position to read: one past the page, so the read learns
+ * whether a next page exists without ever touching more than limit + 1 positions.
+ */
+function jobPage(query: Request['query']): { start: number; readEnd: number; limit: number } | 'deep' | null {
   const start = nonNegativePageInteger(query.start, 0);
   const requestedEnd = nonNegativePageInteger(query.end, 99);
   const requestedLimit = nonNegativePageInteger(query.limit, MAX_JOB_PAGE_SIZE);
@@ -51,8 +55,12 @@ function jobPage(query: Request['query']): { start: number; end: number; limit: 
   if (start > MAX_JOB_START) return 'deep';
   if (requestedEnd < start) return null;
   const limit = Math.min(requestedEnd - start + 1, requestedLimit, MAX_JOB_PAGE_SIZE);
-  const end = start + limit - 1;
-  return { start, end, limit };
+  return { start, readEnd: start + limit, limit };
+}
+
+/** Drops the one-past-the-page probe job; `hasMore` is true exactly when it was present. */
+function takePage<T>(read: T[], limit: number): { items: T[]; hasMore: boolean } {
+  return { items: read.slice(0, limit), hasMore: read.length > limit };
 }
 
 /**
@@ -161,36 +169,36 @@ export class JobsController {
       const { state = 'waiting' } = req.query;
       const queue = page.limit > 0 ? this.queueManager.getQueue(queueName) : null;
 
-      let jobs: Job[] = [];
+      let read: Job[] = [];
       if (queue) {
         switch (state) {
           case 'waiting':
-            jobs = await queue.getWaiting(page.start, page.end);
+            read = await queue.getWaiting(page.start, page.readEnd);
             break;
           case 'active':
-            jobs = await queue.getActive(page.start, page.end);
+            read = await queue.getActive(page.start, page.readEnd);
             break;
           case 'completed':
-            jobs = await queue.getCompleted(page.start, page.end);
+            read = await queue.getCompleted(page.start, page.readEnd);
             break;
           case 'failed':
-            jobs = await queue.getFailed(page.start, page.end);
+            read = await queue.getFailed(page.start, page.readEnd);
             break;
           case 'delayed':
-            jobs = await queue.getDelayed(page.start, page.end);
+            read = await queue.getDelayed(page.start, page.readEnd);
             break;
           default:
-            jobs = await queue.getWaiting(page.start, page.end);
+            read = await queue.getWaiting(page.start, page.readEnd);
         }
       }
 
+      const { items: jobs, hasMore } = takePage(read, page.limit);
       const jobsData = await Promise.all(jobs.map((job) => publicJob(job, queueName)));
 
-      // Queue offsets may omit jobs outside this bounded read.
       res.json({
         success: true,
         data: { queueName, state, jobs: jobsData, count: jobsData.length },
-        pagination: { limit: page.limit, offset: page.start, truncated: page.limit > 0 },
+        pagination: { limit: page.limit, offset: page.start, hasMore },
       });
     } catch {
       logger.error('Error listing jobs');
@@ -631,9 +639,10 @@ export class JobsController {
       const page = jobPage(req.query);
       if (!page) { res.status(400).json(INVALID_JOB_PAGINATION); return; }
       if (page === 'deep') { res.status(400).json(DEEP_JOB_PAGES_UNAVAILABLE); return; }
-      const failedJobs = page.limit > 0
-        ? await this.queueManager.getFailedJobs(queueName, page.start, page.end)
+      const read = page.limit > 0
+        ? await this.queueManager.getFailedJobs(queueName, page.start, page.readEnd)
         : [];
+      const { items: failedJobs, hasMore } = takePage(read, page.limit);
 
       const jobsData = await Promise.all(
         failedJobs.map((job) => publicJob(job, queueName))
@@ -646,7 +655,7 @@ export class JobsController {
           failedJobs: jobsData,
           count: jobsData.length,
         },
-        pagination: { limit: page.limit, offset: page.start, truncated: page.limit > 0 },
+        pagination: { limit: page.limit, offset: page.start, hasMore },
       });
     } catch {
       logger.error('Error getting failed jobs');

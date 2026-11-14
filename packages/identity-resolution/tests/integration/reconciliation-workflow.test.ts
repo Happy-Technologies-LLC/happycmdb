@@ -7,7 +7,7 @@
  */
 
 import { IdentityReconciliationEngine } from '../../src/engine/identity-reconciliation-engine';
-import { closeQueueManagerConnection, JournalGapError } from '@cmdb/database';
+import { closeQueueManagerConnection, JournalAbortedError, JournalGapError } from '@cmdb/database';
 import { TransformedCI } from '@cmdb/integration-framework';
 import {
   physicalServerDuplicates,
@@ -116,9 +116,8 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
       const uniqueIds = new Set(ciIds);
       expect(uniqueIds.size).toBe(1);
 
-      // The engine only persists `identifiers` (e.g. uuid) on the initial
-      // CREATE; later discoveries merge their `attributes` only. Since VMware
-      // is discovered last here, its attribute `vm_uuid` is what gets merged in.
+      // Only the initial create persists `identifiers` (e.g. uuid); later discoveries merge their `attributes` only.
+      // Since VMware is discovered last here, its attribute `vm_uuid` is what gets merged in.
       const ci = await getCIFromNeo4j(ciIds[0]);
       expect(ci.vm_uuid).toBe('vm-12345-6789-abcd-ef01'); // VMware attribute merged
     });
@@ -189,6 +188,12 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
     it('should merge database metadata based on source authority', async () => {
       const [datadogDiscovery, sshDiscovery] = databaseWithConflicts;
 
+      // HAP-2016: the journaled create seeds field sources, so the creating source's value is protected by authority.
+      // The organization ranks datadog above ssh (7).
+      const { getPostgresClient } = require('@cmdb/database');
+      await getPostgresClient().query(`INSERT INTO source_authority (organization_id, source_name, authority_score)
+        VALUES ('aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa', 'datadog', 9)`);
+
       // Discover via SSH first (lower authority)
       const ciId1 = await engine.reconcileCI(sshDiscovery, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
       let ci = await getCIFromNeo4j(ciId1);
@@ -207,19 +212,16 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
       expect(versionSource?.source_name).toBe('datadog');
     });
 
-    it('applies the most recent discovery when no prior field lineage protects a value', async () => {
+    it('lets a higher-authority discovery replace the value of the creating source', async () => {
       const [datadogDiscovery, sshDiscovery] = databaseWithConflicts;
 
-      // Discover via Datadog first. createNewCI spreads attributes onto the
-      // node but does NOT seed ci_field_sources, so there is no lineage yet.
+      // Discover via Datadog first. The journaled create seeds ci_field_sources for the attributes it writes, so the
+      // creating source (datadog, no authority entry: fallback 5) owns them.
       const ciId1 = await engine.reconcileCI(datadogDiscovery, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
       let ci = await getCIFromNeo4j(ciId1);
       expect(ci.version).toBe('14.8');
 
-      // Then discover via SSH. Because no field lineage exists yet, every SSH
-      // attribute is treated as new and written, so the SSH value wins.
-      // (The default source_authority map has no 'datadog' entry, so it would
-      // resolve to the fallback authority anyway.)
+      // Then discover via SSH: the default authority map ranks ssh (7) above datadog's fallback (5), so the SSH value wins.
       const ciId2 = await engine.reconcileCI(sshDiscovery, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
       expect(ciId1).toBe(ciId2);
 
@@ -345,19 +347,20 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
         engine.reconcileCI({ ...ci }, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa')
       );
 
+      // HAP-2016: the create is journaled under the stable id of (organization, source, source_id), so simultaneous
+      // first-time discoveries of one CI cannot make two nodes: the loser meets the in-flight gap (JournalGapError) or,
+      // arriving after the winner committed, the id's uniqueness constraint (JournalAbortedError).
       const settled = await Promise.allSettled(promises);
       for (const result of settled) {
-        if (result.status === 'rejected') expect(result.reason).toBeInstanceOf(JournalGapError);
+        if (result.status === 'rejected') expect([JournalGapError, JournalAbortedError].some(type => result.reason instanceof type)).toBe(true);
       }
       const ciIds = settled.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
-      // At least one discovery wins; every winner names a CI.
+      // At least one discovery wins; every winner names a CI, and there is exactly one.
       expect(ciIds.length).toBeGreaterThan(0);
       expect(ciIds.every((id) => typeof id === 'string' && id.length > 0)).toBe(true);
+      expect(new Set(ciIds).size).toBe(1);
 
-      // The engine performs no distributed locking, so simultaneous first-time
-      // discoveries of the same CI can race and create more than one node. A
-      // subsequent (non-concurrent) discovery deduplicates against a CI that is
-      // already persisted (matched here by its uuid identifier).
+      // A subsequent (non-concurrent) discovery deduplicates against the persisted CI (matched here by its uuid identifier).
       const followUp = await engine.reconcileCI({ ...ci }, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
       expect(new Set(ciIds).has(followUp)).toBe(true);
     });
@@ -507,5 +510,6 @@ describe('ReconciliationWorkflow - Integration Tests', () => {
     // filter is invalid; truncate the reconciliation bookkeeping tables.
     const postgres = getPostgresClient();
     await postgres.query('TRUNCATE ci_source_lineage, ci_field_sources');
+    await postgres.query(`DELETE FROM source_authority WHERE organization_id = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa'`);
   }
 });

@@ -24,7 +24,6 @@ interface UseJobsOptions {
 
 interface UseJobsReturn {
   jobs: Job[];
-  total: number;
   loading: boolean;
   error: Error | null;
   refetch: () => Promise<void>;
@@ -42,7 +41,7 @@ export function useJobs(options: UseJobsOptions): UseJobsReturn {
   } = options;
   const { status: filterStatus, limit: filterLimit, offset: filterOffset } = filters;
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
 
@@ -61,7 +60,7 @@ export function useJobs(options: UseJobsOptions): UseJobsReturn {
         offset: filterOffset,
       });
       setJobs(response.jobs);
-      setTotal(response.total);
+      setHasMore(response.hasMore);
     } catch (err) {
       setError(err instanceof Error ? err : new Error('Failed to fetch jobs'));
     } finally {
@@ -101,11 +100,8 @@ export function useJobs(options: UseJobsOptions): UseJobsReturn {
     return () => clearInterval(intervalId);
   }, [autoRefresh, refreshInterval, fetchJobs]);
 
-  const hasMore = jobs.length < total;
-
   return {
     jobs,
-    total,
     loading,
     error,
     refetch: fetchJobs,

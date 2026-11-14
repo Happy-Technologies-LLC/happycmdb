@@ -12,7 +12,6 @@ import { Icon } from '@happy-technologies/design-system';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Select,
@@ -61,7 +60,7 @@ export const Jobs: React.FC = () => {
 
   const {
     jobs: completedJobs,
-    total: completedTotal,
+    hasMore: completedHasMore,
     loading: completedLoading,
     error: completedError,
     refetch: refetchCompleted,
@@ -83,7 +82,7 @@ export const Jobs: React.FC = () => {
 
   const {
     jobs: failedJobs,
-    total: failedTotal,
+    hasMore: failedHasMore,
     loading: failedLoading,
     error: failedError,
     refetch: refetchFailed,
@@ -216,15 +215,9 @@ export const Jobs: React.FC = () => {
             </TabsTrigger>
             <TabsTrigger value="completed" className="gap-2">
               Completed
-              {completedTotal > 0 && (
-                <Badge variant="success" className="ml-1">{completedTotal}</Badge>
-              )}
             </TabsTrigger>
             <TabsTrigger value="failed" className="gap-2">
               Failed
-              {failedTotal > 0 && (
-                <Badge variant="destructive" className="ml-1">{failedTotal}</Badge>
-              )}
             </TabsTrigger>
             <TabsTrigger value="schedules" className="gap-2">
               Schedules
@@ -253,7 +246,7 @@ export const Jobs: React.FC = () => {
           ) : (
             <JobList
               jobs={completedJobs}
-              total={completedTotal}
+              hasMore={completedHasMore}
               page={page}
               rowsPerPage={rowsPerPage}
               onPageChange={handlePageChange}
@@ -280,7 +273,7 @@ export const Jobs: React.FC = () => {
           ) : (
             <JobList
               jobs={failedJobs}
-              total={failedTotal}
+              hasMore={failedHasMore}
               page={page}
               rowsPerPage={rowsPerPage}
               onPageChange={handlePageChange}

@@ -3189,8 +3189,11 @@ paths:
         queue positions. History beyond start 10,000 is unavailable through
         this legacy listing API. Offsets refer to queue positions, not tenant
         rank; a page may contain fewer owned jobs than the requested limit.
-        Unknown queue names and deep offsets return fixed 400 responses before
-        queue access. No foreign queue occupancy is disclosed.
+        The read covers at most `limit` + 1 queue positions; the response
+        carries `pagination: { limit, offset, hasMore }`, where `hasMore` is
+        true exactly when a position after the page held a job. There is no
+        `total`. Unknown queue names and deep offsets return fixed 400
+        responses before queue access. No foreign queue occupancy is disclosed.
       parameters:
         - name: queueName
           in: path
@@ -3226,7 +3229,9 @@ paths:
       summary: List tenant-owned failed jobs
       description: |
         Same queue-position semantics and maximum start 10,000 as
-        `/jobs/{queueName}`. Deeper history is unavailable through this API.
+        `/jobs/{queueName}`, including `pagination: { limit, offset, hasMore }`
+        from a read of at most `limit` + 1 positions. Deeper history is
+        unavailable through this API.
       parameters:
         - name: queueName
           in: path

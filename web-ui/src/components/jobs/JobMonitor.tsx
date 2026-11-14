@@ -62,7 +62,7 @@ export const JobMonitor: React.FC<JobMonitorProps> = ({
   // Fetch data with auto-refresh
   const {
     jobs,
-    total,
+    hasMore,
     loading: jobsLoading,
     error: jobsError,
     refetch: refetchJobs,
@@ -179,7 +179,7 @@ export const JobMonitor: React.FC<JobMonitorProps> = ({
       ) : (
         <JobList
           jobs={jobs}
-          total={total}
+          hasMore={hasMore}
           page={page}
           rowsPerPage={rowsPerPage}
           onPageChange={handlePageChange}

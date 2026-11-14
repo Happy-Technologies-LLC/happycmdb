@@ -1593,6 +1593,8 @@ Query Parameters:
 Response: BusinessServiceDashboardData
 ```
 
+**Unavailable figures (Executive, CIO, FinOps, Business Service)**: no number in these payloads is invented. A figure that is not computed from the caller organization's graph data (for example cost trend history, budgets, revenue, ROI, health scores, availability, compliance flags, change success rates) is `null` (or an empty list) and is named in the payload's `unavailable` array as `<section>.<field>` or `<section>`, for example `"topCostDrivers.changePercent"` or `"costTrends"`. A cost total whose CIs carry no `tbm_monthly_cost` is `null`, not `0`. Clients render these as "—" or "Not available yet".
+
 ### GraphQL Queries
 
 **Executive Dashboard Query**:

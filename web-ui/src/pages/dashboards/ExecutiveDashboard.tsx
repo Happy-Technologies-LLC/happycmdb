@@ -12,6 +12,10 @@ import { Badge } from '@/components/ui/badge';
 import { Eyebrow } from '@/components/ui/eyebrow';
 import { brand } from '@/lib/brandColors';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { UnavailableNotice } from '@/components/dashboard/UnavailableNotice';
+import {
+  EMPTY_VALUE, averageKnown, formatCount, formatCurrency, formatPercent, isKnown,
+} from '@/lib/dashboardValue';
 
 export const ExecutiveDashboard: React.FC = () => {
   const { timeRange, updateTimeRange } = useTimeRange('1y'); // Default to 1 year for executives
@@ -38,17 +42,6 @@ export const ExecutiveDashboard: React.FC = () => {
     );
   }
 
-  const formatCurrency = (value: number) => {
-    if (value == null || isNaN(value)) return '$0';
-    if (value >= 1000000) {
-      return `$${(value / 1000000).toFixed(1)}M`;
-    }
-    if (value >= 1000) {
-      return `$${(value / 1000).toFixed(0)}K`;
-    }
-    return `$${value.toFixed(0)}`;
-  };
-
   // Safe defaults for potentially empty API responses
   const serviceHealthByTier = data.serviceHealthByTier || [];
   const riskMatrixServices = data.riskMatrix?.services || [];
@@ -57,13 +50,8 @@ export const ExecutiveDashboard: React.FC = () => {
   const costTrends = data.costTrends || [];
   const topCostDrivers = data.topCostDrivers || [];
 
-  // Calculate overall health score
-  const overallHealthScore = serviceHealthByTier.length > 0
-    ? serviceHealthByTier.reduce(
-        (acc: number, tier: any) => acc + tier.averageHealthScore,
-        0
-      ) / serviceHealthByTier.length
-    : 0;
+  // Mean of the known tier scores; null (not 0) when no tier has a health score.
+  const overallHealthScore = averageKnown(serviceHealthByTier.map((tier: any) => tier.averageHealthScore));
 
   // Calculate total risk exposure (services in critical+high risk)
   const highRiskServices = riskMatrixServices.filter(
@@ -127,10 +115,10 @@ export const ExecutiveDashboard: React.FC = () => {
         />
         <KPICard
           title="Overall Health Score"
-          value={`${overallHealthScore.toFixed(0)}%`}
+          value={formatPercent(overallHealthScore, 0)}
           icon="pulse"
-          color={overallHealthScore >= 80 ? 'green' : overallHealthScore >= 60 ? 'yellow' : 'red'}
-          trend={data.serviceHealthByTier[0]?.trend as "down" | "stable" | "up" | undefined}
+          color={overallHealthScore === null ? 'blue' : overallHealthScore >= 80 ? 'green' : overallHealthScore >= 60 ? 'yellow' : 'red'}
+          trend={(data.serviceHealthByTier[0]?.trend ?? undefined) as "down" | "stable" | "up" | undefined}
           description="Across all service tiers"
         />
         <KPICard
@@ -142,12 +130,7 @@ export const ExecutiveDashboard: React.FC = () => {
         />
         <KPICard
           title="Average ROI"
-          value={`${(
-            valueScorecard.length > 0
-              ? valueScorecard.reduce((acc: number, s: any) => acc + (s.roi || 0), 0) /
-                valueScorecard.length
-              : 0
-          ).toFixed(1)}%`}
+          value={formatPercent(averageKnown(valueScorecard.map((s: any) => s.roi)))}
           icon="trend-up"
           color="green"
           description="Return on IT investment"
@@ -157,7 +140,7 @@ export const ExecutiveDashboard: React.FC = () => {
       {/* Cost Breakdown and Trends */}
       <div className="grid gap-4 md:grid-cols-2">
         <CostBreakdownChart
-          data={costByCapability.map((cap: any) => ({
+          data={costByCapability.filter((cap: any) => isKnown(cap.totalCost)).map((cap: any) => ({
             name: cap.capability,
             value: cap.totalCost,
             children: (cap.businessServices || []).map((bs: any) => ({
@@ -169,12 +152,16 @@ export const ExecutiveDashboard: React.FC = () => {
           description="Click to drill down into services"
           type="treemap"
         />
-        <CostTrendChart
-          data={costTrends}
-          title="Cost Trends"
-          description="Monthly IT spend over time"
-          showBudget={true}
-        />
+        {costTrends.length > 0 ? (
+          <CostTrendChart
+            data={costTrends}
+            title="Cost Trends"
+            description="Monthly IT spend over time"
+            showBudget={true}
+          />
+        ) : (
+          <UnavailableNotice label="Cost trends" />
+        )}
       </div>
 
       {/* Service Health by Tier */}
@@ -182,21 +169,25 @@ export const ExecutiveDashboard: React.FC = () => {
         <div>
           <h3 className="text-lg font-semibold mb-1">Service Health Scores by Tier</h3>
           <p className="text-sm text-muted-foreground mb-4">Average health across service tiers</p>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={serviceHealthByTier}>
-              <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
-              <XAxis dataKey="tier" tick={{ fill: brand.inkSoft, fontSize: 12 }} />
-              <YAxis domain={[0, 100]} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
-              <Tooltip />
-              <Legend />
-              <Bar
-                dataKey="averageHealthScore"
-                fill={brand.navy}
-                name="Health Score"
-                radius={[8, 8, 0, 0]}
-              />
-            </BarChart>
-          </ResponsiveContainer>
+          {serviceHealthByTier.some((tier: any) => isKnown(tier.averageHealthScore)) ? (
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={serviceHealthByTier}>
+                <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
+                <XAxis dataKey="tier" tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+                <YAxis domain={[0, 100]} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+                <Tooltip />
+                <Legend />
+                <Bar
+                  dataKey="averageHealthScore"
+                  fill={brand.navy}
+                  name="Health Score"
+                  radius={[8, 8, 0, 0]}
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <UnavailableNotice label="Service health scores" />
+          )}
         </div>
       </LiquidGlass>
 
@@ -238,10 +229,14 @@ export const ExecutiveDashboard: React.FC = () => {
                 <span className="text-sm font-medium">{service.serviceName}</span>
                 <div className="flex items-center gap-2">
                   <span className="text-sm">{formatCurrency(service.monthlyCost)}/mo</span>
-                  {service.trend && (
+                  {service.trend && isKnown(service.changePercent) ? (
                     <Badge variant={service.trend === 'up' ? 'destructive' : 'default'}>
-                      {service.trend === 'up' ? '↑' : '↓'} {Math.abs(service.changePercent)}%
+                      {service.trend === 'up' ? '↑' : '↓'} {formatPercent(Math.abs(service.changePercent))}
                     </Badge>
+                  ) : (
+                    <span className="text-sm text-muted-foreground" title="Change vs previous period not available yet">
+                      {EMPTY_VALUE}
+                    </span>
                   )}
                 </div>
               </div>
@@ -267,8 +262,8 @@ export const ExecutiveDashboard: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {valueScorecard
-                  .sort((a: any, b: any) => (b.roi || 0) - (a.roi || 0))
+                {[...valueScorecard]
+                  .sort((a: any, b: any) => (b.roi ?? -Infinity) - (a.roi ?? -Infinity))
                   .map((service: any) => (
                     <tr key={service.serviceId} className="border-b border-border hover:bg-accent">
                       <td className="py-3 px-2 text-sm font-medium">{service.serviceName}</td>
@@ -279,12 +274,16 @@ export const ExecutiveDashboard: React.FC = () => {
                         {formatCurrency(service.monthlyCost)}
                       </td>
                       <td className="py-3 px-2 text-sm text-right">
-                        <Badge variant={service.roi >= 100 ? 'success' : 'secondary'}>
-                          {service.roi.toFixed(1)}%
-                        </Badge>
+                        {isKnown(service.roi) ? (
+                          <Badge variant={service.roi >= 100 ? 'success' : 'secondary'}>
+                            {formatPercent(service.roi)}
+                          </Badge>
+                        ) : (
+                          EMPTY_VALUE
+                        )}
                       </td>
                       <td className="py-3 px-2 text-sm text-right">
-                        {service.customers.toLocaleString()}
+                        {formatCount(service.customers)}
                       </td>
                     </tr>
                   ))}

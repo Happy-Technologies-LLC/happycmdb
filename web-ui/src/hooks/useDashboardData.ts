@@ -84,6 +84,7 @@ export const useFinOpsDashboard = (timeRange: TimeRange) => {
   });
 
   return {
+    unavailable: data?.unavailable ?? [],
     cloudCosts: {
       data: data?.cloudCosts || [],
       loading: isLoading,
@@ -134,6 +135,7 @@ export const useBusinessServiceDashboard = (serviceId?: string, _businessUnit?: 
   });
 
   return {
+    unavailable: data?.unavailable ?? [],
     serviceHealth: {
       data: data?.serviceHealth,
       loading: isLoading,

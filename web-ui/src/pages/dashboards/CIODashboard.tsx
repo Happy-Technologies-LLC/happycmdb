@@ -9,6 +9,17 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Eyebrow } from '@/components/ui/eyebrow';
 import { brand } from '@/lib/brandColors';
+import { UnavailableNotice } from '@/components/dashboard/UnavailableNotice';
+import {
+  NOT_AVAILABLE,
+  EMPTY_VALUE,
+  isKnown,
+  isUnavailable,
+  averageKnown,
+  formatCurrency,
+  formatPercent,
+  formatCount,
+} from '@/lib/dashboardValue';
 import {
   BarChart,
   Bar,
@@ -50,18 +61,8 @@ export const CIODashboard: React.FC = () => {
     );
   }
 
-  const formatCurrency = (value: number) => {
-    if (value == null || isNaN(value)) return '$0';
-    if (value >= 1000000) {
-      return `$${(value / 1000000).toFixed(1)}M`;
-    }
-    if (value >= 1000) {
-      return `$${(value / 1000).toFixed(0)}K`;
-    }
-    return `$${value.toFixed(0)}`;
-  };
-
   // Safe defaults for potentially empty API responses
+  const unavailable = data.unavailable;
   const serviceAvailability = data.serviceAvailability || [];
   const changeSuccessRates = data.changeSuccessRates || {} as any;
   const configurationAccuracy = data.configurationAccuracy || {} as any;
@@ -69,19 +70,29 @@ export const CIODashboard: React.FC = () => {
   const incidentResponseTimes = data.incidentResponseTimes || [];
   const capacityPlanning = data.capacityPlanning || [];
 
-  // Calculate averages
-  const avgAvailability = serviceAvailability.length > 0
-    ? serviceAvailability.reduce(
-        (acc: number, tier: any) => acc + tier.averageAvailability,
-        0
-      ) / serviceAvailability.length
-    : 0;
+  // Overall figures: only from known values; null (shown as "—") when none is known
+  const avgAvailability = averageKnown(serviceAvailability.map((tier: any) => tier.averageAvailability));
+  const hasAvailability = serviceAvailability.some(
+    (tier: any) => isKnown(tier.averageAvailability) || isKnown(tier.slaTarget)
+  );
+  const knownBudgets = costByCapability.map((c: any) => c.budgetAllocated).filter(isKnown);
+  const totalBudget = knownBudgets.length > 0
+    ? knownBudgets.reduce((acc: number, v: number) => acc + v, 0)
+    : null;
+  const hasCost = costByCapability.some((c: any) => isKnown(c.cost));
+  const hasBudget = knownBudgets.length > 0;
 
-  const changeData = [
-    { name: 'Successful', value: changeSuccessRates.successful ?? 0, color: brand.success },
-    { name: 'Failed', value: changeSuccessRates.failed ?? 0, color: brand.danger },
-    { name: 'Rollbacks', value: changeSuccessRates.rollbacks ?? 0, color: brand.warning },
+  const changeEntries: Array<{ name: string; value: number | null; color: string }> = [
+    { name: 'Successful', value: changeSuccessRates.successful, color: brand.success },
+    { name: 'Failed', value: changeSuccessRates.failed, color: brand.danger },
+    { name: 'Rollbacks', value: changeSuccessRates.rollbacks, color: brand.warning },
   ];
+  const changeData = changeEntries.filter(
+    (entry): entry is { name: string; value: number; color: string } => isKnown(entry.value)
+  );
+
+  const successRate = changeSuccessRates.successRate;
+  const accuracy = configurationAccuracy.accuracyPercentage;
 
   return (
     <div className="p-6 space-y-6">
@@ -130,30 +141,41 @@ export const CIODashboard: React.FC = () => {
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <KPICard
           title="Average Availability"
-          value={`${avgAvailability.toFixed(2)}%`}
+          value={formatPercent(avgAvailability, 2)}
           icon="pulse"
-          color={avgAvailability >= 99.9 ? 'green' : avgAvailability >= 99 ? 'yellow' : 'red'}
+          color={
+            !isKnown(avgAvailability) ? 'blue'
+              : avgAvailability >= 99.9 ? 'green'
+              : avgAvailability >= 99 ? 'yellow'
+              : 'red'
+          }
           description="Across all service tiers"
         />
         <KPICard
           title="Change Success Rate"
-          value={`${(changeSuccessRates?.successRate ?? 0).toFixed(1)}%`}
+          value={formatPercent(successRate)}
           icon="check-circle"
-          color={(changeSuccessRates?.successRate ?? 0) >= 85 ? 'green' : 'yellow'}
-          description={`${changeSuccessRates?.total ?? 0} changes (${timeRange.label})`}
+          color={!isKnown(successRate) ? 'blue' : successRate >= 85 ? 'green' : 'yellow'}
+          description={
+            isKnown(changeSuccessRates.total)
+              ? `${formatCount(changeSuccessRates.total)} changes (${timeRange.label})`
+              : `Change count: ${NOT_AVAILABLE}`
+          }
         />
         <KPICard
           title="Config Accuracy"
-          value={`${(configurationAccuracy?.accuracyPercentage ?? 0).toFixed(1)}%`}
+          value={formatPercent(accuracy)}
           icon="database"
-          color={(configurationAccuracy?.accuracyPercentage ?? 0) >= 95 ? 'green' : 'yellow'}
-          description={`${configurationAccuracy?.driftDetected ?? 0} CIs with drift`}
+          color={!isKnown(accuracy) ? 'blue' : accuracy >= 95 ? 'green' : 'yellow'}
+          description={
+            isKnown(configurationAccuracy.driftDetected)
+              ? `${formatCount(configurationAccuracy.driftDetected)} CIs with drift`
+              : `Drift: ${NOT_AVAILABLE}`
+          }
         />
         <KPICard
           title="Total IT Budget"
-          value={formatCurrency(
-            costByCapability.reduce((acc: number, c: any) => acc + c.budgetAllocated, 0)
-          )}
+          value={formatCurrency(totalBudget)}
           icon="currency-dollar"
           color="blue"
           description="Allocated across capabilities"
@@ -166,26 +188,34 @@ export const CIODashboard: React.FC = () => {
           <div>
           <h3 className="text-lg font-semibold mb-1">Service Availability by Tier</h3>
           <p className="text-sm text-muted-foreground mb-4">SLA compliance by service tier</p>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={serviceAvailability}>
-                <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
-                <XAxis dataKey="tier" tick={{ fill: brand.inkSoft, fontSize: 12 }} />
-                <YAxis domain={[95, 100]} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
-                <Tooltip />
-                <Legend />
-                <Bar dataKey="averageAvailability" fill={brand.sky} name="Availability %" radius={[8, 8, 0, 0]} />
-                <Bar dataKey="slaTarget" fill={brand.success} name="SLA Target %" radius={[8, 8, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            {hasAvailability ? (
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={serviceAvailability}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
+                  <XAxis dataKey="tier" tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+                  <YAxis domain={[95, 100]} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+                  <Tooltip />
+                  <Legend />
+                  <Bar dataKey="averageAvailability" fill={brand.sky} name="Availability %" radius={[8, 8, 0, 0]} />
+                  <Bar dataKey="slaTarget" fill={brand.success} name="SLA Target %" radius={[8, 8, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <UnavailableNotice label="Service availability" />
+            )}
             <div className="mt-4 space-y-2">
               {serviceAvailability.map((tier: any) => (
                 <div key={tier.tier} className="flex items-center justify-between p-2 rounded-lg hover:bg-accent">
                   <span className="text-sm font-medium">{tier.tier}</span>
                   <div className="flex items-center gap-2">
-                    <span className="text-sm">{tier.averageAvailability.toFixed(2)}%</span>
-                    <Badge variant={tier.complianceStatus === 'compliant' ? 'success' : 'destructive'}>
-                      {tier.complianceStatus === 'compliant' ? 'Within SLA' : 'Below SLA'}
-                    </Badge>
+                    <span className="text-sm">{formatPercent(tier.averageAvailability, 2)}</span>
+                    {tier.complianceStatus == null ? (
+                      <Badge variant="outline">{NOT_AVAILABLE}</Badge>
+                    ) : (
+                      <Badge variant={tier.complianceStatus === 'compliant' ? 'success' : 'destructive'}>
+                        {tier.complianceStatus === 'compliant' ? 'Within SLA' : 'Below SLA'}
+                      </Badge>
+                    )}
                   </div>
                 </div>
               ))}
@@ -197,43 +227,47 @@ export const CIODashboard: React.FC = () => {
           <div>
           <h3 className="text-lg font-semibold mb-1">Change Success Rates</h3>
           <p className="text-sm text-muted-foreground mb-4">Last {timeRange.label}</p>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  data={changeData}
-                  cx="50%"
-                  cy="50%"
-                  labelLine={false}
-                  label={({ name, percent }) =>
-                    `${name}: ${(percent * 100).toFixed(0)}%`
-                  }
-                  outerRadius={100}
-                  fill={brand.sky}
-                  dataKey="value"
-                >
-                  {changeData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} />
-                  ))}
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
+            {changeData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie
+                    data={changeData}
+                    cx="50%"
+                    cy="50%"
+                    labelLine={false}
+                    label={({ name, percent }) =>
+                      `${name}: ${(percent * 100).toFixed(0)}%`
+                    }
+                    outerRadius={100}
+                    fill={brand.sky}
+                    dataKey="value"
+                  >
+                    {changeData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <UnavailableNotice label="Change success rates" />
+            )}
             <div className="mt-4 grid grid-cols-3 gap-4 text-center">
               <div>
                 <p className="text-2xl font-bold text-success">
-                  {changeSuccessRates.successful}
+                  {formatCount(changeSuccessRates.successful)}
                 </p>
                 <p className="text-xs text-muted-foreground">Successful</p>
               </div>
               <div>
                 <p className="text-2xl font-bold text-danger">
-                  {changeSuccessRates.failed}
+                  {formatCount(changeSuccessRates.failed)}
                 </p>
                 <p className="text-xs text-muted-foreground">Failed</p>
               </div>
               <div>
                 <p className="text-2xl font-bold text-warning">
-                  {changeSuccessRates.rollbacks}
+                  {formatCount(changeSuccessRates.rollbacks)}
                 </p>
                 <p className="text-xs text-muted-foreground">Rollbacks</p>
               </div>
@@ -247,17 +281,21 @@ export const CIODashboard: React.FC = () => {
         <div>
           <h3 className="text-lg font-semibold mb-1">Incident Response Times (MTTR)</h3>
           <p className="text-sm text-muted-foreground mb-4">Mean Time to Resolution by priority</p>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={incidentResponseTimes}>
-              <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
-              <XAxis dataKey="priority" tick={{ fill: brand.inkSoft, fontSize: 12 }} />
-              <YAxis label={{ value: 'Hours', angle: -90, position: 'insideLeft' }} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
-              <Tooltip />
-              <Legend />
-              <Bar dataKey="mttr" fill={brand.danger} name="Actual MTTR" radius={[8, 8, 0, 0]} />
-              <Bar dataKey="target" fill={brand.success} name="Target MTTR" radius={[8, 8, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          {incidentResponseTimes.length === 0 && isUnavailable(unavailable, 'incidentResponseTimes') ? (
+            <UnavailableNotice label="Incident response times" />
+          ) : (
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={incidentResponseTimes}>
+                <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
+                <XAxis dataKey="priority" tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+                <YAxis label={{ value: 'Hours', angle: -90, position: 'insideLeft' }} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+                <Tooltip />
+                <Legend />
+                <Bar dataKey="mttr" fill={brand.danger} name="Actual MTTR" radius={[8, 8, 0, 0]} />
+                <Bar dataKey="target" fill={brand.success} name="Target MTTR" radius={[8, 8, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
           <div className="mt-4 space-y-2">
             {incidentResponseTimes.map((priority: any) => (
               <div key={priority.priority} className="flex items-center justify-between p-2 rounded-lg hover:bg-accent">
@@ -286,32 +324,37 @@ export const CIODashboard: React.FC = () => {
             <div>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm font-medium">Configuration Accuracy</span>
-                <span className="text-sm font-bold">
-                  {(configurationAccuracy?.accuracyPercentage ?? 0).toFixed(1)}%
-                </span>
+                <span className="text-sm font-bold">{formatPercent(accuracy)}</span>
               </div>
-              <Progress value={configurationAccuracy?.accuracyPercentage ?? 0} className="h-3" />
+              {isKnown(accuracy) ? (
+                <Progress value={accuracy} className="h-3" />
+              ) : (
+                <UnavailableNotice label="Accuracy" />
+              )}
             </div>
             <div className="grid grid-cols-3 gap-4 mt-4">
               <div className="text-center p-4 border border-border rounded-lg">
-                <p className="text-2xl font-bold">{configurationAccuracy.totalCIs}</p>
+                <p className="text-2xl font-bold">{formatCount(configurationAccuracy.totalCIs)}</p>
                 <p className="text-sm text-muted-foreground">Total CIs</p>
               </div>
               <div className="text-center p-4 border border-border rounded-lg">
                 <p className="text-2xl font-bold text-success">
-                  {configurationAccuracy.accurateCIs}
+                  {formatCount(configurationAccuracy.accurateCIs)}
                 </p>
                 <p className="text-sm text-muted-foreground">Accurate CIs</p>
               </div>
               <div className="text-center p-4 border border-border rounded-lg">
                 <p className="text-2xl font-bold text-warning">
-                  {configurationAccuracy.driftDetected}
+                  {formatCount(configurationAccuracy.driftDetected)}
                 </p>
                 <p className="text-sm text-muted-foreground">Drift Detected</p>
               </div>
             </div>
             <p className="text-xs text-muted-foreground mt-2">
-              Last audit: {new Date(configurationAccuracy.lastAuditDate).toLocaleString()}
+              Last audit:{' '}
+              {configurationAccuracy.lastAuditDate
+                ? new Date(configurationAccuracy.lastAuditDate).toLocaleString()
+                : EMPTY_VALUE}
             </p>
           </div>
         </div>
@@ -322,17 +365,28 @@ export const CIODashboard: React.FC = () => {
         <div>
           <h3 className="text-lg font-semibold mb-1">Cost by Business Capability</h3>
           <p className="text-sm text-muted-foreground mb-4">Budget allocation and variance</p>
-          <ResponsiveContainer width="100%" height={350}>
-            <BarChart data={costByCapability.slice(0, 10)} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
-              <XAxis type="number" tickFormatter={formatCurrency} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
-              <YAxis dataKey="capability" type="category" width={150} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
-              <Tooltip formatter={(value: number) => formatCurrency(value)} />
-              <Legend />
-              <Bar dataKey="cost" fill={brand.navy} name="Actual Cost" radius={[0, 8, 8, 0]} />
-              <Bar dataKey="budgetAllocated" fill={brand.success} name="Budget" radius={[0, 8, 8, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          {hasCost || hasBudget ? (
+            <ResponsiveContainer width="100%" height={350}>
+              <BarChart data={costByCapability.slice(0, 10)} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
+                <XAxis type="number" tickFormatter={formatCurrency} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+                <YAxis dataKey="capability" type="category" width={150} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+                <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                <Legend />
+                <Bar dataKey="cost" fill={brand.navy} name="Actual Cost" radius={[0, 8, 8, 0]} />
+                {hasBudget && (
+                  <Bar dataKey="budgetAllocated" fill={brand.success} name="Budget" radius={[0, 8, 8, 0]} />
+                )}
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <UnavailableNotice label="Cost by capability" />
+          )}
+          {(!hasBudget || costByCapability.some((c: any) => !isKnown(c.variance))) && (
+            <div className="mt-4">
+              <UnavailableNotice label="Budget and variance" />
+            </div>
+          )}
         </div>
       </LiquidGlass>
 
@@ -341,39 +395,43 @@ export const CIODashboard: React.FC = () => {
         <div>
           <h3 className="text-lg font-semibold mb-1">Capacity Planning</h3>
           <p className="text-sm text-muted-foreground mb-4">Resource utilization trends and forecast</p>
-          <ResponsiveContainer width="100%" height={350}>
-            <LineChart data={capacityPlanning}>
-              <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
-              <XAxis dataKey="month" tick={{ fill: brand.inkSoft, fontSize: 12 }} />
-              <YAxis domain={[0, 100]} label={{ value: 'Utilization %', angle: -90, position: 'insideLeft' }} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
-              <Tooltip />
-              <Legend />
-              <Line
-                type="monotone"
-                dataKey="computeUtilization"
-                stroke={brand.navy}
-                strokeWidth={2}
-                name="Compute"
-                dot={{ r: 4 }}
-              />
-              <Line
-                type="monotone"
-                dataKey="storageUtilization"
-                stroke={brand.sky}
-                strokeWidth={2}
-                name="Storage"
-                dot={{ r: 4 }}
-              />
-              <Line
-                type="monotone"
-                dataKey="networkUtilization"
-                stroke={brand.success}
-                strokeWidth={2}
-                name="Network"
-                dot={{ r: 4 }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
+          {capacityPlanning.length === 0 && isUnavailable(unavailable, 'capacityPlanning') ? (
+            <UnavailableNotice label="Capacity planning" />
+          ) : (
+            <ResponsiveContainer width="100%" height={350}>
+              <LineChart data={capacityPlanning}>
+                <CartesianGrid strokeDasharray="3 3" stroke={brand.line} />
+                <XAxis dataKey="month" tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+                <YAxis domain={[0, 100]} label={{ value: 'Utilization %', angle: -90, position: 'insideLeft' }} tick={{ fill: brand.inkSoft, fontSize: 12 }} />
+                <Tooltip />
+                <Legend />
+                <Line
+                  type="monotone"
+                  dataKey="computeUtilization"
+                  stroke={brand.navy}
+                  strokeWidth={2}
+                  name="Compute"
+                  dot={{ r: 4 }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="storageUtilization"
+                  stroke={brand.sky}
+                  strokeWidth={2}
+                  name="Storage"
+                  dot={{ r: 4 }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="networkUtilization"
+                  stroke={brand.success}
+                  strokeWidth={2}
+                  name="Network"
+                  dot={{ r: 4 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
         </div>
       </LiquidGlass>
     </div>

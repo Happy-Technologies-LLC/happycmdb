@@ -63,7 +63,7 @@ afterAll(() => host.kill());
 it('(a) an update with the placeholder, a non-object or an object holding the placeholder gets a fixed 400 and writes nothing; a metadata-only update keeps the secret', async () => {
   const id = (await post(stored)).body.data.id;
   const before = await row(id);
-  for (const credentials of [REDACTED_PLACEHOLDER, rnd(), [stored], null, { ...stored, password: REDACTED_PLACEHOLDER }, { username: 'svc', extra: { note: `${rnd()}${REDACTED_PLACEHOLDER}` } }]) {
+  for (const credentials of [REDACTED_PLACEHOLDER, rnd(), [stored], null, 5, true, { ...stored, password: REDACTED_PLACEHOLDER }, { username: 'svc', extra: { note: `${rnd()}${REDACTED_PLACEHOLDER}` } }]) {
     const from = seen.length;
     const res = await put(id, { name: rnd(), credentials });
     expect([res.status, res.body._message, res.body._details, seen.length - from]).toEqual([400, INVALID_CREDENTIALS_UPDATE, undefined, 0]);

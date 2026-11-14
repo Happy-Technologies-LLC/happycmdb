@@ -42,9 +42,18 @@ it('the edge CSP connect-src does not list api.happycmdb.io, which the built SPA
   expect(conf).not.toMatch(/connect-src [^;"]*api\.happycmdb\.io/);
 });
 
-it('no non-test web-ui/src file calls a localhost or 127.0.0.1 origin, which the CSP blocks (HAP-1234)', () => {
+// HAP-1279 F-5: a loopback or wildcard-bind origin, with or without a scheme or port: localhost:3000, //localhost, 127.0.0.1, 0.0.0.0, [::1].
+const LOCAL_ORIGIN =
+  /localhost:3000|(?:https?:)?\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?![\w.])|(?<![\w.])(?:127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d+/;
+it('the local-origin pattern matches loopback and wildcard origins and nothing near-miss', () => {
+  const hits = ['http://localhost:3000/api', "'//localhost'", 'localhost:3000', 'http://127.0.0.1', 'https://127.0.0.1:8443/x', 'http://0.0.0.0:3000', '//0.0.0.0', 'http://[::1]', '//[::1]:3000', 'https://[::1]/a', '0.0.0.0:8080', '[::1]:3000', 'fetch("127.0.0.1:3000")'];
+  const misses = ['http://localhost.example.com', 'http://127.0.0.10', '10.0.0.0/8', 'CMDB_NETWORKS=10.0.0.0/8,172.16.0.0/12', '0.0.0.0', '::1', 'http://[::1a]', 'x0.0.0.0:80', '1127.0.0.1:80', 'https://example.com:3000'];
+  expect([hits.filter((h) => !LOCAL_ORIGIN.test(h)), misses.filter((m) => LOCAL_ORIGIN.test(m))]).toEqual([[], []]);
+});
+
+it('no non-test web-ui/src file calls a localhost, 127.0.0.1, 0.0.0.0 or [::1] origin, which the CSP blocks (HAP-1234)', () => {
   const files = (readdirSync(SRC, { recursive: true }) as string[]).filter((f) => /\.(?:[cm]?[jt]sx?|html)$/.test(f) && !/(?:\.test\.|__tests__)/.test(f));
   expect(files).toContain('components/discovery/AgentList.tsx');
-  const hits = files.filter((f) => /localhost:3000|(?:https?:)?\/\/(?:localhost|127\.0\.0\.1)\b/.test(readFileSync(resolve(SRC, f), 'utf8')));
+  const hits = files.filter((f) => LOCAL_ORIGIN.test(readFileSync(resolve(SRC, f), 'utf8')));
   expect(hits).toEqual([]);
 });

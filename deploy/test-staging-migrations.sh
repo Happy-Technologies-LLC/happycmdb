@@ -85,6 +85,22 @@ owner_psql() { compose exec -T postgres psql -X -A -t -v ON_ERROR_STOP=1 -U cmdb
 attrs=$(owner_psql -c "SELECT rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls, rolcanlogin
   FROM pg_roles WHERE rolname = 'cmdb_app'")
 [ "$attrs" = 'f|f|f|f|f|t' ] || { echo "cmdb_app attributes: '$attrs'" >&2; exit 1; }
+# What a finished install looks like to the app login: its grants and every column of the application schemas.
+app_state() {
+  owner_psql -c "
+    SELECT 'rel ' || n.nspname || '.' || c.relname || ' ' || a.privilege_type
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace, aclexplode(c.relacl) a
+      WHERE a.grantee = 'cmdb_app'::regrole AND n.nspname IN ('public', 'cmdb')
+    UNION ALL
+    SELECT 'schema ' || n.nspname || ' ' || a.privilege_type FROM pg_namespace n, aclexplode(n.nspacl) a
+      WHERE a.grantee = 'cmdb_app'::regrole
+    UNION ALL
+    SELECT 'col ' || table_schema || '.' || table_name || '.' || column_name || ' ' || data_type
+      FROM information_schema.columns WHERE table_schema IN ('public', 'cmdb')
+    ORDER BY 1"
+}
+app_state > "$scratch/fresh_state"
+[ "$(grep -c '^rel ' "$scratch/fresh_state")" -gt 0 ] || { echo 'cmdb_app holds no grants after a fresh install' >&2; exit 1; }
 compose up -d --no-build --wait --wait-timeout 600 api-server
 probe() { compose exec -T api-server node - < deploy/api-db-role-probe.cjs; }
 app_probe=$(probe) || true
@@ -141,3 +157,61 @@ if compose run --rm migrator; then
   exit 1
 fi
 echo 'Disposable empty-DB migration and no-op rerun passed'
+
+# HAP-1575: the generation-94 shape (ledger present, no 045, no cmdb_app) upgrades to the fresh-install end state.
+# Rebuild the volume, then migrate with only the files before 045 and without app-login (--no-deps), so cmdb_app is never made.
+compose --profile migrate down -v --remove-orphans
+compose up -d --wait postgres
+gen94="$scratch/gen94-migrations"
+mkdir "$gen94"
+for file in packages/database/src/postgres/migrations/*.sql; do
+  if [[ "$(basename "$file")" < 045_staging_app_login_acl.sql ]]; then cp "$file" "$gen94/"; fi
+done
+ls "$gen94" > "$scratch/gen94_expected"
+[ -s "$scratch/gen94_expected" ] && ! grep -q '^045' "$scratch/gen94_expected"
+compose run --rm --no-deps -v "$gen94:/gen94:ro" migrator \
+  node packages/database/dist/postgres/run-migrations.js /gen94
+query_migrations > "$scratch/actual"
+diff -u "$scratch/gen94_expected" "$scratch/actual"
+roles=$(owner_psql -c "SELECT count(*) FROM pg_roles WHERE rolname = 'cmdb_app'")
+[ "$roles" = 0 ] || { echo "generation-94 fixture already has cmdb_app" >&2; exit 1; }
+
+# Same checks after an upgrade and after a down + re-up: ledger complete, the app login a plain LOGIN role, grants and schema as a
+# fresh install, and the API connecting as cmdb_app.
+assert_fresh_end_state() {
+  query_migrations > "$scratch/actual"
+  diff -u "$scratch/expected" "$scratch/actual"
+  attrs=$(owner_psql -c "SELECT rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls, rolcanlogin
+    FROM pg_roles WHERE rolname = 'cmdb_app'")
+  [ "$attrs" = 'f|f|f|f|f|t' ] || { echo "$1: cmdb_app attributes: '$attrs'" >&2; exit 1; }
+  app_state > "$scratch/state"
+  diff -u "$scratch/fresh_state" "$scratch/state"
+  compose up -d --no-build --wait --wait-timeout 600 api-server
+  app_probe=$(probe) || true
+  [ "$app_probe" = 'current_user=cmdb_app rolsuper=false' ] || { echo "$1: API role probe: '$app_probe'" >&2; exit 1; }
+}
+compose run --rm migrator
+assert_fresh_end_state 'generation-94 upgrade'
+
+# The manual 045 rollback sets cmdb_app NOLOGIN; the next app-login + migrator run restores LOGIN and re-applies 045-048.
+compose stop api-server
+for _ in $(seq 30); do
+  sessions=$(owner_psql -c "SELECT count(*) FROM pg_stat_activity WHERE usename = 'cmdb_app'")
+  [ "$sessions" = 0 ] && break
+  sleep 1
+done
+[ "$sessions" = 0 ] || { echo 'cmdb_app sessions outlived the API' >&2; exit 1; }
+compose exec -T postgres psql -X -v ON_ERROR_STOP=1 -U cmdb_user -d cmdb \
+  < packages/database/src/postgres/migrations/rollback/045_staging_app_login_acl.down.sql
+down_login=$(owner_psql -c "SELECT rolcanlogin FROM pg_roles WHERE rolname = 'cmdb_app'")
+[ "$down_login" = f ] || { echo "cmdb_app rolcanlogin after the 045 rollback: '$down_login'" >&2; exit 1; }
+down_grants=$(app_state | grep -E '^(rel|schema) ' || true)
+[ -z "$down_grants" ] || { echo "cmdb_app kept grants after the 045 rollback: $down_grants" >&2; exit 1; }
+if refusal=$(compose exec -T postgres psql -X -U cmdb_app -d cmdb -c 'SELECT 1' < /dev/null 2>&1); then
+  echo 'cmdb_app logged in after the 045 rollback' >&2
+  exit 1
+fi
+[[ "$refusal" == *'not permitted to log in'* ]] || { echo "cmdb_app refusal was not NOLOGIN: $refusal" >&2; exit 1; }
+compose run --rm migrator
+assert_fresh_end_state 'down + re-up'
+echo 'Disposable generation-94 upgrade and 045 rollback + re-up passed'

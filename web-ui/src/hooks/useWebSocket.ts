@@ -123,7 +123,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         if (reconnect && shouldReconnectRef.current) {
           const delay = Math.min(reconnectInterval * 2 ** failedAttemptsRef.current, MAX_RECONNECT_DELAY_MS);
           failedAttemptsRef.current += 1;
-          logger.info(`Reconnecting in ${delay}ms...`);
+          logger.info('Reconnecting after a delay');
           reconnectTimeoutRef.current = setTimeout(() => {
             connect();
           }, delay);

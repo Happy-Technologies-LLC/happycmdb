@@ -134,6 +134,25 @@ jobs:
       - name: The web image starts and serves the bundle (HAP-1754)
         run: deploy/test-web-image-start.sh web-ui-image:ci
 
+  web-ui-lint:
+    name: Web UI Lint (eslint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint the web UI (HAP-1951; the root "npm run lint" is not a gate, see the PR)
+        run: npm run lint --workspace=web-ui
+
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
@@ -892,7 +911,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
   ci-rollup:
-    needs: [unit-tests, integration-tests, e2e-tests, e2e-typecheck, staging-migrations, web-ui-build, nginx-config-test, docs-build, api-image-nmap, hap630-real-store, hap644-real-store, hap668-real-store, hap835-real-store, hap1422-real-store, hap1562-real-store]
+    needs: [unit-tests, integration-tests, e2e-tests, e2e-typecheck, staging-migrations, web-ui-build, web-ui-lint, nginx-config-test, docs-build, api-image-nmap, hap630-real-store, hap644-real-store, hap668-real-store, hap835-real-store, hap1422-real-store, hap1562-real-store]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -908,6 +927,7 @@ jobs:
           STAGING_MIGRATIONS_RESULT: ${{ needs.staging-migrations.result }}
           E2E_TESTS_RESULT: ${{ needs.e2e-tests.result }}
           WEB_UI_BUILD_RESULT: ${{ needs.web-ui-build.result }}
+          WEB_UI_LINT_RESULT: ${{ needs.web-ui-lint.result }}
           E2E_TYPECHECK_RESULT: ${{ needs.e2e-typecheck.result }}
           NGINX_CONFIG_TEST_RESULT: ${{ needs.nginx-config-test.result }}
           DOCS_BUILD_RESULT: ${{ needs.docs-build.result }}
@@ -929,6 +949,7 @@ jobs:
              [ "$E2E_TESTS_RESULT" = "success" ] &&
              [ "$STAGING_MIGRATIONS_RESULT" = "success" ] &&
              [ "$WEB_UI_BUILD_RESULT" = "success" ] &&
+             [ "$WEB_UI_LINT_RESULT" = "success" ] &&
              [ "$E2E_TYPECHECK_RESULT" = "success" ] &&
              [ "$NGINX_CONFIG_TEST_RESULT" = "success" ] &&
              [ "$DOCS_BUILD_RESULT" = "success" ] &&
@@ -949,6 +970,7 @@ jobs:
             [ "$E2E_TESTS_RESULT" = "success" ] || failures+=("e2e-tests=$E2E_TESTS_RESULT")
             [ "$STAGING_MIGRATIONS_RESULT" = "success" ] || failures+=("staging-migrations=$STAGING_MIGRATIONS_RESULT")
             [ "$WEB_UI_BUILD_RESULT" = "success" ] || failures+=("web-ui-build=$WEB_UI_BUILD_RESULT")
+            [ "$WEB_UI_LINT_RESULT" = "success" ] || failures+=("web-ui-lint=$WEB_UI_LINT_RESULT")
             [ "$E2E_TYPECHECK_RESULT" = "success" ] || failures+=("e2e-typecheck=$E2E_TYPECHECK_RESULT")
             [ "$NGINX_CONFIG_TEST_RESULT" = "success" ] || failures+=("nginx-config-test=$NGINX_CONFIG_TEST_RESULT")
             [ "$DOCS_BUILD_RESULT" = "success" ] || failures+=("docs-build=$DOCS_BUILD_RESULT")

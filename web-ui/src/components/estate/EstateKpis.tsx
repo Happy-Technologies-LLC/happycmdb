@@ -13,6 +13,8 @@ import { QueryState } from './SurfaceState';
 function NotAvailable({ label, missing }: { label: string; missing: ReactNode }) {
   return (
     <MetricCard
+      role="group"
+      aria-label={label}
       layout="compact"
       label={label}
       value="–"
@@ -44,6 +46,8 @@ export function EstateKpis({
         <QueryState what="the estate counts" error={error} onRetry={onRetry} />
       ) : (
         <MetricCard
+          role="group"
+          aria-label="CIs managed"
           layout="compact"
           label="CIs managed"
           loading={loading}

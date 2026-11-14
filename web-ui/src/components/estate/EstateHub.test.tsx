@@ -12,7 +12,10 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 const auth = vi.hoisted(() => ({ role: 'admin' as string }));
 vi.mock('@contexts/AuthContext', () => ({ useAuth: () => ({ user: { role: auth.role } }) }));
 
-type Reply = { status: number; body: unknown } | 'pending';
+type Reply =
+  | { status: number; body: unknown }
+  | 'pending'
+  | ((params: Record<string, unknown>) => { status: number; body: unknown });
 const world: { routes: Record<string, Reply>; requests: string[] } = { routes: {}, requests: [] };
 
 const { default: axios } = await import('axios');
@@ -22,8 +25,9 @@ axios.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
     `${config.method} ${url}${config.params ? `?${new URLSearchParams(config.params).toString()}` : ''}`
   );
   const key = Object.keys(world.routes).find((k) => url === k || url.startsWith(`${k}?`));
-  const reply = key ? world.routes[key] : { status: 404, body: { message: `unplayed ${url}` } };
-  if (reply === 'pending') return new Promise(() => undefined);
+  const played = key ? world.routes[key] : { status: 404, body: { message: `unplayed ${url}` } };
+  if (played === 'pending') return new Promise(() => undefined);
+  const reply = typeof played === 'function' ? played(config.params ?? {}) : played;
   const response = {
     data: reply.body,
     status: reply.status,
@@ -246,12 +250,13 @@ describe('estate hub: KPI stack (N2)', () => {
     mount();
     expect(await screen.findByText('CIs managed')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('4 active')).toBeInTheDocument());
+    expect(within(screen.getByRole('group', { name: 'CIs managed' })).getByText('4')).toBeInTheDocument();
     for (const [label, missing] of [
       ['Health', 'BW1, BW4'],
       ['Config drift', 'BW5'],
       ['Coverage', 'BW6'],
     ]) {
-      const card = screen.getByText(label).closest('section, div[class*="rounded"]') as HTMLElement;
+      const card = screen.getByRole('group', { name: label });
       expect(within(card).getByText('Not available yet')).toBeInTheDocument();
       expect(within(card).getByText(new RegExp(missing))).toBeInTheDocument();
     }
@@ -269,26 +274,34 @@ describe('estate hub: KPI stack (N2)', () => {
 
 describe('estate hub: incident ribbon (ME1)', () => {
   it('leads with the highest-priority open incident and counts the rest', async () => {
+    // The route takes one status per request: each status answers its own rows and its own total, as the server does.
+    const byStatus: Record<string, unknown[]> = {
+      NEW: [
+        incident({
+          id: 'i2',
+          incident_number: 'INC-30000',
+          title: 'Minor slowdown',
+          priority: 3,
+        }),
+        incident({}),
+      ],
+      ASSIGNED: [
+        incident({ id: 'i3', incident_number: 'INC-40000', title: 'Disk filling', priority: 2 }),
+      ],
+      IN_PROGRESS: [],
+    };
     play({
-      '/itil/incidents': ok({
-        success: true,
-        data: [
-          incident({
-            id: 'i2',
-            incident_number: 'INC-30000',
-            title: 'Minor slowdown',
-            priority: 3,
-          }),
-          incident({}),
-        ],
-        pagination: { total: 2 },
-      }),
+      '/itil/incidents': (params) => {
+        const data = byStatus[String(params.status)] ?? [];
+        return ok({ success: true, data, pagination: { total: data.length } });
+      },
     });
     mount();
     expect(await screen.findByText('INC-20481')).toBeInTheDocument();
     expect(screen.getByText(/Orders database primary failing/)).toBeInTheDocument();
-    expect(screen.getByText(/P1 · opened 14 min ago/)).toBeInTheDocument();
+    expect(screen.getByText(/P1 · opened 14 min ago · 2 more open$/)).toBeInTheDocument();
     expect(screen.queryByText('INC-30000')).toBeNull();
+    expect(screen.queryByText('INC-40000')).toBeNull();
     // One request per open status, the list route takes one at a time.
     expect(
       world.requests
@@ -296,6 +309,20 @@ describe('estate hub: incident ribbon (ME1)', () => {
         .map((r) => /status=(\w+)/.exec(r)?.[1])
         .sort()
     ).toEqual(['ASSIGNED', 'IN_PROGRESS', 'NEW']);
+  });
+
+  it('says nothing about others when the lead incident is the only open one', async () => {
+    play({
+      '/itil/incidents': (params) =>
+        ok({
+          success: true,
+          data: params.status === 'NEW' ? [incident({})] : [],
+          pagination: { total: params.status === 'NEW' ? 1 : 0 },
+        }),
+    });
+    mount();
+    expect(await screen.findByText('INC-20481')).toBeInTheDocument();
+    expect(screen.queryByText(/more open/)).toBeNull();
   });
 
   it('omits users and revenue when they are the stored zeros, shows them when estimated', async () => {

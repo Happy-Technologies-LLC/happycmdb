@@ -27,6 +27,11 @@ export const PatternLibrary: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
+  // Reset to page 1 when filters change (a hook: it stays above the loading early return)
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter, categoryFilter]);
+
   if (loading) {
     return <LoadingSpinner />;
   }
@@ -52,11 +57,6 @@ export const PatternLibrary: React.FC = () => {
   const startIndex = (currentPage - 1) * pageSize;
   const endIndex = startIndex + pageSize;
   const paginatedPatterns = filteredPatterns.slice(startIndex, endIndex);
-
-  // Reset to page 1 when filters change
-  React.useEffect(() => {
-    setCurrentPage(1);
-  }, [searchTerm, statusFilter, categoryFilter]);
 
   const getStatusBadge = (status: string) => {
     const variants: Record<string, { variant: BadgeProps['variant']; label: string; icon: React.ReactNode }> = {

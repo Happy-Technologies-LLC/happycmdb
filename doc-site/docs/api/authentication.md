@@ -463,6 +463,10 @@ Only three authentication endpoints carry a rate limiter: `POST /api/v1/auth/log
 
 The client address ("IP") is `req.ip`: `X-Forwarded-For` counts only for the hops `TRUST_PROXY` trusts (default:
 none). See [Proxy Trust & Login Rate Limiting](/configuration/environment-variables#proxy-trust-login-rate-limiting).
+Every per-IP bucket key (login, password change, refresh) uses the address normalized (HAP-1715): an IPv4 address
+is itself, an IPv4-mapped IPv6 address (`::ffff:192.0.2.1`) is its IPv4 address, and any other IPv6 address is its
+`/64`, so a client rotating through its own `/64` shares one bucket. A value that is not an IP address shares one
+`unknown` bucket.
 While the rate-limit store is unreachable, login and password change answer a fixed `503` with
 `Cache-Control: no-store` and never check the password (fail closed); refresh is let through (fail open).
 

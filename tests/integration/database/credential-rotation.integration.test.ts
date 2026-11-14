@@ -362,15 +362,16 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
 
     it.each([
       ['a changed stored hash', async () => { await graph.run('MATCH (u:User {_id: $id}) SET u._passwordHash = "newer"', { id: USER }); }, {}, 'newer'],
-      ['a moved generation', async () => { await graph.run('MATCH (u:User {_id: $id}) SET u.credentialEpoch = 1', { id: USER }); }, {}, defaultHash],
-      ['a marked account', async () => { await graph.run('MATCH (u:User {_id: $id}) SET u.defaultPasswordSuspect = true', { id: USER }); }, {}, defaultHash],
-    ] as Array<[string, () => Promise<void>, object, string]>)('writes nothing for %s', async (_label, interfere, overrides, expected) => {
+      ['a moved generation', async () => { await graph.run('MATCH (u:User {_id: $id}) SET u.credentialEpoch = 1', { id: USER }); }, {}, undefined],
+      ['a marked account', async () => { await graph.run('MATCH (u:User {_id: $id}) SET u.defaultPasswordSuspect = true', { id: USER }); }, {}, undefined],
+    ] as Array<[string, () => Promise<void>, object, string | undefined]>)('writes nothing for %s', async (_label, interfere, overrides, expected) => {
       await unmark();
       await interfere();
 
       expect(await rehash(overrides)).toBe(false);
 
-      expect((await userProps())['_passwordHash']).toBe(expected);
+      // defaultHash is set in beforeAll, so "left as it was" is resolved here, not when the table is built.
+      expect((await userProps())['_passwordHash']).toBe(expected ?? defaultHash);
     });
   });
 

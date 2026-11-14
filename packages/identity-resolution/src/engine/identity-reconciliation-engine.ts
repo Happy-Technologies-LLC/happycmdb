@@ -403,65 +403,9 @@ export class IdentityReconciliationEngine {
         source: discoveredCI.source
       });
 
-      const { ciId, incarnationId } = await this.createNewCI(discoveredCI, organizationId);
-
-      // Emit CI discovered event
-      await this.eventProducer.emit<CIDiscoveredEvent>(
-        EventType.CI_DISCOVERED,
-        'identity-reconciliation-engine',
-        {
-          ci_id: ciId,
-          organization_id: organizationId,
-          ci_incarnation_id: incarnationId,
-          ci_name: discoveredCI.name,
-          ci_type: discoveredCI.ci_type,
-          source_system: discoveredCI.source,
-          confidence_score: discoveredCI.confidence_score,
-          identifiers: discoveredCI.identifiers,
-        }
-      );
-
-      return ciId;
-    }
-  }
-
-  /**
-   * Create new CI in Neo4j
-   */
-  private async createNewCI(ci: TransformedCI, organizationId: string): Promise<{ ciId: string; incarnationId: string }> {
-    const session = this.neo4jClient.getSession();
-
-    try {
-      const ciId = this.generateCIId();
-
-      const result = await session.run(
-        `CREATE (ci:CI:${sanitizeCITypeForLabel(ci.ci_type)})
-         SET ci = $properties, ci.incarnation_id = randomUUID()
-         RETURN ci.id as ci_id, ci.incarnation_id AS incarnation_id`,
-        {
-          properties: {
-            name: ci.name,
-            ci_type: ci.ci_type,
-            environment: ci.environment,
-            status: ci.status || 'active',
-            ...mergeableOnCreate(ci.attributes),
-            ...mergeableOnCreate(ci.identifiers),
-            id: ciId,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            organization_id: organizationId,
-          },
-        }
-      );
-
-      // Record source lineage
-      await this.recordSourceLineage(ciId, ci.source, ci.source_id, ci.confidence_score, organizationId);
-
-      logger.info('New CI created', { ci_id: ciId, name: ci.name });
-      return { ciId: result.records[0]!.get('ci_id') as string,
-        incarnationId: result.records[0]!.get('incarnation_id') as string };
-    } finally {
-      await session.close();
+      // One journaled create (history, audit, lineage, field sources) under the stable id of (O, source, source_id);
+      // it emits CI_DISCOVERED after T2. A missing or over-255 source_id/source is a PlanUnrepresentableError.
+      return (await this.createFromMerge(discoveredCI, organizationId, 'system:identity-reconciliation', 'system')).ci_id;
     }
   }
 
@@ -486,7 +430,8 @@ export class IdentityReconciliationEngine {
    * path (create, update, hold or resolve): a database not yet migrated by Neo4j 005 keeps a global constraint on it,
    * so a collision would disclose another org's value. That identity is O's lineage (findByExternalId).
    */
-  private async createFromMerge(ci: TransformedCI, organizationId: string, actor: string): Promise<MergeOutcome> {
+  private async createFromMerge(ci: TransformedCI, organizationId: string, actor: string,
+    actorType: JournalActorType = 'user'): Promise<MergeOutcome> {
     const { source, source_id: sourceId } = ci;
     if (typeof sourceId !== 'string' || !sourceId || sourceId.length > 255 || source.length > 255) throw new PlanUnrepresentableError();
     const attributes = mergeableOnCreate(ci.attributes);
@@ -496,7 +441,7 @@ export class IdentityReconciliationEngine {
     const ciId = `ci_${createHash('sha256').update(JSON.stringify([organizationId, source, sourceId])).digest('hex').slice(0, 32)}`;
     const incarnationId = randomUUID();
     const outcome = await this.neo4jClient.journal.run({
-      organizationId, actor, operation: 'create', ciIds: [ciId],
+      organizationId, actor, actorType, operation: 'create', ciIds: [ciId],
       plan: async () => ({
         graph: { kind: 'create', label: sanitizeCITypeForLabel(ci.ci_type),
           params: enc({ id: ciId, props: { ...fields, incarnation_id: incarnationId } }) },
@@ -650,25 +595,6 @@ export class IdentityReconciliationEngine {
         audit: { action: 'UPDATE', changes: enc([{ field, old_value: current[field] ?? null, new_value: value }]) },
       };
     }, async groupId => ({ ci_id: ciId, status, correlation_id: groupId }));
-  }
-
-  /** Lineage of a CI created by discovery/ETL (S5 residual: not yet journaled), keyed by organization. */
-  private async recordSourceLineage(ciId: string, sourceName: string, sourceId: string, confidence: number,
-    organizationId: string): Promise<void> {
-    await this.postgresClient.query(
-      `INSERT INTO ci_source_lineage (organization_id, ci_id, source_name, source_id, confidence_score, last_seen_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())
-       ON CONFLICT (organization_id, ci_id, source_name, source_id)
-       DO UPDATE SET last_seen_at = NOW(), confidence_score = $5`,
-      [organizationId, ciId, sourceName, sourceId, Math.round(confidence)]
-    );
-  }
-
-  /**
-   * Generate unique CI ID
-   */
-  private generateCIId(): string {
-    return `ci_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 
   /**

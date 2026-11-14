@@ -44,6 +44,20 @@ const mockNeo4jClient = {
     }
     return written.records.length ? result('group') : null;
   },
+  // HAP-2016: the journaled create (journal internals and the real create: reconcile-create.journal.test.ts) plans, then
+  // replays the T2 field-source/lineage upserts on the mock client.
+  journal: {
+    run: async (write: { plan: () => Promise<PlannedMerge>; result: (groupId: string) => Promise<unknown> }) => {
+      const planned = await write.plan();
+      for (const field of planned.fields ?? []) {
+        await mockPostgresClient.query('INSERT INTO ci_field_sources ON CONFLICT', [field.name, field.text, field.source]);
+      }
+      if (planned.lineage) {
+        await mockPostgresClient.query('INSERT INTO ci_source_lineage ON CONFLICT', [planned.lineage.source, planned.lineage.sourceId]);
+      }
+      return write.result('group');
+    },
+  },
 };
 
 const mockPostgresClient = {
@@ -61,6 +75,7 @@ const mockSession = {
 
 jest.mock('@cmdb/database', () => ({
   ...jest.requireActual('@cmdb/database/journal/journal'), enc: jest.requireActual('@cmdb/database/journal/encoding').enc,
+  PlanUnrepresentableError: jest.requireActual('@cmdb/database/journal/encoding').PlanUnrepresentableError,
   getNeo4jClient: jest.fn(() => mockNeo4jClient),
   getPostgresClient: jest.fn(() => mockPostgresClient),
 }));
@@ -341,14 +356,10 @@ describe('Merge Strategies and Conflict Resolution', () => {
 
       // First discovery (NMAP) - no match found via composite fuzzy, creates new CI
       // composite fuzzy: session.run returns no candidates
-      mockSession.run
-        .mockResolvedValueOnce({ records: [] }) // composite fuzzy search - no match
-        .mockResolvedValueOnce({ // CREATE CI
-          records: [{ get: jest.fn().mockReturnValue('ci_merged_server') }],
-        });
+      mockSession.run.mockResolvedValueOnce({ records: [] }); // composite fuzzy search - no match
 
       const ciId1 = await engine.reconcileCI(nmapCI, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
-      expect(ciId1).toBe('ci_merged_server');
+      expect(ciId1).toMatch(/^ci_[0-9a-f]{32}$/); // the stable id of the journaled create
 
       // Reset mocks for second discovery
       mockPostgresClient.query.mockReset();
@@ -359,7 +370,7 @@ describe('Merge Strategies and Conflict Resolution', () => {
       mockSession.run.mockResolvedValueOnce({
         records: [{
           get: jest.fn((field: string) => {
-            if (field === 'ci_id') return 'ci_merged_server';
+            if (field === 'ci_id') return ciId1;
             if (field === 'hostname') return 'prod-server-01';
             if (field === 'ips') return ['10.0.1.50'];
             return null;
@@ -370,7 +381,7 @@ describe('Merge Strategies and Conflict Resolution', () => {
       mockPostgresClient.query.mockResolvedValueOnce({ rows: [] });
       // remaining queries (field sources, lineage, Neo4j update)
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_merged_server' }] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => ciId1 }] });
 
       const ciId2 = await engine.reconcileCI(sshCI, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
@@ -381,12 +392,12 @@ describe('Merge Strategies and Conflict Resolution', () => {
 
       // Third discovery (VMware) - UUID match found
       mockSession.run.mockResolvedValueOnce({
-        records: [{ get: jest.fn().mockReturnValue('ci_merged_server') }],
+        records: [{ get: jest.fn().mockReturnValue(ciId1) }],
       });
       // getFieldSources query
       mockPostgresClient.query.mockResolvedValueOnce({ rows: [] });
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
-      mockSession.run.mockResolvedValue({ records: [{ get: () => 'ci_merged_server' }] });
+      mockSession.run.mockResolvedValue({ records: [{ get: () => ciId1 }] });
 
       const ciId3 = await engine.reconcileCI(vmwareCI, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
@@ -497,10 +508,7 @@ describe('Merge Strategies and Conflict Resolution', () => {
       // No match found via any strategy (all Neo4j queries return empty)
       mockSession.run
         .mockResolvedValueOnce({ records: [] }) // fqdn match - no result
-        .mockResolvedValueOnce({ records: [] }) // composite fuzzy - no result
-        .mockResolvedValueOnce({ // CREATE CI
-          records: [{ get: jest.fn().mockReturnValue('ci_new') }],
-        });
+        .mockResolvedValueOnce({ records: [] }); // composite fuzzy - no result
 
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
 

@@ -176,7 +176,7 @@ const changeFiltersSchema = Joi.object({
   status: Joi.string()
     .valid('DRAFT', 'PENDING_APPROVAL', 'APPROVED', 'SCHEDULED', 'IN_PROGRESS', 'IMPLEMENTED', 'CLOSED', 'CANCELLED')
     .optional(),
-  changeType: Joi.string().valid('STANDARD', 'NORMAL', 'EMERGENCY').optional(),
+  changeType: Joi.string().valid('STANDARD', 'NORMAL', 'EMERGENCY', 'MAJOR').optional(),
   requestedBy: Joi.string().optional(),
   page: Joi.number().integer().min(1).default(1),
   limit: Joi.number().integer().min(1).max(1000).default(50),

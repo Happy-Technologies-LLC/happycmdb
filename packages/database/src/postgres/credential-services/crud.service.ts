@@ -162,7 +162,7 @@ export class CredentialCRUDService {
         );
       }
       logger.error('Failed to create unified credential', {
-        error,
+        error: errorClassFields(error),
         input: { ...input, credentials: '***REDACTED***' },
       });
       throw error;
@@ -364,6 +364,7 @@ export class CredentialCRUDService {
   ): Promise<UnifiedCredential> {
     const client = await this.pool.connect();
     let inTransaction = false;
+    let releaseError: Error | undefined;
     try {
       const updates: string[] = [];
       const params: any[] = [];
@@ -478,7 +479,10 @@ export class CredentialCRUDService {
       };
     } catch (error: any) {
       if (inTransaction) {
-        await client.query('ROLLBACK').catch(() => undefined);
+        // A failed ROLLBACK leaves the session in an unknown state: release it with the error so the pool destroys it.
+        await client.query('ROLLBACK').catch((rollbackError: unknown) => {
+          releaseError = rollbackError instanceof Error ? rollbackError : new Error('ROLLBACK failed');
+        });
       }
       if (error.code === '23505') {
         throw new Error(
@@ -488,7 +492,7 @@ export class CredentialCRUDService {
       logger.error('Failed to update unified credential', { error: errorClassFields(error), id });
       throw error;
     } finally {
-      client.release();
+      client.release(releaseError);
     }
   }
 
@@ -578,7 +582,7 @@ export class CredentialCRUDService {
         name: result.rows[0].name,
       });
     } catch (error) {
-      logger.error('Failed to delete unified credential', { error, id });
+      logger.error('Failed to delete unified credential', { error: errorClassFields(error), id });
       throw error;
     } finally {
       client.release();

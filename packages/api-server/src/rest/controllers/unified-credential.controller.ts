@@ -10,11 +10,11 @@ import {
   AuthProtocol,
   CredentialScope,
   logger,
+  errorClassFields,
   CredentialProtocolAdapter,
 } from '@cmdb/common';
 import { ROLE_PERMISSIONS, type AuthenticatedRequest } from '../../auth/types';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
-import { errorLogFields } from '../../utils/log-error';
 
 /** What every credential read returns instead of the secret. HAP-1227: an update carrying it is refused. */
 export const REDACTED_PLACEHOLDER = '***REDACTED***';
@@ -78,7 +78,7 @@ export class UnifiedCredentialController {
       if (this.refusedC4(error, res)) {
         return;
       }
-      logger.error('Error creating credential', { error: errorLogFields(error) });
+      logger.error('Error creating credential', { error: errorClassFields(error) });
 
       // Check for duplicate name error
       if (error instanceof Error && error.message.includes('already exists')) {
@@ -120,7 +120,7 @@ export class UnifiedCredentialController {
         count: credentials.length,
       });
     } catch (error) {
-      logger.error('Error listing credentials', { error: errorLogFields(error) });
+      logger.error('Error listing credentials', { error: errorClassFields(error) });
       res.status(500).json({
         success: false,
         error: 'Failed to list credentials',
@@ -168,7 +168,7 @@ export class UnifiedCredentialController {
         data: safeCredential,
       });
     } catch (error) {
-      logger.error('Error getting credential', { error: errorLogFields(error), id: req.params['id'] });
+      logger.error('Error getting credential', { error: errorClassFields(error), id: req.params['id'] });
       res.status(500).json({
         success: false,
         error: 'Failed to get credential',
@@ -217,7 +217,7 @@ export class UnifiedCredentialController {
         res.status(400).json({ _success: false, _error: 'Validation Error', _message: CredentialProtocolAdapter.INVALID_SSH_PORT });
         return;
       }
-      logger.error('Error updating credential', { error: errorLogFields(error), id: req.params['id'] });
+      logger.error('Error updating credential', { error: errorClassFields(error), id: req.params['id'] });
 
       // Check for not found error
       if (error instanceof Error && error.message.includes('not found')) {
@@ -270,7 +270,7 @@ export class UnifiedCredentialController {
       if (this.refusedC4(error, res)) {
         return;
       }
-      logger.error('Error deleting credential', { error: errorLogFields(error), id: req.params['id'] });
+      logger.error('Error deleting credential', { error: errorClassFields(error), id: req.params['id'] });
 
       // Check for not found error
       if (error instanceof Error && error.message.includes('not found')) {
@@ -327,7 +327,7 @@ export class UnifiedCredentialController {
         data: result,
       });
     } catch (error) {
-      logger.error('Error validating credential', { error: errorLogFields(error), id: req.params['id'] });
+      logger.error('Error validating credential', { error: errorClassFields(error), id: req.params['id'] });
       res.status(500).json({
         success: false,
         error: 'Failed to validate credential',
@@ -368,7 +368,7 @@ export class UnifiedCredentialController {
         data: safeResult,
       });
     } catch (error) {
-      logger.error('Error matching credentials', { error: errorLogFields(error) });
+      logger.error('Error matching credentials', { error: errorClassFields(error) });
       res.status(500).json({
         success: false,
         error: 'Failed to match credentials',
@@ -401,7 +401,7 @@ export class UnifiedCredentialController {
         count: safeResults.length,
       });
     } catch (error) {
-      logger.error('Error ranking credentials', { error: errorLogFields(error) });
+      logger.error('Error ranking credentials', { error: errorClassFields(error) });
       res.status(500).json({
         success: false,
         error: 'Failed to rank credentials',

@@ -461,6 +461,17 @@ export interface CredentialSetUpdateInput {
 }
 
 /**
+ * A credential set that does not exist for the caller (missing, or owned by someone else). Controllers branch on the
+ * class, never on the message: a decode failure's message can quote decrypted plaintext (HAP-1834).
+ */
+export class CredentialSetNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Credential set with ID ${id} not found`);
+    this.name = 'CredentialSetNotFoundError';
+  }
+}
+
+/**
  * Credential Set Summary - Lightweight info with expanded credential details
  */
 export interface CredentialSetSummary {

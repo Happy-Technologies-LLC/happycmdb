@@ -104,7 +104,7 @@ const CASES: Record<string, Case> = {
 /** Handlers that, with the generic request, answer below 500 (validation, auth) and so cannot show a 5xx body. */
 const NO_5XX = [
   'AnalyticsController.getChangeHistory', 'AnalyticsController.getHealthMetrics', 'AnomalyController.queryAggregate',
-  'AnomalyController.runAnomalyDetection', 'AuthController.changePassword', 'AuthController.login',
+  'AnomalyController.runAnomalyDetection', 'AuthController.login',
   'AuthController.logout', 'AuthController.refreshToken', 'CIController.createCI',
   'ITILController.restoreFromBaseline', 'ITILController.scheduleAudit',
   'RelationshipController.createRelationship', 'RelationshipController.deleteRelationship',

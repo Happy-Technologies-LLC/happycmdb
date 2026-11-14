@@ -179,12 +179,14 @@ export class AuthController {
      * Change the authenticated user's password
      * HAP-1368: per client (req.ip, login's bucket) plus per user across all clients at login's account budget; a
      * limiter store error refuses the change (503). Mounted after authentication: the user bucket keys on the
-     * verified subject.
+     * verified subject. HAP-1712: the audit-chain readiness refusal (503) comes before the limiter, so a refused
+     * change spends neither bucket.
      */
     this.router.put(
       '/password',
       this.authMiddleware.authenticate(),
       this.authMiddleware.requireJwtSession(),
+      this.requireAuditChain.bind(this),
       this.rateLimiter.limit('auth', { perUser: true, failClosed: true }),
       this.validator.validate(authSchemas._changePassword),
       this.changePassword.bind(this)
@@ -462,10 +464,19 @@ export class AuthController {
     }
   }
 
+  /** HAP-1368/HAP-1712: a password change is refused (503; the router sets no-store) before the limiter and before anything changes while it cannot be audited. */
+  private requireAuditChain(_req: Request, res: Response, next: NextFunction): void {
+    if (this.authService.auditChainReady()) {
+      next();
+      return;
+    }
+    res.status(503).json(PASSWORD_CHANGE_UNAVAILABLE);
+  }
+
   /**
    * Change password endpoint
-   * HAP-1368: refused (503) before anything changes while the audit chain is not ready; each success and each wrong
-   * current password then appends one audit row (best-effort once the outcome is decided).
+   * HAP-1368: each success and each wrong current password appends one audit row (best-effort once the outcome is
+   * decided); the audit-chain readiness refusal is the requireAuditChain step before the limiter.
    */
   private async changePassword(req: AuthenticatedRequest, res: Response): Promise<void> {
     if (!req.user?._userId) {
@@ -474,10 +485,6 @@ export class AuthController {
         error: 'Unauthorized',
         message: 'User not authenticated',
       });
-      return;
-    }
-    if (!this.authService.auditChainReady()) {
-      res.status(503).json(PASSWORD_CHANGE_UNAVAILABLE);
       return;
     }
 

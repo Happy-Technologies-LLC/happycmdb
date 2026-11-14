@@ -548,6 +548,36 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(res.body.pagination.total).toBe(2);
   });
 
+  it('GET /cis and GET /cis/:id add the normalized owner/provider/ip_address/tier and leave every raw key as it was (BW2)', async () => {
+    const rawMetadata = JSON.stringify({ owned_by: 'platform-team', cloud_provider: 'aws', ip: ' 10.0.0.4 ',
+      service_tier: { level: 'gold' }, tier: 3, criticality_tier: 'gold', hostname: 'web01' });
+    seedCI('ci-a-app', ORG_A, { metadata: rawMetadata });
+    const expected = { owner: 'platform-team', provider: 'aws', ip_address: '10.0.0.4', tier: 'gold' };
+
+    const list = await request(app).get('/api/v1/cis').set(AS_A);
+    const listed = list.body.data.find((ci: { id: string }) => ci.id === 'ci-a-app');
+    expect(listed).toMatchObject({ id: 'ci-a-app', name: 'ci-a-app', type: 'server', status: 'active',
+      environment: 'production', metadata: rawMetadata, ...expected }); // raw string metadata unchanged
+    const bare = list.body.data.find((ci: { id: string }) => ci.id === 'ci-a-db');
+    expect(bare).toMatchObject({ owner: null, provider: null, ip_address: null, tier: null });
+
+    const detail = await request(app).get('/api/v1/cis/ci-a-app').set(AS_A);
+    expect(detail.status).toBe(200);
+    expect(detail.body.data).toMatchObject({ id: 'ci-a-app', name: 'ci-a-app', type: 'server', status: 'active',
+      environment: 'production', metadata: JSON.parse(rawMetadata), ...expected });
+  });
+
+  it("the normalized fields never read another organization's CI", async () => {
+    seedCI('ci-b-app', ORG_B, { metadata: JSON.stringify({ owner: 'b-secret-owner', ip_address: '10.99.99.99' }) });
+    const own = await request(app).get('/api/v1/cis').set(AS_A);
+    expect(own.text).not.toContain('b-secret-owner');
+    expect(own.text).not.toContain('10.99.99.99');
+    const foreign = await request(app).get('/api/v1/cis/ci-b-app').set(AS_A);
+    expect([foreign.status, foreign.body]).toEqual([404, NOT_FOUND]);
+    const theirs = await request(app).get('/api/v1/cis/ci-b-app').set(AS_B);
+    expect(theirs.body.data).toMatchObject({ owner: 'b-secret-owner', ip_address: '10.99.99.99' });
+  });
+
   it("GET /cis?external_id= matches exactly in the caller's org; another org gets one empty answer (FD17-S4)", async () => {
     seedCI('ci-a-ext', ORG_A, { external_id: 'ext-1' });
     seedCI('ci-a-ext10', ORG_A, { external_id: 'ext-10' });

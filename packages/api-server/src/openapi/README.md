@@ -89,7 +89,7 @@ is performed by this change.
 - `DELETE /auth/api-keys/{keyId}` - Revoke API key
 
 ### Configuration Items (`/api/v1/cis`)
-- `GET /cis` - List all CIs with filtering
+- `GET /cis` - List all CIs with filtering. `GET /cis` and `GET /cis/{id}` add read-only `owner`, `provider`, `ip_address` and `tier` (string or null), derived at read time from the CI's `attributes`/`metadata` by a documented ordered key set (`services/ci-normalized-fields.ts`); the raw `metadata` is unchanged and nothing is stored
 - `POST /cis` - Create a CI with server-assigned `id`; omit `id`, `external_id`, `organization_id`
 - `GET /cis/{id}` - Get CI by ID
 - `PUT /cis/{id}` - Update CI
@@ -239,7 +239,7 @@ production scheduling. Credential-backed discovery is restored by HP1-S5
 - `GET /reconciliation/lineage/{ci_id}`, `GET /reconciliation/field-sources/{ci_id}` - Caller-owned CI lineage and field sources; foreign and missing CIs share one 404 (GraphQL `getCILineage`/`getCIFieldSources` NOT_FOUND). After the organization guard, both and their GraphQL counterparts return 503 `Service Unavailable` (GraphQL `SERVICE_UNAVAILABLE`) before any data query while the HP1 schema or the Neo4j fence constraint is missing (v16 §3.2)
 
 ### Analytics (`/api/v1/analytics`)
-- `GET /analytics/dashboard` - Dashboard statistics
+- `GET /analytics/dashboard` - Dashboard statistics for the caller's organization. `health_score` is `null` (unavailable) until a CI health state exists; `critical_relationships` counts relationships with at least one endpoint whose `bsm_business_criticality` is `tier_1` or `tier_2` (`services/critical-ci.ts`)
 - `GET /analytics/ci-counts` - CI counts by type
 - `GET /analytics/discovery-stats` - Discovery statistics
 - `GET /analytics/dependency-depth` and GraphQL `getDependencyDepthStats` share a bounded tenant-edge traversal (128 edges, depth 10, 5-second SQL timeout). Larger graphs return a fixed resource-limit failure; request admission holds REST slots until work finishes.

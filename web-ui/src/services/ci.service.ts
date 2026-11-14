@@ -15,6 +15,14 @@ export interface CI {
   description?: string;
   attributes: Record<string, any>;
   metadata?: Record<string, any>;
+  /**
+   * Read-only projections of the metadata bag, derived server-side at read time (services/ci-normalized-fields.ts):
+   * a trimmed string of at most 256 characters, or null when none of the documented keys holds one.
+   */
+  owner?: string | null;
+  provider?: string | null;
+  ip_address?: string | null;
+  tier?: string | null;
   tags: string[];
   discovered_by?: string;
   last_discovered?: string;
@@ -85,7 +93,9 @@ export interface DashboardStats {
   by_status: Record<CIStatus, number>;
   by_environment: Record<Environment, number>;
   recent_discoveries: CI[];
-  health_score: number;
+  /** null: unavailable (no CI health state yet, BW1); never a placeholder 0. */
+  health_score: number | null;
+  /** Relationships with at least one endpoint that is a critical CI (bsm_business_criticality tier_1 or tier_2). */
   critical_relationships: number;
 }
 

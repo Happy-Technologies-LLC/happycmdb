@@ -50,7 +50,7 @@ function play() {
       by_status: { active: 1 },
       by_environment: { production: 1 },
       recent_discoveries: [],
-      health_score: 0,
+      health_score: null,
       critical_relationships: 0,
     }),
     '/cis': ok({ success: true, data: cis, pagination: { total: 1, page: 1, limit: 150, totalPages: 1 } }),

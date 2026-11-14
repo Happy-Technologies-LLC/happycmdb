@@ -2717,12 +2717,32 @@ paths:
                 properties:
                   total_cis:
                     type: integer
-                  total_relationships:
+                  by_type:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                  by_status:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                  by_environment:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                  recent_discoveries:
+                    type: array
+                    items:
+                      type: object
+                  health_score:
+                    type: number
+                    nullable: true
+                    description: >-
+                      Always null today (unavailable): there is no CI health state yet. Never 0 as a placeholder.
+                  critical_relationships:
                     type: integer
-                  active_discovery_jobs:
-                    type: integer
-                  recent_anomalies:
-                    type: integer
+                    description: >-
+                      Relationships, within the caller's organization, with at least one endpoint that is a
+                      critical CI (`bsm_business_criticality` tier_1 or tier_2; services/critical-ci.ts).
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -4847,6 +4867,29 @@ components:
             os: Ubuntu 22.04
             cpu_cores: 8
             memory_gb: 32
+        owner:
+          type: string
+          nullable: true
+          maxLength: 256
+          description: >-
+            Read-only projection, derived at read time and never stored. First usable value of `owner`,
+            `owned_by`, `managed_by`, `owner_name`, looked up in `attributes`, then `metadata`. A usable value is a string that is non-empty and at most 256 characters once trimmed;
+            anything else is skipped. Null when none. See services/ci-normalized-fields.ts.
+        provider:
+          type: string
+          nullable: true
+          maxLength: 256
+          description: Read-only projection, same rules as `owner`; keys `cloud_provider`, `provider`, `vendor`.
+        ip_address:
+          type: string
+          nullable: true
+          maxLength: 256
+          description: Read-only projection, same rules as `owner`; keys `ip_address`, `ip`, `primary_ip`, `private_ip`, `public_ip`.
+        tier:
+          type: string
+          nullable: true
+          maxLength: 256
+          description: Read-only projection, same rules as `owner`; keys `tier`, `service_tier`, `criticality_tier`.
 
     CIInput:
       type: object

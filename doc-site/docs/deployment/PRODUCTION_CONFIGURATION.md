@@ -228,11 +228,14 @@ See [environment-variables.md](../configuration/environment-variables.md) for th
   switches it to verify-full. The compose file sets no `GF_DATABASE_CA_CERT_PATH`, and Grafana 10.2.0 then passes an
   empty `sslrootcert` to `lib/pq` v1.10.9, which loads no root certificate and verifies against the system roots, so a
   private CA is rejected (checked in the Grafana v10.2.0 and `lib/pq` v1.10.9 sources, not by running a container).
-- **Grafana datasources**: `sslmode: ${POSTGRES_SSL_MODE:-prefer}` in
-  `infrastructure/monitoring/grafana/provisioning/datasources/postgres.yml` is expanded from the Grafana container's own
-  environment. The compose `grafana` service mounts the provisioning directory (HAP-1820), so both datasources are
-  provisioned, but its `environment` carries `GF_*` variables only: `POSTGRES_SSL_MODE` and the `POSTGRES_*` credentials
-  from `.env` do not reach it, so the datasources cannot connect until that env is wired (HAP-1827).
+- **Grafana datasources**: `infrastructure/monitoring/grafana/provisioning/datasources/postgres.yml` reads
+  `GRAFANA_DS_HOST`, `GRAFANA_DS_PORT`, `GRAFANA_DS_DATABASE`, `GRAFANA_DS_USER`, `GRAFANA_DS_PASSWORD` and
+  `GRAFANA_DS_SSL_MODE` from the Grafana container's own environment, and the compose `grafana` service forwards exactly
+  those (HAP-1827). They never fall back to `POSTGRES_*`, so the `.env` superuser credentials do not reach Grafana for
+  the datasources. `GRAFANA_DS_SSL_MODE` defaults to `require` (TLS, certificate not verified), not `verify-full`,
+  because the compose mounts no CA into Grafana. With `GRAFANA_DS_USER` / `GRAFANA_DS_PASSWORD` unset the datasources
+  are provisioned but their health check fails. On a stack whose Postgres has `POSTGRES_SSL_ENABLED=off` (the compose
+  default), set `GRAFANA_DS_SSL_MODE=disable` explicitly. See [Grafana datasource reporting role](#grafana-datasource-reporting-role-hap-1827).
 
 To run `verify-full` with this compose file, add these in a compose override file; the shipped file does none of it:
 
@@ -248,11 +251,51 @@ To run `verify-full` with this compose file, add these in a compose override fil
    restarted.
 3. Grafana's own database: set `GF_DATABASE_CA_CERT_PATH` to a CA file mounted into the Grafana container, and set
    `GF_DATABASE_SSL_MODE` independently of the shared `POSTGRES_SSL_MODE` if it should differ.
-4. Grafana datasources (once HAP-1827 wires `POSTGRES_*` into the `grafana` service environment): set the mode literally in the file rather than
-   from `POSTGRES_SSL_MODE`, and use one CA method: `jsonData.sslRootCertFile` pointing at a mounted CA file, with the
-   default `tlsConfigurationMethod` (`file-path`). Do not mix it with `secureJsonData.tlsCACert`, which applies only to
-   `tlsConfigurationMethod: file-content`.
+4. Grafana datasources: set `GRAFANA_DS_SSL_MODE=verify-full` and, in the datasource file or an override copy, use one
+   CA method: `jsonData.sslRootCertFile` pointing at a mounted CA file, with the default `tlsConfigurationMethod`
+   (`file-path`). Do not mix it with `secureJsonData.tlsCACert`, which applies only to
+   `tlsConfigurationMethod: file-content`. As in item 1, mount only the CA certificate.
 :::
+
+#### Grafana datasource reporting role (HAP-1827)
+
+The Grafana datasources must connect as a dedicated read-only role, never as `POSTGRES_USER` (`cmdb_user`, the
+bootstrap superuser): the `HappyCMDB (Explore)` datasource runs free-form SQL, and Grafana Editors can use it. The role
+is **not created by this repository**; creating it needs an operator and SENSITIVE review. Proposed, not run:
+
+```sql
+-- Run as a superuser on the cmdb database. Set the password from your secret store; never commit it.
+CREATE ROLE grafana_reporting LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS
+  CONNECTION LIMIT 10 PASSWORD '<from secret store>';
+ALTER ROLE grafana_reporting SET default_transaction_read_only = on;
+ALTER ROLE grafana_reporting SET statement_timeout = '30s';
+GRANT CONNECT ON DATABASE cmdb TO grafana_reporting;
+GRANT USAGE ON SCHEMA cmdb, public TO grafana_reporting;
+-- Exactly the relations the shipped dashboards query. Re-derive from dashboards/*.json when they change.
+GRANT SELECT ON cmdb.dim_ci, cmdb.fact_ci_changes, cmdb.fact_ci_relationships TO grafana_reporting;
+-- Column-level: omit errors / error_message / triggered_by_user (may carry connector secrets or user names).
+GRANT SELECT (id, config_id, connector_type, started_at, completed_at, status, records_extracted,
+  records_transformed, records_loaded, records_failed, duration_ms, organization_id)
+  ON public.connector_run_history TO grafana_reporting;
+```
+
+- **Reuse of `metabase_readonly`**: rejected. `infrastructure/database/metabase-init.sql` revokes all table grants and
+  grants only named `public` reporting views (plus `cmdb.v_ci_discovery_summary`); it has no grant on the four relations
+  above, and widening it would also widen Metabase. A separate role keeps each BI tool's blast radius independent.
+- **Not granted**: any other `public` table (`audit_log`, credentials, journals), any sequence, any `INSERT`/`UPDATE`/
+  `DELETE`/`TRUNCATE`, and no default privileges for future tables. `default_transaction_read_only` is a role default a
+  session can `SET` back, so the missing write grants are the control, not that setting.
+- **Tenant scoping**: no `CREATE POLICY` / `ROW LEVEL SECURITY` exists in the shipped migrations, so tenant scoping is
+  application-side (`organization_id` columns on `cmdb.dim_ci` and `connector_run_history`). `cmdb.fact_ci_changes` and
+  `cmdb.fact_ci_relationships` carry no `organization_id` at all. The role above therefore reads **every organization's**
+  rows: it is safe only for single-organization deployments, or where every Grafana user may see all tenants. Multi-tenant
+  Grafana needs a design decision (per-organization role plus RLS policies or `security_invoker` views filtered by a
+  per-role `app.organization_id` setting, with a Grafana organization and datasource per tenant) before the role is used.
+- **Password delivery**: Grafana 10.2 provisioning expands environment variables only (no file reads), so
+  `GRAFANA_DS_PASSWORD` must reach the container's environment from the deploy-time secret store, not from `.env` in git.
+- **Remaining exposure**: Grafana provisioning has no read-only switch for the Postgres datasource, so a user of
+  `HappyCMDB (Explore)` can run any `SELECT` the role may read. `editable: false` blocks UI edits of the datasource and
+  Explore uses a smaller connection pool; the database role is the real control.
 
 #### Docker Compose Configuration
 

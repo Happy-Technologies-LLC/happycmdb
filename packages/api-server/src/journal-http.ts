@@ -72,12 +72,19 @@ export function assertNoReservedMembers(value: unknown): void {
   }
 }
 
-/** Neo4j-storable property map: null, boolean, finite number, string, or a homogeneous array of those. */
+/**
+ * Neo4j-storable property map: null, boolean, finite number, string, or a homogeneous array of those (HAP-1732: an
+ * array never holds null, which Neo4j refuses to store; the map itself is a plain object, never a string or array).
+ */
 export function assertStorableProperties(props: Record<string, unknown>): void {
+  if (props === null || typeof props !== 'object' || Array.isArray(props)) {
+    throw new RequestShapeError();
+  }
   for (const value of Object.values(props)) {
     const members = Array.isArray(value) ? value : [value];
     const kinds = new Set(members.map(member => member === null ? 'null' : typeof member));
     if (kinds.size > 1 || [...kinds].some(kind => !['null', 'boolean', 'number', 'string'].includes(kind)) ||
+      (Array.isArray(value) && kinds.has('null')) ||
       members.some(member => typeof member === 'number' && !Number.isFinite(member))) throw new RequestShapeError();
   }
 }

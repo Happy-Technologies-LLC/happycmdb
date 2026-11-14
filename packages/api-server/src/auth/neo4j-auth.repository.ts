@@ -19,7 +19,7 @@ import { appendAuditEntry, auditChainReady, getNeo4jClient, getPostgresClient } 
 import type { AuditLogEntry } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
 import type {
-  AuthRepository, CredentialEventInput, GuardedPasswordWrite, GuardedUserWrite, UserProfileUpdate,
+  AuthRepository, CredentialEventInput, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite, UserProfileUpdate,
 } from './auth.service';
 import { AmbiguousUserIdentityError, UserNotFoundError, type ApiKey, type User } from './types';
 import { LOCK_USER } from './user-lock';
@@ -61,6 +61,22 @@ WHERE (u._id = $userId OR u.id = $userId)
   AND NOT ${MARKED}
   AND coalesce(u._passwordHash, u.passwordHash) = $readHash
 SET u._passwordHash = $newHash, u.passwordHash = $newHash, u.credentialEpoch = $nextEpoch,
+    u._updatedAt = datetime(), u.updatedAt = datetime()
+RETURN count(u) AS n`;
+
+/**
+ * Login cost convergence (HAP-1090): same guards as GUARDED_PASSWORD_CYPHER, but the generation is only read, never
+ * written, so the same password at a new cost ends no session or API key.
+ */
+export const GUARDED_REHASH_CYPHER = `
+MATCH (u:User) WHERE elementId(u) = $elementId
+${LOCK_USER}
+WITH u
+WHERE (u._id = $userId OR u.id = $userId)
+  AND coalesce(u.credentialEpoch, 0) = $credentialEpoch
+  AND NOT ${MARKED}
+  AND coalesce(u._passwordHash, u.passwordHash) = $readHash
+SET u._passwordHash = $newHash, u.passwordHash = $newHash,
     u._updatedAt = datetime(), u.updatedAt = datetime()
 RETURN count(u) AS n`;
 
@@ -246,6 +262,13 @@ export class Neo4jAuthRepository implements AuthRepository {
     return this.guardedWrite(GUARDED_PASSWORD_CYPHER, {
       elementId: write.elementId ?? null, userId: write.userId, credentialEpoch: neo4j.int(write.credentialEpoch),
       readHash: write.readHash, newHash: write.newHash, nextEpoch: neo4j.int(write.nextEpoch),
+    });
+  }
+
+  async rehashPasswordGuarded(write: GuardedPasswordRehash): Promise<boolean> {
+    return this.guardedWrite(GUARDED_REHASH_CYPHER, {
+      elementId: write.elementId ?? null, userId: write.userId, credentialEpoch: neo4j.int(write.credentialEpoch),
+      readHash: write.readHash, newHash: write.newHash,
     });
   }
 

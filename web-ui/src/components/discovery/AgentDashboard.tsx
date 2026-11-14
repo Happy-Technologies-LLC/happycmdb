@@ -20,6 +20,10 @@ interface AgentStats {
   totalCIsDiscovered: number;
 }
 
+// HAP-1826: the capabilities the setup snippets advertise. The happycmdb/agent image (Dockerfile.agent) ships no nmap,
+// so `nmap` must not be listed here until that image installs it (pinned, no file caps, with a CI proof like the API image).
+const ADVERTISED_CAPABILITIES = 'ssh';
+
 export const AgentDashboard: React.FC = () => {
   const [stats, setStats] = useState<AgentStats>({
     totalAgents: 0,
@@ -136,7 +140,7 @@ export const AgentDashboard: React.FC = () => {
                   <div># Set API endpoint</div>
                   <div>export CMDB_API_URL=http://your-cmdb-server:3000</div>
                   <div className="mt-2"># Set agent capabilities</div>
-                  <div>export CMDB_CAPABILITIES=nmap,ssh</div>
+                  <div>export CMDB_CAPABILITIES={ADVERTISED_CAPABILITIES}</div>
                   <div className="mt-2"># Configure reachable networks</div>
                   <div>export CMDB_NETWORKS=10.0.0.0/8,172.16.0.0/12</div>
                 </div>
@@ -150,7 +154,7 @@ export const AgentDashboard: React.FC = () => {
                   <div className="mt-2"># Or with Docker</div>
                   <div>docker run -d \</div>
                   <div className="ml-4">-e CMDB_API_URL=http://your-server:3000 \</div>
-                  <div className="ml-4">-e CMDB_CAPABILITIES=nmap,ssh \</div>
+                  <div className="ml-4">-e CMDB_CAPABILITIES={ADVERTISED_CAPABILITIES} \</div>
                   <div className="ml-4">-e CMDB_NETWORKS=10.0.0.0/8 \</div>
                   <div className="ml-4">happycmdb/agent:latest</div>
                 </div>
@@ -171,7 +175,7 @@ export const AgentDashboard: React.FC = () => {
                 </h4>
                 <ul className="list-disc list-inside text-sm space-y-1 text-muted-foreground">
                   <li>Agent needs network access to CMDB API server (port 3000)</li>
-                  <li>For nmap: No added Linux capabilities needed (unprivileged TCP connect scans: -sT, -sV)</li>
+                  <li>nmap is not included in the agent image; TCP connect scans (-sT, -sV) run from the API server and need no added Linux capabilities</li>
                   <li>For SSH: Needs to reach target hosts on port 22</li>
                   <li>Agent sends heartbeat every 60 seconds</li>
                 </ul>

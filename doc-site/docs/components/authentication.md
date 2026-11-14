@@ -585,9 +585,15 @@ organization when a CI is created through `POST /api/v1/cis` or GraphQL `createC
   whose stored metadata is not a JSON object reads as `{}`). Other keys are ignored and never written; one log line records how many were
   ignored, without keys or values. GraphQL `_mergedFields` lists only mergeable keys, and
   resolving a conflict on a non-mergeable field with `merge` or `accept_source` returns the same
-  fixed **422**. A failed reconciliation request never returns the underlying error text: REST
-  answers **500** with `message: "Internal error"`, GraphQL `INTERNAL_SERVER_ERROR` without
-  `originalError`; the detail is only logged.
+  fixed **422**. A merge that creates a CI always stores the request's top-level `name`,
+  `ci_type`, `status` (default `active`) and `environment` (HAP-1732): an attribute or identifier
+  of the same name is not written, recorded or audited on create (an update never writes the
+  top-level fields, so there such an attribute stays an ordinary policy-governed field). Attribute
+  values must be Neo4j-storable: a nested object, a mixed array, an array holding `null` or a
+  non-object `attributes` is a **400** `Invalid request` before any store access. A failed
+  reconciliation request never returns the underlying error text: REST answers **500** with
+  `message: "Internal error"`, GraphQL `INTERNAL_SERVER_ERROR` without `originalError`; the log
+  line carries only the error class and code, never the driver message.
 - CIs written by discovery, connectors, ETL and reconciliation carry no
   `organization_id` and are invisible to every organization through `/api/v1/cis`,
   `/api/v1/dashboards` and the GraphQL CI operations.

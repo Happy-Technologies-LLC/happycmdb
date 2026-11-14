@@ -25,7 +25,7 @@ import { AUTH_HEADER, AUTH_HEADER_VALUE } from '../../rest/middleware/refresh-co
 import { ValidationMiddleware } from '../../rest/middleware/validation.middleware';
 import { AuthFailureError, AuthService, CurrentPasswordIncorrectError } from '../../auth/auth.service';
 import { AuthMiddleware } from '../auth.middleware';
-import { RateLimitMiddleware } from '../rate-limit.middleware';
+import { RateLimitMiddleware, clientBucketAddress } from '../rate-limit.middleware';
 
 const CLIENT_MAX = 4;
 const ACCOUNT_MAX = 2;
@@ -420,5 +420,109 @@ describe('PUT /auth/password rate limiting (HAP-1368)', () => {
         .send({ currentPassword: randomUUID(), newPassword: randomUUID() })).status);
     }
     expect(statuses).toEqual([401, 401]);
+  });
+});
+
+describe('clientBucketAddress (HAP-1715)', () => {
+  it.each([
+    ['IPv4 is itself', '192.0.2.1', '192.0.2.1'],
+    ['IPv4-mapped IPv6 is its IPv4', '::ffff:192.0.2.1', '192.0.2.1'],
+    ['IPv4-mapped, upper case and hex groups', '::FFFF:c000:0201', '192.0.2.1'],
+    ['IPv4-mapped, fully expanded', '0:0:0:0:0:ffff:192.0.2.1', '192.0.2.1'],
+    ['IPv6 keys as its /64', '2001:db8:1:2:3:4:5:6', '2001:db8:1:2::/64'],
+    ['compression gives the same /64 as the expanded form', '2001:db8:1:2::9', '2001:db8:1:2::/64'],
+    ['compression inside the first four groups', '2001:0:0:1::7', '2001:0:0:1::/64'],
+    ['compression covering the whole /64', '2001:db8::1', '2001:db8:0:0::/64'],
+    ['upper case and leading zeros', '2001:0DB8:0001:0002:ffff:FFFF:ffff:ffff', '2001:db8:1:2::/64'],
+    ['zone id is stripped', 'fe80::1%eth0', 'fe80:0:0:0::/64'],
+    ['zone id on a mapped IPv4', '::ffff:192.0.2.1%eth0', '192.0.2.1'],
+    ['embedded IPv4 outside the mapped prefix is an ordinary IPv6', '64:ff9b::192.0.2.33', '64:ff9b:0:0::/64'],
+    ['loopback', '::1', '0:0:0:0::/64'],
+    ['unspecified', '::', '0:0:0:0::/64'],
+    ['unknown', 'unknown', 'unknown'],
+    ['empty', '', 'unknown'],
+    ['garbage', 'not-an-address', 'unknown'],
+    ['too many groups', '1:2:3:4:5:6:7:8:9', 'unknown'],
+    ['bad IPv4', '256.0.0.1', 'unknown'],
+  ])('%s', (_label, input, expected) => {
+    expect(clientBucketAddress(input)).toBe(expected);
+  });
+
+  it('addresses in one /64 share a key; the next /64 and a different prefix do not', () => {
+    const key = clientBucketAddress('2001:db8:1:2::1');
+    expect(clientBucketAddress('2001:db8:1:2:ffff:ffff:ffff:ffff')).toBe(key);
+    expect(clientBucketAddress('2001:db8:1:3::1')).not.toBe(key);
+    expect(clientBucketAddress('2001:db8:2:2::1')).not.toBe(key);
+  });
+});
+
+describe('rate limit buckets key on the IPv6 /64 (HAP-1715)', () => {
+  const via = (address: string) => ({ 'X-Forwarded-For': address });
+
+  it('rotating the host part inside one /64 shares one client bucket', async () => {
+    const app = loginApp(new FakeRedis(), 1);
+    const statuses: number[] = [];
+    for (let i = 0; i <= CLIENT_MAX; i++) {
+      statuses.push((await login(app, `user${i}`, via(`2001:db8:1:2:${i}::${i + 1}`))).status);
+    }
+    expect(statuses).toEqual([...Array(CLIENT_MAX).fill(401), 429]);
+    expect(app.reached).toHaveLength(CLIENT_MAX);
+  });
+
+  it('rotating the host part inside one /64 shares one account+client bucket', async () => {
+    const app = loginApp(new FakeRedis(), 1);
+    const statuses: number[] = [];
+    for (let i = 0; i <= ACCOUNT_MAX; i++) {
+      statuses.push((await login(app, 'alice', via(`2001:db8:1:2::${i + 1}`))).status);
+    }
+    expect(statuses).toEqual([...Array(ACCOUNT_MAX).fill(401), 429]);
+  });
+
+  it('addresses in different /64s get separate client and account+client buckets', async () => {
+    const app = loginApp(new FakeRedis(), 1);
+    for (let i = 0; i < CLIENT_MAX; i++) {
+      expect((await login(app, `user${i}`, via('2001:db8:1:2::1'))).status).toBe(401);
+    }
+    expect((await login(app, 'zed', via('2001:db8:1:2::2'))).status).toBe(429);
+    expect((await login(app, 'zed', via('2001:db8:1:3::1'))).status).toBe(401);
+    expect((await login(app, 'alice', via('2001:db8:1:4::1'))).status).toBe(401);
+    expect((await login(app, 'alice', via('2001:db8:1:4::2'))).status).toBe(401);
+    expect((await login(app, 'alice', via('2001:db8:1:4::3'))).status).toBe(429);
+    expect((await login(app, 'alice', via('2001:db8:1:5::1'))).status).toBe(401);
+  });
+
+  it('IPv4 clients keep one bucket per address', async () => {
+    const app = loginApp(new FakeRedis(), 1);
+    for (let i = 0; i < CLIENT_MAX; i++) {
+      expect((await login(app, `user${i}`, via('192.0.2.1'))).status).toBe(401);
+    }
+    expect((await login(app, 'xavier', via('192.0.2.1'))).status).toBe(429);
+    expect((await login(app, 'xavier', via('192.0.2.2'))).status).toBe(401);
+  });
+
+  it('an IPv4-mapped IPv6 address and its IPv4 address share one bucket', async () => {
+    const app = loginApp(new FakeRedis(), 1);
+    const forms = ['192.0.2.1', '::ffff:192.0.2.1', '::FFFF:c000:201', '192.0.2.1'];
+    const statuses: number[] = [];
+    for (const [i, form] of forms.entries()) statuses.push((await login(app, `user${i}`, via(form))).status);
+    expect(statuses).toEqual([401, 401, 401, 401]);
+    expect((await login(app, 'user9', via('::ffff:192.0.2.1'))).status).toBe(429);
+    expect((await login(app, 'user9', via('192.0.2.1'))).status).toBe(429);
+  });
+
+  it('a value that is not an address falls into one shared bucket, not one per value', async () => {
+    const app = loginApp(new FakeRedis(), 1);
+    const statuses: number[] = [];
+    for (let i = 0; i <= CLIENT_MAX; i++) statuses.push((await login(app, `user${i}`, via(`garbage-${i}`))).status);
+    expect(statuses).toEqual([...Array(CLIENT_MAX).fill(401), 429]);
+  });
+
+  it('password change: rotating inside one /64 shares one client bucket', async () => {
+    const { app } = passwordApp(new FakeRedis());
+    const statuses: number[] = [];
+    for (let i = 0; i <= CLIENT_MAX; i++) {
+      statuses.push((await changePassword(app, `user-${i}`, `2001:db8:1:2::${i + 1}`)).status);
+    }
+    expect(statuses).toEqual([...Array(CLIENT_MAX).fill(400), 429]);
   });
 });

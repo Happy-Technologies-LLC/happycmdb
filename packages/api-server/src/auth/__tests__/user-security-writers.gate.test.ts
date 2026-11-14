@@ -105,12 +105,12 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
     },
   },
   {
-    name: 'password hash (rotation, guarded self-service change, seed writers)',
+    name: 'password hash (rotation, guarded self-service change, guarded login rehash, seed writers)',
     pattern: new RegExp(String.raw`\.\s*_?passwordHash\s*=(?!=)|${removes('_?passwordHash')}`, 'gi'),
     reviewed: {
       'infrastructure/scripts/init-neo4j.cypher': 1,
       'infrastructure/scripts/seed-data.ts': 1,
-      'packages/api-server/src/auth/neo4j-auth.repository.ts': 2, // GUARDED_PASSWORD_CYPHER: both spellings
+      'packages/api-server/src/auth/neo4j-auth.repository.ts': 4, // GUARDED_PASSWORD_CYPHER and GUARDED_REHASH_CYPHER (HAP-1090): both spellings each
       'packages/api-server/src/scripts/rotate-user-password.ts': 2, // APPLY_CYPHER: both spellings
       'packages/api-server/src/scripts/seed-tenant-fixture.ts': 1,
     },
@@ -347,6 +347,8 @@ describe('inventory gate 4: user-security property writers', () => {
     ['an underscore-spelling marker setter in the repository', REPOSITORY,
       "const U = 'MATCH (u:User) WHERE elementId(u) = $e SET u._defaultPasswordSuspect = true';"],
     ['a generation writer in the repository', REPOSITORY, "const E = 'SET u.credentialEpoch = $epoch';"],
+    ['a login rehash that also advances the generation in the repository (HAP-1090)', REPOSITORY,
+      "const REHASH_BUMP = 'MATCH (u:User) WHERE elementId(u) = $e SET u._passwordHash = $h, u.passwordHash = $h, u.credentialEpoch = $n';"],
     ['an API-key generation update in the repository', REPOSITORY,
       "const K = 'UPDATE api_keys SET credential_epoch = $1 WHERE id = $2';"],
     ['a map write to the user in the repository', REPOSITORY,
@@ -420,7 +422,7 @@ describe('inventory gate 4: user-security property writers', () => {
     ['spaces around the dot', key => `'MATCH (u:User {_id: $id}) REMOVE u . ${key}'`],
   ];
   const REMOVE_RULE: Record<string, string> = {
-    passwordHash: 'password hash (rotation, guarded self-service change, seed writers)',
+    passwordHash: 'password hash (rotation, guarded self-service change, guarded login rehash, seed writers)',
     platformAdmin: 'platformAdmin (set only by the reviewed operator grant)',
     seedProvenance: 'seedProvenance (seed writers and the window stamp; never cleared)',
     defaultPasswordSuspect: 'defaultPasswordSuspect cleared (the operator rotation only)',

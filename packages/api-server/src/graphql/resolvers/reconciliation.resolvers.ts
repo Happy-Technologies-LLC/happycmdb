@@ -6,7 +6,7 @@
  */
 
 import { GraphQLError } from 'graphql';
-import { logger } from '@cmdb/common';
+import { errorClassFields, logger } from '@cmdb/common';
 import { getIdentityReconciliationEngine, isMergeable } from '@cmdb/identity-resolution';
 import { getPostgresClient } from '@cmdb/database';
 import { TransformedCI, IdentificationAttributes } from '@cmdb/integration-framework';
@@ -85,7 +85,7 @@ const ReconciliationQuery = {
         _matchedAttributes: match.matched_attributes
       };
     } catch (error: any) {
-      logger.error('GraphQL: Error finding matches', error);
+      logger.error('GraphQL: Error finding matches', errorClassFields(error));
       throw new GraphQLError('Failed to find matches', {
         extensions: {
           code: 'INTERNAL_SERVER_ERROR',
@@ -130,7 +130,7 @@ const ReconciliationQuery = {
         _revision: row.content_hash,
       }));
     } catch (error: any) {
-      logger.error('GraphQL: Error listing conflicts', error);
+      logger.error('GraphQL: Error listing conflicts', errorClassFields(error));
       throw new GraphQLError('Failed to list conflicts', {
         extensions: {
           code: 'INTERNAL_SERVER_ERROR',
@@ -185,7 +185,7 @@ const ReconciliationQuery = {
         throw new GraphQLError('CI is temporarily unavailable', { extensions: { code: 'CONFLICT' } });
       }
       if (error instanceof GraphQLError && error.extensions['code'] === 'NOT_FOUND') throw error;
-      logger.error('GraphQL: Error getting CI lineage');
+      logger.error('GraphQL: Error getting CI lineage', errorClassFields(error));
       throw new GraphQLError('Failed to get CI lineage', {
         extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
@@ -227,7 +227,7 @@ const ReconciliationQuery = {
         throw new GraphQLError('CI is temporarily unavailable', { extensions: { code: 'CONFLICT' } });
       }
       if (error instanceof GraphQLError && error.extensions['code'] === 'NOT_FOUND') throw error;
-      logger.error('GraphQL: Error getting CI field sources');
+      logger.error('GraphQL: Error getting CI field sources', errorClassFields(error));
       throw new GraphQLError('Failed to get CI field sources', {
         extensions: { code: 'INTERNAL_SERVER_ERROR' },
       });
@@ -304,7 +304,7 @@ const ReconciliationMutation = {
       if (error instanceof GraphQLError && error.extensions['code'] === 'NOT_FOUND') throw error;
       const journal = journalGraphQLError(error);
       if (journal) throw journal;
-      logger.error('GraphQL: Error merging CI', error);
+      logger.error('GraphQL: Error merging CI', errorClassFields(error));
       throw new GraphQLError('Failed to merge CI', {
         extensions: {
           code: 'INTERNAL_SERVER_ERROR',
@@ -345,7 +345,7 @@ const ReconciliationMutation = {
       if (error instanceof GraphQLError) throw error;
       const journal = journalGraphQLError(error);
       if (journal) throw journal;
-      logger.error('GraphQL: Error resolving conflict');
+      logger.error('GraphQL: Error resolving conflict', errorClassFields(error));
       throw new GraphQLError('Failed to resolve conflict', { extensions: { code: 'INTERNAL_SERVER_ERROR' } });
     }
   },

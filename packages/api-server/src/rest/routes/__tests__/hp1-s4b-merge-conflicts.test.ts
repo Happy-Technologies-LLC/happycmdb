@@ -109,7 +109,7 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 }));
 jest.mock('../../../middleware/audit.middleware', () => ({ auditMiddleware: (_req: Request, _res: Response, next: NextFunction) => next() }));
 
-import { loadConfig } from '@cmdb/common';
+import { loadConfig, logger } from '@cmdb/common';
 import { enc, getAuditService, getNeo4jClient, getPostgresClient, requeueFailedJournalGroup, setJournalSeam } from '@cmdb/database';
 import { conflictHash } from '@cmdb/identity-resolution/engine/identity-reconciliation-engine';
 import { JWTService } from '../../../auth/jwt.service';
@@ -492,8 +492,8 @@ it('R-1 (HAP-1099): a legacy external_id conflict never writes; merge and accept
     const { id, expected_revision } = await legacy(sourceId);
     refused.push(await resolve('a', id, { ...body, expected_revision }));
   }
-  expect(refused.map(response => [response.status, response.text])).toEqual(Array(3).fill([422,
-    JSON.stringify({ success: false, error: 'Unprocessable Entity', message: 'CI cannot be changed through the audited path' })]));
+  expect(refused.map(response => [response.status, response.body.success])).toEqual(Array(3).fill([422, false]));
+  for (const response of refused) expect(response.text).not.toMatch(/held-by-b|mine/); // the conflicting values never echo
   expect([mockGraph.nodes.get(X), await journal(X)]).toEqual([before, []]);
   const target = await legacy('s4');
   expect((await resolve('a', target.id, { resolution: 'accept_target', expected_revision: target.expected_revision })).status).toBe(200);
@@ -534,4 +534,83 @@ it('HAP-499: REST merge create and GraphQL merge update write, record and echo o
   expect([leaked(created), leaked(X), updated.body.data?._reconciliation.mergeCI, (await rows(`SELECT ci_id = $1 AS created, field_name
     FROM ci_field_sources WHERE ci_id IN ($1, $2) ORDER BY 1`, [created, X])).map(row => [row['created'], row['field_name']])])
     .toEqual([[], [], { _action: 'updated', _mergedFields: ['note'] }, [[false, 'note'], [true, 'note']]]);
+});
+
+it('HAP-1732: a merge create keeps the request name, status and environment over same-named attributes; an update writes such an attribute under policy', async () => {
+  const serial = `h1732-${randomUUID()}`;
+  const send = (source: string, extra: object, attributes: object, serialNumber = serial) => api('a').post('merge', { name: 'top-name',
+    ci_type: 'server', source, source_id: `${source}-1`, identifiers: { serial_number: serialNumber }, attributes, ...extra });
+  const created = await send(serial, { status: 'retired', environment: 'production' },
+    { name: 'attr-name', status: 'attr-status', environment: 'attr-env', owner: 'o1' });
+  const X = created.body.data.ci_id as string;
+  const top = { name: 'top-name', status: 'retired', environment: 'production' };
+  const [history] = await rows(`SELECT new_values FROM ci_change_history WHERE ci_id = $1 AND change_type = 'created'`, [X]);
+  const [audit] = await rows(`SELECT changes FROM audit_log WHERE entity_id = $1 AND action = 'CREATE'`, [X]);
+  const written = (changes: { field: string; new_value: unknown }[]) => Object.fromEntries(changes.map(({ field, new_value }) => [field, new_value]));
+  expect(created.status).toBe(200);
+  expect(mockGraph.nodes.get(X)).toMatchObject({ ...top, owner: 'o1' });
+  expect(history!['new_values']).toMatchObject({ ...top, owner: 'o1' });
+  expect(written(audit!['changes'])).toMatchObject({ ...top, owner: 'o1' });
+  expect((await rows('SELECT field_name FROM ci_field_sources WHERE ci_id = $1', [X])).map(row => row['field_name'])).toEqual(['owner']);
+
+  // Absent top-level status and environment: the default and no environment, never the attributes.
+  const bare = (await send(`${serial}-bare`, {}, { status: 'attr-status', environment: 'attr-env' }, `${serial}-bare`)).body.data.ci_id as string;
+  expect([mockGraph.nodes.get(bare)!['status'], mockGraph.nodes.get(bare)!['environment']]).toEqual(['active', undefined]);
+
+  // An update never writes the request's top-level fields, so there an attribute of that name is an ordinary field source.
+  const updated = await send(serial, {}, { name: 'renamed', status: 'attr-status' });
+  expect([updated.status, updated.body.data.action, mockGraph.nodes.get(X)!['name'], mockGraph.nodes.get(X)!['status']])
+    .toEqual([200, 'updated', 'renamed', 'attr-status']);
+  expect((await rows('SELECT field_name FROM ci_field_sources WHERE ci_id = $1 ORDER BY 1', [X])).map(row => row['field_name']))
+    .toEqual(['name', 'owner', 'status']);
+});
+
+it('HAP-1732: a non-scalar or non-storable merge input is a 400 before any store access, REST and GraphQL', async () => {
+  const valid = { name: 'h1732-bad', ci_type: 'server', source: 'scan', source_id: 'scan-1', identifiers: { serial_number: 'h1732-bad' } };
+  const nested = { a: { b: 1 } };
+  const restCases: object[] = [{ attributes: { v: nested } }, { attributes: { v: [1, 'a'] } }, { attributes: { v: [null] } },
+    { attributes: { v: [[1]] } }, { attributes: 'text' }, { attributes: ['a'] }, { identifiers: { serial_number: nested } },
+    { identifiers: { mac_address: [null] } }, { identifiers: { mac_address: [['aa']] } }, { name: nested }, { environment: ['x'] }, { status: nested }];
+  [mockGraph.sql.length, mockGraph.statements.length] = [0, 0];
+  const rest = [];
+  for (const patch of restCases) rest.push(await api('a').post('merge', { ...valid, ...patch }));
+  const gqlCases = [{ v: nested }, { v: [1, 'a'] }, { v: [null] }, { v: [[1]] }, 'text', ['a'], 5];
+  const gql = [];
+  for (const attributes of gqlCases) {
+    gql.push(await request(app).post('/graphql').set('authorization', bearer('a')).send({ variables: { attributes },
+      query: `mutation ($attributes: JSON) { _reconciliation { mergeCI(_name: "h1732-bad", _ciType: "server", _source: "scan", _sourceId: "scan-1",
+        _identifiers: { _serialNumber: "h1732-bad" }, _attributes: $attributes) { _action } } }` }));
+  }
+  gql.push(await api('a').gql(`mutation { _reconciliation { mergeCI(_name: "h1732-bad", _ciType: "server", _source: "scan", _sourceId: "scan-1",
+    _identifiers: { _serialNumber: { a: 1 }, _macAddress: [null] }) { _action } } }`));
+  expect(rest.map(response => response.status)).toEqual(Array(restCases.length).fill(400));
+  expect(rest.slice(0, 6).map(response => response.body)).toEqual(Array(6).fill({ success: false, error: 'Bad Request', message: 'Invalid request' }));
+  expect(gql.map(response => [response.body.data?._reconciliation ?? null, response.body.errors.length > 0])).toEqual(Array(gqlCases.length + 1).fill([null, true]));
+  expect(gql.slice(0, gqlCases.length).map(response => response.body.errors[0].extensions.code)).toEqual(Array(gqlCases.length).fill('BAD_USER_INPUT'));
+  expect([mockGraph.statements, mockGraph.sql]).toEqual([[], []]);
+});
+
+it('HAP-1732: reconciliation read and merge failures log the error class and code only, never the driver text', async () => {
+  const secret = 'bolt://neo4j:hunter2@db MATCH (ci {serial_number: "ROW-VALUE"})';
+  const failure = Object.assign(new Error(secret), { code: 'Neo.ClientError.Statement.SyntaxError' });
+  const log = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+  const X = await ci(A);
+  const client = getNeo4jClient();
+  const readFailure = jest.spyOn(client, 'getCI').mockRejectedValue(failure);
+  const lineage = `{ _reconciliation { getCILineage(_ciId: "${X}") { _ciId } } }`;
+  const sources = `{ _reconciliation { getCIFieldSources(_ciId: "${X}") { _ciId } } }`;
+  const reads = [await api('a').get(`lineage/${X}`), await api('a').get(`field-sources/${X}`), await api('a').gql(lineage), await api('a').gql(sources)];
+  readFailure.mockRestore();
+  jest.spyOn(client, 'assertJournalReady').mockRejectedValue(failure);
+  const revision = 'a'.repeat(64);
+  const writes = [await merge('a', X, 'scan', { note: 'n' }), await resolve('a', randomUUID(), { resolution: 'accept_target', expected_revision: revision }),
+    await api('a').gql(`mutation { _reconciliation { mergeCI(_name: "${X}", _ciType: "server", _source: "scan", _sourceId: "scan-1",
+      _identifiers: { _serialNumber: "${X}" }) { _action } } }`),
+    await api('a').gql(`mutation { _reconciliation { resolveConflict(_id: "${randomUUID()}", _resolution: "accept_target",
+      _expectedRevision: "${revision}") { _status } } }`)];
+  const responses = [...reads, ...writes];
+  expect([responses.slice(0, 2).concat(writes.slice(0, 2)).map(response => response.status), [reads[2], reads[3], writes[2], writes[3]]
+    .map(response => response.body.errors[0].extensions.code)]).toEqual([[500, 500, 500, 500], Array(4).fill('INTERNAL_SERVER_ERROR')]);
+  expect(log.mock.calls.map(call => call[1])).toEqual(Array(8).fill({ errorClass: 'Error', code: 'Neo.ClientError.Statement.SyntaxError' }));
+  expect(JSON.stringify([log.mock.calls, responses.map(response => response.text)])).not.toMatch(/hunter2|ROW-VALUE/);
 });

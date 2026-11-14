@@ -28,6 +28,7 @@ import neo4j from 'neo4j-driver';
 import { DEFAULT_PLAINTEXTS } from '../auth/default-credentials';
 import { isSeededAccount } from '../auth/platform-admin';
 import { LOCK_USER } from '../auth/user-lock';
+import { BCRYPT_HASH } from '../auth/password.service';
 
 import { isolateOperatorEnvironment, openOperatorStores, type OperatorStores } from './operator-stores';
 import type { RotationGraph, RotationSqlQuery, Row } from './rotate-user-password';
@@ -109,7 +110,6 @@ const SCAN_EVENT_SQL = `
 INSERT INTO auth_credential_events (user_id, event, actor) VALUES ($1, 'default_marker_set_scan', $2)`;
 
 const toNumber = (value: unknown): number => (neo4j.isInt(value) ? neo4j.integer.toNumber(value) : Number(value));
-const BCRYPT_HASH = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
 /** The API's organization-claim shape (auth.middleware.ts organizationClaim). */
 const ORGANIZATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ASSIGNMENT = 'organization assignment';

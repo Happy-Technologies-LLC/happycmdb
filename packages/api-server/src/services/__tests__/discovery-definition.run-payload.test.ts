@@ -10,9 +10,11 @@ const mockAdded: Array<[string, Record<string, unknown>, unknown]> = [];
 let mockConfig: unknown;
 let mockBound: Record<string, string> = {};
 const mockSql: string[] = [];
+const mockLastJobIds: unknown[] = [];
 jest.mock('@cmdb/database', () => ({
   getPostgresClient: () => ({ getClient: async () => ({
-    query: async (sql: string) => (mockSql.push(sql), { rows: sql.includes('FROM discovery_definitions') ? [{
+    query: async (sql: string, params?: unknown[]) => (mockSql.push(sql),
+      sql.includes('SET last_job_id') && mockLastJobIds.push(params?.[0]), { rows: sql.includes('FROM discovery_definitions') ? [{
       id: 'd1', name: 'n', provider: 'nmap', method: 'agentless', credential_id: null, credential_set_id: null, ...mockBound,
       config: mockConfig, schedule: null, is_active: true, tags: [], created_by: 'u',
       created_at: new Date(0), updated_at: new Date(0),
@@ -31,7 +33,7 @@ jest.mock('@cmdb/common', () => ({
 import { randomUUID } from 'crypto';
 import { DiscoveryDefinitionService } from '../discovery-definition.service';
 
-beforeEach(() => { mockAdded.length = 0; mockSql.length = 0; mockBound = {}; });
+beforeEach(() => { mockAdded.length = 0; mockSql.length = 0; mockLastJobIds.length = 0; mockBound = {}; });
 afterEach(() => { expect(JSON.stringify(mockAdded)).not.toContain(SENTINEL); });
 
 it('runDefinition queues only targets and scan modes for a valid definition', async () => {
@@ -41,6 +43,25 @@ it('runDefinition queues only targets and scan modes for a valid definition', as
   expect(mockAdded[0][1]).toMatchObject({ provider: 'nmap', definition_id: 'd1', organizationId: 'org' });
   expect(mockAdded[0][1].config).toStrictEqual(mockConfig);
   expect(keysDeep(mockAdded).filter((key) => FORBIDDEN.test(key))).toEqual([]);
+});
+
+it('runDefinition gives two runs in the same millisecond distinct enqueued job ids', async () => {
+  mockConfig = { targets: ['192.0.2.10'], scanOptions: { serviceDetection: true } };
+  const now = jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+  try {
+    const service = new DiscoveryDefinitionService();
+    const first = await service.runDefinition('d1', 'u', 'org');
+    const second = await service.runDefinition('d1', 'u', 'org');
+    expect(first).not.toBe(second);
+    expect(mockAdded).toHaveLength(2);
+    // The returned id is the one BullMQ was given, in both the option and the payload.
+    expect(mockAdded.map(([, data, opts]) => [data.jobId, (opts as { jobId: string }).jobId]))
+      .toEqual([[first, first], [second, second]]);
+    expect(mockLastJobIds).toEqual([first, second]);
+    expect(first.length).toBeLessThanOrEqual(255);
+  } finally {
+    now.mockRestore();
+  }
 });
 
 it.each([

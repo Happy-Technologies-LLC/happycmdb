@@ -8,6 +8,14 @@
 
 import Joi from 'joi';
 
+/**
+ * The one source of the bcrypt cost bounds and default (HAP-1090): the schema below, PasswordService and the
+ * operator scripts all read these.
+ */
+export const BCRYPT_ROUNDS_MIN = 10;
+export const BCRYPT_ROUNDS_MAX = 15;
+export const BCRYPT_ROUNDS_DEFAULT = 12;
+
 export const configSchema = Joi.object({
   // Environment
   env: Joi.string()
@@ -140,7 +148,7 @@ export const configSchema = Joi.object({
     }).required(),
 
     bcrypt: Joi.object({
-      rounds: Joi.number().min(10).max(15).default(12),
+      rounds: Joi.number().min(BCRYPT_ROUNDS_MIN).max(BCRYPT_ROUNDS_MAX).default(BCRYPT_ROUNDS_DEFAULT),
     }).default(),
 
     apiKeys: Joi.object({

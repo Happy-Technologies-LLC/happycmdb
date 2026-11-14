@@ -15,7 +15,7 @@ import express from 'express';
 import request from 'supertest';
 import { AuthController } from '../auth.controller';
 import { AuthService, AuthRepository, UserProfileUpdate } from '../../auth/auth.service';
-import type { GuardedPasswordWrite, GuardedUserWrite } from '../../auth/auth.service';
+import type { GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite } from '../../auth/auth.service';
 import { ValidationMiddleware } from '../middleware/validation.middleware';
 import { AuthMiddleware } from '../../middleware/auth.middleware';
 import { RateLimitMiddleware } from '../../middleware/rate-limit.middleware';
@@ -82,6 +82,16 @@ class InMemoryAuthRepository implements AuthRepository {
       return false;
     }
     this.users.set(write.userId, { ...existing, _passwordHash: write.newHash, _credentialEpoch: write.nextEpoch });
+    return true;
+  }
+
+  /** Like GUARDED_REHASH_CYPHER: the hash lands, the generation does not move. */
+  async rehashPasswordGuarded(write: GuardedPasswordRehash): Promise<boolean> {
+    const existing = this.users.get(write.userId);
+    if (!existing || existing._passwordHash !== write.readHash) {
+      return false;
+    }
+    this.users.set(write.userId, { ...existing, _passwordHash: write.newHash });
     return true;
   }
 

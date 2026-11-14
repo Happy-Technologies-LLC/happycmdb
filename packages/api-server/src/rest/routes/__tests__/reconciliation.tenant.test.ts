@@ -116,7 +116,7 @@ it('merges own CI; foreign, org-less and missing targets get the identical creat
   expect(emit).toHaveBeenCalledTimes(4); // one ci.updated, three ci.discovered
 });
 
-it('HAP-499: a reconciliation 500 never reflects the database error; the detail is logged server-side', async () => {
+it('HAP-499/HAP-1732: a reconciliation 500 never reflects the database error; only its class is logged server-side', async () => {
   const raw = new Error("Node(42) already exists with label `CI` and property `external_id` = 'secret-ext'");
   run.mockRejectedValue(raw);
   query.mockRejectedValue(raw);
@@ -125,5 +125,7 @@ it('HAP-499: a reconciliation 500 never reflects the database error; the detail 
     await as(request(app).post('/api/v1/reconciliation/merge')).send(payload),
     ...await Promise.all(['conflicts', 'lineage/target', 'field-sources/target'].map(path => as(request(app).get(`/api/v1/reconciliation/${path}`))))];
   expect(responses.map(response => [response.status, /secret-ext|Node\(42\)/.test(response.text)])).toEqual(Array(5).fill([500, false]));
-  expect(jest.mocked(logger.error).mock.calls.filter(([, detail]) => detail === raw)).toHaveLength(5);
+  const logged = jest.mocked(logger.error).mock.calls;
+  expect(logged.map(([, detail]) => detail)).toEqual(Array(5).fill({ errorClass: 'Error' }));
+  expect(JSON.stringify(logged)).not.toMatch(/secret-ext|Node\(42\)/);
 });

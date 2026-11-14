@@ -40,6 +40,19 @@ const backendNames = (backend: unknown): unknown[] =>
 
 const nameOf = (doc: Node): unknown => (isMap(doc.metadata) ? doc.metadata.name : undefined);
 
+/** YAML 1.1 booleans: Kubernetes decodes `yes`, `on` and `y` as true for a bool field, as does `True`. */
+const isYamlTrue = (value: unknown): boolean => value === true || (typeof value === 'string' && /^(true|yes|on|y)$/i.test(value.trim()));
+
+/** The `items` of a `kind: List` (or typed list such as `ServiceList`), or undefined for any other document. */
+const listItems = (doc: Node): unknown[] | undefined =>
+  typeof doc.kind === 'string' && doc.kind.endsWith('List') && Array.isArray(doc.items) ? doc.items : undefined;
+
+/** The documents with every List replaced by its items, however deeply nested. */
+const flattenLists = (docs: readonly unknown[]): unknown[] =>
+  docs.flatMap((doc) => (isMap(doc) && listItems(doc) ? flattenLists(listItems(doc) as unknown[]) : [doc]));
+
+const ROUTE_KINDS = ['HTTPRoute', 'GRPCRoute', 'TCPRoute', 'TLSRoute', 'UDPRoute'];
+
 const WORKLOAD_KINDS = ['Pod', 'Deployment', 'StatefulSet', 'DaemonSet', 'ReplicaSet', 'ReplicationController', 'Job', 'CronJob'];
 
 /** The pod template (`{ metadata, spec }`) of a workload document; a bare Pod is its own template. */
@@ -81,7 +94,23 @@ const selectsPods = (selector: unknown, podLabels: readonly Node[]): boolean =>
 const isMetabaseService = (doc: Node, podLabels: readonly Node[]): boolean =>
   doc.kind === 'Service' && (isMetabase(nameOf(doc)) || selectsPods(isMap(doc.spec) ? doc.spec.selector : undefined, podLabels));
 
-function metabaseContext(docs: unknown[]): MetabaseContext {
+/**
+ * An ExternalName Service whose `externalName` is the cluster DNS name of a Service in `services`:
+ * `<svc>`, `<svc>.<ns>`, `<svc>.<ns>.svc` or `<svc>.<ns>.svc.<cluster domain>`.
+ */
+function aliasesMetabase(doc: Node, services: ReadonlySet<string>): boolean {
+  const spec = isMap(doc.spec) ? doc.spec : {};
+  if (doc.kind !== 'Service' || spec.type !== 'ExternalName' || typeof spec.externalName !== 'string') return false;
+  const labels = spec.externalName.trim().toLowerCase().replace(/\.$/, '').split('.');
+  return services.has(labels[0]) && (labels.length <= 2 || labels[2] === 'svc');
+}
+
+/**
+ * The Service names that reach Metabase: by label subset or by name, plus every ExternalName Service whose target is
+ * one of them (an alias of an alias included), since a route to the alias reaches Metabase.
+ */
+function metabaseContext(rawDocs: unknown[]): MetabaseContext {
+  const docs = flattenLists(rawDocs);
   const podLabels: Node[] = [];
   for (const doc of docs) {
     const template = isMap(doc) ? metabaseTemplate(doc) : undefined;
@@ -89,11 +118,21 @@ function metabaseContext(docs: unknown[]): MetabaseContext {
   }
   const services = new Set<string>();
   for (const doc of docs) if (isMap(doc) && isMetabaseService(doc, podLabels)) services.add(String(nameOf(doc)));
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const doc of docs) {
+      if (isMap(doc) && aliasesMetabase(doc, services) && !services.has(String(nameOf(doc)))) {
+        services.add(String(nameOf(doc)));
+        grew = true;
+      }
+    }
+  }
   return { podLabels, services };
 }
 
-/** Reasons one parsed Kubernetes document exposes Metabase beyond the cluster. */
+/** Reasons one parsed Kubernetes document exposes Metabase beyond the cluster; the items of a List are scanned one by one. */
 function k8sExposure(doc: unknown, context: MetabaseContext): string[] {
+  if (isMap(doc) && listItems(doc)) return flattenLists([doc]).flatMap((item) => k8sExposure(item, context));
   if (!isMap(doc) || typeof doc.kind !== 'string') return [];
   const spec = isMap(doc.spec) ? doc.spec : {};
   const name = nameOf(doc);
@@ -113,9 +152,15 @@ function k8sExposure(doc: unknown, context: MetabaseContext): string[] {
     if (isMetabase(name) || hosts.some(isMetabase) || backends.some(isMetabaseBackend)) out.push(`Ingress ${String(name)}`);
   }
 
-  if (doc.kind === 'HTTPRoute') {
+  if (ROUTE_KINDS.includes(doc.kind)) {
     const refs = list(spec.rules).flatMap((rule) => (isMap(rule) ? list(rule.backendRefs).flatMap(backendNames) : []));
-    if (isMetabase(name) || refs.some(isMetabaseBackend) || list(spec.hostnames).some(isMetabase)) out.push(`HTTPRoute ${String(name)}`);
+    if (isMetabase(name) || refs.some(isMetabaseBackend) || list(spec.hostnames).some(isMetabase)) out.push(`${doc.kind} ${String(name)}`);
+  }
+
+  // OpenShift Route: `to` and `alternateBackends` are Service references, `host` is the public name.
+  if (doc.kind === 'Route') {
+    const refs = [...backendNames(spec.to), ...list(spec.alternateBackends).flatMap(backendNames)];
+    if (isMetabase(name) || isMetabase(spec.host) || refs.some(isMetabaseBackend)) out.push(`Route ${String(name)}`);
   }
 
   // A Service is Metabase's by name or by selector: "bi" selecting the Metabase pods counts, and so does "metabase" selecting anything.
@@ -123,13 +168,15 @@ function k8sExposure(doc: unknown, context: MetabaseContext): string[] {
     const type = spec.type ?? 'ClusterIP';
     if (type !== 'ClusterIP') out.push(`Service ${String(name)} is ${String(type)}`);
     if (list(spec.externalIPs).length > 0) out.push(`Service ${String(name)} sets externalIPs`);
+  } else if (aliasesMetabase(doc, context.services)) {
+    out.push(`Service ${String(name)} is an ExternalName alias of Metabase (${String(spec.externalName)})`);
   }
 
   const template = metabaseTemplate(doc);
   if (template) {
     const podSpec = isMap(template.spec) ? template.spec : {};
     const who = `${doc.kind} ${String(name)}`;
-    if (podSpec.hostNetwork === true) out.push(`${who} sets hostNetwork`);
+    if (isYamlTrue(podSpec.hostNetwork)) out.push(`${who} sets hostNetwork`);
     for (const container of containersOf(podSpec)) {
       for (const port of list(container.ports)) {
         if (isMap(port) && Number(port.hostPort) > 0) out.push(`${who} publishes hostPort ${String(port.hostPort)}`);
@@ -140,34 +187,78 @@ function k8sExposure(doc: unknown, context: MetabaseContext): string[] {
   return out;
 }
 
-const LOOPBACK = /^(127(\.\d{1,3}){3}|localhost|\[::1\])$/;
+const LOOPBACK = /^(127(\.\d{1,3}){3}|localhost|\[?::1\]?)$/;
 
-/** Published ports of one compose service that are bound beyond loopback ("[ip:]host:container[/proto]" or long form). */
+/**
+ * Published ports of one compose service that are bound beyond loopback. Short form is "[ip:][host:]container[/proto]":
+ * a port with no host part ("3000", 3000, "3000/tcp") is published on a random host port on every interface, so only
+ * "ip::container" with a loopback ip is internal. Long form is `{ target, published?, host_ip? }`: with no `host_ip`
+ * the port is on every interface, whether or not `published` is set.
+ */
 function nonLoopbackPorts(service: Node): string[] {
   const out: string[] = [];
   for (const port of list(service.ports)) {
     if (isMap(port)) {
-      if (port.published !== undefined && !LOOPBACK.test(String(port.host_ip ?? ''))) out.push(`ports ${JSON.stringify(port)}`);
+      if (!LOOPBACK.test(String(port.host_ip ?? ''))) out.push(`ports ${JSON.stringify(port)}`);
       continue;
     }
     // ${VAR:-default} interpolation holds colons, so flatten it first.
     const spec = String(port).replace(/\$\{[^}]*\}/g, 'VAR');
     const parts = spec.split(/:(?![^[]*\])/);
-    if (parts.length === 1) continue; // container port only: not published
-    if (parts.length === 2 || !LOOPBACK.test(parts[0])) out.push(`ports ${String(port)}`);
+    if (parts.length <= 2 || !LOOPBACK.test(parts[0])) out.push(`ports ${String(port)}`);
   }
   return out;
+}
+
+/** Compose `extends` merge: sequences concatenate, mappings merge key by key, scalars override. */
+function mergeService(base: Node, own: Node): Node {
+  const out: Node = { ...base };
+  for (const [key, value] of Object.entries(own)) {
+    const inherited = out[key];
+    if (Array.isArray(inherited) && Array.isArray(value)) out[key] = [...inherited, ...value];
+    else if (isMap(inherited) && isMap(value)) out[key] = { ...inherited, ...value };
+    else out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Each service with its same-file `extends` chain merged in (`extends: base` or `extends: { service }`). One that names
+ * another file, a service this file lacks, or a cycle is left unmerged and reported: its real shape is unknown.
+ */
+function resolveExtends(entries: [string, Node][]): { services: [string, Node][]; problems: string[] } {
+  const byId = new Map(entries);
+  const resolved = new Map<string, Node>();
+  const problems: string[] = [];
+  const resolveOne = (id: string, trail: readonly string[]): Node => {
+    const cached = resolved.get(id);
+    if (cached) return cached;
+    const own = byId.get(id) as Node;
+    let effective = own;
+    if (own.extends !== undefined) {
+      const target = typeof own.extends === 'string' ? { service: own.extends } : isMap(own.extends) ? own.extends : {};
+      const targetId = typeof target.service === 'string' ? target.service : undefined;
+      if (target.file !== undefined) problems.push(`${id}: extends ${String(targetId)} from ${String(target.file)}, which this scan does not read`);
+      else if (targetId === undefined || !byId.has(targetId)) problems.push(`${id}: extends ${String(targetId)}, which is not a service of this file`);
+      else if (targetId === id || trail.includes(targetId)) problems.push(`${id}: extends ${targetId}, which is a cycle`);
+      else effective = mergeService(resolveOne(targetId, [...trail, id]), own);
+    }
+    resolved.set(id, effective);
+    return effective;
+  };
+  return { services: entries.map(([id]) => [id, resolveOne(id, [])]), problems };
 }
 
 /**
  * Reasons a Metabase service of one parsed compose document is reachable beyond loopback: `network_mode: host`, a
  * published port with no loopback host address, or a shared network namespace (`network_mode: service:X` / `container:X`)
  * whose owner or co-tenant publishes beyond loopback or cannot be resolved within the file. A service is Metabase's by
- * name, container name or image, not by name alone.
+ * name, container name or image, not by name alone, after `extends` is resolved within the file; an `extends` that names
+ * another file, a missing service or a cycle cannot be resolved and is reported for the service that carries it.
  */
 function composeExposure(doc: unknown): string[] {
   if (!isMap(doc) || !isMap(doc.services)) return [];
-  const services = Object.entries(doc.services).filter((entry): entry is [string, Node] => isMap(entry[1]));
+  const { services, problems: extendsProblems } = resolveExtends(Object.entries(doc.services).filter((entry): entry is [string, Node] => isMap(entry[1])));
   const sharedRef = (service: Node) => {
     const match = /^(service|container):(.+)$/.exec(String(service.network_mode ?? '').trim());
     return match ? { kind: match[1], target: match[2].trim() } : undefined;
@@ -223,7 +314,7 @@ function composeExposure(doc: unknown): string[] {
     if (!(isMetabase(ownerId) || isMetabase(owner.image) || isMetabase(owner.container_name))) continue;
     for (const port of nonLoopbackPorts(service)) out.push(`${id}: publishes Metabase's network namespace (${ownerId}): ${port}`);
   }
-  return out;
+  return [...extendsProblems, ...out];
 }
 
 const tracked = (...globs: string[]): string[] =>
@@ -405,7 +496,7 @@ describe('Metabase is internal-only (staff and operator tool)', () => {
       expect(compose('      - "127.0.0.1:${METABASE_PORT:-3002}:3000"\n')).toEqual([]);
       expect(compose('      - "[::1]:3002:3000"\n')).toEqual([]);
       expect(compose('      - target: 3000\n        published: 3002\n        host_ip: 127.0.0.1\n')).toEqual([]);
-      expect(compose('      - "3000"\n')).toEqual([]);
+      expect(compose('      - "3000"\n')).toHaveLength(1);
     });
 
     it('flag compose network_mode: host on a Metabase service, however the service is named', () => {
@@ -453,6 +544,165 @@ describe('Metabase is internal-only (staff and operator tool)', () => {
       expect(composeExposure(parseYaml(text))).toEqual(['reports: ports 3002:3000']);
       const manifest = 'kind: Service\nmetadata:\n  name: bi\nbase: &base\n  selector:\n    component: analytics\nspec:\n  <<: *base\n  type: LoadBalancer\n';
       expect(k8s(manifest, METABASE_PODS)).toEqual(['Service bi is LoadBalancer']);
+    });
+
+    it('flag a compose port with no host part: Compose publishes it on a random host port on every interface', () => {
+      for (const port of ['"3000"', '3000', '"3000/tcp"', '"3000-3002"', '"${METABASE_PORT:-3000}"']) {
+        expect(compose(`      - ${port}\n`)).toHaveLength(1);
+      }
+      expect(composeOf('  bi:\n    image: metabase/metabase\n    ports:\n      - 3000\n')).toEqual(['bi: ports 3000']);
+      // a bare container port pinned to loopback (random host port on 127.0.0.1) stays internal
+      expect(compose('      - "127.0.0.1::3000"\n')).toEqual([]);
+      expect(compose('      - "[::1]::3000/tcp"\n')).toEqual([]);
+      expect(compose('      - "0.0.0.0::3000"\n')).toHaveLength(1);
+    });
+
+    it('flag a long-form compose port unless host_ip pins it to loopback, whether or not it names a published port', () => {
+      expect(compose('      - target: 3000\n')).toHaveLength(1);
+      expect(compose('      - target: 3000\n        protocol: tcp\n')).toHaveLength(1);
+      expect(compose('      - target: 3000\n        published: "3002"\n')).toHaveLength(1);
+      expect(compose('      - target: 3000\n        host_ip: 0.0.0.0\n')).toHaveLength(1);
+      expect(compose('      - target: 3000\n        host_ip: 10.0.0.5\n')).toHaveLength(1);
+      expect(compose('      - target: 3000\n        host_ip: 127.0.0.1\n')).toEqual([]);
+      expect(compose('      - target: 3000\n        host_ip: "::1"\n')).toEqual([]);
+      expect(compose('      - target: 3000\n        published: 3002\n        host_ip: "::1"\n')).toEqual([]);
+    });
+
+    it('treat a bare container port on a service that shares a namespace with Metabase as published', () => {
+      const mb = '  metabase:\n    image: metabase/metabase\n    network_mode: "service:edge"\n';
+      expect(composeOf(mb + '  edge:\n    image: nginx\n    ports:\n      - 3000\n')).toEqual(['metabase: shares a network namespace with edge: ports 3000']);
+    });
+
+    it('read every YAML 1.1 truthy spelling of hostNetwork, and no falsy one', () => {
+      for (const value of ['true', 'True', 'TRUE', 'yes', 'Yes', 'YES', 'on', 'On', 'ON', 'y', '"yes"', '"true"']) {
+        expect(k8s(deployment(podSpec('') + `hostNetwork: ${value}`))).toEqual(['Deployment bi sets hostNetwork']);
+      }
+      for (const value of ['false', 'False', 'no', 'off', 'n', '"false"', 'null']) {
+        expect(k8s(deployment(podSpec('') + `hostNetwork: ${value}`))).toEqual([]);
+      }
+      expect(k8s(`kind: Pod\nmetadata:\n  name: metabase\nspec:\n  hostNetwork: yes\n  containers: []\n`)).toEqual(['Pod metabase sets hostNetwork']);
+    });
+
+    describe('kind: List', () => {
+      const listOf = (...items: string[]) =>
+        `kind: List\nitems:\n${items.map((item) => item.trimEnd().replace(/^/gm, '    ').replace(/^ {4}/, '  - ')).join('\n')}\n`;
+
+      it('scan the items of a List, and of Lists nested in it', () => {
+        const bi = service('bi', 'component: analytics', '  type: LoadBalancer\n');
+        expect(k8s(listOf(METABASE_PODS, bi))).toEqual(['Service bi is LoadBalancer']);
+        expect(k8s(listOf(listOf(METABASE_PODS, bi)))).toEqual(['Service bi is LoadBalancer']);
+        expect(k8s(listOf(deployment(podSpec('') + 'hostNetwork: yes')))).toEqual(['Deployment bi sets hostNetwork']);
+        expect(k8s('kind: ServiceList\nitems:\n  - kind: Service\n    metadata:\n      name: metabase\n    spec:\n      type: NodePort\n')).toEqual(['Service metabase is NodePort']);
+      });
+
+      it('resolve a Service defined in a List for a route outside it, and a route inside a List', () => {
+        const edge = 'kind: Ingress\nmetadata:\n  name: edge\nspec:\n  defaultBackend:\n    service:\n      name: bi\n';
+        expect(k8s(edge, listOf(METABASE_PODS, service('bi', 'component: analytics')))).toEqual(['Ingress edge']);
+        expect(k8s(listOf(edge), METABASE_PODS, service('bi', 'component: analytics'))).toEqual(['Ingress edge']);
+      });
+
+      it('flag nothing for a List of unrelated resources', () => {
+        expect(k8s(listOf(service('api', 'app: api', '  type: LoadBalancer\n'), service('docs', 'app: docs')), METABASE_PODS)).toEqual([]);
+        expect(k8s('kind: List\nitems: []\n')).toEqual([]);
+      });
+    });
+
+    describe('ExternalName Services', () => {
+      const external = (name: string, target: string) => service(name, '', `  type: ExternalName\n  externalName: ${target}\n`);
+      const metabaseSvc = service('metabase', 'app: metabase');
+      const flagged = (name: string, target: string) => [`Service ${name} is an ExternalName alias of Metabase (${target})`];
+
+      it('flag one whose externalName is the DNS name of a Metabase Service', () => {
+        for (const target of ['metabase', 'metabase.data', 'metabase.data.svc', 'metabase.data.svc.cluster.local', 'metabase.data.svc.cluster.local.', 'Metabase.data.svc']) {
+          expect(k8s(external('reports', target), METABASE_PODS, metabaseSvc)).toEqual(flagged('reports', target));
+        }
+        // a Metabase Service reached through a label selector, whatever its name
+        expect(k8s(external('reports', 'bi.data.svc.cluster.local'), METABASE_PODS, service('bi', 'component: analytics'))).toEqual(flagged('reports', 'bi.data.svc.cluster.local'));
+      });
+
+      it('flag an alias of an alias, and the Ingress or route that backs onto it', () => {
+        const first = external('reports', 'metabase.data.svc');
+        const second = external('dash', 'reports.data.svc');
+        expect(k8s(second, first, metabaseSvc)).toEqual(flagged('dash', 'reports.data.svc'));
+        const ingress = 'kind: Ingress\nmetadata:\n  name: edge\nspec:\n  defaultBackend:\n    service:\n      name: dash\n';
+        expect(k8s(ingress, second, first, metabaseSvc)).toEqual(['Ingress edge']);
+        expect(k8s('kind: TCPRoute\nmetadata:\n  name: r\nspec:\n  rules:\n    - backendRefs:\n        - name: reports\n', first, metabaseSvc)).toEqual(['TCPRoute r']);
+      });
+
+      it('do not flag one that targets another Service or an external host, and flag a Metabase-named one however it points', () => {
+        for (const target of ['docs.data.svc.cluster.local', 'metabase.example.com', 'api.example.com', 'docs']) {
+          expect(k8s(external('reports', target), METABASE_PODS, metabaseSvc)).toEqual([]);
+        }
+        expect(k8s(external('reports', 'metabase.data.svc'), METABASE_PODS)).toEqual([]); // no Metabase Service in the scan
+        expect(k8s(external('metabase', 'api.example.com'))).toEqual(['Service metabase is ExternalName']);
+        const ingress = 'kind: Ingress\nmetadata:\n  name: edge\nspec:\n  defaultBackend:\n    service:\n      name: reports\n';
+        expect(k8s(ingress, external('reports', 'docs.data.svc'), METABASE_PODS, metabaseSvc)).toEqual([]);
+      });
+    });
+
+    it('flag an OpenShift Route to Metabase by host, name, `to` or `alternateBackends`, and not one to another Service', () => {
+      const route = (spec: string, name = 'r') => `kind: Route\nmetadata:\n  name: ${name}\nspec:\n${spec}`;
+      const bi = service('bi', 'component: analytics');
+      const docs = service('docs', 'app: docs');
+      expect(k8s(route('  to:\n    kind: Service\n    name: bi\n'), METABASE_PODS, bi)).toEqual(['Route r']);
+      expect(k8s(route('  to:\n    kind: Service\n    name: metabase\n'))).toEqual(['Route r']);
+      expect(k8s(route('  to:\n    name: docs\n  alternateBackends:\n    - name: bi\n      weight: 10\n'), METABASE_PODS, bi, docs)).toEqual(['Route r']);
+      expect(k8s(route('  host: metabase.apps.example.io\n  to:\n    name: docs\n'), docs)).toEqual(['Route r']);
+      expect(k8s(route('  to:\n    name: docs\n', 'metabase'), docs)).toEqual(['Route metabase']);
+      expect(k8s(route('  host: api.apps.example.io\n  to:\n    name: docs\n'), METABASE_PODS, bi, docs)).toEqual([]);
+      expect(k8s(route('  to:\n    name: bi\n'), bi)).toEqual([]); // `bi` selects pods that are not Metabase's in this scan
+    });
+
+    it('flag Gateway API TCPRoute, TLSRoute, GRPCRoute and UDPRoute backends like an HTTPRoute', () => {
+      const route = (kind: string, backend: string, extra = '') => `kind: ${kind}\nmetadata:\n  name: r\nspec:\n${extra}  rules:\n    - backendRefs:\n        - name: ${backend}\n`;
+      const bi = service('bi', 'component: analytics');
+      const docs = service('docs', 'app: docs');
+      for (const kind of ['HTTPRoute', 'TCPRoute', 'TLSRoute', 'GRPCRoute', 'UDPRoute']) {
+        expect(k8s(route(kind, 'bi'), METABASE_PODS, bi)).toEqual([`${kind} r`]);
+        expect(k8s(route(kind, 'metabase'))).toEqual([`${kind} r`]);
+        expect(k8s(route(kind, 'docs'), METABASE_PODS, bi, docs)).toEqual([]);
+      }
+      expect(k8s(route('TLSRoute', 'docs', '  hostnames: [metabase.example.io]\n'), docs)).toEqual(['TLSRoute r']);
+      expect(k8s('kind: GRPCRoute\nmetadata:\n  name: metabase\nspec: {}\n')).toEqual(['GRPCRoute metabase']);
+    });
+
+    describe('compose extends', () => {
+      const base = '  base:\n    image: metabase/metabase\n    ports:\n      - "127.0.0.1:3000:3000"\n';
+      const extending = (name: string, extend: string, rest = '') => `  ${name}:\n    extends:\n${extend}${rest}`;
+
+      it('merge the base service under the extending one, so an inherited image, port or host network is seen', () => {
+        // inherits the Metabase image and adds a public port
+        expect(composeOf(base + extending('reports', '      service: base\n', '    ports:\n      - "3002:3000"\n'))).toEqual(['reports: ports 3002:3000']);
+        // short form, and a chain through an intermediate service
+        expect(composeOf(base + extending('mid', '      service: base\n') + extending('reports', '      service: mid\n', '    ports:\n      - "3002:3000"\n')))
+          .toEqual(['reports: ports 3002:3000']);
+        expect(composeOf(base + '  reports:\n    extends: base\n    ports:\n      - 3002\n')).toEqual(['reports: ports 3002']);
+        // inherits the public port of the base
+        expect(composeOf('  base:\n    image: metabase/metabase\n    ports:\n      - "3002:3000"\n' + extending('reports', '      service: base\n')))
+          .toEqual(['base: ports 3002:3000', 'reports: ports 3002:3000']);
+        // a Metabase service that extends a non-Metabase base with a public port
+        expect(composeOf('  edge:\n    image: nginx\n    ports:\n      - "3002:3000"\n' + extending('reports', '      service: edge\n', '    image: metabase/metabase\n')))
+          .toEqual(['reports: ports 3002:3000']);
+        // host network inherited, and overridden by the extending service
+        expect(composeOf('  base:\n    image: metabase/metabase\n    network_mode: host\n' + extending('reports', '      service: base\n')))
+          .toEqual(['base: network_mode host', 'reports: network_mode host']);
+        expect(composeOf('  base:\n    image: metabase/metabase\n    network_mode: host\n' + extending('reports', '      service: base\n', '    network_mode: bridge\n')))
+          .toEqual(['base: network_mode host']);
+      });
+
+      it('flag nothing for services that extend a non-Metabase base, or a Metabase base that is loopback-only', () => {
+        expect(composeOf('  edge:\n    image: nginx\n    ports:\n      - "3002:3000"\n' + extending('web', '      service: edge\n'))).toEqual([]);
+        expect(composeOf(base + extending('reports', '      service: base\n', '    ports:\n      - "127.0.0.1:3002:3000"\n'))).toEqual([]);
+      });
+
+      it('fail closed on an extends that names another file, a missing service, or a cycle', () => {
+        expect(composeOf(extending('reports', '      file: common.yml\n      service: metabase\n')))
+          .toEqual(['reports: extends metabase from common.yml, which this scan does not read']);
+        expect(composeOf(extending('reports', '      service: ghost\n'))).toEqual(['reports: extends ghost, which is not a service of this file']);
+        expect(composeOf('  reports:\n    extends: ghost\n')).toEqual(['reports: extends ghost, which is not a service of this file']);
+        expect(composeOf(extending('a', '      service: b\n') + extending('b', '      service: a\n'))).toEqual(['b: extends a, which is a cycle']);
+        expect(composeOf(extending('a', '      service: a\n'))).toEqual(['a: extends a, which is a cycle']);
+      });
     });
   });
 });

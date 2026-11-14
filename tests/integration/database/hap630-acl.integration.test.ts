@@ -178,7 +178,14 @@ if (process.env['HAP630_ACCEPTANCE'] === '1') {
           `SELECT * FROM ${view} LIMIT 1`, false);
         await db.query(readFileSync(join(root, 'infrastructure/database/views/cost-analysis.sql'), 'utf8'));
         await asRole(db, 'metabase_readonly', 'SELECT * FROM v_cost_by_tower LIMIT 1', false);
-        await asRole(db, 'metabase_readonly', 'SELECT * FROM v_top_cost_drivers LIMIT 1', true);
+        // HAP-659: the recreated view has no ci.metadata column, so BI may read it; the raw dimension stays denied.
+        for (const view of ['v_top_cost_drivers', 'v_underutilized_resources']) {
+          await asRole(db, 'metabase_readonly', `SELECT * FROM ${view} LIMIT 1`, false);
+          const { rows } = await db.query(`SELECT count(*)::int AS n FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'metadata'`, [view]);
+          expect(rows[0].n).toBe(0);
+        }
+        await asRole(db, 'metabase_readonly', 'SELECT * FROM cmdb.dim_ci LIMIT 1', true);
       }, 180000);
 
       it('guarded manual down refuses wrong relation and removes exactly its ledger entry', async () => {

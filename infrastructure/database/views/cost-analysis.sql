@@ -259,9 +259,12 @@ COMMENT ON VIEW v_depreciation_summary IS 'Asset depreciation summary with remai
 
 -- ----------------------------------------
 -- v_top_cost_drivers
--- Top 20 cost drivers across all CIs
+-- Top 20 cost drivers across all CIs.
+-- HAP-659: no ci.metadata column (unbounded JSONB), so BI may read it. An earlier
+-- revision exposed it; CREATE OR REPLACE cannot drop a column, hence the DROP.
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_top_cost_drivers AS
+DROP VIEW IF EXISTS v_top_cost_drivers;
+CREATE VIEW v_top_cost_drivers AS
 SELECT
     ci.ci_id,
     ci.ci_name,
@@ -272,7 +275,6 @@ SELECT
     COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) AS monthly_cost,
     COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) * 12 AS annual_cost,
     ci.bsm_attributes->>'business_criticality' AS business_criticality,
-    ci.metadata,
     ci.updated_at
 FROM cmdb.dim_ci ci
 WHERE ci.is_current = TRUE
@@ -283,6 +285,40 @@ LIMIT 20;
 
 COMMENT ON VIEW v_top_cost_drivers IS 'Top 20 configuration items by monthly cost';
 
+-- ----------------------------------------
+-- v_underutilized_resources
+-- HAP-659: rightsizing candidates (<50% utilization). Only the numeric
+-- utilization_pct scalar is lifted out of ci.metadata; the JSONB itself is never
+-- selected, and a non-numeric value yields NULL (row excluded) instead of a cast error.
+-- ----------------------------------------
+CREATE OR REPLACE VIEW v_underutilized_resources AS
+SELECT
+    u.ci_id,
+    u.ci_name,
+    u.ci_type,
+    u.environment,
+    u.monthly_cost,
+    u.utilization_pct,
+    u.monthly_cost * (1 - u.utilization_pct / 100) AS potential_savings
+FROM (
+    SELECT
+        ci.ci_id,
+        ci.ci_name,
+        ci.ci_type,
+        ci.environment,
+        COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) AS monthly_cost,
+        CASE WHEN ci.metadata->>'utilization_pct' ~ '^[0-9]+(\.[0-9]+)?$'
+            THEN (ci.metadata->>'utilization_pct')::DECIMAL
+        END AS utilization_pct
+    FROM cmdb.dim_ci ci
+    WHERE ci.is_current = TRUE
+      AND ci.ci_status = 'active'
+) u
+WHERE u.utilization_pct < 50
+  AND u.monthly_cost > 0;
+
+COMMENT ON VIEW v_underutilized_resources IS 'Active CIs under 50% utilization with monthly cost and potential savings';
+
 -- Grant SELECT permissions to metabase_readonly
 GRANT SELECT ON v_executive_cost_summary TO metabase_readonly;
 GRANT SELECT ON v_cost_by_tower TO metabase_readonly;
@@ -291,4 +327,5 @@ GRANT SELECT ON v_unit_economics TO metabase_readonly;
 GRANT SELECT ON v_cloud_vs_onprem_costs TO metabase_readonly;
 GRANT SELECT ON v_cost_allocation_summary TO metabase_readonly;
 GRANT SELECT ON v_depreciation_summary TO metabase_readonly;
--- v_top_cost_drivers exposes unbounded ci.metadata; do not allow BI to read it.
+GRANT SELECT ON v_top_cost_drivers TO metabase_readonly;
+GRANT SELECT ON v_underutilized_resources TO metabase_readonly;

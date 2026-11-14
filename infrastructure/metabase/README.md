@@ -174,7 +174,10 @@ All views are created in the `public` schema for easy access. They are optimized
 | `v_cloud_vs_onprem_costs` | Deployment model comparison | Cloud vs on-prem costs |
 | `v_cost_allocation_summary` | Budget variance | Actual vs budget by cost center |
 | `v_depreciation_summary` | Asset depreciation | Book value, remaining life |
-| `v_top_cost_drivers` | Top 20 cost drivers | Highest cost CIs |
+| `v_top_cost_drivers` | Top 20 cost drivers | Highest cost CIs (no `ci.metadata`, HAP-659) |
+| `v_underutilized_resources` | CIs under 50% utilization | Monthly cost, utilization, potential savings |
+
+**BI role access**: `metabase_readonly` can only read the allowlisted reporting views (`infrastructure/database/metabase-init.sql`). Dashboards and saved questions must query those views, never raw tables (`business_services`, `itil_incidents`, `itil_changes`, `cmdb.dim_ci`, ...). `tests/unit/metabase/bi-assets-allowlist.test.ts` checks every relation in `dashboards/*.json` and `questions/*.sql` against the allowlist.
 
 ### ITIL Service Management Views
 

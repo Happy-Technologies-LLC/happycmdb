@@ -40,7 +40,7 @@ Metabase provides advanced business intelligence and ad-hoc reporting capabiliti
 │                            │                      │         │
 │                            │                      ▼         │
 │                       ┌────────────┐       ┌──────────────┐│
-│                       │ 24 BI Views│       │  Dashboards  ││
+│                       │ 26 BI Views│       │  Dashboards  ││
 │                       │  (Cost,    │       │  Reports     ││
 │                       │   ITIL,    │       │  Questions   ││
 │                       │   BSM)     │       └──────────────┘│
@@ -160,9 +160,9 @@ kubectl logs -f metabase-0
 
 ## Database Views
 
-HappyCMDB v3.0 provides 24 optimized PostgreSQL views organized into three categories: **Cost Analysis**, **ITIL Service Management**, and **Business Service Mapping (BSM)**.
+HappyCMDB v3.0 provides 26 optimized PostgreSQL views organized into three categories: **Cost Analysis**, **ITIL Service Management**, and **Business Service Mapping (BSM)**.
 
-### Cost Analysis Views (8 views)
+### Cost Analysis Views (9 views)
 
 These views power TBM (Technology Business Management) cost allocation and FinOps analysis.
 
@@ -379,6 +379,8 @@ ORDER BY current_book_value DESC;
 - `annual_cost` - Annualized cost
 - `business_criticality` - Criticality tier
 
+The view deliberately has no `ci.metadata` column (unbounded JSONB); it is granted to `metabase_readonly` on that basis.
+
 **Use Cases**:
 - Cost driver identification
 - Optimization opportunity discovery
@@ -389,6 +391,24 @@ ORDER BY current_book_value DESC;
 SELECT ci_name, ci_type, monthly_cost, annual_cost
 FROM v_top_cost_drivers
 LIMIT 10;
+```
+
+#### v_underutilized_resources
+
+**Purpose**: Active CIs under 50% utilization (rightsizing candidates)
+
+**Key Columns**:
+- `ci_name`, `ci_type`, `environment` - CI identity
+- `monthly_cost` - Monthly cost
+- `utilization_pct` - Utilization (numeric `utilization_pct` lifted from CI metadata; non-numeric values are skipped)
+- `potential_savings` - `monthly_cost * (1 - utilization_pct / 100)`
+
+**Sample Query**:
+```sql
+SELECT ci_name, ci_type, monthly_cost, utilization_pct, potential_savings
+FROM v_underutilized_resources
+ORDER BY potential_savings DESC
+LIMIT 20;
 ```
 
 ---
@@ -1098,16 +1118,18 @@ Example: Find services with high cost and low availability
 
 ```sql
 SELECT
-    bs.name AS business_service,
-    bs.operational_status,
-    COALESCE((bs.tbm_attributes->>'total_monthly_cost')::DECIMAL, 0) AS monthly_cost,
-    COALESCE((bs.itil_attributes->>'availability_target')::DECIMAL, 0) AS sla_target,
-    100.0 - COALESCE((bs.itil_attributes->>'availability_current')::DECIMAL, 0) AS availability_gap
-FROM business_services bs
-WHERE COALESCE((bs.tbm_attributes->>'total_monthly_cost')::DECIMAL, 0) > 10000
-  AND 100.0 - COALESCE((bs.itil_attributes->>'availability_current')::DECIMAL, 0) > 5
+    business_service_name AS business_service,
+    operational_status,
+    monthly_cost,
+    availability_30d,
+    100.0 - availability_30d AS availability_gap
+FROM v_service_health_scorecard
+WHERE monthly_cost > 10000
+  AND 100.0 - availability_30d > 5
 ORDER BY monthly_cost DESC, availability_gap DESC;
 ```
+
+> **BI role access**: `metabase_readonly` reads only the allowlisted reporting views, never raw tables such as `business_services`, `itil_incidents`, `itil_changes` or `cmdb.dim_ci`. Query the views in this guide; a query against a raw table fails with `permission denied`.
 
 #### Step 3: Add Parameters (Optional)
 
@@ -1643,7 +1665,7 @@ docker logs cmdb-metabase > metabase_logs_$(date +%Y%m%d).log
 
 Metabase provides HappyCMDB v3.0 with enterprise-grade business intelligence capabilities:
 
-- **24 optimized database views** for Cost Analysis, ITIL, and BSM
+- **26 optimized database views** for Cost Analysis, ITIL, and BSM
 - **3 pre-built dashboards** for Executive, FinOps, and ITIL stakeholders
 - **15 pre-configured questions** for common analysis scenarios
 - **Self-service analytics** with visual query builder and SQL editor

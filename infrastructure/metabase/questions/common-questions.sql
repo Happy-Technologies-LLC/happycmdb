@@ -31,16 +31,10 @@ SELECT
     ci_name,
     ci_type,
     environment,
-    COALESCE((tbm_attributes->>'monthly_cost')::DECIMAL, 0) AS monthly_cost,
-    COALESCE((metadata->>'utilization_pct')::DECIMAL, 0) AS utilization_pct,
-    COALESCE((tbm_attributes->>'monthly_cost')::DECIMAL, 0) *
-        (1 - COALESCE((metadata->>'utilization_pct')::DECIMAL, 0) / 100) AS potential_savings
-FROM cmdb.dim_ci
-WHERE is_current = TRUE
-  AND ci_status = 'active'
-  AND (metadata->>'utilization_pct') IS NOT NULL
-  AND (metadata->>'utilization_pct')::DECIMAL < 50
-  AND COALESCE((tbm_attributes->>'monthly_cost')::DECIMAL, 0) > 0
+    monthly_cost,
+    utilization_pct,
+    potential_savings
+FROM v_underutilized_resources
 ORDER BY potential_savings DESC
 LIMIT 20;
 
@@ -97,99 +91,79 @@ ORDER BY ABS(variance_pct) DESC;
 
 -- Question 6: Which business services have the most incidents?
 -- Description: Identify services requiring attention based on incident frequency
+-- (resolved or closed incidents, last 90 days)
 -- Collection: Service Health
 SELECT
-    bs.name AS business_service,
-    bs.operational_status,
-    COUNT(i.id) AS incident_count,
-    SUM(COALESCE((i.business_impact->>'estimated_revenue_impact')::DECIMAL, 0)) AS total_revenue_impact,
-    AVG(i.time_to_resolve_minutes) AS avg_resolution_minutes,
-    MAX(i.priority) AS highest_priority
-FROM business_services bs
-JOIN itil_incidents i ON i.affected_business_service_id = bs.id
-WHERE i.reported_at >= NOW() - INTERVAL '90 days'
-GROUP BY bs.id, bs.name, bs.operational_status
+    business_service_name AS business_service,
+    operational_status,
+    total_incidents_90d AS incident_count,
+    total_revenue_impact,
+    mttr_minutes AS avg_resolution_minutes
+FROM v_mttr_mtbf_analysis
 ORDER BY incident_count DESC
 LIMIT 10;
 
 -- Question 7: What is our incident resolution performance by priority?
--- Description: Measure incident response SLAs
+-- Description: Measure incident response SLAs (resolved or closed, last 90 days).
+-- Averages are incident-weighted across the view's groups; the view has no
+-- per-incident rows, so the max replaces the former p95.
 -- Collection: ITIL Metrics
 SELECT
     priority,
-    COUNT(*) AS total_incidents,
-    ROUND(AVG(time_to_acknowledge_minutes), 2) AS avg_acknowledgment_minutes,
-    ROUND(AVG(time_to_resolve_minutes), 2) AS avg_resolution_minutes,
-    ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY time_to_resolve_minutes), 2) AS p95_resolution_minutes,
-    SUM(COALESCE((business_impact->>'estimated_revenue_impact')::DECIMAL, 0)) AS total_revenue_impact
-FROM itil_incidents
-WHERE reported_at >= NOW() - INTERVAL '90 days'
-  AND status IN ('resolved', 'closed')
+    SUM(incident_count) AS total_incidents,
+    ROUND(
+        SUM(avg_acknowledgment_minutes * incident_count) /
+            NULLIF(SUM(incident_count) FILTER (WHERE avg_acknowledgment_minutes IS NOT NULL), 0),
+        2
+    ) AS avg_acknowledgment_minutes,
+    ROUND(
+        SUM(avg_resolution_minutes * incident_count) /
+            NULLIF(SUM(incident_count) FILTER (WHERE avg_resolution_minutes IS NOT NULL), 0),
+        2
+    ) AS avg_resolution_minutes,
+    MAX(max_resolution_minutes) AS max_resolution_minutes,
+    SUM(total_revenue_impact) AS total_revenue_impact
+FROM v_incident_summary
+WHERE status IN ('resolved', 'closed')
 GROUP BY priority
 ORDER BY priority;
 
--- Question 8: Which incidents are currently breaching SLA?
--- Description: Identify open incidents at risk of SLA breach
+-- Question 8: Which business services are missing their availability SLA?
+-- Description: Services whose 30-day availability is below target. A per-incident
+-- breach list needs raw itil_incidents rows, which the BI role cannot read.
 -- Collection: SLA Management
 SELECT
-    i.incident_number,
-    i.title,
-    i.priority,
-    i.status,
-    bs.name AS affected_service,
-    i.reported_at,
-    EXTRACT(EPOCH FROM (NOW() - i.reported_at)) / 60 AS age_minutes,
-    -- Calculate expected resolution time based on priority (example SLA)
-    CASE i.priority
-        WHEN 1 THEN 240  -- 4 hours for P1
-        WHEN 2 THEN 480  -- 8 hours for P2
-        WHEN 3 THEN 1440 -- 24 hours for P3
-        WHEN 4 THEN 2880 -- 48 hours for P4
-        ELSE 4320        -- 72 hours for P5
-    END AS sla_target_minutes,
-    EXTRACT(EPOCH FROM (NOW() - i.reported_at)) / 60 -
-    CASE i.priority
-        WHEN 1 THEN 240
-        WHEN 2 THEN 480
-        WHEN 3 THEN 1440
-        WHEN 4 THEN 2880
-        ELSE 4320
-    END AS sla_breach_minutes,
-    i.assigned_to,
-    COALESCE((i.business_impact->>'estimated_revenue_impact')::DECIMAL, 0) AS revenue_impact
-FROM itil_incidents i
-LEFT JOIN business_services bs ON i.affected_business_service_id = bs.id
-WHERE i.status IN ('new', 'assigned', 'in_progress', 'pending')
-  AND EXTRACT(EPOCH FROM (NOW() - i.reported_at)) / 60 >
-      CASE i.priority
-          WHEN 1 THEN 240
-          WHEN 2 THEN 480
-          WHEN 3 THEN 1440
-          WHEN 4 THEN 2880
-          ELSE 4320
-      END
-ORDER BY sla_breach_minutes DESC;
+    business_service_name,
+    operational_status,
+    sla_target_availability,
+    actual_availability_30d,
+    incident_count_30d,
+    recent_incident_count,
+    avg_resolution_minutes_30d,
+    technical_owner
+FROM v_sla_compliance
+WHERE sla_met = FALSE
+ORDER BY actual_availability_30d ASC;
 
 -- ============================================
 -- CHANGE MANAGEMENT QUESTIONS
 -- ============================================
 
 -- Question 9: What is our change success rate?
--- Description: Track change management effectiveness
+-- Description: Track change management effectiveness (last 6 calendar months, monthly buckets)
 -- Collection: Change Management
 SELECT
     change_type,
-    COUNT(*) AS total_changes,
-    SUM(CASE WHEN outcome = 'successful' THEN 1 ELSE 0 END) AS successful,
-    SUM(CASE WHEN outcome = 'failed' THEN 1 ELSE 0 END) AS failed,
-    SUM(CASE WHEN outcome = 'backed_out' THEN 1 ELSE 0 END) AS rolled_back,
+    SUM(total_changes) AS total_changes,
+    SUM(successful_changes) AS successful,
+    SUM(failed_changes) AS failed,
+    SUM(rolled_back_changes) AS rolled_back,
     ROUND(
-        100.0 * SUM(CASE WHEN outcome = 'successful' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
+        100.0 * SUM(successful_changes) / NULLIF(SUM(total_changes), 0),
         2
     ) AS success_rate
-FROM itil_changes
-WHERE scheduled_start >= NOW() - INTERVAL '6 months'
-  AND status = 'closed'
+FROM v_change_success_rates
+WHERE month >= DATE_TRUNC('month', NOW() - INTERVAL '6 months')
 GROUP BY change_type
 ORDER BY total_changes DESC;
 

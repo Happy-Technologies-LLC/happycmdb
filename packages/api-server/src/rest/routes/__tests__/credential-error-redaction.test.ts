@@ -29,14 +29,20 @@ const sql = (text: string, params: unknown[] = [], op = 'query') => new Promise<
   host.send({ id, op, sql: text, params });
 });
 // A PostgreSQL-style failure that quotes a value, injected into one statement shape at a time.
-let failOn: { pattern: RegExp; error: () => Error } | null = null;
+// `afterRunning` runs the statement on the database first, then fails: a failed ROLLBACK that really rolled back.
+let failOn: { pattern: RegExp; error: () => Error; afterRunning?: boolean }[] = [];
+// Every release() call's arguments: pg destroys a client released with an error instead of pooling it.
+const releases: unknown[][] = [];
 const pool = {
   connect: async () => ({
     query: async (text: string, params?: unknown[]) => {
-      if (failOn?.pattern.test(text)) throw failOn.error();
-      return { rows: await sql(text, params) };
+      const fail = failOn.find((f) => f.pattern.test(text));
+      if (fail && fail.afterRunning !== true) throw fail.error();
+      const rows = await sql(text, params);
+      if (fail) throw fail.error();
+      return { rows };
     },
-    release: () => undefined,
+    release: (...args: unknown[]) => { releases.push(args); },
   }),
 };
 jest.mock('@cmdb/database', () => ({
@@ -91,7 +97,7 @@ const captureLogger = () => {
     const calls = spies.flatMap((spy) => spy.mock.calls as unknown[][]);
     const rendered = calls.map((args) => inspect(args, { depth: null, showHidden: true, maxStringLength: null, maxArrayLength: null, breakLength: Infinity })).join('\n');
     const errorFields = calls.flatMap((args) => args.map((arg) => (arg as { error?: unknown } | null)?.error).filter((e) => e !== undefined));
-    return { rendered, errorFields };
+    return { rendered, errorFields, calls };
   };
 };
 
@@ -105,7 +111,7 @@ CREATE TABLE discovery_definitions (credential_id UUID, credential_set_id UUID);
 CREATE TABLE connector_configurations (credential_id UUID);`, [], 'exec');
   await sql(readFileSync(join(migrations, '021_credential_organization_scope.sql'), 'utf8'), [], 'exec');
 });
-afterEach(() => { failOn = null; });
+afterEach(() => { failOn = []; releases.length = 0; });
 afterAll(() => host.kill());
 
 describe('logger arguments on credential failure paths carry the class only', () => {
@@ -134,7 +140,7 @@ describe('logger arguments on credential failure paths carry the class only', ()
   it('(4b) the update catch logs a driver failure by class and SQLSTATE, never its message or the quoted value', async () => {
     const id = await insert(decodable());
     const driver = `invalid input syntax for type uuid: "${SECRET}"`;
-    failOn = { pattern: /^\s*UPDATE credentials/, error: () => Object.assign(new Error(driver), { code: '22P02', severity: 'ERROR' }) };
+    failOn = [{ pattern: /^\s*UPDATE credentials/, error: () => Object.assign(new Error(driver), { code: '22P02', severity: 'ERROR' }) }];
     const logs = captureLogger();
     await expect(new CredentialCRUDService(pool as never).update(id, { name: rnd() }, 'a', A, true)).rejects.toThrow(driver);
     const { rendered, errorFields } = logs();
@@ -185,5 +191,147 @@ describe('(2) PUT on a stored value that cannot be decoded commits nothing', () 
     const res = await request(app).put(`/api/v1/credentials/${id}`).set(as('admin')).send({ name });
     const [stored] = await row(id);
     expect([res.status, res.body.data.name, res.body.data.credentials, stored!['name']]).toEqual([200, name, '***REDACTED***', name]);
+  });
+});
+
+// HAP-1834. A pg CHECK or NOT NULL failure carries the failing row in its enumerable `detail`; winston would keep it.
+const DETAIL = rnd();
+const driverFailure = (marker = DETAIL) => Object.assign(new Error(`new row violates check constraint "chk": ${marker}`), { code: '23514', detail: `Failing row contains (${marker})` });
+const failing = (pattern: RegExp, error: () => Error = driverFailure) => { failOn = [{ pattern, error }]; };
+const classOnly = (errorFields: unknown[]) => errorFields.every((field) => Object.keys(field as object).every((key) => key === 'errorClass' || key === 'code'));
+const noMarkers = (text: string, ...markers: string[]) => markers.map((marker) => text.includes(marker));
+const sets = async (credentialIds?: string[]) => {
+  const res = await request(app).post('/api/v1/credential-sets').set(as('a')).send({ name: `set-${rnd()}`, credential_ids: credentialIds ?? [await insert(decodable())] });
+  expect(res.status).toBe(201);
+  return res.body.data.id as string;
+};
+
+describe('(5) PUT logs: class only, no stored plaintext or driver detail, and the log call fires', () => {
+  // The service rethrows every decode failure as the fixed-message decryptFailure, so both reach the logger as Error.
+  it.each([['non-JSON plaintext', nonJson], ['a tampered auth tag', tampered]])('PUT on a stored value with %s', async (_label, stored) => {
+    for (const who of ['a', 'admin']) {
+      const id = await insert(stored(), who);
+      const logs = captureLogger();
+      const res = await request(app).put(`/api/v1/credentials/${id}`).set(as(who)).send({ name: rnd() });
+      const { rendered, errorFields, calls } = logs();
+      expect([res.status, res.body]).toEqual([500, { success: false, error: 'Failed to update credential', message: 'Internal error' }]);
+      expect(noMarkers(rendered + JSON.stringify(res.body), plain, parseMessage, SECRET, DECRYPT_MESSAGE)).toEqual([false, false, false, false]);
+      expect(calls.map((args) => args[0])).toEqual(expect.arrayContaining(['Failed to update unified credential', 'Error updating credential']));
+      expect(errorFields).toContainEqual({ errorClass: 'Error' });
+      expect(classOnly(errorFields)).toBe(true);
+      jest.restoreAllMocks();
+    }
+  });
+
+  it.each([
+    ['a rename', () => ({ name: rnd() }), SECRET],
+    ['new secret material', () => ({ credentials: { key: SECRET } }), SECRET],
+  ])('PUT with %s when the driver rejects the UPDATE with a row-quoting detail', async (_label, body, marker) => {
+    const id = await insert(encrypt(JSON.stringify({ key: rnd() })), 'a', 'api_key');
+    failing(/^\s*UPDATE credentials/, () => driverFailure(`${DETAIL} ${marker}`));
+    const logs = captureLogger();
+    const res = await request(app).put(`/api/v1/credentials/${id}`).set(as('a')).send(body());
+    const { rendered, errorFields, calls } = logs();
+    expect([res.status, res.body]).toEqual([500, { success: false, error: 'Failed to update credential', message: 'Internal error' }]);
+    expect(noMarkers(rendered + JSON.stringify(res.body), DETAIL, marker)).toEqual([false, false]);
+    expect(calls.map((args) => args[0])).toEqual(expect.arrayContaining(['Failed to update unified credential', 'Error updating credential']));
+    expect(errorFields).toContainEqual({ errorClass: 'Error', code: '23514' });
+    expect(classOnly(errorFields)).toBe(true);
+  });
+});
+
+describe('(1) create, delete and set failures log the error class only', () => {
+  const expectClean = (logs: ReturnType<ReturnType<typeof captureLogger>>, res: { body: unknown }, messages: string[]) => {
+    expect(noMarkers(logs.rendered + JSON.stringify(res.body), DETAIL, SECRET)).toEqual([false, false]);
+    expect(logs.calls.map((args) => args[0])).toEqual(expect.arrayContaining(messages));
+    expect(logs.errorFields).toContainEqual({ errorClass: 'Error', code: '23514' });
+    expect(classOnly(logs.errorFields)).toBe(true);
+  };
+
+  it('POST /credentials: the INSERT failure and the secret in the body stay out of the logger', async () => {
+    failing(/INSERT INTO credentials/, () => driverFailure(`${DETAIL} ${SECRET}`));
+    const logs = captureLogger();
+    const res = await request(app).post('/api/v1/credentials').set(as('a')).send({ name: rnd(), protocol: 'api_key', scope: 'api', credentials: { key: SECRET } });
+    expect(res.status).toBe(500);
+    expectClean(logs(), res, ['Failed to create unified credential', 'Error creating credential']);
+  });
+
+  it('DELETE /credentials/:id: the DELETE failure stays out of the logger', async () => {
+    const id = await insert(decodable());
+    failing(/DELETE FROM credentials/, () => driverFailure(`${DETAIL} ${SECRET}`));
+    const logs = captureLogger();
+    const res = await request(app).delete(`/api/v1/credentials/${id}`).set(as('a'));
+    expect(res.status).toBe(500);
+    expectClean(logs(), res, ['Failed to delete unified credential', 'Error deleting credential']);
+  });
+
+  it.each([
+    ['create', /INSERT INTO credential_sets/, async () => request(app).post('/api/v1/credential-sets').set(as('a')).send({ name: rnd(), credential_ids: [await insert(decodable())] }),
+      ['Failed to create credential set', 'Error creating credential set']],
+    ['update', /UPDATE credential_sets/, async (id: string) => request(app).put(`/api/v1/credential-sets/${id}`).set(as('a')).send({ name: rnd() }),
+      ['Failed to update credential set', 'Error updating credential set']],
+    ['delete', /DELETE FROM credential_sets/, async (id: string) => request(app).delete(`/api/v1/credential-sets/${id}`).set(as('a')),
+      ['Failed to delete credential set', 'Error deleting credential set']],
+  ])('credential set %s', async (_op, pattern, send, messages) => {
+    // The set exists before the failure is armed, so the setup request does not hit it.
+    const id = await sets();
+    failing(pattern as RegExp, () => driverFailure(`${DETAIL} ${SECRET}`));
+    const logs = captureLogger();
+    const res = await (send as (id: string) => Promise<request.Response>)(id);
+    expect(res.status).toBe(500);
+    expectClean(logs(), res, messages as string[]);
+  });
+});
+
+describe('(3) a credential set is 404 by error type, never by message text', () => {
+  const notFound = { success: false, error: 'Not Found', message: 'Credential set not found' };
+  const missing = randomUUID();
+  it.each([
+    ['PUT', () => request(app).put(`/api/v1/credential-sets/${missing}`).set(as('a')).send({ name: rnd() })],
+    ['DELETE', () => request(app).delete(`/api/v1/credential-sets/${missing}`).set(as('a'))],
+    ['select', () => request(app).post(`/api/v1/credential-sets/${missing}/select`).set(as('a')).send({ context: { ip: '10.0.0.1' } })],
+  ])('%s on an absent set keeps its 404 body', async (_op, send) => {
+    const res = await send();
+    expect([res.status, res.body]).toEqual([404, notFound]);
+  });
+
+  it('select on a member whose decode error quotes "not found" is 500, with the decrypted text out of the logger', async () => {
+    const quoted = `h${randomBytes(2).toString('hex')} not found`;
+    const quotedMessage = (() => { try { JSON.parse(quoted); } catch (error) { return (error as Error).message; } throw new Error('fixture parsed'); })();
+    expect(quotedMessage).toContain('not found');
+    const set = await sets([await insert(encrypt(quoted))]);
+    const logs = captureLogger();
+    const res = await request(app).post(`/api/v1/credential-sets/${set}/select`).set(as('a')).send({ context: { ip: '10.0.0.1' } });
+    const { rendered, errorFields } = logs();
+    expect([res.status, res.body]).toEqual([500, { success: false, error: 'Failed to select credentials', message: 'Internal error' }]);
+    expect(noMarkers(rendered + JSON.stringify(res.body), quoted, quotedMessage)).toEqual([false, false]);
+    expect(errorFields).toContainEqual({ errorClass: 'SyntaxError' });
+  });
+
+  it.each([
+    ['PUT', /UPDATE credential_sets/, (id: string) => request(app).put(`/api/v1/credential-sets/${id}`).set(as('a')).send({ name: rnd() })],
+    ['DELETE', /DELETE FROM credential_sets/, (id: string) => request(app).delete(`/api/v1/credential-sets/${id}`).set(as('a'))],
+  ])('%s: an untyped failure whose text says "not found" is 500', async (_op, pattern, send) => {
+    const id = await sets();
+    failing(pattern, () => new Error('relation "x" not found'));
+    const res = await send(id);
+    expect([res.status, res.body]).toEqual([500, expect.objectContaining({ message: 'Internal error' })]);
+  });
+});
+
+describe('(4) a client whose ROLLBACK failed is released with the error, so the pool destroys it', () => {
+  const run = () => new CredentialCRUDService(pool as never).update('missing-id', { name: rnd() }, 'a', A, true);
+  it('failed UPDATE and failed ROLLBACK: release receives the ROLLBACK Error', async () => {
+    const rollback = new Error(`ROLLBACK refused ${rnd()}`);
+    failOn = [{ pattern: /^\s*UPDATE credentials/, error: () => driverFailure() }, { pattern: /^ROLLBACK/, error: () => rollback, afterRunning: true }];
+    await expect(run()).rejects.toThrow(driverFailure().message);
+    expect(releases).toEqual([[rollback]]);
+  });
+
+  it('failed UPDATE and clean ROLLBACK: the client goes back to the pool without an error', async () => {
+    failing(/^\s*UPDATE credentials/);
+    await expect(run()).rejects.toThrow(driverFailure().message);
+    expect(releases.every(([error]) => error === undefined)).toBe(true);
+    expect(releases).toHaveLength(1);
   });
 });

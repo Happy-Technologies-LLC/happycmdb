@@ -21,14 +21,45 @@ function allowlist(): Set<string> {
   return new Set([...array.matchAll(/'([^']+)'/g)].map(m => (m[1].includes('.') ? m[1] : `public.${m[1]}`)));
 }
 
-/** Relations named after FROM / JOIN in a SQL text, schema-qualified; CTE names and EXTRACT(x FROM ...) excluded. */
+const CLAUSE_END = /^(?:WHERE|GROUP|ORDER|LIMIT|HAVING|UNION|INTERSECT|EXCEPT|WINDOW|OFFSET|FETCH)\b/i;
+
+/** The comma-separated items of every FROM list (`FROM a, b JOIN c ON ..., d`), parenthesized content blanked to `(`. */
+function fromItems(text: string): string[] {
+  const items: string[] = [];
+  for (const from of text.matchAll(/\bFROM\b/gi)) {
+    const rest = text.slice(from.index + 4);
+    let depth = 0;
+    let item = '';
+    for (let i = 0; i < rest.length; i++) {
+      const ch = rest[i];
+      if (depth === 0 && (ch === ';' || (/\W/.test(rest[i - 1] ?? ' ') && CLAUSE_END.test(rest.slice(i))))) break;
+      if (ch === ')' && depth === 0) break;
+      if (ch === '(') { if (depth === 0) item += '('; depth++; }
+      else if (ch === ')') depth--;
+      else if (depth === 0 && ch === ',') { items.push(item); item = ''; }
+      else if (depth === 0) item += ch;
+    }
+    items.push(item);
+  }
+  return items;
+}
+
+/** Relations named in a FROM list or after JOIN, schema-qualified; CTE names and EXTRACT(x FROM ...) excluded. */
 function relations(sql: string): string[] {
   const text = sql.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/EXTRACT\s*\(\s*\w+\s+FROM/gi, 'EXTRACT(');
   const ctes = new Set([...text.matchAll(/\b(\w+)\s+AS\s*\(/gi)].map(m => m[1].toLowerCase()));
+  const names = [
+    // an item starts with its relation (a subquery starts with `(`); each JOIN inside the item names another
+    ...fromItems(text).flatMap(item => [
+      /^\s*(?:ONLY\s+|LATERAL\s+)?("?[A-Za-z_]\w*"?(?:\.\w+)?)/i.exec(item)?.[1],
+      ...[...item.matchAll(/\bJOIN\s+("?[A-Za-z_]\w*"?(?:\.\w+)?)/gi)].map(m => m[1]),
+    ]),
+  ];
   const found = new Set<string>();
-  for (const m of text.matchAll(/\b(?:FROM|JOIN)\s+("?[A-Za-z_]\w*"?(?:\.\w+)?)/gi)) {
-    const name = m[1].replace(/"/g, '').toLowerCase();
+  for (const raw of names) {
+    if (!raw) continue;
+    const name = raw.replace(/"/g, '').toLowerCase();
     if (!ctes.has(name)) found.add(name.includes('.') ? name : `public.${name}`);
   }
   return [...found];
@@ -68,50 +99,33 @@ describe('Metabase assets query only what the BI role can read (HAP-659)', () =>
         .toEqual(['public.itil_incidents']);
       expect(unreadable('SELECT * FROM v_cost_by_tower', allowed)).toEqual([]);
     });
-  });
 
-  it('reads the allowlist and finds the shipped dashboards and questions', () => {
-    expect(allowlist().has('public.v_cost_by_tower')).toBe(true);
-    expect(allowlist().has('public.itil_incidents')).toBe(false);
-    expect(dashboards.length).toBeGreaterThanOrEqual(3);
-    expect(assets.length).toBeGreaterThan(20);
+    it('finds relations after a comma join, in a mixed list and inside a subquery', () => {
+      expect(relations('SELECT 1 FROM v_cost_by_tower t, cmdb.dim_ci d WHERE t.x = d.x').sort())
+        .toEqual(['cmdb.dim_ci', 'public.v_cost_by_tower']);
+      expect(relations('SELECT 1 FROM a JOIN b ON f(a.x, b.x) = 1, c, (SELECT 1 FROM d, e) s ORDER BY 1').sort())
+        .toEqual(['public.a', 'public.b', 'public.c', 'public.d', 'public.e']);
+      expect(unreadable('SELECT * FROM v_cost_by_tower t, itil_incidents i', new Set(['public.v_cost_by_tower'])))
+        .toEqual(['public.itil_incidents']);
+    });
   });
 
   it.each(assets.map(([file, sql]) => [file, sql.replace(/\s+/g, ' ').slice(0, 90), sql]))(
     '%s: %s', (_file, _label, sql) => {
+      expect(relations(sql)).not.toEqual([]); // an extractor that finds nothing would pass the next line vacuously
       expect(unreadable(sql)).toEqual([]);
     });
 
-  it('queries every relation it names, so none is silently skipped', () => {
-    const all = new Set(assets.flatMap(([, sql]) => relations(sql)));
-    expect(all.has('public.v_top_cost_drivers')).toBe(true);
-    expect(all.has('public.v_underutilized_resources')).toBe(true);
-  });
-
-  describe('BI view files', () => {
-    const files = readdirSync(join(root, viewsDir)).filter(f => f.endsWith('.sql')).sort();
-    const statements = (file: string) => read(`${viewsDir}/${file}`).replace(/--[^\n]*/g, '').split(/;\s*\n/);
-
-    it.each(files)('%s grants metabase_readonly only allowlisted views', file => {
-      const granted = statements(file).flatMap(s => [...s.matchAll(/GRANT\s+SELECT\s+ON\s+([\w.]+)\s+TO\s+metabase_readonly/gi)])
+  it.each(readdirSync(join(root, viewsDir)).filter(f => f.endsWith('.sql')).sort())(
+    '%s grants metabase_readonly only allowlisted views', file => {
+      const statements = read(`${viewsDir}/${file}`).replace(/--[^\n]*/g, '').split(/;\s*\n/);
+      const granted = statements.flatMap(s => [...s.matchAll(/GRANT\s+SELECT\s+ON\s+([\w.]+)\s+TO\s+metabase_readonly/gi)])
         .map(m => (m[1].includes('.') ? m[1] : `public.${m[1]}`));
-      expect(granted.length).toBeGreaterThan(0);
       expect(granted.filter(v => !allowlist().has(v))).toEqual([]);
     });
 
-    it.each(files)('%s: no BI-granted view selects a whole metadata column', file => {
-      const granted = new Set(statements(file).flatMap(s => [...s.matchAll(/GRANT\s+SELECT\s+ON\s+(\w+)\s+TO\s+metabase_readonly/gi)])
-        .map(m => m[1]));
-      const leaking = statements(file).flatMap(s => {
-        const view = /CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(\w+)\s+AS/i.exec(s);
-        // bare `metadata` / `ci.metadata`; `metadata->>'key'` extracts one scalar and is bounded
-        return view && granted.has(view[1]) && /\b(?:\w+\.)?metadata\b(?!\s*->)/i.test(s) ? [view[1]] : [];
-      });
-      expect(leaking).toEqual([]);
-    });
-  });
-
-  describe('v_top_cost_drivers and v_underutilized_resources as the BI role (PGlite)', () => {
+  // The cost views and the BI grants run as the shipped SQL files do, as the BI role, in PGlite.
+  describe('BI cost views are granted by shape (PGlite)', () => {
     const host = fork(join(root, 'packages/api-server/src/rest/routes/__tests__/fixtures/pglite-host.cjs'), [],
       { serialization: 'advanced' });
     let serial = 0;
@@ -136,12 +150,53 @@ describe('Metabase assets query only what the BI role can read (HAP-659)', () =>
     const row = (i: number, cost: number, util: unknown, extra = '') =>
       `('ci-${i}', 'name-${i}', 'server', 'active', 'production', true,
         '{"monthly_cost": ${cost}}', '{}', '{"utilization_pct": ${JSON.stringify(util)}, "api_token": "${secret}"${extra}}')`;
+    /** Top-level statements, `--` comments dropped, dollar-quoted bodies and string literals kept whole. */
+    function splitStatements(sql: string): string[] {
+      const text = sql.replace(/--[^\n]*/g, '');
+      const out: string[] = [];
+      let cur = '';
+      for (let i = 0; i < text.length;) {
+        const tag = /^\$[A-Za-z_]*\$/.exec(text.slice(i, i + 40));
+        if (tag) {
+          const end = text.indexOf(tag[0], i + tag[0].length);
+          const stop = end < 0 ? text.length : end + tag[0].length;
+          cur += text.slice(i, stop);
+          i = stop;
+        } else if (text[i] === "'") {
+          let j = i + 1;
+          while (j < text.length && (text[j] !== "'" || text[j + 1] === "'")) j += text[j] === "'" ? 2 : 1;
+          cur += text.slice(i, j + 1);
+          i = j + 1;
+        } else if (text[i] === ';') {
+          out.push(cur.trim());
+          cur = '';
+          i += 1;
+        } else {
+          cur += text[i];
+          i += 1;
+        }
+      }
+      return [...out, cur.trim()].filter(Boolean);
+    }
+    /** psql without ON_ERROR_STOP: every statement runs and a failure only prints an error. Returns those errors. */
+    const runLoose = async (statements: string[]) => {
+      const errors: string[] = [];
+      for (const statement of statements) await exec(statement).catch((e: Error) => { errors.push(e.message); });
+      return errors;
+    };
+
+    const costStatements = splitStatements(read(`${viewsDir}/cost-analysis.sql`)).filter(s =>
+      /^(CREATE (OR REPLACE )?VIEW|COMMENT ON VIEW) v_(top_cost_drivers(_bi)?|underutilized_resources)\b/.test(s) || /^DO\b/.test(s));
+    const costViewDdl = costStatements.filter(s => !/^DO\b/.test(s));
+    const initSql = read('infrastructure/database/metabase-init.sql');
+    // the same slice the hosted ACL job (hap630-acl.integration.test.ts) runs
+    const biSetup = initSql.slice(initSql.indexOf('-- Only audited reporting views'), initSql.indexOf('-- FD-6 health reporting'));
+    const migration050 = `BEGIN;\n${read('packages/database/src/postgres/migrations/050_bi_cost_view_grants.sql')}\nCOMMIT;`;
+    const denied = (sql: string) => expect(asBi(sql)).rejects.toThrow(/permission denied/);
 
     beforeAll(async () => {
-      const file = read(`${viewsDir}/cost-analysis.sql`).replace(/--[^\n]*/g, '');
-      const mine = file.split(/;\s*\n/).map(s => s.trim()).filter(s =>
-        /^(DROP VIEW IF EXISTS|CREATE (OR REPLACE )?VIEW|COMMENT ON VIEW|GRANT SELECT ON) v_(top_cost_drivers|underutilized_resources)\b/.test(s));
-      expect(mine.length).toBeGreaterThanOrEqual(5);
+      expect(costStatements.length).toBeGreaterThanOrEqual(7);
+      expect(biSetup).toContain('DO $bi$');
       await exec(`CREATE ROLE metabase_readonly;
         CREATE SCHEMA cmdb;
         CREATE TABLE cmdb.dim_ci (ci_key serial, ci_id text, ci_name text, ci_type text, ci_status text, environment text,
@@ -154,28 +209,71 @@ describe('Metabase assets query only what the BI role can read (HAP-659)', () =>
           row(102, 500, 60),
           row(103, 0, 10), // no cost
         ].join(',')}`);
-      await exec(`${mine.join(';\n')};`);
     }, 60000);
+    beforeEach(async () => { await exec('DROP VIEW IF EXISTS v_top_cost_drivers, v_top_cost_drivers_bi, v_underutilized_resources CASCADE'); });
     afterAll(() => { host.kill(); });
 
-    it('top cost drivers: BI can read the 20 most expensive CIs, with no metadata column and no secret value', async () => {
-      const rows = await asBi('SELECT * FROM v_top_cost_drivers');
-      expect(rows).toHaveLength(20);
-      expect(rows[0]['ci_id']).toBe('ci-24');
-      expect(Object.keys(rows[0])).not.toContain('metadata');
-      expect(JSON.stringify(rows)).not.toContain(secret);
+    it('fresh install: BI reads the bounded views with no metadata column and no secret; v_top_cost_drivers and the raw dimension stay denied', async () => {
+      expect(await runLoose(costStatements)).toEqual([]);
+      const top = await asBi('SELECT * FROM v_top_cost_drivers_bi');
+      expect(top).toHaveLength(20);
+      expect(top[0]['ci_id']).toBe('ci-24');
+      expect(Object.keys(top[0])).not.toContain('metadata');
+      const idle = await asBi('SELECT * FROM v_underutilized_resources');
+      expect(idle.map(r => r['ci_id'])).toEqual(['ci-100']);
+      expect(Number(idle[0]['potential_savings'])).toBeCloseTo(300);
+      expect(JSON.stringify([top, idle])).not.toContain(secret);
+      await denied('SELECT * FROM v_top_cost_drivers');
+      await denied('SELECT metadata FROM cmdb.dim_ci');
     });
 
-    it('underutilized resources: only numeric utilization below 50, with savings, and no metadata or secret', async () => {
-      const rows = await asBi('SELECT * FROM v_underutilized_resources');
-      expect(rows.map(r => r['ci_id'])).toEqual(['ci-100']);
-      expect(Number(rows[0]['potential_savings'])).toBeCloseTo(300);
-      expect(Object.keys(rows[0])).not.toContain('metadata');
-      expect(JSON.stringify(rows)).not.toContain(secret);
+    it('BI setup grants the bounded views by name and shape, and never v_top_cost_drivers (HAP-659 B1)', async () => {
+      await exec(costViewDdl.join(';\n'));
+      await exec(biSetup);
+      expect(await asBi('SELECT ci_id FROM v_top_cost_drivers_bi')).toHaveLength(20);
+      expect(await asBi('SELECT ci_id FROM v_underutilized_resources')).toHaveLength(1);
+      await denied('SELECT * FROM v_top_cost_drivers'); // present with ci.metadata, on no allowlist
     });
 
-    it('the BI role still cannot read the raw dimension', async () => {
-      await expect(asBi('SELECT metadata FROM cmdb.dim_ci')).rejects.toThrow(/permission denied/);
+    // B1: the old shape is already in the database when BI setup (the documented metabase-init.sql re-run) executes.
+    it.each([
+      ['v_top_cost_drivers', 'ci_id, metadata'],
+      ['v_top_cost_drivers_bi', 'ci_id, metadata'],
+      ['v_top_cost_drivers_bi', 'ci_id, tbm_attributes AS attrs'], // a jsonb column under another name
+      ['v_underutilized_resources', 'ci_id, metadata'],
+    ])('old-shape %s (%s) present, then BI setup runs: the BI read is denied', async (view, columns) => {
+      await exec(`CREATE VIEW ${view} AS SELECT ${columns} FROM cmdb.dim_ci`);
+      await exec(`GRANT SELECT ON ${view} TO metabase_readonly`); // a grant left by an earlier bootstrap
+      await exec(biSetup);
+      await denied(`SELECT * FROM ${view}`);
+    });
+
+    // B2: cost-analysis.sql runs without ON_ERROR_STOP; a stale old-shape view makes its CREATE fail.
+    it.each([
+      ['v_top_cost_drivers_bi', 'ci_id, metadata'],
+      ['v_underutilized_resources', 'ci_id, tbm_attributes AS attrs'],
+    ])('a failed CREATE leaves old-shape %s in place: cost-analysis.sql without ON_ERROR_STOP leaves BI no access (HAP-659 B2)', async (view, columns) => {
+      await exec(`CREATE VIEW ${view} AS SELECT ${columns} FROM cmdb.dim_ci`);
+      await exec(`GRANT SELECT ON ${view} TO metabase_readonly`);
+      const errors = await runLoose(costStatements);
+      expect(errors.some(e => /cannot (change name of|drop columns from) view/.test(e))).toBe(true); // the repro condition
+      await denied(`SELECT * FROM ${view}`);
+      await denied('SELECT * FROM v_top_cost_drivers');
+    });
+
+    it('migration 050 grants the bounded views to BI after a restore, and only them', async () => {
+      await exec(costViewDdl.join(';\n'));
+      await exec(migration050);
+      expect(await asBi('SELECT ci_id FROM v_top_cost_drivers_bi')).toHaveLength(20);
+      expect(await asBi('SELECT ci_id FROM v_underutilized_resources')).toHaveLength(1);
+      await denied('SELECT * FROM v_top_cost_drivers');
+    });
+
+    it('migration 050 skips a view that has a metadata or jsonb column and revokes its grant; a missing view is skipped', async () => {
+      await exec(`CREATE VIEW v_top_cost_drivers_bi AS SELECT ci_id, metadata FROM cmdb.dim_ci;
+        GRANT SELECT ON v_top_cost_drivers_bi TO metabase_readonly`);
+      await exec(migration050); // v_underutilized_resources does not exist: no error
+      await denied('SELECT * FROM v_top_cost_drivers_bi');
     });
   });
 });

@@ -259,12 +259,38 @@ COMMENT ON VIEW v_depreciation_summary IS 'Asset depreciation summary with remai
 
 -- ----------------------------------------
 -- v_top_cost_drivers
--- Top 20 cost drivers across all CIs.
--- HAP-659: no ci.metadata column (unbounded JSONB), so BI may read it. An earlier
--- revision exposed it; CREATE OR REPLACE cannot drop a column, hence the DROP.
+-- Top 20 cost drivers across all CIs
+-- Carries ci.metadata (unbounded, secret-capable JSONB): NEVER granted to metabase_readonly and never on a BI
+-- allowlist. BI reads v_top_cost_drivers_bi below. HAP-659.
 -- ----------------------------------------
-DROP VIEW IF EXISTS v_top_cost_drivers;
-CREATE VIEW v_top_cost_drivers AS
+CREATE OR REPLACE VIEW v_top_cost_drivers AS
+SELECT
+    ci.ci_id,
+    ci.ci_name,
+    ci.ci_type,
+    ci.environment,
+    ci.tbm_attributes->>'resource_tower' AS tbm_resource_tower,
+    ci.tbm_attributes->>'cost_pool' AS tbm_cost_pool,
+    COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) AS monthly_cost,
+    COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) * 12 AS annual_cost,
+    ci.bsm_attributes->>'business_criticality' AS business_criticality,
+    ci.metadata,
+    ci.updated_at
+FROM cmdb.dim_ci ci
+WHERE ci.is_current = TRUE
+  AND ci.ci_status = 'active'
+  AND COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) > 0
+ORDER BY monthly_cost DESC
+LIMIT 20;
+
+COMMENT ON VIEW v_top_cost_drivers IS 'Top 20 configuration items by monthly cost (includes ci.metadata; not for BI)';
+
+-- ----------------------------------------
+-- v_top_cost_drivers_bi
+-- HAP-659: the BI-readable top cost drivers: v_top_cost_drivers without ci.metadata. A new name, so no database
+-- that ever held the metadata shape of v_top_cost_drivers has this view in that shape.
+-- ----------------------------------------
+CREATE OR REPLACE VIEW v_top_cost_drivers_bi AS
 SELECT
     ci.ci_id,
     ci.ci_name,
@@ -283,7 +309,7 @@ WHERE ci.is_current = TRUE
 ORDER BY monthly_cost DESC
 LIMIT 20;
 
-COMMENT ON VIEW v_top_cost_drivers IS 'Top 20 configuration items by monthly cost';
+COMMENT ON VIEW v_top_cost_drivers_bi IS 'Top 20 configuration items by monthly cost, without ci.metadata (BI-readable)';
 
 -- ----------------------------------------
 -- v_underutilized_resources
@@ -327,5 +353,29 @@ GRANT SELECT ON v_unit_economics TO metabase_readonly;
 GRANT SELECT ON v_cloud_vs_onprem_costs TO metabase_readonly;
 GRANT SELECT ON v_cost_allocation_summary TO metabase_readonly;
 GRANT SELECT ON v_depreciation_summary TO metabase_readonly;
-GRANT SELECT ON v_top_cost_drivers TO metabase_readonly;
-GRANT SELECT ON v_underutilized_resources TO metabase_readonly;
+-- v_top_cost_drivers exposes unbounded ci.metadata; do not allow BI to read it.
+
+-- HAP-659: the per-CI views BI may read are granted by SHAPE, not only by name. This file runs without
+-- ON_ERROR_STOP (setup-metabase.sh, documented psql commands), so a failed CREATE can leave a view of this name in
+-- an older shape. A view with any jsonb/json column or a column named metadata gets no grant, and loses one.
+DO $bi$
+DECLARE
+    name text;
+    rel regclass;
+BEGIN
+    FOREACH name IN ARRAY ARRAY['v_top_cost_drivers_bi', 'v_underutilized_resources'] LOOP
+        rel := to_regclass(name);
+        CONTINUE WHEN rel IS NULL;
+        IF EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = rel AND c.relkind <> 'v')
+           OR EXISTS (SELECT 1 FROM pg_attribute a
+                      WHERE a.attrelid = rel AND a.attnum > 0 AND NOT a.attisdropped
+                        AND (a.atttypid IN ('jsonb'::regtype, 'json'::regtype, 'jsonb[]'::regtype, 'json[]'::regtype)
+                             OR lower(a.attname) = 'metadata')) THEN
+            RAISE WARNING 'HAP-659: % has a jsonb or metadata column or is not a view; not granting it to metabase_readonly', rel;
+            EXECUTE format('REVOKE ALL ON %s FROM metabase_readonly', rel);
+        ELSE
+            EXECUTE format('GRANT SELECT ON %s TO metabase_readonly', rel);
+        END IF;
+    END LOOP;
+END
+$bi$;

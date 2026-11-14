@@ -366,7 +366,7 @@ ORDER BY current_book_value DESC;
 
 ---
 
-#### v_top_cost_drivers
+#### v_top_cost_drivers_bi
 
 **Purpose**: Top 20 configuration items by monthly cost
 
@@ -378,7 +378,7 @@ ORDER BY current_book_value DESC;
 - `monthly_cost` - Monthly cost
 - `annual_cost` - Annualized cost
 - `business_criticality` - Criticality tier
-
+The view deliberately has no `ci.metadata` column (unbounded JSONB). It is granted to `metabase_readonly` by shape: the grant is skipped when the view has any json/jsonb column or a column named `metadata`. `v_top_cost_drivers` (which carries `ci.metadata`) is never granted to BI; use `v_top_cost_drivers_bi`.
 The view deliberately has no `ci.metadata` column (unbounded JSONB); it is granted to `metabase_readonly` on that basis.
 
 **Use Cases**:
@@ -389,7 +389,7 @@ The view deliberately has no `ci.metadata` column (unbounded JSONB); it is grant
 **Sample Query**:
 ```sql
 SELECT ci_name, ci_type, monthly_cost, annual_cost
-FROM v_top_cost_drivers
+FROM v_top_cost_drivers_bi
 LIMIT 10;
 ```
 

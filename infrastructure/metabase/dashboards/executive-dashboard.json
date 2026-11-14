@@ -117,7 +117,7 @@
       "dataset_query": {
         "type": "native",
         "native": {
-          "query": "SELECT * FROM v_top_cost_drivers LIMIT 10",
+          "query": "SELECT * FROM v_top_cost_drivers_bi LIMIT 10",
           "template-tags": {}
         },
         "database": "HappyCMDB"

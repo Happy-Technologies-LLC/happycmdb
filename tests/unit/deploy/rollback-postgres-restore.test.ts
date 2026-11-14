@@ -192,7 +192,7 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
 
   // The block the restore prints, run as printed with bash, against a psql that fails for one named migration file.
   it.each([
-    ['every file succeeds', '', ['032', '033', '039', '044', '045', '046', '047', '048']],
+    ['every file succeeds', '', ['032', '033', '039', '044', '045', '046', '047', '048', '050']],
     ['033 fails', '033_public_business_service_audit_acl.sql', ['032', '033']],
   ])('the printed grant step revokes PUBLIC EXECUTE first and stops non-zero, naming the file, when %s', (_case, failFile, files) => {
     const { status, out } = restore({ DB_EXISTS: '1' }, join(dir, 'grant-pre.sql.gz'));
@@ -200,7 +200,7 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
     writeFileSync(join(dir, 'grant-step.sh'), out.slice(out.lastIndexOf('\n', out.indexOf('MANDATORY POST-RESTORE GRANT STEP')) + 1));
     const ledger = ['032_secret_table_public_grants', '033_public_business_service_audit_acl', '034_history_sequence_discovery_acl',
       '039_recent_audit_activity_acl', '044_business_service_journal_read_acl', '045_staging_app_login_acl', '046_service_offerings',
-      '047_ai_sync_cursors', '048_portfolio_import'].map((name) => `${name}.sql`);
+      '047_ai_sync_cursors', '048_portfolio_import', '050_bi_cost_view_grants'].map((name) => `${name}.sql`);
     mkdirSync(join(dir, 'grant'));
     stub('grant/psql', [
       'echo "psql $*" >> "$OUT.calls"',

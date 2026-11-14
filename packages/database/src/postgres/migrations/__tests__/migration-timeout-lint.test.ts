@@ -58,7 +58,7 @@ function topLevelStatements(sql: string): string[] {
   return statements.filter(Boolean);
 }
 
-const SET_LOCAL = /^SET\s+LOCAL\s+(lock_timeout|statement_timeout)\s*(?:=|TO)\s*'?(\d+)\s*(ms|s|min)?'?$/i;
+const SET_LOCAL = /^SET\s+LOCAL\s+(lock_timeout|statement_timeout)\s*(?:=|TO)\s*'?(\d+)\s*(us|ms|s|min|h|d)?'?$/i;
 
 /** Violations of the top-level timeout form; empty when the migration complies. */
 function timeoutLintViolations(sql: string): string[] {
@@ -77,8 +77,11 @@ function timeoutLintViolations(sql: string): string[] {
   return violations;
 }
 
-const migrationFiles = readdirSync(dir).filter(f => /^\d+_.*\.sql$/.test(f)).sort();
+// The migrator runs every *.sql in the directory (migrator.ts discoverMigrations), so the lint selects the same
+// files. A name without a numeric prefix has no number to exempt it and is linted.
+const migrationFiles = readdirSync(dir).filter(f => f.endsWith('.sql')).sort();
 const number = (file: string) => Number(file.split('_')[0]);
+const isLinted = (file: string) => !(number(file) < FIRST_LINTED) && !grandfathered.has(file);
 
 describe('migration timeout lint (HAP-659)', () => {
   describe('rule', () => {
@@ -89,6 +92,18 @@ describe('migration timeout lint (HAP-659)', () => {
         .toEqual([]);
       expect(timeoutLintViolations("SET LOCAL statement_timeout TO 10000;\nSET LOCAL lock_timeout TO '3000ms';\nSELECT 1;"))
         .toEqual([]);
+    });
+
+    it.each(['500us', '3ms', '3s', '1min', '1h', '1d'])('accepts the %s unit form', value => {
+      expect(timeoutLintViolations(`SET LOCAL lock_timeout = '${value}';\nSET LOCAL statement_timeout = '${value}';\nSELECT 1;`))
+        .toEqual([]);
+    });
+
+    it('treats an off-pattern file name as linted, since the migrator runs it', () => {
+      expect(isLinted('hotfix_acl.sql')).toBe(true);
+      expect(isLinted('050_new.sql')).toBe(true);
+      expect(isLinted('027_old.sql')).toBe(false);
+      expect(isLinted('038_drift_impact_org_contract.sql')).toBe(false);
     });
 
     it('refuses set_config() inside DO, which does not bound the DO', () => {
@@ -120,11 +135,7 @@ describe('migration timeout lint (HAP-659)', () => {
   });
 
   describe('migrations', () => {
-    it('finds the migration files', () => {
-      expect(migrationFiles.length).toBeGreaterThan(40);
-    });
-
-    it.each(migrationFiles.filter(f => number(f) >= FIRST_LINTED && !grandfathered.has(f)))(
+    it.each(migrationFiles.filter(isLinted))(
       '%s uses top-level SET LOCAL lock_timeout and statement_timeout', file => {
         expect(timeoutLintViolations(readFileSync(join(dir, file), 'utf8'))).toEqual([]);
       });

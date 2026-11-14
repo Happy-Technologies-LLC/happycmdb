@@ -69,7 +69,7 @@ BEGIN
       'public.v_executive_cost_summary', 'public.v_cost_by_tower',
       'public.v_cost_trends', 'public.v_unit_economics',
       'public.v_cloud_vs_onprem_costs', 'public.v_cost_allocation_summary',
-      'public.v_depreciation_summary', 'public.v_top_cost_drivers',
+      'public.v_depreciation_summary', 'public.v_top_cost_drivers_bi',
       'public.v_underutilized_resources',
       'public.v_incident_summary', 'public.v_incident_trends',
       'public.v_change_success_rates', 'public.v_change_calendar',
@@ -82,7 +82,18 @@ BEGIN
             IF kind <> 'v' THEN
                 RAISE EXCEPTION 'BI reporting object % is not a view', name;
             END IF;
-            EXECUTE format('GRANT SELECT ON %s TO metabase_readonly', name);
+            -- HAP-659: per-CI cost views are granted by shape. This file runs without ON_ERROR_STOP (documented
+            -- re-run), so a view of this name left in an older shape must not be granted: skip it, and revoke.
+            IF name IN ('public.v_top_cost_drivers_bi', 'public.v_underutilized_resources')
+               AND EXISTS (SELECT 1 FROM pg_attribute a
+                           WHERE a.attrelid = to_regclass(name) AND a.attnum > 0 AND NOT a.attisdropped
+                             AND (a.atttypid IN ('jsonb'::regtype, 'json'::regtype, 'jsonb[]'::regtype, 'json[]'::regtype)
+                                  OR lower(a.attname) = 'metadata')) THEN
+                RAISE WARNING 'HAP-659: % has a jsonb or metadata column; not granting it to metabase_readonly', name;
+                EXECUTE format('REVOKE ALL ON %s FROM metabase_readonly', name);
+            ELSE
+                EXECUTE format('GRANT SELECT ON %s TO metabase_readonly', name);
+            END IF;
         END IF;
     END LOOP;
 END

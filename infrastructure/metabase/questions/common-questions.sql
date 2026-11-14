@@ -20,7 +20,7 @@ SELECT
     monthly_cost,
     monthly_cost * 12 AS annual_cost,
     business_criticality
-FROM v_top_cost_drivers
+FROM v_top_cost_drivers_bi
 ORDER BY monthly_cost DESC
 LIMIT 10;
 

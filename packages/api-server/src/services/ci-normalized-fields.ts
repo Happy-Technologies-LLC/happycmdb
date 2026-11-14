@@ -2,26 +2,31 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * Normalized, read-only `owner` / `provider` / `ip_address` / `tier` projection of a CI (BW2).
+ * Normalized, read-only `owner` / `provider` / `ip_address` / `tier` view of a CI (BW2).
  *
- * Discovery and the connectors write these facts under whatever name the source uses, inside the CI's free-form
- * metadata bag. The CI list (GET /cis) and detail (GET /cis/:id) responses add four nullable strings computed
- * from the CI at read time. Nothing is stored, migrated or rewritten; the raw CI (including `metadata`) is
- * returned unchanged next to the projection. The projection reads only the CI object it is given, so it never
- * reaches across organizations: callers pass CIs already scoped to the caller's organization.
+ * Discovery and the connectors write these facts under whatever name the source uses. The CI list (GET /cis) and
+ * detail (GET /cis/:id) responses always carry the four keys, computed from the stored node at read time. Nothing is
+ * stored, migrated or rewritten; the raw CI (including `metadata`) is returned unchanged next to the projection. The
+ * projection reads only the node it is given, so it never reaches across organizations: callers pass nodes already
+ * scoped to the caller's organization.
  *
- * Rules:
- * - A field is resolved by walking its key list in {@link CI_FIELD_KEYS} order (earlier key wins). For each key the
- *   sources are checked in this order: the CI's `attributes` bag, then its `metadata` bag. Top-level node properties
- *   are not read: the detail response only carries a fixed set of them, and list and detail must agree.
- * - `metadata` is stored as a JSON string on the graph node and is parsed here only when it is at most
- *   {@link CI_METADATA_MAX_PARSE_CHARS} characters; a larger or unparseable string contributes nothing.
- * - A value counts only if it is a string that is non-empty after trimming and at most
- *   {@link CI_FIELD_MAX_LENGTH} characters after trimming. Numbers, objects, arrays, empty and oversized
- *   strings are skipped (the next key or source is tried), so a field is `null` when no usable value exists.
- * - The projected value is the trimmed string. The key lists below are the key names discovery and the seed data
- *   actually use (see packages/etl-processor ci-transformer.ts, the nmap and active-directory discovery workers);
- *   extend them here only.
+ * Rules, per field:
+ * 1. A stored top-level node property of the same name wins and is returned exactly as stored, whatever its type
+ *    (`owner: 'alice'`, `ip_address: ['10.0.0.5']`). Identity reconciliation (`mergeableOnCreate`) and the connectors
+ *    write these top-level properties, so the projection never shadows them. Only an absent or null property falls
+ *    through to rule 2.
+ * 2. Otherwise the field is resolved from the node's `metadata` (a JSON string on the node) by walking its key list
+ *    in {@link CI_FIELD_KEYS} order (earlier key wins). `metadata` is the only bag a stored CI has: Neo4j cannot
+ *    store a map property, and the merge path flattens `attributes` onto the node top level (rule 1) rather than
+ *    storing an `attributes` bag, so no `attributes` source is read.
+ * 3. A `metadata` value counts only if it is a string that is non-empty after trimming and at most
+ *    {@link CI_FIELD_MAX_LENGTH} characters after trimming. Numbers, objects, arrays, empty and oversized strings are
+ *    skipped (the next key is tried), so the field is `null` when no usable value exists. The projected value is the
+ *    trimmed string.
+ * - `metadata` is parsed only when it is at most {@link CI_METADATA_MAX_PARSE_CHARS} characters; a larger or
+ *   unparseable string contributes nothing.
+ * - The key lists below are the key names discovery and the seed data actually use (see packages/etl-processor
+ *   ci-transformer.ts, the nmap and active-directory discovery workers); extend them here only.
  */
 
 export type CINormalizedField = 'owner' | 'provider' | 'ip_address' | 'tier';
@@ -40,7 +45,11 @@ export const CI_FIELD_MAX_LENGTH = 256;
 /** A stored `metadata` JSON string longer than this is not parsed at read time. */
 export const CI_METADATA_MAX_PARSE_CHARS = 65_536;
 
-export type CINormalizedFields = Record<CINormalizedField, string | null>;
+/**
+ * A stored top-level value is returned as stored (so any type, `ip_address` may be a string array); a value resolved
+ * from `metadata` is a trimmed string; `null` when neither exists.
+ */
+export type CINormalizedFields = Record<CINormalizedField, unknown>;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -63,28 +72,34 @@ function usableString(value: unknown): string | null {
   return trimmed.length > 0 && trimmed.length <= CI_FIELD_MAX_LENGTH ? trimmed : null;
 }
 
-/** The four normalized fields of one CI; pure, no I/O. */
-export function projectCIFields(ci: Record<string, unknown>): CINormalizedFields {
-  const bags = [asRecord(ci['attributes']), metadataBag(ci['metadata'])];
-  const resolve = (keys: readonly string[]): string | null => {
-    for (const key of keys) {
-      for (const bag of bags) {
-        if (bag === null || !Object.hasOwn(bag, key)) continue;
-        const value = usableString(bag[key]);
-        if (value !== null) return value;
-      }
+/** The four normalized fields of one stored node; pure, no I/O. */
+export function projectCIFields(stored: Record<string, unknown>): CINormalizedFields {
+  const bag = metadataBag(stored['metadata']);
+  const resolve = (field: CINormalizedField): unknown => {
+    const own = stored[field];
+    if (own !== undefined && own !== null) return own;
+    if (bag === null) return null;
+    for (const key of CI_FIELD_KEYS[field]) {
+      if (!Object.hasOwn(bag, key)) continue;
+      const value = usableString(bag[key]);
+      if (value !== null) return value;
     }
     return null;
   };
   return {
-    owner: resolve(CI_FIELD_KEYS.owner),
-    provider: resolve(CI_FIELD_KEYS.provider),
-    ip_address: resolve(CI_FIELD_KEYS.ip_address),
-    tier: resolve(CI_FIELD_KEYS.tier),
+    owner: resolve('owner'),
+    provider: resolve('provider'),
+    ip_address: resolve('ip_address'),
+    tier: resolve('tier'),
   };
 }
 
-/** The CI with the four normalized fields added; every other key is unchanged. */
-export function withNormalizedCIFields<T extends Record<string, unknown>>(ci: T): T & CINormalizedFields {
-  return { ...ci, ...projectCIFields(ci) };
+/**
+ * The CI with the four normalized fields set; every other key is unchanged. `stored` is the node the fields are
+ * projected from (default: the CI itself); pass it when the CI was narrowed from the node, as the detail response is.
+ */
+export function withNormalizedCIFields<T extends Record<string, unknown>>(
+  ci: T, stored: Record<string, unknown> = ci,
+): T & CINormalizedFields {
+  return { ...ci, ...projectCIFields(stored) };
 }

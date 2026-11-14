@@ -16,12 +16,13 @@ export interface CI {
   attributes: Record<string, any>;
   metadata?: Record<string, any>;
   /**
-   * Read-only projections of the metadata bag, derived server-side at read time (services/ci-normalized-fields.ts):
-   * a trimmed string of at most 256 characters, or null when none of the documented keys holds one.
+   * Normalized by the server at read time (services/ci-normalized-fields.ts): a stored top-level value exactly as
+   * stored (`ip_address` may be an array of addresses), else a trimmed string of at most 256 characters from the
+   * metadata bag, else null.
    */
   owner?: string | null;
   provider?: string | null;
-  ip_address?: string | null;
+  ip_address?: string | string[] | null;
   tier?: string | null;
   tags: string[];
   discovered_by?: string;

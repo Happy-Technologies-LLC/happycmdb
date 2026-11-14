@@ -4870,26 +4870,35 @@ components:
         owner:
           type: string
           nullable: true
-          maxLength: 256
           description: >-
-            Read-only projection, derived at read time and never stored. First usable value of `owner`,
-            `owned_by`, `managed_by`, `owner_name`, looked up in `attributes`, then `metadata`. A usable value is a string that is non-empty and at most 256 characters once trimmed;
-            anything else is skipped. Null when none. See services/ci-normalized-fields.ts.
+            Normalized owner, read at request time and never stored. A stored top-level `owner` property (written by
+            identity reconciliation and the connectors) is returned exactly as stored. When the CI has none, the first
+            usable value of `owner`, `owned_by`, `managed_by`, `owner_name` in the CI's stored `metadata` JSON; a usable
+            value is a string that is non-empty and at most 256 characters once trimmed, anything else is skipped.
+            Null when neither exists. See services/ci-normalized-fields.ts.
         provider:
           type: string
           nullable: true
-          maxLength: 256
-          description: Read-only projection, same rules as `owner`; keys `cloud_provider`, `provider`, `vendor`.
+          description: >-
+            Same rules as `owner`; the stored top-level `provider`, else `metadata` keys `cloud_provider`,
+            `provider`, `vendor`.
         ip_address:
-          type: string
           nullable: true
-          maxLength: 256
-          description: Read-only projection, same rules as `owner`; keys `ip_address`, `ip`, `primary_ip`, `private_ip`, `public_ip`.
+          description: >-
+            Same rules as `owner`; the stored top-level `ip_address`, else `metadata` keys `ip_address`, `ip`,
+            `primary_ip`, `private_ip`, `public_ip`. A stored top-level value is not narrowed: reconciliation and
+            several connectors write an array of addresses, returned as stored. A value taken from `metadata` is a string.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
         tier:
           type: string
           nullable: true
-          maxLength: 256
-          description: Read-only projection, same rules as `owner`; keys `tier`, `service_tier`, `criticality_tier`.
+          description: >-
+            Same rules as `owner`; the stored top-level `tier`, else `metadata` keys `tier`, `service_tier`,
+            `criticality_tier`.
 
     CIInput:
       type: object

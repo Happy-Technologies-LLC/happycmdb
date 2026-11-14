@@ -33,17 +33,12 @@ describe('projectCIFields', () => {
     expect(projectCIFields({ metadata: bag })).toEqual(expected);
   });
 
-  it('prefers attributes over metadata for the same key', () => {
-    expect(projectCIFields({ attributes: { owner: 'attrs' }, metadata: { owner: 'meta' } }).owner).toBe('attrs');
-    expect(projectCIFields({ metadata: { owner: 'meta' } }).owner).toBe('meta');
+  it('does not resolve a top-level alias key (owned_by, ip, vendor); only the exact field name is read at top level', () => {
+    expect(projectCIFields({ owned_by: 'x', ip: '10.0.0.1', vendor: 'Dell', service_tier: 'gold' })).toEqual(NONE);
   });
 
-  it('does not read top-level node properties', () => {
-    expect(projectCIFields({ owner: 'top', ip_address: '10.0.0.1', bsm_business_criticality: 'tier_1' })).toEqual(NONE);
-  });
-
-  it('a key earlier in the order beats the same field from an earlier source', () => {
-    expect(projectCIFields({ attributes: { owner_name: 'late' }, metadata: { owner: 'early' } }).owner).toBe('early');
+  it('does not read an `attributes` bag: a stored CI never has one', () => {
+    expect(projectCIFields({ attributes: { owner: 'attrs', ip_address: '10.0.0.1' } })).toEqual(NONE);
   });
 
   it('returns trimmed strings', () => {
@@ -81,7 +76,7 @@ describe('projectCIFields', () => {
   it('never reads inherited properties', () => {
     const inherited = Object.create({ owner: 'from-prototype' }) as Record<string, unknown>;
     expect(projectCIFields({ metadata: inherited }).owner).toBeNull();
-    expect(projectCIFields({ attributes: inherited }).owner).toBeNull();
+    expect(projectCIFields({ metadata: inherited, attributes: inherited }).owner).toBeNull();
   });
 });
 
@@ -100,5 +95,26 @@ describe('withNormalizedCIFields', () => {
   it('emits null (not undefined) for an absent field so the JSON key is always present', () => {
     expect(JSON.parse(JSON.stringify(withNormalizedCIFields({ id: 'ci-1' }))))
       .toEqual({ id: 'ci-1', owner: null, provider: null, ip_address: null, tier: null });
+  });
+
+  it('keeps a stored top-level owner/provider/ip_address/tier exactly as stored, whatever its type (reconciled node)', () => {
+    const node = { id: 'ci_x', owner: 'alice', ip_address: ['10.0.0.5'], tier: 'gold', provider: 'aws', metadata: '{}' };
+    const out = withNormalizedCIFields(node);
+    expect(out).toEqual(node);
+    expect(out.ip_address).toBe(node.ip_address);
+    expect(withNormalizedCIFields({ tier: 3 }).tier).toBe(3);
+  });
+
+  it('a stored top-level value beats metadata, a null or absent one falls through to it', () => {
+    const metadata = JSON.stringify({ owner: 'meta-owner', ip: '10.9.9.9', cloud_provider: 'gcp' });
+    expect(withNormalizedCIFields({ owner: 'alice', ip_address: null, metadata }))
+      .toEqual({ owner: 'alice', ip_address: '10.9.9.9', provider: 'gcp', tier: null, metadata });
+  });
+
+  it('projects from the stored node when the CI was narrowed from it (the detail shape)', () => {
+    const narrowed = { id: 'ci-1', name: 'web', metadata: { hostname: 'web01' } };
+    const stored = { id: 'ci-1', name: 'web', ip_address: ['10.0.0.5', '10.0.0.6'], metadata: '{"hostname":"web01","owner":"ops"}' };
+    expect(withNormalizedCIFields(narrowed, stored))
+      .toEqual({ ...narrowed, owner: 'ops', provider: null, ip_address: ['10.0.0.5', '10.0.0.6'], tier: null });
   });
 });

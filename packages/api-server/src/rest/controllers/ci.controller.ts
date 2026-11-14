@@ -215,13 +215,19 @@ export class CIController {
         sendCINotFound(res);
         return;
       }
-      const ci = await readSingleCI(organizationId, id,
-        () => this.neo4jClient.getCI(id, organizationId));
-      if (!ci) {
+      // recordToCI narrows the node to a fixed set of keys; the normalized fields project from the raw owned node.
+      const read = await readSingleCI(organizationId, id, async () => {
+        const ci = await this.neo4jClient.getCI(id, organizationId);
+        return ci && { ci, stored: await this.neo4jClient.getCIProperties(id, organizationId) };
+      });
+      if (!read || !read.stored) {
         sendCINotFound(res);
         return;
       }
-      res.json({ success: true, data: withNormalizedCIFields(convertNeo4jTypes(ci)) });
+      res.json({
+        success: true,
+        data: withNormalizedCIFields(convertNeo4jTypes(read.ci), convertNeo4jTypes(read.stored)),
+      });
     } catch (error) {
       if (error instanceof CIGapError) {
         res.status(409).json(CI_GAP_RESPONSE);

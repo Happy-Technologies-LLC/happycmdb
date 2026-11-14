@@ -89,7 +89,7 @@ is performed by this change.
 - `DELETE /auth/api-keys/{keyId}` - Revoke API key
 
 ### Configuration Items (`/api/v1/cis`)
-- `GET /cis` - List all CIs with filtering. `GET /cis` and `GET /cis/{id}` add read-only `owner`, `provider`, `ip_address` and `tier` (string or null), derived at read time from the CI's `attributes`/`metadata` by a documented ordered key set (`services/ci-normalized-fields.ts`); the raw `metadata` is unchanged and nothing is stored
+- `GET /cis` - List all CIs with filtering. `GET /cis` and `GET /cis/{id}` always carry `owner`, `provider`, `ip_address` and `tier`: a stored top-level property of that name is returned exactly as stored (`ip_address` may be an array), otherwise the value is derived at read time from the stored `metadata` JSON by a documented ordered key set (`services/ci-normalized-fields.ts`), or `null`; the raw `metadata` is unchanged and nothing is stored
 - `POST /cis` - Create a CI with server-assigned `id`; omit `id`, `external_id`, `organization_id`
 - `GET /cis/{id}` - Get CI by ID
 - `PUT /cis/{id}` - Update CI

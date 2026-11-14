@@ -64,7 +64,7 @@ function response() {
 }
 const fail = (error: unknown) => () => { throw error; };
 const uniqueViolation = () => Object.assign(new Error(`duplicate key value violates unique constraint "credential_sets_org_name_key" ${SECRET}`), { code: '23505' });
-const fkViolation = () => Object.assign(new Error(`update or delete on table "credentials" violates foreign key constraint ${SECRET} already exists`), { code: '23503' });
+const fkViolation = (code = '23503') => Object.assign(new Error(`update or delete on table "credentials" violates foreign key constraint ${SECRET} already exists`), { code });
 const alreadyExistsButNotAConflict = () => new Error(`relation "tmp_${SECRET}" already exists`);
 
 const setInput = { name: 'ops-set', credential_ids: [ID] };
@@ -167,10 +167,13 @@ describe('UnifiedCredentialController', () => {
     const inUse = await run(controller(), 'delete', {});
     expect([inUse.status, inUse.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently used by 1 discovery definition(s) and 3 connector configuration(s)' }]);
 
-    dependencyFails('delete', fkViolation());
-    const fk = await run(controller(), 'delete', {});
-    expect([fk.status, fk.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently in use' }]);
-    expect(fk.text).not.toContain('hunter2');
+    // 23503 (PostgreSQL <= 16) and 23001 restrict_violation (PostgreSQL 18, PGlite) are the same count-free 409
+    for (const code of ['23503', '23001']) {
+      dependencyFails('delete', fkViolation(code));
+      const fk = await run(controller(), 'delete', {});
+      expect([fk.status, fk.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently in use' }]);
+      expect(fk.text).not.toContain('hunter2');
+    }
 
     dependencyFails('delete', new Error(`pool exhausted, connection currently used ${SECRET}`));
     const other = await run(controller(), 'delete', {});

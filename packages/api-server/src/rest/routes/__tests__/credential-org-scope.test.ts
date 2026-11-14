@@ -90,9 +90,10 @@ beforeAll(async () => {
   await sql(`${tables.join('\n')}
 CREATE UNIQUE INDEX idx_credentials_unique_name ON credentials(name, created_by);
 CREATE UNIQUE INDEX idx_credential_sets_unique_name ON credential_sets(name, created_by);
--- Mirrors 001 + 018/024: organization_id is a plain nullable UUID, with no FK from credential_id to credentials.
-CREATE TABLE discovery_definitions (credential_id UUID, credential_set_id UUID, created_by VARCHAR(255), organization_id UUID);
-CREATE TABLE connector_configurations (credential_id UUID, created_by VARCHAR(255), organization_id UUID);`, [], 'exec');
+-- Mirrors 001 + 018/024: credential_id REFERENCES credentials(id) ON DELETE RESTRICT (fk_discovery_definitions_credential,
+-- fk_connector_configurations_credential), while organization_id is a plain nullable UUID the FK does not check.
+CREATE TABLE discovery_definitions (credential_id UUID REFERENCES credentials(id) ON DELETE RESTRICT, credential_set_id UUID, created_by VARCHAR(255), organization_id UUID);
+CREATE TABLE connector_configurations (credential_id UUID REFERENCES credentials(id) ON DELETE RESTRICT, created_by VARCHAR(255), organization_id UUID);`, [], 'exec');
   await sql(`INSERT INTO credentials (id, name, protocol, scope, credentials, created_by)
     VALUES ($1, 'legacy', 'api_key', 'api', '{"key":"legacy-secret"}', 'a')`, [legacyId]);
   await sql(readFileSync(join(migrations, '021_credential_organization_scope.sql'), 'utf8'), [], 'exec');
@@ -168,9 +169,10 @@ it('foreign and missing writes/deletes are indistinguishable with no mutation; o
   expect(await sql('SELECT id FROM credentials WHERE id = $1', [bId])).toEqual([]);
 });
 
-// credential_id has no FK and no trigger (001, 018, 024), so a row of another organization (or with a NULL organization)
-// can reference any credential id. Such a row is neither counted in the list nor a reason to refuse the delete.
-it('list counts and the delete refusal follow one rule: same-organization references only', async () => {
+// The FK on credential_id (001, ON DELETE RESTRICT) checks no organization, so a row of another organization (or with a
+// NULL organization) can reference any credential id. Such a row is neither counted nor reported (list and 409 alike),
+// but the FK still refuses the delete: the refusal is the count-free 409, never a 500 (documented residual existence bit).
+it('list counts and the 409 count same-organization references only; a foreign reference still refuses the delete without counts', async () => {
   const created = await request(app).post('/api/v1/credentials').set(as('a')).send(credential('A-referenced'));
   expect(created.status).toBe(201);
   const id = created.body.data.id as string;
@@ -193,9 +195,14 @@ it('list counts and the delete refusal follow one rule: same-organization refere
   await sql(`DELETE FROM discovery_definitions WHERE credential_id = $1 AND organization_id = $2`, [id, A]);
   await sql(`DELETE FROM connector_configurations WHERE credential_id = $1 AND organization_id = $2`, [id, A]);
   expect(await listed()).toEqual([0, 0]);
-  expect((await request(app).delete(`/api/v1/credentials/${id}`).set(as('a'))).status).toBe(204);
+  const countFree = { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently in use' };
+  const fkRefused = await request(app).delete(`/api/v1/credentials/${id}`).set(as('a'));
+  expect([fkRefused.status, fkRefused.body]).toEqual([409, countFree]);
+  expect(await sql('SELECT id FROM credentials WHERE id = $1', [id])).toEqual([{ id }]);
+
   await sql('DELETE FROM discovery_definitions WHERE credential_id = $1', [id]);
   await sql('DELETE FROM connector_configurations WHERE credential_id = $1', [id]);
+  expect((await request(app).delete(`/api/v1/credentials/${id}`).set(as('a'))).status).toBe(204);
   await sql('DELETE FROM credential_sets WHERE $1 = ANY(credential_ids)', [id]);
 });
 

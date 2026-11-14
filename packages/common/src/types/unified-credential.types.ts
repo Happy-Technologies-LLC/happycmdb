@@ -522,8 +522,11 @@ export class CredentialSetInUseError extends Error {
 
 /**
  * A credential cannot be deleted while referenced. Only references of the credential's own organization are counted
- * and block the delete, the same rule as the `usage_count` / `connector_usage_count` the list reports (the owner sees
- * those totals as a monitoring signal). With no counts the sentence names none (the 23503 fallback).
+ * and reported, the same rule as the `usage_count` / `connector_usage_count` the list reports (the owner sees those
+ * totals as a monitoring signal). A foreign-org or NULL-org reference is neither counted nor reported, but the
+ * ON DELETE RESTRICT FKs from `discovery_definitions` / `connector_configurations` (001) still refuse the delete;
+ * the controller maps that refusal to a count-free 409 (a documented residual existence bit).
+ * Constructed only with at least one nonzero count.
  */
 export class CredentialInUseError extends Error {
   readonly clientMessage: string;
@@ -539,9 +542,7 @@ export class CredentialInUseError extends Error {
     if (credentialSets > 0) {
       parts.push(`${credentialSets} credential set(s)`);
     }
-    const clientMessage = parts.length > 0
-      ? `Cannot delete credential: it is currently used by ${parts.join(' and ')}`
-      : 'Cannot delete credential: it is currently in use';
+    const clientMessage = `Cannot delete credential: it is currently used by ${parts.join(' and ')}`;
     super(clientMessage);
     this.clientMessage = clientMessage;
     this.name = 'CredentialInUseError';

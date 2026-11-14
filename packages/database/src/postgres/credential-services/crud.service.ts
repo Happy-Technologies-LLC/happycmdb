@@ -513,9 +513,10 @@ export class CredentialCRUDService {
       if (isOrgAdmin !== true && carriesC4Tag(owned.rows[0]?.tags)) {
         throw c4AdminRequired();
       }
-      // Check usage. Only references of the credential's own organization count, for the refusal and for the list
-      // alike: credential_id has no FK or trigger, so a row of another organization (or with no organization) can
-      // carry this id and must neither be counted nor reported.
+      // Check usage. Only references of the credential's own organization are counted and reported, here and in the
+      // list alike. The FK on credential_id (001, ON DELETE RESTRICT) checks no organization, so a row of another
+      // organization (or with no organization) can carry this id: it is neither counted nor reported, but the FK
+      // still refuses the DELETE below (23503/23001, mapped by the controller to a count-free 409).
       const count = (result: { rows: Array<{ total: string }> }) => parseInt(result.rows[0]?.total ?? '0', 10);
       const discoveryUsage = count(await client.query<{ total: string }>(
         `SELECT COUNT(*) AS total

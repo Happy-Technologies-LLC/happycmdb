@@ -43,6 +43,8 @@ const C4_REFUSAL = {
 
 /** SQLSTATE of a pg error, if it carries one. */
 const sqlState = (error: unknown): unknown => (error as { code?: unknown } | null)?.code;
+// ON DELETE RESTRICT refusal: 23503 (foreign_key_violation, PostgreSQL <= 16), 23001 (restrict_violation, PostgreSQL 18, PGlite)
+const isRestrictRefusal = (error: unknown): boolean => sqlState(error) === '23503' || sqlState(error) === '23001';
 
 /** HAP-1734: a duplicate name is the typed service error or a raw unique violation (23505); never message text. */
 const isDuplicateName = (error: unknown): boolean =>
@@ -313,7 +315,7 @@ export class UnifiedCredentialController {
       }
 
       // Check for in-use error
-      if (error instanceof CredentialInUseError || sqlState(error) === '23503') {
+      if (error instanceof CredentialInUseError || isRestrictRefusal(error)) {
         res.status(409).json({
           success: false,
           error: 'Conflict',

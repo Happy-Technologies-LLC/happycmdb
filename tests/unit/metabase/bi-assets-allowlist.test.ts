@@ -405,15 +405,21 @@ describe('Metabase assets query only what the BI role can read (HAP-659)', () =>
         await denied('CREATE TEMP TABLE bi_probe (i int)');
       }));
 
-    // Run the file's own BI-role connect/temp-privilege statements, in order, against this database (the file names
-    // the production one). The outcome is read back from the privilege system, not from the statement text.
+    // Run EVERY statement of metabase-init.sql that applies to the cmdb database (everything after its `\c cmdb`), in
+    // file order, so a TEMPORARY grant anywhere in that section fails this test. The file names the production
+    // database; it is swapped for this one. Only two statements are skipped: CREATE USER (the role already exists
+    // here) and the metabase-database COMMENT (no such database here). The outcome is read back from the privilege
+    // system, not from the statement text.
     it('metabase-init.sql leaves the BI role without TEMPORARY on the database', () =>
       withOwnTemporaryGrant(async database => {
-        const from = initSql.indexOf('-- Grant connect to database');
-        const to = initSql.indexOf('-- Only audited reporting views');
-        expect(from).toBeGreaterThan(-1);
-        expect(to).toBeGreaterThan(from);
-        await exec(initSql.slice(from, to).replace(/ON DATABASE cmdb\b/g, `ON DATABASE ${database}`));
+        const marker = '\\c cmdb\n';
+        expect(initSql.split(marker)).toHaveLength(2);
+        const all = splitStatements(initSql.slice(initSql.indexOf(marker) + marker.length));
+        const notHere = (s: string) => /^CREATE USER metabase_readonly\b/.test(s) || /^COMMENT ON DATABASE metabase\b/.test(s);
+        expect(all.filter(notHere)).toHaveLength(2);
+        const statements = all.filter(s => !notHere(s));
+        expect(statements.length).toBeGreaterThanOrEqual(10);
+        for (const statement of statements) await exec(statement.replace(/ON DATABASE cmdb\b/g, `ON DATABASE ${database}`));
         expect(await biHasTemporary()).toBe(false);
         await denied('CREATE TEMP TABLE bi_probe (i int)');
       }));

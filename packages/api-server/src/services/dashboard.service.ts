@@ -14,9 +14,7 @@ import {
 import { logger } from '@cmdb/common';
 import { ownsBusinessService } from './business-service-ownership';
 import { criticalTiersParam } from './critical-ci';
-
-const DASHBOARD_QUERY_TIMEOUT_MS = 5000;
-const MAX_DASHBOARD_GROUPS = 100;
+import { DASHBOARD_QUERY_TIMEOUT_MS, MAX_DASHBOARD_GROUPS } from './dashboard-query';
 
 export class DashboardAggregateLimitError extends Error {
   constructor() {

@@ -29,6 +29,49 @@ export interface DashboardRecentDiscovery {
   last_discovered: string | null;
 }
 
+export type TopologyCategory = 'services' | 'apps' | 'data' | 'infra';
+
+export interface TopologyNode {
+  id: string;
+  name: string;
+  type: string;
+  category: TopologyCategory;
+  status: string | null;
+  critical: boolean;
+  /** CI health state (BW1) does not exist yet; always null. */
+  health: null;
+}
+
+export interface TopologyEdge {
+  source: string;
+  target: string;
+  type: string;
+}
+
+export interface TopologySummary {
+  categories: Record<TopologyCategory | 'critical', number>;
+  /** Stored CI types with no category mapping (counted under infra). */
+  unmapped_types: string[];
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+  totals: {
+    cis: number;
+    relationships: number;
+    nodes_returned: number;
+    edges_returned: number;
+    truncated: boolean;
+  };
+}
+
+export interface TopologySummaryParams {
+  /** Node sample cap; the server clamps to 1..500 (default 200). */
+  limit?: number;
+  /** Edge cap; the server clamps to 1..1000 (default 400). */
+  edgeLimit?: number;
+  /** Include decommissioned CIs (excluded by default). */
+  includeInactive?: boolean;
+}
+
 export interface CICountByType {
   ci_type: string;
   count: number;
@@ -179,6 +222,18 @@ class AnalyticsService {
    */
   async getDashboardStats(): Promise<DashboardStats> {
     const response = await apiClient.get<DashboardStats>('/analytics/dashboard');
+    return response.data;
+  }
+
+  /**
+   * Get the estate topology summary: category counts, capped node sample, capped edge list
+   */
+  async getTopologySummary(params: TopologySummaryParams = {}): Promise<TopologySummary> {
+    const query: Record<string, string | number> = {};
+    if (params.limit !== undefined) query['limit'] = params.limit;
+    if (params.edgeLimit !== undefined) query['edge_limit'] = params.edgeLimit;
+    if (params.includeInactive) query['includeInactive'] = 'true';
+    const response = await apiClient.get<TopologySummary>('/analytics/topology-summary', { params: query });
     return response.data;
   }
 

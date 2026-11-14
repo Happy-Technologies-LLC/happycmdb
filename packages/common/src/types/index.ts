@@ -23,6 +23,23 @@ export type {
 } from './ci.types';
 export { SOURCE_OWNED_CI_TYPES, isSourceOwnedCIType, SourceOwnedError, RELATIONSHIP_TYPES } from './ci.types';
 
+// Estate topology summary (HAP-1924)
+export type {
+  TopologyCategory,
+  TopologyCategoryCounts,
+  TopologyNode,
+  TopologyEdge,
+  TopologySummary,
+} from './topology.types';
+export {
+  TOPOLOGY_CATEGORY_BY_TYPE,
+  topologyCategoryOf,
+  TOPOLOGY_NODE_LIMIT_DEFAULT,
+  TOPOLOGY_NODE_LIMIT_MAX,
+  TOPOLOGY_EDGE_LIMIT_DEFAULT,
+  TOPOLOGY_EDGE_LIMIT_MAX,
+} from './topology.types';
+
 // Discovery Types
 export type {
   DiscoveryJob,

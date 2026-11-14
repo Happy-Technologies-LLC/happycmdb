@@ -56,7 +56,7 @@ it('returns 403 before any store access for tenantless REST analytics', async ()
   for (const path of ['/ci-counts', '/ci-status', '/ci-environments', '/relationship-counts',
     '/discovery-stats', '/discovery-timeline', '/top-connected', '/dependency-depth',
     '/change-history?ci_id=analytics-own', '/relationship-matrix', '/change-timeline',
-    '/health-metrics/analytics-own', '/dashboard']) {
+    '/health-metrics/analytics-own', '/dashboard', '/topology-summary']) {
     const response = await request(app).get(`/api/v1/analytics${path}`).set(bearer('none'));
     expect(response.status).toBe(403);
   }

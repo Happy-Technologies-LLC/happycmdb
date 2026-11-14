@@ -109,6 +109,15 @@ IFS= read -rsp 'Current PostgreSQL password: ' OLD_PG_PASSWORD; echo
 ```
 
 ```bash
+# 1b. Confirm the current password you typed BEFORE the block below changes
+#     anything. Step 3 connects over the container's local socket, which may be
+#     configured `trust` (any password, even a wrong one, is accepted there), so
+#     a typo would go unnoticed until the services restart. A TCP connection
+#     through the published port (5433, see step 6) is checked by password.
+PGPASSWORD="$OLD_PG_PASSWORD" psql -X -w -h localhost -p 5433 -U cmdb_user -d cmdb -tAc 'SELECT 1' >/dev/null || { echo 'current PostgreSQL password rejected over TCP: re-enter it before continuing' >&2; false; }
+```
+
+```bash
 (
 set -eu
 umask 077
@@ -137,10 +146,28 @@ docker-compose --env-file .env -f infrastructure/docker/docker-compose.yml up -d
 # 5. Verify connectivity (after the block above succeeds). /api/v1/cmdb-health/ready
 #    answers 200 only when the API server can run SELECT 1 on PostgreSQL (and
 #    reach Neo4j and Redis), 503 otherwise; retry while the container starts.
-for i in $(seq 1 24); do curl -fsS http://localhost:3000/api/v1/cmdb-health/ready && break; sleep 5; done
+#    If it never answers 200 in 24 tries, this prints the message and ends
+#    with status 1 (the failing `false`), instead of status 0.
+ready=
+for i in $(seq 1 24); do
+  curl -fsS http://localhost:3000/api/v1/cmdb-health/ready && { ready=1; break; }
+  sleep 5
+done
+[ -n "$ready" ] || { echo 'API did not become ready' >&2; false; }
+```
+
+```bash
+# 6. Confirm the new password over TCP. 5433 is the host port the compose file
+#    publishes for cmdb-postgres; -w never prompts. Needs a psql client on the host.
+PGPASSWORD="$NEW_PG_PASSWORD" psql -X -w -h localhost -p 5433 -U cmdb_user -d cmdb -tAc 'SELECT 1' || { echo 'new PostgreSQL password rejected over TCP' >&2; false; }
 ```
 
 The `postgres` service is not recreated: its `POSTGRES_PASSWORD` is only used when the data directory is first initialised.
+
+Notes on the PostgreSQL checks:
+
+- Steps 1b and 6 are the only checks that test a password against `pg_hba.conf` rules for TCP connections; step 3 uses the container's local socket. Verified against a throwaway PostgreSQL 15 with `local trust` and `host scram-sha-256`: a wrong password is accepted over the socket and rejected over TCP. Whether the production `postgres` image's `pg_hba.conf` is configured that way is `[INFERENCE]` (not checked here); if TCP to the published port is also `trust`, steps 1b and 6 prove nothing about the password.
+- If a statement in step 3 fails, psql prints it back in its own output (on the terminal, not in the server log), e.g. `LINE 1: ALTER USER ... PASSWORD '<password text>'` after a syntax error. That needs a `'` or `\` in the password, which this procedure excludes, but a mistyped paste can do it. Treat the shown value as exposed: clear the terminal scrollback, do not paste the output anywhere, and rotate again with a fresh value. The block stops there (`ON_ERROR_STOP`, `set -e`): the database and `.env` keep the old password.
 
 If the block fails at `up -d` (after `mv`), the database and `.env` already hold the new password: re-run only the `docker-compose ... up -d` line. Do not re-run step 1, which would generate a different password.
 
@@ -192,12 +219,17 @@ echo "IMPORTANT: All users must log in again due to security maintenance"
 
 ```bash
 # 1. Backup current credentials (file mode 600; stops if the dump fails or is
-#    empty). Paste this block on its own: pg_dump may prompt for a password.
+#    empty). --clean --if-exists puts DROP TABLE IF EXISTS in the dump so the
+#    Rollback restore can replace the table. A backup left by an earlier
+#    rotation is removed first: it holds ciphertext under an older key, and if
+#    the dump failed it would otherwise satisfy the test -s in step 3.
+#    Paste this block on its own: pg_dump may prompt for a password.
 (
 set -eu
 umask 077
 trap 'rm -f credentials_backup.sql.tmp' EXIT
-pg_dump -U cmdb_user -t discovery_credentials cmdb > credentials_backup.sql.tmp
+rm -f credentials_backup.sql credentials_backup.sql.tmp
+pg_dump --clean --if-exists -U cmdb_user -t discovery_credentials cmdb > credentials_backup.sql.tmp
 test -s credentials_backup.sql.tmp
 mv credentials_backup.sql.tmp credentials_backup.sql
 )
@@ -306,21 +338,26 @@ reencryptCredentials(oldKey, newKey)
 
 **Rollback**:
 ```bash
-# Restore from backup
-psql -U cmdb_user cmdb < credentials_backup.sql
-
-# Revert the encryption key and recreate the API server (same shell as the
-# rotation, so OLD_ENCRYPTION_KEY is still set)
+# Restore the credentials, then revert the encryption key and recreate the API
+# server (same shell as the rotation, so OLD_ENCRYPTION_KEY is still set). One
+# subshell: if the restore fails, .env and the API server are NOT reverted, so
+# they never disagree with the rows about which key is current.
 (
 set -eu
 umask 077
 trap 'rm -f .env.new' EXIT
 : "${OLD_ENCRYPTION_KEY:?}"
+# The backup (step 1) carries DROP TABLE IF EXISTS, so the restore replaces the
+# table. --single-transaction + ON_ERROR_STOP: if any statement fails, nothing
+# is changed.
+psql -X -v ON_ERROR_STOP=1 --single-transaction -U cmdb_user -f credentials_backup.sql cmdb
 OLD_ENCRYPTION_KEY="$OLD_ENCRYPTION_KEY" awk -F= '$1=="ENCRYPTION_KEY"{print "ENCRYPTION_KEY=" ENVIRON["OLD_ENCRYPTION_KEY"]; f=1; next} {print} END{exit !f}' .env > .env.new
 mv .env.new .env
 docker-compose --env-file .env -f infrastructure/docker/docker-compose.yml up -d --no-deps api-server
 )
 ```
+
+The restore replaces the whole table with its state at step 1: rows created or changed since then are lost. If another table holds a foreign key to `discovery_credentials`, the `DROP TABLE` fails, the transaction rolls back and the block stops with the re-encrypted rows, `.env` and the API server all still on the new key; a DBA must then restore the table (the backup is a full-table dump). A `credentials_backup.sql` written by an earlier version of this procedure (no `DROP TABLE IF EXISTS`) fails with `already exists` and changes nothing the same way. The backup holds the credentials ciphertext: keep it mode 600 and delete it once the rotation is accepted.
 
 ### 5. Grafana Admin Password Rotation
 

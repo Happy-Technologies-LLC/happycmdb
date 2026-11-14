@@ -8,7 +8,7 @@
 -- v_executive_cost_summary
 -- High-level cost summary by business capability and service
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_executive_cost_summary AS
+CREATE OR REPLACE VIEW v_executive_cost_summary WITH (security_barrier) AS
 SELECT
     bc.name AS business_capability,
     bs.name AS business_service,
@@ -49,7 +49,7 @@ COMMENT ON VIEW v_executive_cost_summary IS 'Executive cost summary by business 
 -- v_cost_by_tower
 -- TBM cost breakdown by resource tower and cost pool
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_cost_by_tower AS
+CREATE OR REPLACE VIEW v_cost_by_tower WITH (security_barrier) AS
 SELECT
     ci.tbm_attributes->>'resource_tower' AS tbm_resource_tower,
     ci.tbm_attributes->>'cost_pool' AS tbm_cost_pool,
@@ -86,7 +86,7 @@ COMMENT ON VIEW v_cost_by_tower IS 'TBM cost breakdown by resource tower and cos
 -- v_cost_trends
 -- Monthly cost trends over time from fact table
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_cost_trends AS
+CREATE OR REPLACE VIEW v_cost_trends WITH (security_barrier) AS
 SELECT
     DATE_TRUNC('month', fc.changed_at) AS month,
     ci.tbm_attributes->>'resource_tower' AS tbm_resource_tower,
@@ -114,7 +114,7 @@ COMMENT ON VIEW v_cost_trends IS 'Monthly cost trends over time by tower and CI 
 -- v_unit_economics
 -- Unit economics by business service
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_unit_economics AS
+CREATE OR REPLACE VIEW v_unit_economics WITH (security_barrier) AS
 SELECT
     bs.name AS business_service,
     bs.id AS business_service_id,
@@ -161,7 +161,7 @@ COMMENT ON VIEW v_unit_economics IS 'Unit economics by business service with cos
 -- v_cloud_vs_onprem_costs
 -- Cloud vs on-premises cost comparison
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_cloud_vs_onprem_costs AS
+CREATE OR REPLACE VIEW v_cloud_vs_onprem_costs WITH (security_barrier) AS
 SELECT
     ci.tbm_attributes->>'cost_pool' AS deployment_model,
     ci.environment,
@@ -195,7 +195,7 @@ COMMENT ON VIEW v_cloud_vs_onprem_costs IS 'Cloud vs on-premises cost comparison
 -- v_cost_allocation_summary
 -- Cost allocation summary by cost center and business unit
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_cost_allocation_summary AS
+CREATE OR REPLACE VIEW v_cost_allocation_summary WITH (security_barrier) AS
 SELECT
     cp.cost_center,
     cp.business_unit,
@@ -241,7 +241,7 @@ COMMENT ON VIEW v_cost_allocation_summary IS 'Cost allocation summary with budge
 -- v_depreciation_summary
 -- Asset depreciation summary
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_depreciation_summary AS
+CREATE OR REPLACE VIEW v_depreciation_summary WITH (security_barrier) AS
 SELECT
     ds.ci_id,
     ds.ci_name,
@@ -348,8 +348,10 @@ COMMENT ON VIEW v_top_cost_drivers_bi IS 'Top 20 configuration items per organiz
 -- HAP-659: rightsizing candidates (<50% utilization). Only the numeric
 -- utilization_pct scalar is lifted out of ci.metadata; the JSONB itself is never
 -- selected, and a non-numeric value yields NULL (row excluded) instead of a cast error.
+-- The seven unbounded cost views above and this one are WITH (security_barrier): BI-supplied predicates cannot be
+-- pushed below the view's WHERE. (CREATE OR REPLACE VIEW without the option would reset it.) Migration 051.
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_underutilized_resources AS
+CREATE OR REPLACE VIEW v_underutilized_resources WITH (security_barrier) AS
 SELECT
     u.ci_id,
     u.ci_name,
@@ -391,21 +393,45 @@ GRANT SELECT ON v_depreciation_summary TO metabase_readonly;
 
 -- HAP-659: the per-CI views BI may read are granted by SHAPE, not only by name. This file runs without
 -- ON_ERROR_STOP (setup-metabase.sh, documented psql commands), so a failed CREATE can leave a view of this name in
--- an older shape. A view with any jsonb/json column or a column named metadata gets no grant, and loses one.
+-- an older shape. A view gets no grant, and loses one, when it is not a view, is not owned by the migration role
+-- (the owner of cmdb.dim_ci), has a column named metadata, or carries json/jsonb in any column, including through a
+-- domain, array or composite type. Migration 051 applies the same rule after a restore.
 DO $bi$
 DECLARE
     name text;
     rel regclass;
+    expected_owner oid := (SELECT c.relowner FROM pg_class c WHERE c.oid = to_regclass('cmdb.dim_ci'));
+    unsafe boolean;
 BEGIN
     FOREACH name IN ARRAY ARRAY['v_top_cost_drivers_bi', 'v_underutilized_resources'] LOOP
         rel := to_regclass(name);
         CONTINUE WHEN rel IS NULL;
-        IF EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = rel AND c.relkind <> 'v')
-           OR EXISTS (SELECT 1 FROM pg_attribute a
-                      WHERE a.attrelid = rel AND a.attnum > 0 AND NOT a.attisdropped
-                        AND (a.atttypid IN ('jsonb'::regtype, 'json'::regtype, 'jsonb[]'::regtype, 'json[]'::regtype)
-                             OR lower(a.attname) = 'metadata')) THEN
-            RAISE WARNING 'HAP-659: % has a jsonb or metadata column or is not a view; not granting it to metabase_readonly', rel;
+        SELECT NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = rel AND c.relkind = 'v'
+                           AND c.relowner IS NOT DISTINCT FROM expected_owner)
+            OR EXISTS (SELECT 1 FROM pg_attribute a
+                       WHERE a.attrelid = rel AND a.attnum > 0 AND NOT a.attisdropped
+                         AND lower(a.attname) = 'metadata')
+            OR EXISTS (
+              WITH RECURSIVE ty(oid) AS (
+                SELECT a.atttypid FROM pg_attribute a
+                WHERE a.attrelid = rel AND a.attnum > 0 AND NOT a.attisdropped
+                UNION
+                SELECT n.oid
+                FROM ty
+                  JOIN pg_type t ON t.oid = ty.oid
+                  CROSS JOIN LATERAL (
+                    SELECT t.typbasetype WHERE t.typtype = 'd'
+                    UNION ALL
+                    SELECT t.typelem WHERE t.typcategory = 'A'
+                    UNION ALL
+                    SELECT f.atttypid FROM pg_attribute f
+                    WHERE t.typtype = 'c' AND f.attrelid = t.typrelid AND f.attnum > 0 AND NOT f.attisdropped
+                  ) n(oid)
+              )
+              SELECT 1 FROM ty WHERE ty.oid IN ('json'::regtype, 'jsonb'::regtype))
+          INTO unsafe;
+        IF unsafe THEN
+            RAISE WARNING 'HAP-659: % is not a view owned by the owner of cmdb.dim_ci, or carries json/jsonb or a metadata column; not granting it to metabase_readonly', rel;
             EXECUTE format('REVOKE ALL ON %s FROM metabase_readonly', rel);
         ELSE
             EXECUTE format('GRANT SELECT ON %s TO metabase_readonly', rel);

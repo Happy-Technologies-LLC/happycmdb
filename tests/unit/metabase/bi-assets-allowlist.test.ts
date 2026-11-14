@@ -192,6 +192,7 @@ describe('Metabase assets query only what the BI role can read (HAP-659)', () =>
     // the same slice the hosted ACL job (hap630-acl.integration.test.ts) runs
     const biSetup = initSql.slice(initSql.indexOf('-- Only audited reporting views'), initSql.indexOf('-- FD-6 health reporting'));
     const migration050 = `BEGIN;\n${read('packages/database/src/postgres/migrations/050_bi_cost_view_grants.sql')}\nCOMMIT;`;
+    const migration051 = `BEGIN;\n${read('packages/database/src/postgres/migrations/051_bi_view_security_barrier.sql')}\nCOMMIT;`;
     const denied = (sql: string) => expect(asBi(sql)).rejects.toThrow(/permission denied/);
 
     beforeAll(async () => {
@@ -211,7 +212,13 @@ describe('Metabase assets query only what the BI role can read (HAP-659)', () =>
           row(103, 0, 10), // no cost
         ].join(',')}`);
     }, 60000);
-    beforeEach(async () => { await exec('DROP VIEW IF EXISTS v_top_cost_drivers, v_top_cost_drivers_bi, v_underutilized_resources CASCADE'); });
+    const barrierViews = ['v_executive_cost_summary', 'v_cost_by_tower', 'v_cost_trends', 'v_unit_economics',
+      'v_cloud_vs_onprem_costs', 'v_cost_allocation_summary', 'v_depreciation_summary', 'v_underutilized_resources'];
+    beforeEach(async () => {
+      await exec(`DROP VIEW IF EXISTS v_top_cost_drivers, v_top_cost_drivers_bi, ${barrierViews.join(', ')} CASCADE;
+        DROP TYPE IF EXISTS cj CASCADE; DROP DOMAIN IF EXISTS dj CASCADE;
+        REVOKE ALL ON ALL TABLES IN SCHEMA public FROM metabase_readonly`);
+    });
     afterAll(() => { host.kill(); });
 
     it('fresh install: BI reads the bounded views with no metadata column and no secret; v_top_cost_drivers and the raw dimension stay denied', async () => {
@@ -275,6 +282,91 @@ describe('Metabase assets query only what the BI role can read (HAP-659)', () =>
         GRANT SELECT ON v_top_cost_drivers_bi TO metabase_readonly`);
       await exec(migration050); // v_underutilized_resources does not exist: no error
       await denied('SELECT * FROM v_top_cost_drivers_bi');
+    });
+
+    const reloptions = async (view: string) =>
+      (await exec(`SELECT reloptions::text AS o FROM pg_class WHERE oid = '${view}'::regclass`, 'query'))[0]['o'];
+
+    // cmdb#318 review: security_barrier on the BI-granted views that have no LIMIT.
+    it('cost-analysis.sql creates v_underutilized_resources with security_barrier, and 051 sets it on every unbounded cost view', async () => {
+      await exec(costViewDdl.join(';\n'));
+      expect(await reloptions('v_underutilized_resources')).toBe('{security_barrier=true}');
+      await exec(`ALTER VIEW v_underutilized_resources RESET (security_barrier)`);
+      for (const view of barrierViews.filter(v => v !== 'v_underutilized_resources')) {
+        await exec(`CREATE VIEW ${view} AS SELECT ci_id FROM cmdb.dim_ci`);
+      }
+      for (const view of barrierViews) expect(await reloptions(view)).toBeNull();
+      await exec(migration051);
+      for (const view of barrierViews) expect(await reloptions(view)).toBe('{security_barrier=true}');
+      await exec(migration051); // idempotent
+      expect(await reloptions('v_top_cost_drivers_bi')).toBeNull(); // LIMIT 20 already blocks push-down
+    });
+
+    // The barrier's effect: a predicate the BI user supplies must not run on rows the view filters out.
+    it('a BI predicate cannot reach a CI the view excludes once the view has security_barrier', async () => {
+      await exec(`CREATE FUNCTION leak(text) RETURNS boolean LANGUAGE plpgsql COST 0.0001 AS $$
+        BEGIN IF $1 = 'hidden-inactive' THEN RAISE EXCEPTION 'leaked %', $1; END IF; RETURN true; END $$;
+        INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, environment, is_current, tbm_attributes, bsm_attributes, metadata)
+        VALUES ('hidden', 'hidden-inactive', 'server', 'inactive', 'production', true, '{"monthly_cost": 5}', '{}',
+                '{"utilization_pct": 10}')`);
+      try {
+        const sql = 'SELECT ci_id FROM v_underutilized_resources WHERE leak(ci_name)';
+        await exec(costViewDdl.join(';\n'));
+        await exec('GRANT SELECT ON v_underutilized_resources TO metabase_readonly');
+        expect((await asBi(sql)).map(r => r['ci_id'])).toEqual(['ci-100']);
+        await exec('ALTER VIEW v_underutilized_resources RESET (security_barrier)'); // the state before 051
+        await expect(asBi(sql)).rejects.toThrow(/leaked hidden-inactive/);
+        await exec(migration051);
+        expect((await asBi(sql)).map(r => r['ci_id'])).toEqual(['ci-100']);
+      } finally {
+        await exec(`DELETE FROM cmdb.dim_ci WHERE ci_id = 'hidden'; DROP FUNCTION leak(text)`);
+      }
+    });
+
+    // cmdb#318 review (info): the shape guard refuses json/jsonb carried by a domain, array or composite type, and a
+    // view not owned by the owner of cmdb.dim_ci. The same rule runs in 051, metabase-init.sql and cost-analysis.sql.
+    const costGuard = costStatements.filter(s => /^DO\b/.test(s)).join(';\n');
+    const guards: [string, string][] = [['migration 051', migration051], ['metabase-init.sql', biSetup], ['cost-analysis.sql', costGuard]];
+    describe.each(guards)('%s shape guard', (_name, run) => {
+      it.each([
+        ['a domain over jsonb', 'SELECT ci_id, metadata::dj AS x FROM cmdb.dim_ci'],
+        ['an array of a domain over jsonb', 'SELECT ci_id, ARRAY[metadata::dj] AS x FROM cmdb.dim_ci'],
+        ['a composite with a domain over jsonb', 'SELECT ci_id, ROW(1, metadata::dj)::cj AS x FROM cmdb.dim_ci'],
+        ['a jsonb column under another name', 'SELECT ci_id, tbm_attributes AS x FROM cmdb.dim_ci'],
+        ['a column named Metadata', 'SELECT ci_id, ci_name AS "Metadata" FROM cmdb.dim_ci'],
+      ])('refuses %s and removes its grant', async (_shape, select) => {
+        await exec(`CREATE DOMAIN dj AS jsonb; CREATE TYPE cj AS (a int, b dj)`);
+        await exec(`CREATE VIEW v_underutilized_resources AS ${select};
+          GRANT SELECT ON v_underutilized_resources TO metabase_readonly`);
+        await exec(run);
+        await denied('SELECT * FROM v_underutilized_resources');
+      });
+
+      it('refuses a view owned by another role, and still grants a bounded view owned by the dim_ci owner', async () => {
+        await exec(`CREATE VIEW v_underutilized_resources AS SELECT ci_id FROM cmdb.dim_ci;
+          GRANT SELECT ON v_underutilized_resources TO metabase_readonly`);
+        await exec(run);
+        expect(await asBi('SELECT ci_id FROM v_underutilized_resources LIMIT 1')).toHaveLength(1);
+        await exec('CREATE ROLE other_owner');
+        try {
+          await exec('ALTER VIEW v_underutilized_resources OWNER TO other_owner');
+          await exec(run);
+          await denied('SELECT * FROM v_underutilized_resources');
+        } finally {
+          await exec('DROP OWNED BY other_owner; DROP ROLE other_owner');
+        }
+      });
+    });
+
+    it('051 removes a TEMPORARY grant made to the BI role (the PUBLIC grant is separate)', async () => {
+      const temp = async () => (await exec(
+        `SELECT has_database_privilege('metabase_readonly', current_database(), 'TEMPORARY') AS t`, 'query'))[0]['t'];
+      await exec(`GRANT TEMPORARY ON DATABASE ${(await exec('SELECT current_database() AS d', 'query'))[0]['d']} TO metabase_readonly`);
+      await exec(`REVOKE TEMPORARY ON DATABASE ${(await exec('SELECT current_database() AS d', 'query'))[0]['d']} FROM PUBLIC`);
+      expect(await temp()).toBe(true);
+      await exec(migration051);
+      expect(await temp()).toBe(false);
+      await denied('CREATE TEMP TABLE bi_probe (i int)');
     });
   });
 });

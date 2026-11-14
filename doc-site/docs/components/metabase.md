@@ -378,7 +378,7 @@ ORDER BY current_book_value DESC;
 - `monthly_cost` - Monthly cost
 - `annual_cost` - Annualized cost
 - `business_criticality` - Criticality tier
-The view deliberately has no `ci.metadata` column (unbounded JSONB). It is granted to `metabase_readonly` by shape: the grant is skipped when the view has any json/jsonb column or a column named `metadata`. `v_top_cost_drivers` (which carries `ci.metadata`) is never granted to BI; use `v_top_cost_drivers_bi`.
+The view deliberately has no `ci.metadata` column (unbounded JSONB). It is granted to `metabase_readonly` by shape: the grant is skipped when the view is not owned by the owner of `cmdb.dim_ci`, has a column named `metadata`, or carries json/jsonb in any column (including through a domain, array or composite type). `v_top_cost_drivers` (which carries `ci.metadata`) is never granted to BI; use `v_top_cost_drivers_bi`.
 The view deliberately has no `ci.metadata` column (unbounded JSONB); it is granted to `metabase_readonly` on that basis.
 
 **Use Cases**:

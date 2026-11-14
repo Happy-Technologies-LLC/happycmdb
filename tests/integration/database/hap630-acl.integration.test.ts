@@ -217,6 +217,10 @@ if (process.env['HAP630_ACCEPTANCE'] === '1') {
         }
         await asRole(db, 'metabase_readonly', 'SELECT * FROM v_top_cost_drivers LIMIT 1', true);
         await asRole(db, 'metabase_readonly', 'SELECT * FROM cmdb.dim_ci LIMIT 1', true);
+        // cmdb#318 review: the unbounded BI-granted cost views are security barriers (no LIMIT to stop push-down).
+        const { rows: barrier } = await db.query(`SELECT c.relname, c.reloptions::text AS options FROM pg_class c
+          WHERE c.relkind = 'v' AND c.relname = 'v_underutilized_resources'`);
+        expect(barrier).toEqual([{ relname: 'v_underutilized_resources', options: '{security_barrier=true}' }]);
       }, 180000);
 
       // HAP-659 review B1/B2: the BI grant on a per-CI cost view depends on the view's shape, not only its name.

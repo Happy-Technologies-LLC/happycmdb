@@ -13,6 +13,7 @@ import {
 } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { ownsBusinessService } from './business-service-ownership';
+import { criticalTiersParam } from './critical-ci';
 
 const DASHBOARD_QUERY_TIMEOUT_MS = 5000;
 const MAX_DASHBOARD_GROUPS = 100;
@@ -373,11 +374,11 @@ export class DashboardService {
         const riskResult = await session.run(`
           MATCH (ci:CI)
           WHERE ci.status = 'active' AND ci.organization_id = $organizationId
-            AND ci.bsm_business_criticality IN ['tier_1', 'tier_2']
+            AND ci.bsm_business_criticality IN $criticalTiers
           WITH ci ORDER BY ci.id LIMIT 10
           RETURN ci.id AS id, ci.name AS name, ci.type AS type,
             ci.bsm_business_criticality AS criticality
-        `, { organizationId }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
+        `, { organizationId, ...criticalTiersParam() }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
         riskMatrix = { services: riskResult.records.map(row => {
           const criticality = row.get('criticality') as string;
           const type = row.get('type') as string;

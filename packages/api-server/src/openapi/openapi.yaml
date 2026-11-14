@@ -2717,12 +2717,32 @@ paths:
                 properties:
                   total_cis:
                     type: integer
-                  total_relationships:
+                  by_type:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                  by_status:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                  by_environment:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                  recent_discoveries:
+                    type: array
+                    items:
+                      type: object
+                  health_score:
+                    type: number
+                    nullable: true
+                    description: >-
+                      Always null today (unavailable): there is no CI health state yet. Never 0 as a placeholder.
+                  critical_relationships:
                     type: integer
-                  active_discovery_jobs:
-                    type: integer
-                  recent_anomalies:
-                    type: integer
+                    description: >-
+                      Relationships, within the caller's organization, with at least one endpoint that is a
+                      critical CI (`bsm_business_criticality` tier_1 or tier_2; services/critical-ci.ts).
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -4847,6 +4867,38 @@ components:
             os: Ubuntu 22.04
             cpu_cores: 8
             memory_gb: 32
+        owner:
+          type: string
+          nullable: true
+          description: >-
+            Normalized owner, read at request time and never stored. A stored top-level `owner` property (written by
+            identity reconciliation and the connectors) is returned exactly as stored. When the CI has none, the first
+            usable value of `owner`, `owned_by`, `managed_by`, `owner_name` in the CI's stored `metadata` JSON; a usable
+            value is a string that is non-empty and at most 256 characters once trimmed, anything else is skipped.
+            Null when neither exists. See services/ci-normalized-fields.ts.
+        provider:
+          type: string
+          nullable: true
+          description: >-
+            Same rules as `owner`; the stored top-level `provider`, else `metadata` keys `cloud_provider`,
+            `provider`, `vendor`.
+        ip_address:
+          nullable: true
+          description: >-
+            Same rules as `owner`; the stored top-level `ip_address`, else `metadata` keys `ip_address`, `ip`,
+            `primary_ip`, `private_ip`, `public_ip`. A stored top-level value is not narrowed: reconciliation and
+            several connectors write an array of addresses, returned as stored. A value taken from `metadata` is a string.
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        tier:
+          type: string
+          nullable: true
+          description: >-
+            Same rules as `owner`; the stored top-level `tier`, else `metadata` keys `tier`, `service_tier`,
+            `criticality_tier`.
 
     CIInput:
       type: object

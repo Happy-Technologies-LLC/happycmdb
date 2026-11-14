@@ -176,7 +176,8 @@ export interface DashboardStats {
   cis_by_status: Record<CIStatus, number>;
   cis_by_environment: Record<Environment, number>;
   recent_discoveries: number;
-  health_score: number;
+  /** null: unavailable (no CI health state yet, BW1). */
+  health_score: number | null;
 }
 
 // Data Table

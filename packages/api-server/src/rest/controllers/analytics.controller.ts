@@ -8,6 +8,7 @@ import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
 import { AnalyticsService, DependencyDepthLimitError } from '../../services/analytics.service';
 import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, CIListUnavailableError, readSingleCI } from '../../read-admission';
+import { criticalTiersParam } from '../../services/critical-ci';
 
 export class AnalyticsController {
   private postgresClient = getPostgresClient();
@@ -502,11 +503,14 @@ export class AnalyticsController {
           COUNT(DISTINCT ci.type) as unique_types,
           COUNT(DISTINCT ci.environment) as unique_environments
       `, { organizationId });
-      const relationshipCountResult = await session.run(`
+      // "Critical" is the shared definition in services/critical-ci.ts (bsm_business_criticality tier_1 or tier_2).
+      // A relationship counts once when at least one endpoint is critical; both endpoints stay in the caller's org.
+      const criticalRelationshipResult = await session.run(`
         MATCH (source:CI)-[r]->(target:CI)
         WHERE source.organization_id = $organizationId AND target.organization_id = $organizationId
-        RETURN COUNT(r) as total_relationships
-      `, { organizationId });
+          AND (source.bsm_business_criticality IN $criticalTiers OR target.bsm_business_criticality IN $criticalTiers)
+        RETURN COUNT(r) as critical_relationships
+      `, { organizationId, ...criticalTiersParam() });
 
       const byTypeResult = await session.run(`
         MATCH (ci:CI)
@@ -607,8 +611,9 @@ export class AnalyticsController {
         by_status: byStatusMap,
         by_environment: byEnvironmentMap,
         recent_discoveries: recentDiscoveries,
-        health_score: 0,
-        critical_relationships: relationshipCountResult.records[0]?.get('total_relationships')?.toNumber() || 0,
+        // null = unavailable: no CI health state exists yet (BW1), and 0 would read as "everything is down".
+        health_score: null,
+        critical_relationships: criticalRelationshipResult.records[0]?.get('critical_relationships')?.toNumber() || 0,
       });
     } catch (error) {
       logger.error('Error getting dashboard stats', error);

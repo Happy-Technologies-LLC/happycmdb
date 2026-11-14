@@ -4,6 +4,7 @@
 import type { ReactNode } from 'react';
 import { MetricCard } from '@happy-technologies/design-system';
 import type { DashboardStats } from '@/services/ci.service';
+import { formatHealthScore } from '@/lib/health-score';
 import { QueryState } from './SurfaceState';
 
 /**
@@ -25,9 +26,10 @@ function NotAvailable({ label, missing }: { label: string; missing: ReactNode })
 }
 
 /**
- * ME9 to ME13, the KPI stack. CIs managed is real (`total_cis` of GET /analytics/dashboard). Health, drift and
- * coverage have no source yet, and the dashboard's `health_score` is a hardcoded 0 (analytics.controller.ts, BW4),
- * so it is not read. Deltas and sparklines need a KPI history (BW7) and are not drawn.
+ * ME9 to ME13, the KPI stack. CIs managed is real (`total_cis` of GET /analytics/dashboard). Drift and coverage have
+ * no source yet. Health shows the dashboard's `health_score` only when it is a number; the server sends null until a
+ * CI health state exists (BW1), and that renders as "Not available yet", never as 0%. Deltas and sparklines need a KPI
+ * history (BW7) and are not drawn.
  */
 export function EstateKpis({
   stats,
@@ -40,6 +42,7 @@ export function EstateKpis({
   error: unknown;
   onRetry: () => void;
 }) {
+  const health = formatHealthScore(stats?.health_score);
   return (
     <div className="grid content-start gap-4">
       {error ? (
@@ -57,7 +60,11 @@ export function EstateKpis({
           }
         />
       )}
-      <NotAvailable label="Health" missing="Needs a CI health state (BW1, BW4)" />
+      {health === null ? (
+        <NotAvailable label="Health" missing="Needs a CI health state (BW1)" />
+      ) : (
+        <MetricCard role="group" aria-label="Health" layout="compact" label="Health" value={health} />
+      )}
       <NotAvailable label="Config drift" missing="Needs a tenant-wide drift count (BW5)" />
       <NotAvailable label="Coverage" missing="Needs a coverage definition and metric (BW6)" />
     </div>

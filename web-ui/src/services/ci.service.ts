@@ -15,6 +15,15 @@ export interface CI {
   description?: string;
   attributes: Record<string, any>;
   metadata?: Record<string, any>;
+  /**
+   * Normalized by the server at read time (services/ci-normalized-fields.ts): a stored top-level value exactly as
+   * stored (`ip_address` may be an array of addresses), else a trimmed string of at most 256 characters from the
+   * metadata bag, else null.
+   */
+  owner?: string | null;
+  provider?: string | null;
+  ip_address?: string | string[] | null;
+  tier?: string | null;
   tags: string[];
   discovered_by?: string;
   last_discovered?: string;
@@ -85,7 +94,9 @@ export interface DashboardStats {
   by_status: Record<CIStatus, number>;
   by_environment: Record<Environment, number>;
   recent_discoveries: CI[];
-  health_score: number;
+  /** null: unavailable (no CI health state yet, BW1); never a placeholder 0. */
+  health_score: number | null;
+  /** Relationships with at least one endpoint that is a critical CI (bsm_business_criticality tier_1 or tier_2). */
   critical_relationships: number;
 }
 

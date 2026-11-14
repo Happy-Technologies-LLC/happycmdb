@@ -193,7 +193,7 @@ describe('analyticsService', () => {
         by_status: { active: 10, retired: 2 },
         by_environment: { production: 9, development: 3 },
         recent_discoveries: [],
-        health_score: 0,
+        health_score: null,
         critical_relationships: 16,
       },
     });
@@ -207,7 +207,7 @@ describe('analyticsService', () => {
       by_status: { active: 10, retired: 2 },
       by_environment: { production: 9, development: 3 },
       recent_discoveries: [],
-      health_score: 0,
+      health_score: null,
       critical_relationships: 16,
     });
   });

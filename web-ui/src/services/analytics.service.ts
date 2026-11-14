@@ -14,7 +14,9 @@ export interface DashboardStats {
   by_status: Record<string, number>;
   by_environment: Record<string, number>;
   recent_discoveries: DashboardRecentDiscovery[];
-  health_score: number;
+  /** null: unavailable (no CI health state yet, BW1); never a placeholder 0. */
+  health_score: number | null;
+  /** Relationships with at least one endpoint that is a critical CI (bsm_business_criticality tier_1 or tier_2). */
   critical_relationships: number;
 }
 

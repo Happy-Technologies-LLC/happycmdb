@@ -180,7 +180,7 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
     return [record(counts)];
   }
   if (query.includes('AS criticality')) {
-    return matched.filter(ci => ['tier_1', 'tier_2'].includes(ci['bsm_business_criticality'] as string))
+    return matched.filter(ci => (params['criticalTiers'] as string[]).includes(ci['bsm_business_criticality'] as string))
       .sort((a, b) => String(a['id']).localeCompare(String(b['id']))).slice(0, 10).map(ci => record({
         id: ci['id'], name: ci['name'], type: ci['type'], criticality: ci['bsm_business_criticality'],
       }));

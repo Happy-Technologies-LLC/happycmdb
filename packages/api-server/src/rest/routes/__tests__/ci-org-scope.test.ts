@@ -188,6 +188,11 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
     return props !== undefined && ciInScope(props) ? [record({ ci: node(props) })] : [];
   }
 
+  if (cypher.startsWith('MATCH (ci:CI {id: $id})') && cypher.endsWith('RETURN properties(ci) AS props')) {
+    const props = graph.nodes.get(params['id'] as string);
+    return props !== undefined && ciInScope(props) ? [record({ props: { ...props } })] : [];
+  }
+
   if (cypher.startsWith('MATCH (ci:CI) WHERE') && cypher.includes('AS incarnationId')) {
     return [...graph.nodes.values()].filter(props => ciInScope(props)
       && (params['afterId'] === undefined || (typeof props['organization_id'] === 'string'
@@ -546,6 +551,55 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(res.status).toBe(200);
     expect(res.body.data.map((ci: { id: string }) => ci.id).sort()).toEqual(['ci-a-app', 'ci-a-db']);
     expect(res.body.pagination.total).toBe(2);
+  });
+
+  it('GET /cis and GET /cis/:id keep stored top-level owner/ip_address/tier/provider, an array included (reconciled node, BW2)', async () => {
+    // The shape identity reconciliation (mergeableOnCreate) and the connectors write onto the node top level.
+    seedCI('ci-a-merged', ORG_A, { owner: 'alice', ip_address: ['10.0.0.5', '10.0.0.6'], tier: 'gold', provider: 'aws',
+      metadata: JSON.stringify({ owner: 'meta-owner', ip: '10.9.9.9', cloud_provider: 'gcp' }) });
+    seedCI('ci-a-partial', ORG_A, { owner: 'bob', metadata: JSON.stringify({ owner: 'meta-owner', ip: '10.9.9.9' }) });
+    const stored = { owner: 'alice', ip_address: ['10.0.0.5', '10.0.0.6'], tier: 'gold', provider: 'aws' };
+
+    const list = await request(app).get('/api/v1/cis').set(AS_A);
+    expect(list.body.data.find((ci: { id: string }) => ci.id === 'ci-a-merged')).toMatchObject(stored);
+    const detail = await request(app).get('/api/v1/cis/ci-a-merged').set(AS_A);
+    expect(detail.status).toBe(200);
+    expect(detail.body.data).toMatchObject(stored);
+
+    // A stored top-level value wins per field; only the fields it does not carry come from metadata.
+    const partial = { owner: 'bob', ip_address: '10.9.9.9', tier: null, provider: null };
+    expect(list.body.data.find((ci: { id: string }) => ci.id === 'ci-a-partial')).toMatchObject(partial);
+    expect((await request(app).get('/api/v1/cis/ci-a-partial').set(AS_A)).body.data).toMatchObject(partial);
+  });
+
+  it('GET /cis and GET /cis/:id add the normalized owner/provider/ip_address/tier and leave every raw key as it was (BW2)', async () => {
+    const rawMetadata = JSON.stringify({ owned_by: 'platform-team', cloud_provider: 'aws', ip: ' 10.0.0.4 ',
+      service_tier: { level: 'gold' }, tier: 3, criticality_tier: 'gold', hostname: 'web01' });
+    seedCI('ci-a-app', ORG_A, { metadata: rawMetadata });
+    const expected = { owner: 'platform-team', provider: 'aws', ip_address: '10.0.0.4', tier: 'gold' };
+
+    const list = await request(app).get('/api/v1/cis').set(AS_A);
+    const listed = list.body.data.find((ci: { id: string }) => ci.id === 'ci-a-app');
+    expect(listed).toMatchObject({ id: 'ci-a-app', name: 'ci-a-app', type: 'server', status: 'active',
+      environment: 'production', metadata: rawMetadata, ...expected }); // raw string metadata unchanged
+    const bare = list.body.data.find((ci: { id: string }) => ci.id === 'ci-a-db');
+    expect(bare).toMatchObject({ owner: null, provider: null, ip_address: null, tier: null });
+
+    const detail = await request(app).get('/api/v1/cis/ci-a-app').set(AS_A);
+    expect(detail.status).toBe(200);
+    expect(detail.body.data).toMatchObject({ id: 'ci-a-app', name: 'ci-a-app', type: 'server', status: 'active',
+      environment: 'production', metadata: JSON.parse(rawMetadata), ...expected });
+  });
+
+  it("the normalized fields never read another organization's CI", async () => {
+    seedCI('ci-b-app', ORG_B, { metadata: JSON.stringify({ owner: 'b-secret-owner', ip_address: '10.99.99.99' }) });
+    const own = await request(app).get('/api/v1/cis').set(AS_A);
+    expect(own.text).not.toContain('b-secret-owner');
+    expect(own.text).not.toContain('10.99.99.99');
+    const foreign = await request(app).get('/api/v1/cis/ci-b-app').set(AS_A);
+    expect([foreign.status, foreign.body]).toEqual([404, NOT_FOUND]);
+    const theirs = await request(app).get('/api/v1/cis/ci-b-app').set(AS_B);
+    expect(theirs.body.data).toMatchObject({ owner: 'b-secret-owner', ip_address: '10.99.99.99' });
   });
 
   it("GET /cis?external_id= matches exactly in the caller's org; another org gets one empty answer (FD17-S4)", async () => {

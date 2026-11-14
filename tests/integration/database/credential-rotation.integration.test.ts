@@ -52,10 +52,13 @@ import {
   rotateUserPassword, type RotationDeps, type RotationSqlQuery,
 } from '../../../packages/api-server/src/scripts/rotate-user-password';
 import {
-  assignOrganization, grantPlatformAdmin, inventorySeedAccounts, scanDefaultPasswords, stampSeedAccounts,
+  GRANT_IDENTITY_CYPHER, GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER, REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER,
+  assignOrganization, grantPlatformAdmin, grantPortfolioImportScope, inventorySeedAccounts, main as identityWindowCli,
+  revokePortfolioImportScope, scanDefaultPasswords, stampSeedAccounts,
 } from '../../../packages/api-server/src/scripts/identity-window';
+import { PORTFOLIO_IMPORT_SCOPE, holdsScope } from '../../../packages/api-server/src/auth/scopes';
 import { LockBusyError, openOperatorStores, type OperatorStores } from '../../../packages/api-server/src/scripts/operator-stores';
-import { main as rotationCli } from '../../../packages/api-server/src/scripts/rotate-user-password';
+import { main as rotationCli, type RotationGraph } from '../../../packages/api-server/src/scripts/rotate-user-password';
 import { isPlatformAdmin, isSeededAccount } from '../../../packages/api-server/src/auth/platform-admin';
 import {
   GUARDED_DISABLE_CYPHER, GUARDED_PASSWORD_CYPHER, GUARDED_REHASH_CYPHER, MARK_DEFAULT_SUSPECT_CYPHER, Neo4jAuthRepository,
@@ -726,5 +729,210 @@ describe('FD5-S1 LOW-1: assign-organization compare-and-set on Neo4j 5.15', () =
     expect(props).toMatchObject({ _organizationId: ORG, organizationAssignedBy: 'ci' });
     expect(props['organizationId']).toBeUndefined();
     expect(neo4j.isDateTime(props['organizationAssignedAt'])).toBe(true);
+  });
+});
+
+describe('HAP-1632: portfolio:import scope grant and revoke compare-and-set on Neo4j 5.15', () => {
+  const ID = 'hp1-s6-scope-user';
+
+  /** An eligible user (unmarked, unseeded); `props` may add or override stored properties, including `scopes`. */
+  const createScopeUser = (props: Record<string, unknown> = {}, id = ID) =>
+    graph.run('CREATE (u:User) SET u = $props', {
+      props: { _id: id, _username: id, _enabled: true, _passwordHash: defaultHash, defaultPasswordSuspect: false, ...props },
+    });
+  async function stored(id = ID): Promise<Record<string, unknown>> {
+    const result = await graph.run('MATCH (u:User {_id: $id}) RETURN properties(u) AS p', { id });
+    return result.records[0]!.get('p') as Record<string, unknown>;
+  }
+  async function elementId(id = ID): Promise<string> {
+    return (await graph.run('MATCH (u:User {_id: $id}) RETURN elementId(u) AS e', { id })).records[0]!.get('e') as string;
+  }
+  async function loadedHolds(id = ID): Promise<boolean> {
+    return holdsScope((await new Neo4jAuthRepository().findUserById(id))!, PORTFOLIO_IMPORT_SCOPE);
+  }
+  /** The graph, but `interfere` runs once right after the resolution read: a writer landing between read and write. */
+  function racing(inner: RotationGraph, interfere: () => Promise<unknown>): RotationGraph {
+    let done = false;
+    return {
+      write: (cypher, params) => inner.write(cypher, params),
+      read: async (cypher, params) => {
+        const rows = await inner.read(cypher, params);
+        if (cypher === GRANT_IDENTITY_CYPHER && !done) {
+          done = true;
+          await interfere();
+        }
+        return rows;
+      },
+    };
+  }
+
+  it('grants a user with no scopes property: the stored list is [scope], the loaded user holds it, a repeat writes nothing', async () => {
+    await createScopeUser();
+    const window = operator();
+
+    await expect(grantPortfolioImportScope(window.graph, ID, 'ci')).resolves.toEqual({ userId: ID, outcome: 'granted' });
+
+    const props = await stored();
+    expect(props['scopes']).toEqual([PORTFOLIO_IMPORT_SCOPE]);
+    expect(props['portfolioImportScopeGrantedBy']).toBe('ci');
+    expect(neo4j.isDateTime(props['portfolioImportScopeGrantedAt'])).toBe(true);
+    expect(await loadedHolds()).toBe(true);
+
+    await expect(grantPortfolioImportScope(window.graph, ID, 'someone-else')).resolves.toEqual({ userId: ID, outcome: 'unchanged' });
+    expect((await stored())['portfolioImportScopeGrantedBy']).toBe('ci');
+  });
+
+  it('grants a user holding another scope without dropping it, and revoke removes only the portfolio entry', async () => {
+    await createScopeUser({ scopes: ['credentials:manage'] });
+    const window = operator();
+
+    await grantPortfolioImportScope(window.graph, ID, 'ci');
+    expect((await stored())['scopes']).toEqual(['credentials:manage', PORTFOLIO_IMPORT_SCOPE]);
+
+    await expect(revokePortfolioImportScope(window.graph, ID, 'ci')).resolves.toEqual({ userId: ID, outcome: 'revoked' });
+    const props = await stored();
+    expect(props['scopes']).toEqual(['credentials:manage']);
+    expect(props['portfolioImportScopeRevokedBy']).toBe('ci');
+    expect(neo4j.isDateTime(props['portfolioImportScopeRevokedAt'])).toBe(true);
+    expect(await loadedHolds()).toBe(false);
+  });
+
+  it('revoking the last entry stores [] (not an absent property) and the next grant matches that empty list', async () => {
+    await createScopeUser();
+    const window = operator();
+    await grantPortfolioImportScope(window.graph, ID, 'ci');
+
+    await revokePortfolioImportScope(window.graph, ID, 'ci');
+    const revoked = await stored();
+    expect(revoked['scopes']).toEqual([]);
+    expect(await loadedHolds()).toBe(false);
+    await expect(revokePortfolioImportScope(window.graph, ID, 'ci')).resolves.toEqual({ userId: ID, outcome: 'unchanged' });
+
+    await expect(grantPortfolioImportScope(window.graph, ID, 'ci')).resolves.toEqual({ userId: ID, outcome: 'granted' });
+    expect((await stored())['scopes']).toEqual([PORTFOLIO_IMPORT_SCOPE]);
+    expect(await loadedHolds()).toBe(true);
+  });
+
+  it('a seeded account never holds the scope even with it stored', async () => {
+    await createScopeUser({ scopes: [PORTFOLIO_IMPORT_SCOPE], seedProvenance: 'init-neo4j' });
+
+    expect(await loadedHolds()).toBe(false);
+  });
+
+  const changes: Array<[string, typeof grantPortfolioImportScope]> = [
+    ['grant', grantPortfolioImportScope],
+    ['revoke', revokePortfolioImportScope],
+  ];
+
+  it.each(changes)('%s: a scope list changed between the resolution and the write is not_applied and writes nothing', async (name, change) => {
+    const start = name === 'grant' ? ['a'] : ['a', PORTFOLIO_IMPORT_SCOPE];
+    await createScopeUser({ scopes: start });
+    const graphWindow = operator().graph;
+    const raced = racing(graphWindow, () => graph.run("MATCH (u:User {_id: $id}) SET u.scopes = ['a', 'other', 'b']", { id: ID }));
+
+    await expect(change(raced, ID, 'ci')).rejects.toMatchObject({ name: 'GrantRefused', reason: 'not_applied' });
+
+    const props = await stored();
+    expect(props['scopes']).toEqual(['a', 'other', 'b']);
+    expect(props['portfolioImportScopeGrantedBy']).toBeUndefined();
+    expect(props['portfolioImportScopeRevokedBy']).toBeUndefined();
+  });
+
+  it.each(changes)('%s: a user marked or provenanced between the resolution and the write is not_applied and writes nothing', async (name, change) => {
+    for (const interference of [
+      "SET u.seedProvenance = 'init-neo4j'", 'SET u.defaultPasswordSuspect = true', 'SET u._defaultPasswordSuspect = true',
+    ]) {
+      await graph.run('MATCH (u:User) WHERE u._id = $id DETACH DELETE u', { id: ID });
+      await createScopeUser({ scopes: name === 'grant' ? [] : [PORTFOLIO_IMPORT_SCOPE] });
+      const raced = racing(operator().graph, () => graph.run(`MATCH (u:User {_id: $id}) ${interference}`, { id: ID }));
+
+      await expect(change(raced, ID, 'ci')).rejects.toMatchObject({ name: 'GrantRefused', reason: 'not_applied' });
+
+      const props = await stored();
+      expect(props['scopes']).toEqual(name === 'grant' ? [] : [PORTFOLIO_IMPORT_SCOPE]);
+      expect(props['portfolioImportScopeGrantedBy']).toBeUndefined();
+      expect(props['portfolioImportScopeRevokedBy']).toBeUndefined();
+    }
+  });
+
+  const statements: Array<[string, string, string[], string[], string]> = [
+    ['grant', GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER, [], [PORTFOLIO_IMPORT_SCOPE], 'Granted'],
+    ['revoke', REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER, [PORTFOLIO_IMPORT_SCOPE], [], 'Revoked'],
+  ];
+
+  describe.each(statements)('the %s statement itself', (_name, cypher, before, after, stamp) => {
+    const run = async (params: Record<string, unknown>, id = ID) => {
+      const rows = await operator().graph.write(cypher, {
+        eid: await elementId(id), id, observed: before, scopes: after, operator: 'ci', ...params,
+      });
+      return neo4j.integer.toNumber(rows[0]!['n'] as never);
+    };
+
+    it('writes when the observed list equals the stored one, and an absent property equals the observed []', async () => {
+      await createScopeUser(before.length > 0 ? { scopes: before } : {});
+
+      expect(await run({})).toBe(1);
+
+      const props = await stored();
+      expect(props['scopes']).toEqual(after);
+      expect(props[`portfolioImportScope${stamp}By`]).toBe('ci');
+    });
+
+    it('refuses a stored list that differs from the observed one, whether it grew or was replaced', async () => {
+      await createScopeUser({ scopes: [...before, 'extra'] });
+
+      expect(await run({})).toBe(0); // observed is a strict prefix of the stored list
+      expect(await run({ observed: ['stale'] })).toBe(0);
+
+      expect((await stored())['scopes']).toEqual([...before, 'extra']);
+    });
+
+    const ineligible: Array<[string, Record<string, unknown>]> = [
+      ['a seeded user', { seedProvenance: 'init-neo4j' }],
+      ['a marked user', { defaultPasswordSuspect: true }],
+      ['a marked user (underscore spelling)', { _defaultPasswordSuspect: true }],
+    ];
+    it.each(ineligible)('refuses %s', async (_label, extra) => {
+      await createScopeUser({ scopes: before, ...extra });
+
+      expect(await run({})).toBe(0);
+
+      const after_ = await stored();
+      expect(after_['scopes']).toEqual(before);
+      expect(after_[`portfolioImportScope${stamp}By`]).toBeUndefined();
+    });
+
+    it('refuses an id that is not the node\'s own', async () => {
+      await createScopeUser({ scopes: before });
+
+      expect(await run({ id: 'hp1-s6-someone-else' })).toBe(0);
+
+      expect((await stored())['scopes']).toEqual(before);
+    });
+  });
+
+  it('the CLI dispatches grant and revoke to their own statements on the real stores, and exits 2 on a refusal', async () => {
+    await createScopeUser();
+    const run = async (command: string, userId: string) => {
+      const out: string[] = [];
+      const err: string[] = [];
+      const code = await identityWindowCli([command, '--user-id', userId, '--operator', 'ci'], operatorEnv(), {
+        stdout: line => out.push(line), stderr: line => err.push(line),
+      });
+      return { code, out, err };
+    };
+
+    expect(await run('grant-portfolio-import-scope', ID)).toEqual({ code: 0, out: [JSON.stringify({ userId: ID, outcome: 'granted' })], err: [] });
+    expect((await stored())['scopes']).toEqual([PORTFOLIO_IMPORT_SCOPE]);
+    expect(await loadedHolds()).toBe(true);
+
+    expect(await run('revoke-portfolio-import-scope', ID)).toEqual({ code: 0, out: [JSON.stringify({ userId: ID, outcome: 'revoked' })], err: [] });
+    expect((await stored())['scopes']).toEqual([]);
+    expect(await loadedHolds()).toBe(false);
+
+    // USER (the suite fixture) carries the default-password marker.
+    expect(await run('grant-portfolio-import-scope', USER)).toEqual({
+      code: 2, out: [], err: ['identity-window: portfolio-import scope grant refused: seeded_account'],
+    });
   });
 });

@@ -183,6 +183,7 @@ REST `POST /api/v1/connector-configs/:id/run` retains its existing queued-histor
 - **AI Discovery Module** — Standalone AI-powered infrastructure discovery with pattern learning
 - **Terraform Provider** — Manage HappyCMDB resources as infrastructure-as-code
 - **Helm Chart** — Production Kubernetes deployment with auto-scaling
+- **Evidence-qualified impact views** *(Proposed, HAP-171; not decided, pending founder review)* — Per-relationship evidence, staleness and unknown-coverage markers; declared-graph reachability is never presented as complete runtime blast radius. See [design](doc-site/docs/architecture/system-overview.md#evidence-qualified-relationships-and-impact-proposed)
 
 ## Development
 

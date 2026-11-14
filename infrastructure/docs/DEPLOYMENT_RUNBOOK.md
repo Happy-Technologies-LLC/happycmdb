@@ -468,6 +468,22 @@ Where `infrastructure/database/metabase-init.sql` created `metabase_readonly`, 0
 
 Then restart the services that log in as those roles. Until the block has printed `GRANT STEP COMPLETE`, do not treat the application as working.
 
+**051 warned `is not a view owned by the owner of cmdb.dim_ci; security_barrier not set`.** A cost view of `cost-analysis.sql` is owned by another role (typical after a manual `CREATE VIEW` by a different login), so 051 left it without `security_barrier`; for `v_underutilized_resources` it also withdrew BI's grant. A foreign-owned `v_top_cost_drivers_bi` is not in the barrier loop: 051 never sets or restores its `security_barrier` (its per-organization `row_number()` filter does not block push-down by itself, so `cost-analysis.sql` creates it `WITH (security_barrier)`); it only gets the separate grant-guard warning and loses BI's grant. The fix is to put the view under the `cmdb.dim_ci` owner and re-run `cost-analysis.sql` as that owner. Re-running the file alone does not do it: `CREATE OR REPLACE VIEW` needs ownership of the existing view (`ERROR: must be owner of view ...` for the `cmdb.dim_ci` owner), and when a superuser runs it, the view keeps its wrong owner. Either:
+1. as the view's owner or a superuser, `DROP VIEW <view>;`, then run `psql -X -f infrastructure/database/views/cost-analysis.sql` as the `cmdb.dim_ci` owner. The file recreates every cost view `WITH (security_barrier)`, owned by that login, and re-grants `metabase_readonly` (the drop removed the grants on the view); or
+2. as a superuser, `ALTER VIEW <view> OWNER TO <cmdb.dim_ci owner>;`. Grants are kept (except BI's grant that 051 withdrew, which the re-run of 051 below restores by shape). For `v_top_cost_drivers_bi` also run `ALTER VIEW v_top_cost_drivers_bi SET (security_barrier = true);` after the `OWNER TO`: 051 does not set it, so re-running 051 alone leaves that view without the barrier.
+
+Then re-run 051 as the `cmdb.dim_ci` owner: `psql -X -v ON_ERROR_STOP=1 --single-transaction -f packages/database/src/postgres/migrations/051_bi_view_security_barrier.sql`. It must print no warning naming the view. (For `v_top_cost_drivers_bi` it only re-grants BI by shape; the barrier comes from option 1 or the `ALTER VIEW ... SET` above.) Verify:
+
+```sql
+SELECT c.relname, pg_get_userbyid(c.relowner) AS owner, c.reloptions
+FROM pg_class c
+WHERE c.relkind = 'v' AND c.relname IN ('v_executive_cost_summary', 'v_cost_by_tower', 'v_cost_trends',
+  'v_unit_economics', 'v_cloud_vs_onprem_costs', 'v_cost_allocation_summary', 'v_depreciation_summary',
+  'v_underutilized_resources', 'v_top_cost_drivers_bi');
+```
+
+Every row's `owner` is the owner of `cmdb.dim_ci` (`SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'cmdb.dim_ci'::regclass`), and every one of the nine rows, `v_top_cost_drivers_bi` included, shows `{security_barrier=true}` in `reloptions`.
+
 ### Rollback Process
 
 The rollback script will:

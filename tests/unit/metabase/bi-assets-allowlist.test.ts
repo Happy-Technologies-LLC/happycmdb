@@ -203,6 +203,17 @@ describe('Metabase assets query only what the BI role can read (HAP-659)', () =>
         CREATE TABLE cmdb.dim_ci (ci_key serial, ci_id text, ci_name text, ci_type text, ci_status text, environment text,
           is_current boolean, tbm_attributes jsonb, bsm_attributes jsonb, metadata jsonb, updated_at timestamptz DEFAULT now(),
           organization_id uuid);
+        -- the tables the other cost views read (columns as the views use them)
+        CREATE TABLE business_services (id int, name text, tbm_attributes jsonb, bsm_attributes jsonb, operational_status text,
+          technical_owner text, updated_at timestamptz);
+        CREATE TABLE service_dependencies (source_id int, source_type text, dependency_type text, target_id int, target_type text);
+        CREATE TABLE business_capabilities (id int, name text);
+        CREATE TABLE cmdb.fact_ci_changes (ci_key int, changed_at timestamptz, field_name text, new_value text);
+        CREATE TABLE tbm_cost_pools (id int, cost_center text, business_unit text, name text, cost_pool_type text,
+          monthly_budget numeric, annual_budget numeric, owner text, is_active boolean);
+        CREATE TABLE tbm_depreciation_schedules (ci_id text, ci_name text, purchase_date date, purchase_cost numeric,
+          useful_life_months int, depreciation_method text, monthly_depreciation numeric, accumulated_depreciation numeric,
+          current_book_value numeric, fully_depreciated boolean, fully_depreciated_at timestamptz, is_active boolean);
         INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, environment, is_current, tbm_attributes, bsm_attributes, metadata)
         VALUES ${[
           ...Array.from({ length: 25 }, (_, i) => row(i, 1000 + i, 90)), // 25 active, costed, well utilized
@@ -288,9 +299,8 @@ describe('Metabase assets query only what the BI role can read (HAP-659)', () =>
       (await exec(`SELECT reloptions::text AS o FROM pg_class WHERE oid = '${view}'::regclass`, 'query'))[0]['o'];
 
     // cmdb#318 review: security_barrier on the BI-granted views that have no LIMIT.
-    it('cost-analysis.sql creates v_underutilized_resources with security_barrier, and 051 sets it on every unbounded cost view', async () => {
+    it('051 sets security_barrier on every unbounded cost view', async () => {
       await exec(costViewDdl.join(';\n'));
-      expect(await reloptions('v_underutilized_resources')).toBe('{security_barrier=true}');
       await exec(`ALTER VIEW v_underutilized_resources RESET (security_barrier)`);
       for (const view of barrierViews.filter(v => v !== 'v_underutilized_resources')) {
         await exec(`CREATE VIEW ${view} AS SELECT ci_id FROM cmdb.dim_ci`);
@@ -302,6 +312,17 @@ describe('Metabase assets query only what the BI role can read (HAP-659)', () =>
       // not in 051's list, but cost-analysis.sql creates it with the barrier too (052 replaced its LIMIT 20 with a
       // per-organization row_number() filter, which no longer blocks push-down by itself); 051 leaves that option alone
       expect(await reloptions('v_top_cost_drivers_bi')).toBe('{security_barrier=true}');
+    });
+
+    // cmdb#328 review: cost-analysis.sql itself must create every unbounded cost view WITH (security_barrier). 051 sets
+    // the option too, but runs once; a re-run of cost-analysis.sql (CREATE OR REPLACE VIEW without the option resets it)
+    // would silently drop it from a view that lost the clause. Run the whole file's view DDL and read each view back.
+    const allCostViewDdl = splitStatements(read(`${viewsDir}/cost-analysis.sql`)).filter(s => /^CREATE (OR REPLACE )?VIEW\b/.test(s));
+    // all nine: the eight 051 covers plus v_top_cost_drivers_bi, whose per-organization row_number() filter does not
+    // block push-down, so cost-analysis.sql (not 051) gives it the barrier
+    it.each([...barrierViews, 'v_top_cost_drivers_bi'])('cost-analysis.sql creates %s with security_barrier', async view => {
+      await exec(allCostViewDdl.join(';\n'));
+      expect(await reloptions(view)).toBe('{security_barrier=true}');
     });
 
     // The barrier's effect: a predicate the BI user supplies must not run on rows the view filters out.
@@ -360,15 +381,65 @@ describe('Metabase assets query only what the BI role can read (HAP-659)', () =>
       });
     });
 
-    it('051 removes a TEMPORARY grant made to the BI role (the PUBLIC grant is separate)', async () => {
-      const temp = async () => (await exec(
-        `SELECT has_database_privilege('metabase_readonly', current_database(), 'TEMPORARY') AS t`, 'query'))[0]['t'];
-      await exec(`GRANT TEMPORARY ON DATABASE ${(await exec('SELECT current_database() AS d', 'query'))[0]['d']} TO metabase_readonly`);
-      await exec(`REVOKE TEMPORARY ON DATABASE ${(await exec('SELECT current_database() AS d', 'query'))[0]['d']} FROM PUBLIC`);
-      expect(await temp()).toBe(true);
-      await exec(migration051);
-      expect(await temp()).toBe(false);
-      await denied('CREATE TEMP TABLE bi_probe (i int)');
+    const currentDatabase = async () => (await exec('SELECT current_database() AS d', 'query'))[0]['d'] as string;
+    const biHasTemporary = async () => (await exec(
+      `SELECT has_database_privilege('metabase_readonly', current_database(), 'TEMPORARY') AS t`, 'query'))[0]['t'];
+    // Model a BI role that holds TEMPORARY itself (an older bootstrap); the PUBLIC grant is revoked so the role's own
+    // grant is the only path, and put back afterwards for the tests that follow.
+    const withOwnTemporaryGrant = async (run: (database: string) => Promise<void>) => {
+      const database = await currentDatabase();
+      await exec(`GRANT TEMPORARY ON DATABASE ${database} TO metabase_readonly;
+        REVOKE TEMPORARY ON DATABASE ${database} FROM PUBLIC`);
+      try {
+        expect(await biHasTemporary()).toBe(true);
+        await run(database);
+      } finally {
+        await exec(`GRANT TEMPORARY ON DATABASE ${database} TO PUBLIC; REVOKE TEMPORARY ON DATABASE ${database} FROM metabase_readonly`);
+      }
+    };
+
+    it('051 removes a TEMPORARY grant made to the BI role (the PUBLIC grant is separate)', () =>
+      withOwnTemporaryGrant(async () => {
+        await exec(migration051);
+        expect(await biHasTemporary()).toBe(false);
+        await denied('CREATE TEMP TABLE bi_probe (i int)');
+      }));
+
+    // Run the file's own BI-role connect/temp-privilege statements, in order, against this database (the file names
+    // the production one). The outcome is read back from the privilege system, not from the statement text.
+    it('metabase-init.sql leaves the BI role without TEMPORARY on the database', () =>
+      withOwnTemporaryGrant(async database => {
+        const from = initSql.indexOf('-- Grant connect to database');
+        const to = initSql.indexOf('-- Only audited reporting views');
+        expect(from).toBeGreaterThan(-1);
+        expect(to).toBeGreaterThan(from);
+        await exec(initSql.slice(from, to).replace(/ON DATABASE cmdb\b/g, `ON DATABASE ${database}`));
+        expect(await biHasTemporary()).toBe(false);
+        await denied('CREATE TEMP TABLE bi_probe (i int)');
+      }));
+
+    // 051 warns and skips a barrier view that another role owns (the owner could redefine it), and carries on.
+    it('051 skips security_barrier on a cost view owned by another role, sets it on the rest, and does not fail', async () => {
+      await exec(costViewDdl.join(';\n'));
+      await exec(`ALTER VIEW v_underutilized_resources RESET (security_barrier)`);
+      for (const view of barrierViews.filter(v => v !== 'v_underutilized_resources')) {
+        await exec(`CREATE VIEW ${view} AS SELECT ci_id FROM cmdb.dim_ci`);
+      }
+      await exec('CREATE ROLE other_owner');
+      try {
+        await exec('ALTER VIEW v_cost_by_tower OWNER TO other_owner');
+        await exec(migration051);
+        expect(await reloptions('v_cost_by_tower')).toBeNull();
+        for (const view of barrierViews.filter(v => v !== 'v_cost_by_tower')) {
+          expect(await reloptions(view)).toBe('{security_barrier=true}');
+        }
+        // the fix: hand the view back to the owner of cmdb.dim_ci and run 051 again
+        await exec('ALTER VIEW v_cost_by_tower OWNER TO CURRENT_USER');
+        await exec(migration051);
+        expect(await reloptions('v_cost_by_tower')).toBe('{security_barrier=true}');
+      } finally {
+        await exec('DROP OWNED BY other_owner; DROP ROLE other_owner');
+      }
     });
   });
 });

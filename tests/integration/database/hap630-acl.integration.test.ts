@@ -15,6 +15,14 @@ const secretViews = ['active_api_keys', 'credential_summaries',
   'credential_set_summaries', 'discovery_definitions_with_credentials'];
 const privateTables = ['ci_reconciliation_operations', 'ci_reconciliation_epochs'];
 const reporting = ['public.recent_audit_activity', 'cmdb.v_ci_discovery_summary'];
+/**
+ * The nine BI-granted cost views of cost-analysis.sql that need security_barrier: eight unbounded ones, plus
+ * v_top_cost_drivers_bi (its per-organization row_number() filter no longer blocks push-down). 051 sets the first
+ * eight; cost-analysis.sql sets all nine.
+ */
+const costBarrierViews = ['v_executive_cost_summary', 'v_cost_by_tower', 'v_cost_trends', 'v_unit_economics',
+  'v_cloud_vs_onprem_costs', 'v_cost_allocation_summary', 'v_depreciation_summary', 'v_underutilized_resources',
+  'v_top_cost_drivers_bi'];
 const poolFor = (database?: string) => new Pool({
   host: process.env['POSTGRES_HOST'], port: Number(process.env['POSTGRES_PORT']),
   database: database || process.env['POSTGRES_DB'], user: process.env['POSTGRES_USER'],
@@ -219,8 +227,9 @@ if (process.env['HAP630_ACCEPTANCE'] === '1') {
         await asRole(db, 'metabase_readonly', 'SELECT * FROM cmdb.dim_ci LIMIT 1', true);
         // cmdb#318 review: the unbounded BI-granted cost views are security barriers (no LIMIT to stop push-down).
         const { rows: barrier } = await db.query(`SELECT c.relname, c.reloptions::text AS options FROM pg_class c
-          WHERE c.relkind = 'v' AND c.relname = 'v_underutilized_resources'`);
-        expect(barrier).toEqual([{ relname: 'v_underutilized_resources', options: '{security_barrier=true}' }]);
+          WHERE c.relkind = 'v' AND c.relname = ANY($1)`, [costBarrierViews]);
+        expect(barrier.sort((a, b) => (a.relname < b.relname ? -1 : 1))).toEqual(
+          [...costBarrierViews].sort().map(relname => ({ relname, options: '{security_barrier=true}' })));
       }, 180000);
 
       // HAP-659 review B1/B2: the BI grant on a per-CI cost view depends on the view's shape, not only its name.
@@ -275,6 +284,60 @@ if (process.env['HAP630_ACCEPTANCE'] === '1') {
           expect(await canRead('v_top_cost_drivers')).toBe(false);
         } finally {
           await db.query(drop);
+          await db.query(costSql);
+        }
+      }, 180000);
+
+      // cmdb#328 review: 051 warns and skips a cost view owned by another role (its owner could redefine it).
+      // CREATE OR REPLACE VIEW keeps the owner, and cost-analysis.sql cannot replace a view the login does not own, so
+      // the view has to be dropped (or handed back with ALTER VIEW ... OWNER TO) before the file is re-run.
+      it('051 warns and skips a cost view owned by another role; dropping it and re-running cost-analysis.sql restores the barrier', async () => {
+        const costSql = readFileSync(join(root, 'infrastructure/database/views/cost-analysis.sql'), 'utf8');
+        const mig051 = readFileSync(join(root,
+          'packages/database/src/postgres/migrations/051_bi_view_security_barrier.sql'), 'utf8');
+        const other = 'hap630_view_owner';
+        const view = 'v_cost_by_tower';
+        const barrier = async () => Object.fromEntries((await db.query(`SELECT c.relname, c.reloptions::text AS options,
+          pg_get_userbyid(c.relowner) AS owner FROM pg_class c WHERE c.relkind = 'v' AND c.relname = ANY($1)`,
+          [costBarrierViews])).rows.map(r => [r.relname, r]));
+        // 051 is a transaction-scoped migration (SET LOCAL); a dedicated client sees its WARNINGs as notices.
+        const run051 = async () => {
+          const client = await db.connect();
+          const notices: string[] = [];
+          client.on('notice', n => notices.push(n.message));
+          try {
+            await client.query('BEGIN');
+            await client.query(mig051);
+            await client.query('COMMIT');
+          } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+          } finally {
+            client.release();
+          }
+          return notices.filter(m => m.includes(view));
+        };
+        await db.query(`CREATE ROLE ${other}`);
+        try {
+          await db.query(costSql);
+          const owner = (await barrier())[view].owner;
+          await db.query(`ALTER VIEW ${view} OWNER TO ${other}`);
+          await db.query(`ALTER VIEW ${view} RESET (security_barrier)`); // as after a restore of an older dump
+          const warnings = await run051(); // must not throw
+          expect(warnings).toHaveLength(1);
+          const skipped = await barrier();
+          expect(skipped[view]).toMatchObject({ options: null, owner: other });
+          for (const name of costBarrierViews.filter(n => n !== view)) {
+            expect(skipped[name].options).toBe('{security_barrier=true}');
+          }
+          // the documented fix
+          await db.query(`DROP VIEW ${view}`);
+          await db.query(costSql);
+          expect(await run051()).toEqual([]);
+          expect((await barrier())[view]).toMatchObject({ options: '{security_barrier=true}', owner });
+        } finally {
+          await db.query(`DROP OWNED BY ${other}`);
+          await db.query(`DROP ROLE ${other}`);
           await db.query(costSql);
         }
       }, 180000);

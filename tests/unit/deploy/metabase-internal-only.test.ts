@@ -2,14 +2,15 @@
  * cm-fu-bi-tenant-scope (cmdb#318 review, operator decision): Metabase is an INTERNAL staff and operator tool. Its BI
  * views contain every organization's rows and Metabase cannot restrict a user to one tenant, so no shipped manifest
  * may publish it: no Ingress / HTTPRoute routes to it, its Service is ClusterIP, and every compose file that publishes
- * its port binds loopback only.
+ * its port binds loopback only. Compose files are scanned alone and as merged sets (a sibling `*.override.yml`, every
+ * `-f` chain named in tracked scripts and docs), and `include:` fails closed unless it resolves to a tracked file.
  *
  * Every tracked YAML file is parsed (not grepped). The detectors also run against inline fixtures that DO publish
  * Metabase, so a detector that stopped seeing them (renamed key, new spelling) fails here instead of passing vacuously.
  */
 import { execFileSync } from 'child_process';
 import { readFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { join, posix, resolve } from 'path';
 import { parse, parseAllDocuments } from 'yaml';
 
 const REPO = resolve(__dirname, '../../..');
@@ -250,11 +251,13 @@ function resolveExtends(entries: [string, Node][]): { services: [string, Node][]
 }
 
 /**
- * Reasons a Metabase service of one parsed compose document is reachable beyond loopback: `network_mode: host`, a
- * published port with no loopback host address, or a shared network namespace (`network_mode: service:X` / `container:X`)
- * whose owner or co-tenant publishes beyond loopback or cannot be resolved within the file. A service is Metabase's by
- * name, container name or image, not by name alone, after `extends` is resolved within the file; an `extends` that names
- * another file, a missing service or a cycle cannot be resolved and is reported for the service that carries it.
+ * Reasons a Metabase service of one parsed compose document is reachable beyond loopback: `network_mode: host`, an
+ * attached network that is the external network named `host` (Compose v2 host networking; a service with no `networks`
+ * is on `default`), a published port with no loopback host address, or a shared network namespace
+ * (`network_mode: service:X` / `container:X`) whose owner or co-tenant publishes beyond loopback or cannot be resolved
+ * within the file. A service is Metabase's by name, container name or image, not by name alone, after `extends` is
+ * resolved within the file; an `extends` that names another file, a missing service or a cycle cannot be resolved and
+ * is reported for the service that carries it. A document is one file or a merged set of files (`composeSetExposure`).
  */
 function composeExposure(doc: unknown): string[] {
   if (!isMap(doc) || !isMap(doc.services)) return [];
@@ -283,12 +286,30 @@ function composeExposure(doc: unknown): string[] {
     const ns = namespaceOwner(entry);
     return 'owner' in ns ? `owner:${ns.owner[0]}` : `unresolved:${ns.unresolved}`;
   };
+  const networks = isMap(doc.networks) ? doc.networks : {};
+  /** Compose v2 host networking: a network that is external and named `host` (its name defaults to its key). */
+  const isHostNetwork = (key: string): boolean => {
+    const def = networks[key];
+    if (!isMap(def)) return false;
+    const legacy = isMap(def.external) ? def.external : undefined;
+    if (!(legacy || isYamlTrue(def.external))) return false;
+    const name = typeof def.name === 'string' ? def.name : typeof legacy?.name === 'string' ? legacy.name : key;
+    return name.trim() === 'host';
+  };
+  /** The key of an attached network that is the host network: any one, as `priority` can promote a later one to primary. */
+  const hostNetwork = (service: Node): string | undefined => {
+    if (service.network_mode !== undefined) return undefined;
+    const declared = Array.isArray(service.networks) ? service.networks.filter((key): key is string => typeof key === 'string') : isMap(service.networks) ? Object.keys(service.networks) : [];
+    return (declared.length > 0 ? declared : ['default']).find(isHostNetwork);
+  };
 
   const out: string[] = [];
   for (const entry of services) {
     const [id, service] = entry;
     if (!(isMetabase(id) || isMetabase(service.image) || isMetabase(service.container_name))) continue;
+    const viaNetwork = hostNetwork(service);
     if (String(service.network_mode ?? '').trim() === 'host') out.push(`${id}: network_mode host`);
+    if (viaNetwork) out.push(`${id}: network ${viaNetwork} is the external host network`);
     for (const port of nonLoopbackPorts(service)) out.push(`${id}: ${port}`);
 
     if (!sharedRef(service)) continue;
@@ -297,7 +318,7 @@ function composeExposure(doc: unknown): string[] {
       out.push(`${id}: network_mode ${ns.unresolved} targets a service or container outside this file`);
       continue;
     }
-    if (String(ns.owner[1].network_mode ?? '').trim() === 'host') out.push(`${id}: shares the host network via ${ns.owner[0]}`);
+    if (hostNetwork(ns.owner[1]) || String(ns.owner[1].network_mode ?? '').trim() === 'host') out.push(`${id}: shares the host network via ${ns.owner[0]}`);
     const key = keyOf(entry);
     for (const member of services) {
       if (member[0] === id || keyOf(member) !== key) continue;
@@ -317,6 +338,107 @@ function composeExposure(doc: unknown): string[] {
   return [...extendsProblems, ...out];
 }
 
+/** Compose multi-file merge of top-level elements: same-named entries merge like `extends` (see `mergeService`), anything else is replaced. */
+function mergeCompose(docs: readonly Node[]): Node {
+  const out: Node = {};
+  for (const doc of docs) {
+    for (const [key, value] of Object.entries(doc)) {
+      const inherited = out[key];
+      if (!(isMap(inherited) && isMap(value))) {
+        out[key] = value;
+        continue;
+      }
+      const entries: Node = { ...inherited };
+      for (const [name, entry] of Object.entries(value)) entries[name] = isMap(entries[name]) && isMap(entry) ? mergeService(entries[name] as Node, entry) : entry;
+      out[key] = entries;
+    }
+  }
+  return out;
+}
+
+/** Reads one repo-relative (posix) compose file: its first mapping document, or undefined when it is not an in-repo file. */
+type ComposeLoader = (file: string) => Node | undefined;
+
+const REMOTE_INCLUDE = /^([a-z][a-z0-9+.-]*:|git@)/i;
+
+/** The paths of one `include:` entry: `path`, `{ path }` or `{ path: [..] }` (a list is one merged project). */
+function includePaths(entry: unknown): string[] | undefined {
+  const raw = isMap(entry) ? entry.path : entry;
+  const paths = Array.isArray(raw) ? raw : [raw];
+  return paths.length > 0 && paths.every((path) => typeof path === 'string' && path.trim() !== '') ? (paths as string[]).map((path) => path.trim()) : undefined;
+}
+
+/**
+ * One compose file with its `include:` entries merged in beneath it. `include:` is fail-closed: an entry is read only
+ * when it is a literal path to a file the loader has in the repo; an interpolated, remote, out-of-repo or missing path
+ * cannot be scanned, so it is reported rather than assumed harmless.
+ */
+function loadComposeFile(file: string, load: ComposeLoader, trail: readonly string[]): { doc: Node; problems: string[] } {
+  const own = load(file);
+  if (!own) return { doc: {}, problems: [`${file}: not a readable in-repo compose file`] };
+  const problems: string[] = [];
+  const included: Node[] = [];
+  for (const entry of list(own.include)) {
+    const paths = includePaths(entry);
+    if (!paths) {
+      problems.push(`${file}: include entry ${JSON.stringify(entry)} names no path`);
+      continue;
+    }
+    for (const path of paths) {
+      const target = posix.normalize(posix.join(posix.dirname(file), path));
+      if (/\$/.test(path) || REMOTE_INCLUDE.test(path) || posix.isAbsolute(path) || target === '..' || target.startsWith('../')) {
+        problems.push(`${file}: include ${path} is interpolated, remote or outside the repo, so this scan cannot read it`);
+      } else if (trail.includes(target)) {
+        problems.push(`${file}: include ${path} is a cycle`);
+      } else {
+        const nested = loadComposeFile(target, load, [...trail, target]);
+        included.push(nested.doc);
+        problems.push(...nested.problems.map((problem) => (problem.startsWith(`${target}: not a readable`) ? `${file}: include ${path} is not an in-repo compose file` : problem)));
+      }
+    }
+  }
+  const { include: _include, ...rest } = own;
+  return { doc: mergeCompose([...included, rest]), problems };
+}
+
+/** Exposure of a set of compose files merged in `-f` order (an override can add a port or image to a service of the base). */
+function composeSetExposure(files: readonly string[], load: ComposeLoader): string[] {
+  const loaded = files.map((file) => loadComposeFile(file, load, [file]));
+  return [...new Set([...loaded.flatMap(({ problems }) => problems), ...composeExposure(mergeCompose(loaded.map(({ doc }) => doc)))])];
+}
+
+const COMPOSE_NAME = /^(.*\/)?([^/]*compose[^/]*?)\.(ya?ml)$/i;
+
+/** The compose files named by `-f` / `--file` in each compose command of a script or doc, per command, in order. */
+function composeChains(text: string): string[][] {
+  return text
+    .replace(/\\\r?\n\s*/g, ' ')
+    .split(/\r?\n/)
+    .flatMap((line) => line.split(/&&|\|\||[;|]/))
+    .filter((command) => /\bcompose\b/i.test(command))
+    .map((command) => [...command.matchAll(/(?:^|\s)(?:-f|--file)(?:\s+|=)["']?([^\s"'<>|;&`$]+\.ya?ml)/g)].map((match) => posix.normalize(match[1])))
+    .filter((chain) => chain.length > 0);
+}
+
+/**
+ * The merged sets to scan: every compose file alone; each compose file with its sibling `<name>.override.<ext>` (what
+ * `docker compose` loads on its own for `docker-compose.yml`); and every `-f` chain of `chains` whose files are all tracked.
+ */
+function composeSets(files: readonly string[], chains: readonly (readonly string[])[]): string[][] {
+  const known = new Set(files);
+  const sets = new Map<string, string[]>();
+  const add = (set: string[]) => sets.set(set.join('\0'), set);
+  for (const file of files) {
+    if (!/compose/i.test(file)) continue;
+    add([file]);
+    const match = COMPOSE_NAME.exec(file);
+    const override = match && `${match[1] ?? ''}${match[2]}.override.${match[3]}`;
+    if (override && known.has(override)) add([file, override]);
+  }
+  for (const chain of chains) if (chain.every((file) => known.has(file))) add([...chain]);
+  return [...sets.values()];
+}
+
 const tracked = (...globs: string[]): string[] =>
   execFileSync('git', ['ls-files', '-z', '--', ...globs], { cwd: REPO, encoding: 'utf8' }).split('\0').filter(Boolean);
 
@@ -333,6 +455,16 @@ const METABASE_MANIFEST = 'infrastructure/kubernetes/deployments/metabase-deploy
 
 const K8S_DOCS = YAML_FILES.flatMap((file) => docsOf(file).map((doc) => ({ file, doc })));
 const METABASE_CONTEXT = metabaseContext(K8S_DOCS.map(({ doc }) => doc));
+
+/** The first mapping document of a tracked YAML file; anything else is not an in-repo compose file for `include:`. */
+const loadTracked: ComposeLoader = (file) => (YAML_FILES.includes(file) ? docsOf(file).find(isMap) : undefined);
+
+// Compose files named by `-f` in tracked scripts and docs (this test's own fixtures excluded).
+const SELF = 'tests/unit/deploy/metabase-internal-only.test.ts';
+const CHAIN_FILES = execFileSync('git', ['grep', '-lIz', '-E', '(-f|--file)[ =]+["\']?[^ ]+\\.ya?ml', '--', '.', `:(exclude)${SELF}`], { cwd: REPO, encoding: 'utf8' })
+  .split('\0').filter(Boolean);
+const SCRIPT_CHAINS = CHAIN_FILES.flatMap((file) => composeChains(readFileSync(join(REPO, file), 'utf8')));
+const COMPOSE_SETS = composeSets(YAML_FILES, SCRIPT_CHAINS);
 
 describe('Metabase is internal-only (staff and operator tool)', () => {
   it('parses every tracked YAML document: an unparsable one fails here instead of being skipped', () => {
@@ -358,10 +490,15 @@ describe('Metabase is internal-only (staff and operator tool)', () => {
     expect(exposure).toEqual([]);
   });
 
-  it('no tracked compose file publishes Metabase on a non-loopback interface or on the host network', () => {
-    const exposure = COMPOSE_FILES.flatMap((file) =>
-      docsOf(file).flatMap((doc) => composeExposure(doc)).map((reason) => `${file}: ${reason}`));
+  it('no tracked compose file, merged set of files or include chain publishes Metabase on a non-loopback interface or on the host network', () => {
+    const exposure = COMPOSE_SETS.flatMap((set) => composeSetExposure(set, loadTracked).map((reason) => `${set.join(' + ')}: ${reason}`));
     expect(exposure).toEqual([]);
+  });
+
+  it('scans every tracked compose file alone and each -f chain or sibling override as a merged set, so the set scan cannot go vacuous', () => {
+    expect(COMPOSE_SETS).toEqual(expect.arrayContaining(COMPOSE_FILES.map((file) => [file])));
+    expect(SCRIPT_CHAINS).toContainEqual(['infrastructure/docker/docker-compose.yml']);
+    expect(composeExposure(parseYaml(readFileSync(join(REPO, 'infrastructure/docker/docker-compose.yml'), 'utf8')))).toEqual([]);
   });
 
   describe('detectors', () => {
@@ -702,6 +839,144 @@ describe('Metabase is internal-only (staff and operator tool)', () => {
         expect(composeOf('  reports:\n    extends: ghost\n')).toEqual(['reports: extends ghost, which is not a service of this file']);
         expect(composeOf(extending('a', '      service: b\n') + extending('b', '      service: a\n'))).toEqual(['b: extends a, which is a cycle']);
         expect(composeOf(extending('a', '      service: a\n'))).toEqual(['a: extends a, which is a cycle']);
+      });
+    });
+
+    describe('compose host networking through an external network named host', () => {
+      const hostNet = (extra = '') => `networks:\n  hostnet:\n    external: true\n    name: host\n${extra}`;
+      const exposure = (text: string) => composeExposure(parseYaml(text));
+
+      it('flag a Metabase service whose networks list or map attaches an external network named host', () => {
+        const listForm = `services:\n  bi:\n    image: metabase/metabase\n    networks:\n      - hostnet\n${hostNet()}`;
+        const mapForm = `services:\n  bi:\n    image: metabase/metabase\n    networks:\n      hostnet:\n        priority: 5\n${hostNet()}`;
+        expect(exposure(listForm)).toEqual(['bi: network hostnet is the external host network']);
+        expect(exposure(mapForm)).toEqual(['bi: network hostnet is the external host network']);
+        // the name defaults to the key; the legacy `external: { name }` spelling; any attached network, not only the first
+        expect(exposure('services:\n  metabase:\n    image: x\n    networks: [host]\nnetworks:\n  host:\n    external: true\n')).toEqual(['metabase: network host is the external host network']);
+        expect(exposure('services:\n  metabase:\n    image: x\n    networks: [hostnet]\nnetworks:\n  hostnet:\n    external:\n      name: host\n')).toHaveLength(1);
+        expect(exposure(`services:\n  bi:\n    image: metabase/metabase\n    networks: [back, hostnet]\nnetworks:\n  back: {}\n${hostNet().replace('networks:\n', '')}`)).toHaveLength(1);
+      });
+
+      it('flag a Metabase service with no networks when the top-level default network is the external host network', () => {
+        const withDefault = (service: string) => `services:\n  bi:\n    image: metabase/metabase\n${service}networks:\n  default:\n    external: true\n    name: host\n`;
+        expect(exposure(withDefault(''))).toEqual(['bi: network default is the external host network']);
+        // an explicit network list replaces the default, and network_mode wins over networks altogether
+        expect(exposure(withDefault('    networks: [back]\n'))).toEqual([]);
+        expect(exposure(withDefault('    network_mode: bridge\n'))).toEqual([]);
+      });
+
+      it('flag a Metabase service in the namespace of a host-network service, and nothing for other networks', () => {
+        expect(exposure(`services:\n  edge:\n    image: nginx\n    networks: [hostnet]\n  metabase:\n    image: metabase/metabase\n    network_mode: service:edge\n${hostNet()}`))
+          .toEqual(['metabase: shares the host network via edge']);
+        expect(exposure(`services:\n  metabase:\n    image: metabase/metabase\n    network_mode: service:edge\n  edge:\n    image: nginx\n    networks: [hostnet]\n${hostNet()}`))
+          .toEqual(['metabase: shares the host network via edge']);
+        // not external, a different external name, and a host-named network that is not external
+        expect(exposure('services:\n  metabase:\n    image: x\n    networks: [hostnet]\nnetworks:\n  hostnet:\n    external: true\n    name: shared\n')).toEqual([]);
+        expect(exposure('services:\n  metabase:\n    image: x\n    networks: [host]\nnetworks:\n  host:\n    driver: bridge\n')).toEqual([]);
+        expect(exposure('services:\n  metabase:\n    image: x\n    networks: [back]\nnetworks:\n  back: {}\n')).toEqual([]);
+        // a non-Metabase service on the host network is out of scope
+        expect(exposure(`services:\n  api:\n    image: node\n    networks: [hostnet]\n${hostNet()}`)).toEqual([]);
+      });
+    });
+
+    describe('compose files scanned as merged sets', () => {
+      /** A set of in-memory files: the loader serves the first mapping document of each. */
+      const setOf = (files: Record<string, string>, ...order: string[]) =>
+        composeSetExposure(order, (file) => (file in files ? (parseYaml(files[file]) as Node) : undefined));
+      const base = 'services:\n  bi:\n    image: metabase/metabase:v0.50\n    ports:\n      - "127.0.0.1:3002:3000"\n';
+
+      it('flag an override that adds a public port to a service that runs the Metabase image under another name', () => {
+        const files = { 'docker-compose.yml': base, 'docker-compose.override.yml': 'services:\n  bi:\n    ports:\n      - "3002:3000"\n' };
+        expect(setOf(files, 'docker-compose.yml')).toEqual([]);
+        // alone the override names no image and no Metabase-like name: only the merge identifies the service
+        expect(setOf(files, 'docker-compose.override.yml')).toEqual([]);
+        expect(setOf(files, 'docker-compose.yml', 'docker-compose.override.yml')).toEqual(['bi: ports 3002:3000']);
+      });
+
+      it('flag an override that switches a Metabase-image service to host networking, or attaches the external host network', () => {
+        const files = {
+          'a.yml': base,
+          'host.yml': 'services:\n  bi:\n    network_mode: host\n',
+          'net.yml': 'services:\n  bi:\n    networks: [hostnet]\nnetworks:\n  hostnet:\n    external: true\n    name: host\n',
+        };
+        expect(setOf(files, 'a.yml', 'host.yml')).toEqual(['bi: network_mode host']);
+        expect(setOf(files, 'a.yml', 'net.yml')).toEqual(['bi: network hostnet is the external host network']);
+      });
+
+      it('flag a base with a public port when an override only supplies the Metabase image, and honor the -f order', () => {
+        const files = { 'a.yml': 'services:\n  bi:\n    image: nginx\n    ports:\n      - "8080:3000"\n', 'b.yml': 'services:\n  bi:\n    image: metabase/metabase\n' };
+        expect(setOf(files, 'a.yml', 'b.yml')).toEqual(['bi: ports 8080:3000']);
+        expect(setOf(files, 'a.yml')).toEqual([]);
+        // the later file wins for a scalar: image goes back to nginx
+        expect(setOf(files, 'b.yml', 'a.yml')).toEqual([]);
+      });
+
+      it('report a set file that cannot be read instead of skipping it', () => {
+        expect(setOf({ 'a.yml': base }, 'a.yml', 'missing.yml')).toEqual(['missing.yml: not a readable in-repo compose file']);
+      });
+
+      it('pair each compose file with its sibling override and every -f chain that names tracked files', () => {
+        const files = ['docker-compose.yml', 'docker-compose.override.yml', 'infra/compose.yaml', 'infra/compose.override.yaml', 'deploy/b.compose.yml', 'deploy/ci.yml', 'plain.yml'];
+        const sets = composeSets(files, [['deploy/b.compose.yml', 'deploy/ci.yml'], ['docker-compose.prod.yml'], ['deploy/ci.yml', 'ghost.yml']]);
+        expect(sets).toEqual([
+          ['docker-compose.yml'],
+          ['docker-compose.yml', 'docker-compose.override.yml'],
+          ['docker-compose.override.yml'],
+          ['infra/compose.yaml'],
+          ['infra/compose.yaml', 'infra/compose.override.yaml'],
+          ['infra/compose.override.yaml'],
+          ['deploy/b.compose.yml'],
+          ['deploy/b.compose.yml', 'deploy/ci.yml'],
+        ]);
+      });
+
+      it('read the -f chains of a script or doc: continuations, quotes, --file, several commands per line, and not other tools', () => {
+        const text = [
+          'docker compose -f a.yml \\',
+          '  -f "b.override.yml" up -d',
+          'docker-compose --file=c.yml --file d.yml ps',
+          '`docker compose -p <project> -f deploy/x.compose.yml -f <generation override> exec api`',
+          'docker compose -f e.yml down && docker compose -f f.yml -f g.yml up',
+          'kubectl apply -f manifest.yaml',
+          'docker compose -f "$FILE" up',
+        ].join('\n');
+        expect(composeChains(text)).toEqual([['a.yml', 'b.override.yml'], ['c.yml', 'd.yml'], ['deploy/x.compose.yml'], ['e.yml'], ['f.yml', 'g.yml']]);
+      });
+
+      describe('include:', () => {
+        const withInclude = (include: string) => `include:\n${include}services:\n  api:\n    image: node\n`;
+        const exposed = 'services:\n  bi:\n    image: metabase/metabase\n    ports:\n      - "3002:3000"\n';
+
+        it('fail closed on an include that is remote, interpolated, outside the repo, missing, or has no path', () => {
+          const problems = (include: string) => setOf({ 'deploy/c.yml': withInclude(include) }, 'deploy/c.yml');
+          expect(problems('  - oci://registry.example.io/stack:1\n')).toEqual(['deploy/c.yml: include oci://registry.example.io/stack:1 is interpolated, remote or outside the repo, so this scan cannot read it']);
+          expect(problems('  - https://example.io/bi.yml\n')).toHaveLength(1);
+          expect(problems('  - ${BI_STACK}/bi.yml\n')).toHaveLength(1);
+          expect(problems('  - ../../../etc/bi.yml\n')).toHaveLength(1);
+          expect(problems('  - /srv/bi.yml\n')).toHaveLength(1);
+          expect(problems('  - ghost.yml\n')).toEqual(['deploy/c.yml: include ghost.yml is not an in-repo compose file']);
+          expect(problems('  - env_file: x.env\n')).toHaveLength(1);
+        });
+
+        it('read an include that resolves in-repo, relative to the including file, and flag what it publishes', () => {
+          const files = { 'deploy/c.yml': withInclude('  - path: ../shared/bi.yml\n'), 'shared/bi.yml': exposed };
+          expect(setOf(files, 'deploy/c.yml')).toEqual(['bi: ports 3002:3000']);
+          expect(setOf({ ...files, 'shared/bi.yml': base }, 'deploy/c.yml')).toEqual([]);
+          // a path list is one project; an include of an include is followed
+          expect(setOf({ 'deploy/c.yml': withInclude('  - path: [../shared/ok.yml, ../shared/bi.yml]\n'), 'shared/ok.yml': 'services: {}\n', 'shared/bi.yml': exposed }, 'deploy/c.yml'))
+            .toEqual(['bi: ports 3002:3000']);
+          expect(setOf({ ...files, 'shared/bi.yml': `include:\n  - ghost.yml\n${base}` }, 'deploy/c.yml')).toEqual(['shared/bi.yml: include ghost.yml is not an in-repo compose file']);
+        });
+
+        it('see a service of an included file that an override of the including file gives a public port', () => {
+          const files = { 'c.yml': withInclude('  - bi.yml\n'), 'bi.yml': base, 'o.yml': 'services:\n  bi:\n    ports:\n      - "3002:3000"\n' };
+          expect(setOf(files, 'c.yml')).toEqual([]);
+          expect(setOf(files, 'c.yml', 'o.yml')).toEqual(['bi: ports 3002:3000']);
+        });
+
+        it('report an include cycle', () => {
+          expect(setOf({ 'a.yml': 'include:\n  - b.yml\n', 'b.yml': 'include:\n  - a.yml\n' }, 'a.yml')).toEqual(['b.yml: include a.yml is a cycle']);
+        });
       });
     });
   });

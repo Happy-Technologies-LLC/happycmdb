@@ -299,5 +299,54 @@ describe('an organization change renews the session before anything is cleared o
     await act(async () => undefined);
     expect(screen.getByText('signed out')).toBeTruthy();
     expect(kpiRequests()).toBe(requests);
+    expect(refreshResults).toEqual(['session-ended']);
+  });
+
+  it('a logout while /auth/me is in flight ends the refresh: nothing is published', async () => {
+    const client = newClient();
+    await mount(client);
+    const me = Promise.withResolvers<User>();
+    vi.mocked(api.getCurrentUser).mockImplementationOnce(() => me.promise);
+
+    await act(async () => screen.getByText('refresh').click());
+    await act(async () => screen.getByText('logout').click());
+    await screen.findByText('signed out');
+    const requests = kpiRequests();
+    await act(async () => me.resolve(userOf('org-a')));
+
+    await waitFor(() => expect(refreshResults).toEqual(['session-ended']));
+    expect(screen.getByText('signed out')).toBeTruthy();
+    expect(kpiRequests()).toBe(requests);
+  });
+
+  it('a logout while the post-renewal identity check is in flight ends the refresh: the renewed organization is never published', async () => {
+    const client = newClient();
+    await mount(client);
+    const confirm = Promise.withResolvers<User>();
+    vi.mocked(api.getCurrentUser).mockResolvedValueOnce(userOf('org-b')).mockImplementationOnce(() => confirm.promise);
+
+    await act(async () => screen.getByText('refresh').click());
+    await act(async () => screen.getByText('logout').click());
+    await screen.findByText('signed out');
+    const requests = kpiRequests();
+    await act(async () => confirm.resolve(userOf('org-b')));
+
+    await waitFor(() => expect(refreshResults).toEqual(['session-ended']));
+    expect(screen.getByText('signed out')).toBeTruthy();
+    expect(kpiRequests()).toBe(requests);
+  });
+
+  it('with no user loaded the refresh reports session-ended without asking the server', async () => {
+    const client = newClient();
+    await mount(client);
+    await act(async () => screen.getByText('logout').click());
+    await screen.findByText('signed out');
+    vi.mocked(api.getCurrentUser).mockClear();
+
+    await act(async () => screen.getByText('refresh').click());
+
+    await waitFor(() => expect(refreshResults).toEqual(['session-ended']));
+    expect(api.getCurrentUser).not.toHaveBeenCalled();
+    expect(screen.getByText('signed out')).toBeTruthy();
   });
 });

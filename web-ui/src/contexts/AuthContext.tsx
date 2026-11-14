@@ -189,12 +189,16 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   }, [navigate, signOutLocally]);
 
   const refreshUser = useCallback(async (): Promise<RefreshUserResult> => {
+    // No user loaded means no live session to refresh (never restored, or signed out): publishing one here would
+    // resurrect it, so report it ended without asking the server.
+    if (!stateRef.current.user) return 'session-ended';
     const epoch = sessionEpoch.current;
     try {
       const user = await api.getCurrentUser();
       if (epoch !== sessionEpoch.current) return 'session-ended';
       const previous = stateRef.current.user;
-      if (!previous || (previous.organization_id ?? null) === (user.organization_id ?? null)) {
+      if (!previous) return 'session-ended';
+      if ((previous.organization_id ?? null) === (user.organization_id ?? null)) {
         setState((prev) => ({ ...prev, user }));
         return 'refreshed';
       }

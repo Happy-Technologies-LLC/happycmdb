@@ -6,8 +6,8 @@ import { setContext } from '@apollo/client/link/context';
 import { onError } from '@apollo/client/link/error';
 import { gql } from '@apollo/client';
 import { logClientError, logger } from '@/utils/logger';
-import { getToken, removeToken } from '@/utils/token';
-import { refreshSession } from '@/lib/session';
+import { getToken } from '@/utils/token';
+import { refreshSession, signOutToLogin } from '@/lib/session';
 
 // HTTP Link
 const httpLink = createHttpLink({
@@ -37,8 +37,7 @@ export const sessionLink = new ApolloLink((operation, forward) =>
     let closed = false;
 
     const signOut = (error: unknown) => {
-      removeToken();
-      window.location.href = '/login';
+      signOutToLogin();
       observer.error(error);
     };
 

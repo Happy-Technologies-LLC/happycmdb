@@ -58,6 +58,17 @@ const releasePeerHold = (): void => {
 /** True while this tab or another one is signing out: no renewal may start, and nothing may navigate away. */
 const signingOut = (): boolean => ending !== null || peerHold !== null;
 
+/**
+ * The session is gone (a renewal was refused, or a replay was still 401): drop the token and hard-navigate to /login.
+ * A logout in flight (this tab's, or a peer's) ends at /login by itself, and a hard navigation now would unload the
+ * page before its POST /auth/logout is sent, so the refresh cookie would survive and sign the user back in (HAP-1688 b).
+ * Every client that signs out on a 401 (REST and GraphQL) goes through here.
+ */
+export function signOutToLogin(): void {
+  removeToken();
+  if (!signingOut()) window.location.href = '/login';
+}
+
 if (coordination) {
   coordination.onmessage = (event: MessageEvent<PeerMessage>) => {
     const message = event.data;
@@ -179,9 +190,7 @@ export function attachSession(client: AxiosInstance): void {
       const renewed = await refreshSession().then(() => true, () => false);
       if (renewed) return client.request(config);
     }
-    removeToken();
-    // A logout in flight ends at /login by itself; a hard navigation now would cancel its POST (HAP-1688 b).
-    if (!signingOut()) window.location.href = '/login';
+    signOutToLogin();
     return Promise.reject(redactAxiosError(error));
   });
 }

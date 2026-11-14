@@ -212,6 +212,70 @@ describe('HAP-1688: sign-out races', () => {
       expect(wire).toEqual(['peer renewal answered', '/auth/logout']);
     });
 
+    describe('bounds, with fake timers', () => {
+      // Only setTimeout is faked: BroadcastChannel delivery and promises keep running for real.
+      const deliver = async () => {
+        for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+      };
+      beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('BUSY_GRACE_MS: a peer whose busy arrives late but inside the grace window is still waited for', async () => {
+        peer.onmessage = (event) => {
+          if (event.data.type !== 'logout-pending') return;
+          announced.push(event.data.from);
+          setTimeout(() => peer.postMessage({ type: 'busy', from: 'peer-tab', to: event.data.from }), 100);
+        };
+
+        const loggingOut = api.logout();
+        await deliver();
+        await vi.advanceTimersByTimeAsync(100); // the peer's busy is sent, 50 ms before the grace ends
+        await deliver();
+        await vi.advanceTimersByTimeAsync(100); // the grace is over; the peer is still renewing
+        await deliver();
+        expect(wire).not.toContain('/auth/logout');
+
+        wire.push('peer renewal answered');
+        peer.postMessage({ type: 'settled', from: 'peer-tab', to: announced[0] });
+        await deliver();
+        await loggingOut;
+
+        expect(wire).toEqual(['peer renewal answered', '/auth/logout']);
+      });
+
+      it('BUSY_GRACE_MS: with no busy inside the window the logout goes out as soon as it ends', async () => {
+        const loggingOut = api.logout();
+        await deliver();
+        await vi.advanceTimersByTimeAsync(149);
+        expect(wire).not.toContain('/auth/logout');
+
+        await vi.advanceTimersByTimeAsync(1);
+        await loggingOut;
+
+        expect(wire).toEqual(['/auth/logout']);
+      });
+
+      it('PEER_HOLD_MAX_MS: a peer that announced a logout and never finished holds renewals for 10 s, then stops', async () => {
+        peer.postMessage({ type: 'logout-pending', from: 'peer-tab' });
+        await deliver();
+        await expect(api.refresh()).rejects.toThrow('Signing out');
+
+        await vi.advanceTimersByTimeAsync(9_999);
+        await expect(api.refresh()).rejects.toThrow('Signing out');
+
+        await vi.advanceTimersByTimeAsync(1);
+        const renewal = api.refresh();
+        await vi.advanceTimersByTimeAsync(20); // the mocked server's own 10 ms delay
+        await renewal;
+
+        expect(getToken()).toBe(accepted);
+      });
+    });
+
     it('a tab that hears the announcement drops its in-flight renewal, answers busy then settled, and renews nothing until the logout', async () => {
       const heard: string[] = [];
       peer.onmessage = (event) => {

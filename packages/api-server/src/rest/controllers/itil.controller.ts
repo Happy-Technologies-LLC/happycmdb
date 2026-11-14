@@ -1504,20 +1504,9 @@ export class ITILController {
   }
 }
 
-/**
- * `itil_changes.affected_ci_ids` is TEXT[], which node-postgres decodes to a JS array.
- * Tolerate NULL and a legacy JSON-text array; anything else is no affected CIs.
- */
-export function affectedCIIdList(value: unknown): string[] {
-  let list: unknown = value;
-  if (typeof list === 'string') {
-    try {
-      list = JSON.parse(list);
-    } catch {
-      return [];
-    }
-  }
-  return Array.isArray(list) ? list.filter((id): id is string => typeof id === 'string') : [];
+/** `itil_changes.affected_ci_ids` is TEXT[] (node-postgres decodes it to a JS array); NULL is no affected CIs. */
+function affectedCIIdList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
 }
 
 const isGraphScalar = (value: unknown): boolean => value === null || ['boolean', 'number', 'string'].includes(typeof value) ||

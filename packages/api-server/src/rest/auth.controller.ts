@@ -17,7 +17,7 @@ import { ValidationMiddleware } from './middleware/validation.middleware';
 import { clearRefreshCookie, hasAuthHeader, readRefreshCookie, requireAuthHeader, setRefreshCookie } from './middleware/refresh-cookie';
 import { authSchemas } from '../validation/schemas';
 import { AuthMiddleware, AuthenticatedRequest, logAuthFailure, optionalRequestOrganizationId } from '../middleware/auth.middleware';
-import { RateLimitMiddleware, type Refusal } from '../middleware/rate-limit.middleware';
+import { RateLimitMiddleware, type Refusal, type RefusalBucket } from '../middleware/rate-limit.middleware';
 
 const AUTHENTICATION_FAILURE = { success: false, error: 'Authentication failed' };
 /** HAP-1368: a password change that could not be audited is refused before anything changes. */
@@ -463,22 +463,32 @@ export class AuthController {
     }
   }
 
-  /** One audit row for a password change attempt by the verified user; best-effort and never throws (see AuthService.auditPasswordChange). */
-  private auditPasswordChange(req: AuthenticatedRequest, outcome: PasswordChangeOutcome): Promise<void> {
-    return this.authService.auditPasswordChange(req.user!._userId, optionalRequestOrganizationId(req), req.ip, outcome);
+  /**
+   * One audit row for a password change attempt by the verified user; best-effort and never throws (see
+   * AuthService.auditPasswordChange). Resolves true only when the row was written.
+   */
+  private auditPasswordChange(req: AuthenticatedRequest, outcome: PasswordChangeOutcome, refusedBy?: RefusalBucket): Promise<boolean> {
+    return this.authService.auditPasswordChange(req.user!._userId, optionalRequestOrganizationId(req), req.ip, outcome, refusedBy);
   }
 
   /**
    * cmdb#321: only the first refusal per user and refusing bucket per window is audited. Each audit write takes the
    * global audit-chain lock, so a client retrying past the limit must not turn every 429 into one. The claim is a
    * Redis SET NX PX of the bucket's window; if Redis fails the claim rejects (the limiter logs the class) and nothing
-   * is audited.
+   * is audited. The claim is taken before the write (concurrent refusals must not both write), so a write that fails
+   * or is skipped (no organization claim) gives the claim back (DEL): the next refusal retries instead of the window
+   * losing its row.
    */
   private async auditFirstRefusal(req: AuthenticatedRequest, refusal: Refusal): Promise<void> {
     const userId = req.user!._userId;
     const suffix = refusal.bucket === 'user' ? '' : `:${refusal.bucket}`;
-    if (await refusal.firstInWindow(`rate-limit:auth-user-refused:${userId}${suffix}`)) {
-      await this.auditPasswordChange(req, 'rate_limited');
+    const claim = `rate-limit:auth-user-refused:${userId}${suffix}`;
+    if (!(await refusal.firstInWindow(claim))) return;
+    let audited = false;
+    try {
+      audited = await this.auditPasswordChange(req, 'rate_limited', refusal.bucket);
+    } finally {
+      if (!audited) await refusal.release(claim);
     }
   }
 

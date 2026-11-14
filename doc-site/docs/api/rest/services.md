@@ -652,38 +652,22 @@ Delete a baseline.
 
 ### GET /baselines/:id/comparison
 
-Compare current CI state with baseline.
+::: warning Not implemented
+Baseline comparison is not implemented. The endpoint never evaluates drift and never returns a comparison payload.
+:::
 
-**Response:**
+**Responses:**
+
+| Status | Meaning |
+| ------ | ------- |
+| `404` | The baseline does not exist or belongs to another organization (checked first; the two cases are indistinguishable) |
+| `501` | The baseline exists in the caller's organization; comparison is not implemented, so no drift was evaluated |
 
 ```json
 {
-  "success": true,
-  "comparison": {
-    "baselineId": "BL-20251117-001",
-    "comparisonDate": "2025-11-20T10:00:00Z",
-    "driftDetected": true,
-    "ciComparisons": [
-      {
-        "ci_id": "srv-web-prod-01",
-        "drifted": true,
-        "changes": [
-          {
-            "attribute": "os_version",
-            "baseline": "20.04",
-            "current": "22.04",
-            "severity": "medium"
-          },
-          {
-            "attribute": "kernel_version",
-            "baseline": "5.4.0-42",
-            "current": "5.15.0-56",
-            "severity": "low"
-          }
-        ]
-      }
-    ]
-  }
+  "success": false,
+  "error": "Not Implemented",
+  "message": "Baseline comparison is not implemented; no drift was evaluated for this baseline"
 }
 ```
 

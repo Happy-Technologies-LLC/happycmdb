@@ -918,6 +918,45 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /itil/baselines/{id}/comparison:
+    get:
+      tags: [Configuration Items]
+      summary: Compare a baseline to current CI state (not implemented)
+      description: >-
+        Not implemented. A baseline that does not exist or belongs to another
+        organization is 404 (checked first); an owned baseline is 501, never a
+        success that reads as no drift.
+      operationId: compareITILBaseline
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Baseline ID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CIForbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '501':
+          description: Baseline comparison is not implemented; no drift was evaluated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    enum: [false]
+                  error:
+                    type: string
+                  message:
+                    type: string
+
   # =============================================================================
   # RELATIONSHIPS
   # =============================================================================

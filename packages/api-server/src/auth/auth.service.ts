@@ -13,6 +13,7 @@ import { JWTService, TokenVerificationError } from './jwt.service';
 import { BCRYPT_HASH, PasswordService } from './password.service';
 import { containsNul, defaultCredentialsRefused, isDefaultEquivalent, newPasswordAllowed } from './default-credentials';
 import { isPlatformAdmin } from './platform-admin';
+import type { RefusalBucket } from '../middleware/rate-limit.middleware';
 import {
   User,
   ApiKey,
@@ -674,24 +675,29 @@ export class AuthService {
 
   /**
    * HAP-1368: one audit_log row for a self-service password change attempt: the verified user, the client address,
-   * the outcome and the actor's organization claim; never a password, hash or token. Best-effort: the outcome is
-   * already decided (a changed password stays changed), so a failed write or a missing organization (tenancy is
-   * never inferred) logs fixed text and returns.
+   * the outcome and the actor's organization claim; never a password, hash or token. A rate_limited row also names
+   * the refusing bucket (`metadata.bucket`, a fixed code). Best-effort: the outcome is already decided (a changed
+   * password stays changed), so a failed write or a missing organization (tenancy is never inferred) logs fixed text
+   * and returns false; true means the row was written.
    */
   async auditPasswordChange(
-    userId: string, organizationId: string | null, ipAddress: string | undefined, outcome: PasswordChangeOutcome
-  ): Promise<void> {
+    userId: string, organizationId: string | null, ipAddress: string | undefined, outcome: PasswordChangeOutcome,
+    refusedBy?: RefusalBucket
+  ): Promise<boolean> {
     if (organizationId === null) {
       logger.error('Password change not audited: the actor has no organization claim');
-      return;
+      return false;
     }
     try {
       await this.repository.recordAudit({
         entity_type: 'USER', entity_id: userId, action: 'UPDATE', actor: userId, actor_type: 'user', changes: [],
-        metadata: { operation: 'password_change', outcome }, ip_address: auditClientAddress(ipAddress),
+        metadata: { operation: 'password_change', outcome, ...(refusedBy === undefined ? {} : { bucket: refusedBy }) },
+        ip_address: auditClientAddress(ipAddress),
       }, organizationId);
+      return true;
     } catch {
       logger.error('Password change audit write failed');
+      return false;
     }
   }
 

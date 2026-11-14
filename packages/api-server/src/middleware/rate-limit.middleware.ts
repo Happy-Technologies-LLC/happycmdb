@@ -108,17 +108,20 @@ export interface LimitOptions {
   onRefused?: (req: AuthenticatedRequest, refusal: Refusal) => Promise<void>;
 }
 
+/** The buckets a refusal can come from. */
+export type RefusalBucket = 'client' | 'account' | 'account-global' | 'user';
+
 /** What onRefused is told about the refusal: the bucket that denied it and a once-per-window claim for a hook's own key. */
 export interface Refusal {
-  /** The denying bucket: 'client', 'account', 'account-global' or 'user'. */
-  bucket: 'client' | 'account' | 'account-global' | 'user';
-  /** That bucket's window. */
-  windowMs: number;
+  /** The denying bucket. */
+  bucket: RefusalBucket;
   /**
-   * Redis SET key 1 NX PX windowMs: true for the first caller per key per window. Rejects on a store error, so a hook
-   * that awaits it does nothing further (fail cheap).
+   * Redis SET key 1 NX PX (the denying bucket's window): true for the first caller per key per window. Rejects on a
+   * store error, so a hook that awaits it does nothing further (fail cheap).
    */
   firstInWindow: (key: string) => Promise<boolean>;
+  /** Redis DEL key: gives a claim back, so the next refusal in the window claims it again. Rejects on a store error. */
+  release: (key: string) => Promise<void>;
 }
 
 export class RateLimitMiddleware {
@@ -385,7 +388,7 @@ export class RateLimitMiddleware {
     options: LimitOptions
   ): Promise<boolean> {
     const identifier = options.perUser === true ? `ip:${this.getClientKeyAddress(req)}` : this.getIdentifier(req);
-    const buckets: Array<{ key: string; identifier: string; budget: RateLimitConfig; name: Refusal['bucket'] }> = [
+    const buckets: Array<{ key: string; identifier: string; budget: RateLimitConfig; name: RefusalBucket }> = [
       { key: `rate-limit:${endpointType}:${identifier}`, identifier, budget, name: 'client' },
     ];
     const account = options.account?.(req);
@@ -453,8 +456,8 @@ export class RateLimitMiddleware {
         try {
           await options.onRefused(req, {
             bucket: bucket.name,
-            windowMs: bucket.budget._windowMs,
             firstInWindow: async key => (await this.redis.set(key, '1', 'PX', bucket.budget._windowMs, 'NX')) === 'OK',
+            release: async key => { await this.redis.del(key); },
           });
         } catch (error) {
           logger.error('Rate limit refusal hook failed', undefined, { endpoint: endpointType, ...errorClassFields(error) });

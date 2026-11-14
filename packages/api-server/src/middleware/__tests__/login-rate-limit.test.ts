@@ -342,7 +342,7 @@ function passwordApp(redis: FakeRedis) {
       throw new AuthFailureError('invalid');
     },
     auditChainReady: () => chain.ready,
-    auditPasswordChange: async () => undefined,
+    auditPasswordChange: async () => true,
     changePassword: async (userId: string) => {
       reached.push(userId);
       throw new CurrentPasswordIncorrectError();

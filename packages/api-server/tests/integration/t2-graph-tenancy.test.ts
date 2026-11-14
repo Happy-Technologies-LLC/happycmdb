@@ -335,11 +335,11 @@ it('ITSM KPIs are computed from the tenant\'s ITIL rows and graph, never another
       CREATE (:CI {id:'t2-itsm-foreign', name:'itsm foreign secret', type:'server', status:'active', organization_id:$b})`,
     { a: A, b: B });
     await sql.query(`INSERT INTO itil_incidents (incident_number, title, impact, urgency, priority, affected_ci_id,
-        status, reported_at, time_to_resolve_minutes, reported_by, organization_id)
+        status, reported_at, resolved_at, reported_by, organization_id)
       VALUES
         ('INC-t2-a1', 'a open on db', 'high', 'high', 2, 't2-itsm-db', 'in_progress', now() - interval '3 hours', NULL, 'alice', $1),
-        ('INC-t2-a2', 'a resolved on db', 'low', 'low', 4, 't2-itsm-db', 'resolved', now() - interval '2 days', 60, 'alice', $1),
-        ('INC-t2-a3', 'a resolved on db', 'low', 'low', 4, 't2-itsm-db', 'closed', now() - interval '3 days', 120, 'alice', $1),
+        ('INC-t2-a2', 'a resolved on db', 'low', 'low', 4, 't2-itsm-db', 'resolved', now() - interval '2 days', now() - interval '2 days' + interval '60 minutes', 'alice', $1),
+        ('INC-t2-a3', 'a resolved on db', 'low', 'low', 4, 't2-itsm-db', 'closed', now() - interval '3 days', now() - interval '3 days' + interval '120 minutes', 'alice', $1),
         ('INC-t2-a4', 'a open on foreign ci id', 'low', 'low', 5, 't2-itsm-foreign', 'new', now() - interval '1 hour', NULL, 'alice', $1),
         ('INC-t2-b1', 'b open on db id', 'critical', 'critical', 1, 't2-itsm-db', 'new', now(), NULL, 'bob', $2),
         ('INC-t2-b2', 'b open on db id', 'critical', 'critical', 1, 't2-itsm-db', 'new', now(), NULL, 'bob', $2)`,

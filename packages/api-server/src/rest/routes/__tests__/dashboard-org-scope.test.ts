@@ -341,12 +341,12 @@ INSERT INTO dim_business_services (service_id, name, service_classification, tbm
   ('bs-b-app', 'B Secret App', 'application', 'application', 'medium', 'active', '${ORG_B}');
 
 INSERT INTO itil_incidents (incident_number, title, impact, urgency, priority, affected_ci_id, assigned_group, status,
-    reported_at, time_to_resolve_minutes, reported_by, organization_id) VALUES
+    reported_at, resolved_at, reported_by, organization_id) VALUES
   ('INC-A1', 'A p3 open', 'medium', 'medium', 3, 'a-web', NULL, 'in_progress', now() - interval '5 hours', NULL, 'alice', '${ORG_A}'),
   ('INC-A2', 'A p1 open', 'critical', 'critical', 1, 'bs-a-app', 'DBA', 'new', now() - interval '2 days', NULL, 'alice', '${ORG_A}'),
-  ('INC-A3', 'A resolved', 'low', 'low', 4, 'a-web', NULL, 'resolved', now() - interval '3 days', 60, 'alice', '${ORG_A}'),
-  ('INC-A4', 'A resolved', 'low', 'low', 4, 'a-web', NULL, 'closed', now() - interval '4 days', 120, 'alice', '${ORG_A}'),
-  ('INC-A5', 'A old', 'low', 'low', 4, 'a-web', NULL, 'closed', now() - interval '200 days', 999, 'alice', '${ORG_A}'),
+  ('INC-A3', 'A resolved', 'low', 'low', 4, 'a-web', NULL, 'resolved', now() - interval '3 days', now() - interval '3 days' + interval '60 minutes', 'alice', '${ORG_A}'),
+  ('INC-A4', 'A resolved', 'low', 'low', 4, 'a-web', NULL, 'closed', now() - interval '4 days', now() - interval '4 days' + interval '120 minutes', 'alice', '${ORG_A}'),
+  ('INC-A5', 'A old', 'low', 'low', 4, 'a-web', NULL, 'closed', now() - interval '200 days', now() - interval '200 days' + interval '999 minutes', 'alice', '${ORG_A}'),
   ('INC-A6', 'A foreign ci id', 'low', 'low', 5, 'b-secret', NULL, 'resolved', now() - interval '1 day', NULL, 'alice', '${ORG_A}'),
   ('INC-A7', 'A opened in error', 'low', 'low', 5, 'a-web', NULL, 'cancelled', now() - interval '1 day', NULL, 'alice', '${ORG_A}'),
   ('INC-B1', 'B secret open', 'critical', 'critical', 1, 'b-secret', 'B Team', 'new', now() - interval '2 hours', NULL, 'bob', '${ORG_B}'),
@@ -572,6 +572,28 @@ describe('global dashboards', () => {
     expect(data.baselineCompliance).toEqual([]);
     expect(data.unavailable).toEqual(['slaCompliance', 'baselineCompliance']);
     expect(JSON.stringify(data)).not.toMatch(/INC-B|CHG-B|INC-NULL|CHG-NULL|B Secret|B Team|b-secret name/);
+  });
+
+  it('itsm MTTR is computed from timestamps for an incident resolved through resolveIncident', async () => {
+    // resolveIncident (itil.controller.ts) sets resolved_at = NOW() and never time_to_resolve_minutes.
+    await send('query', `INSERT INTO itil_incidents (incident_number, title, impact, urgency, priority, affected_ci_id,
+        status, reported_at, reported_by, organization_id)
+      VALUES ('INC-A-RESOLVE', 'A resolved via product', 'low', 'low', 4, 'a-resolve-ci', 'in_progress',
+        now() - interval '3 hours', 'alice', $1)`, [ORG_A]);
+    try {
+      const resolved = await send('query', `UPDATE itil_incidents
+        SET status = 'resolved', resolution = $1, resolved_at = NOW(), updated_at = NOW()
+        WHERE incident_number = $2 AND organization_id = $3 RETURNING id`, ['fixed', 'INC-A-RESOLVE', ORG_A]);
+      expect(resolved).toHaveLength(1);
+
+      const res = await request(app).get(`/api/v1/dashboards/itsm?${SPOOF}`).set(AS_A);
+
+      expect(res.status).toBe(200);
+      const entry = res.body.data.topFailingCIs.find((c: { ci_id: string }) => c.ci_id === 'a-resolve-ci');
+      expect(entry).toMatchObject({ incidentCount: 1, mttrMinutes: 180 });
+    } finally {
+      await send('query', `DELETE FROM itil_incidents WHERE incident_number = 'INC-A-RESOLVE'`);
+    }
   });
 
   it('itsm for org B sees only B\'s records, and an org with none gets honest zeros', async () => {

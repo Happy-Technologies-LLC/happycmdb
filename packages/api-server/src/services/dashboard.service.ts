@@ -207,7 +207,7 @@ export interface ITSMDashboardData {
     name: string | null;
     type: string | null;
     incidentCount: number;
-    /** Mean of the recorded time_to_resolve_minutes; null when no incident of the CI is resolved. */
+    /** Mean minutes from reported_at to resolved_at (as GET /itil/metrics/mttr); null when no incident of the CI has a resolved_at. */
     mttrMinutes: number | null;
     lastFailure: string;
   }>;
@@ -684,7 +684,8 @@ export class DashboardService {
     // Cancelled incidents (opened in error) are not failures.
     const failing = await this.postgres.query(
       `SELECT affected_ci_id, count(*) AS incident_count,
-              avg(time_to_resolve_minutes) AS mttr_minutes, max(reported_at) AS last_failure
+              avg(EXTRACT(EPOCH FROM (resolved_at - reported_at)) / 60)
+                FILTER (WHERE resolved_at IS NOT NULL) AS mttr_minutes, max(reported_at) AS last_failure
          FROM itil_incidents
         WHERE organization_id = $1 AND affected_ci_id IS NOT NULL AND affected_ci_id <> ''
           AND status <> 'cancelled'

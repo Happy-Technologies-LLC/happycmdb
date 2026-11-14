@@ -222,7 +222,6 @@ describe('ITSM dashboard when the ITIL records cannot be read', () => {
     CIS = [
       { id: 'a', name: 'a', type: 'server', status: 'active', organization_id: ORG },
       { id: 'b', name: 'b', type: 'server', status: 'retired', organization_id: ORG },
-      { id: 'other', name: 'other', type: 'server', status: 'active', organization_id: 'someone-else' },
     ];
     const statements: string[] = [];
     mockPgQuery = async (sql) => {

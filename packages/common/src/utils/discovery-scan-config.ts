@@ -62,10 +62,25 @@ export function strictDiscoveryDefinitionConfig(input: unknown): SafeDiscoverySc
   }
 }
 
+/**
+ * Tolerant read of a stored definition config: a string is JSON-parsed, anything else passes through.
+ * An unparseable string yields `null`, which strictDiscoveryDefinitionConfig rejects, so callers that
+ * validate the result (hasUnsafeDiscoveryDefinitionConfig) still see it as unsafe. Never throws and
+ * never carries the parse error or config text.
+ */
+export function parseStoredDiscoveryDefinitionConfig(input: unknown): unknown {
+  if (typeof input !== 'string') return input;
+  try {
+    return JSON.parse(input);
+  } catch {
+    return null;
+  }
+}
+
 /** Never project any part of unsafe historical JSON, including legacy aliases; a stored non-JSON string reads as {}. */
 export function publicDiscoveryDefinitionConfig(input: unknown): SafeDiscoveryScanConfig {
   try {
-    return strictDiscoveryDefinitionConfig(typeof input === 'string' ? JSON.parse(input) : input);
+    return strictDiscoveryDefinitionConfig(parseStoredDiscoveryDefinitionConfig(input));
   } catch {
     return {};
   }

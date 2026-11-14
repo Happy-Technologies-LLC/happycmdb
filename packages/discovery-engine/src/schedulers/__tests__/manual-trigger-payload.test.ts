@@ -8,12 +8,19 @@ const keysDeep = (value: unknown): string[] => (value && typeof value === 'objec
   ? Object.entries(value).flatMap(([key, child]) => [key, ...keysDeep(child)]) : []);
 const mockAdded: Array<[string, string, Record<string, unknown>, unknown]> = [];
 let mockRow: Record<string, unknown>;
+let mockQueryRows: Array<Record<string, unknown>> | undefined;
+const mockLogged: Array<[string, Record<string, any> | undefined]> = [];
 jest.mock('@cmdb/common', () => {
   const { getDiscoveryQueueNames, QUEUE_NAMES } = jest.requireActual('@cmdb/common/queues/queue-config');
   return {
     ...jest.requireActual('@cmdb/common/utils/discovery-scan-config'),
     getDiscoveryQueueNames, QUEUE_NAMES,
-    logger: { info: () => undefined, warn: () => undefined, error: () => undefined, debug: () => undefined },
+    logger: {
+      info: (...args: any[]) => { mockLogged.push(['info', args[1]]); },
+      warn: (...args: any[]) => { mockLogged.push(['warn', args[1]]); },
+      error: (...args: any[]) => { mockLogged.push(['error', args[1]]); },
+      debug: () => undefined,
+    },
     getQueueManager: () => ({
       addJob: async (queue: string, name: string, data: Record<string, unknown>, opts: unknown) => {
         mockAdded.push([queue, name, data, opts]);
@@ -22,18 +29,18 @@ jest.mock('@cmdb/common', () => {
       addRepeatableJob: async (queue: string, name: string, data: Record<string, unknown>, opts: unknown) => {
         mockAdded.push([queue, name, data, opts]);
       },
-      getQueue: () => ({ getRepeatableJobs: async () => [{ name: 'discovery-definition-d1', key: 'k1' }] }),
+      getQueue: () => ({ getRepeatableJobs: async () => [{ name: 'discovery-definition-d1', key: 'k1' }], removeRepeatableByKey: async () => undefined }),
     }),
   };
 });
 jest.mock('@cmdb/database', () => ({
-  getPostgresClient: () => ({ pool: { query: async () => ({ rows: [mockRow] }) } }),
+  getPostgresClient: () => ({ pool: { query: async () => ({ rows: mockQueryRows ?? [mockRow] }) } }),
   getScheduleConfigStore: () => ({ seedIfAbsent: async (_kind: string, _provider: string, seed: unknown) => seed }),
 }));
 
 import { DiscoveryScheduler } from '../discovery-scheduler';
 
-beforeEach(() => { mockAdded.length = 0; });
+beforeEach(() => { mockAdded.length = 0; mockLogged.length = 0; });
 afterEach(() => {
   expect(keysDeep(mockAdded).filter((key) => FORBIDDEN.test(key))).toEqual([]);
   expect(JSON.stringify(mockAdded)).not.toContain(SENTINEL);
@@ -75,4 +82,38 @@ it('ssh provider schedules are refused before any addRepeatableJob', async () =>
   await expect(scheduler['scheduleDiscoveryJob'](ssh))
     .rejects.toThrow(/^Credential-backed discovery execution is unavailable$/);
   expect(mockAdded).toEqual([]);
+});
+
+describe('HAP-1737: non-JSON stored definition config fails closed', () => {
+  const corrupt = `{"targets": ["192.0.2.30"], "note": "${SENTINEL}"`;
+
+  it('scheduleDefinition refuses with the unsafe-legacy error, not a raw SyntaxError, and queues nothing', async () => {
+    mockRow = { id: 'd1', provider: 'nmap', config: corrupt, schedule: '0 3 * * *', is_active: true };
+    const failure = await new DiscoveryScheduler(undefined, false).scheduleDefinition('d1', 'org').then(
+      () => undefined, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).name).toBe('Error');
+    expect((failure as Error).message).toBe('Unsafe legacy discovery configuration requires migration');
+    expect(mockAdded).toEqual([]);
+  });
+
+  it('syncSchedules skips the corrupt row, schedules the valid one, and logs no config text', async () => {
+    const rows = [
+      { id: 'bad', provider: 'nmap', config: corrupt, schedule: '0 3 * * *', is_active: true, organization_id: 'org' },
+      { id: 'good', provider: 'nmap', config: JSON.stringify({ targets: ['192.0.2.31'] }), schedule: '0 4 * * *', is_active: true, organization_id: 'org' },
+    ];
+    mockQueryRows = rows;
+    const scheduler = new DiscoveryScheduler(undefined, true);
+    const scheduled: string[] = [];
+    jest.spyOn(scheduler, 'scheduleDefinition').mockImplementation(async (id: string) => { scheduled.push(id); });
+    try {
+      await scheduler.syncSchedules();
+    } finally {
+      mockQueryRows = undefined;
+    }
+    expect(scheduled).toEqual(['good']);
+    expect(mockLogged.filter(([, meta]) => meta && 'definitionId' in meta).map(([, meta]) => meta.definitionId)).toEqual(['bad']);
+    expect(JSON.stringify(mockLogged)).not.toContain(SENTINEL);
+    expect(JSON.stringify(mockLogged)).not.toMatch(/JSON|position|token/i);
+  });
 });

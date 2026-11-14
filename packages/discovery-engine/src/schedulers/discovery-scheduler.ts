@@ -10,7 +10,7 @@
  * Now supports dynamic scheduling based on discovery definitions stored in PostgreSQL.
  */
 
-import { getQueueManager, QUEUE_NAMES, logger, safeDiscoveryScanConfig, hasUnsafeDiscoveryDefinitionConfig, getDiscoveryQueueNames } from '@cmdb/common';
+import { getQueueManager, QUEUE_NAMES, logger, safeDiscoveryScanConfig, hasUnsafeDiscoveryDefinitionConfig, parseStoredDiscoveryDefinitionConfig, getDiscoveryQueueNames } from '@cmdb/common';
 import type { DiscoveryJobData, DiscoveryProvider, DiscoveryDefinition } from '@cmdb/common';
 import { getPostgresClient, getScheduleConfigStore } from '@cmdb/database';
 import { v4 as uuidv4 } from 'uuid';
@@ -685,7 +685,8 @@ export class DiscoveryScheduler {
       provider: row.provider,
       method: row.method,
       credential_id: row.credential_id,
-      config: typeof row.config === 'string' ? JSON.parse(row.config) : row.config,
+      // Unparseable text becomes null, which hasUnsafeDiscoveryDefinitionConfig refuses (fail closed).
+      config: parseStoredDiscoveryDefinitionConfig(row.config) as DiscoveryDefinition['config'],
       schedule: row.schedule,
       is_active: row.is_active,
       tags: row.tags || [],

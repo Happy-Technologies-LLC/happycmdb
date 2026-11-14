@@ -122,7 +122,7 @@ A body with `email` instead of `username` fails validation (`username` is requir
 {
   "success": true,
   "data": {
-    "_accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJ1c2VyLWFkbWluLTAwMSIsInVzZXJuYW1lIjoiYWRtaW4iLCJyb2xlIjoiYWRtaW4iLCJpYXQiOjE2OTk1NTY0MDAsImV4cCI6MTY5OTY0MjgwMH0.signature",
+    "_accessToken": "<access-token>",
     "_expiresIn": 900,
     "_user": {
       "_id": "user-admin-001",
@@ -162,6 +162,8 @@ The refresh token is not in the body: with the header `X-CMDB-Auth: 1` (exactly;
 **Endpoint**: `POST /api/v1/auth/logout` → `{ "success": true, "message": "Logged out successfully" }`. Expires the `__Secure-cmdb_rt` cookie (`Max-Age=0`, past `Expires`, same attributes); no header and no access token are required.
 
 **Stateless** (founder decision, HAP-1211 H1b): logout only clears this browser's cookie. A refresh cookie captured before logout can still be renewed until 7 days after the login it came from (HAP-1285 absolute cap), or earlier when the user changes their password, an operator rotation changes the user's credential generation, or the account is disabled or deleted. The access token stays valid until it expires (15 minutes by default).
+
+**Accepted residual** (HAP-1297): logout needs no `X-CMDB-Auth` header, no access token and no cookie to be answered, so a cross-site `POST` can sign a browser out (a forced logout; the user signs in again). `SameSite=Strict` does not limit this: it only keeps the browser from sending the cookie on a cross-site request, and logout does not need the cookie in the request to answer with the expiring `Set-Cookie`. The `X-CMDB-Auth: 1` header rule protects refresh and the login cookie, not logout. What bounds the impact is that logout only expires the cookie: it reads, issues and revokes nothing, and the in-memory access token keeps working until it expires.
 
 ---
 
@@ -352,7 +354,7 @@ Include the access token in the `Authorization` header for all API requests:
 
 ```bash
 curl "http://localhost:3000/api/v1/cis" \
-  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.token_here.signature"
+  -H "Authorization: Bearer <access-token>"
 ```
 
 **Example (JavaScript)**:
@@ -615,7 +617,7 @@ curl -X POST "http://localhost:3000/api/v1/auth/login" \
   }'
 
 # Save access token from response
-export ACCESS_TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+export ACCESS_TOKEN="<access-token>"
 
 # Test authenticated request
 curl "http://localhost:3000/api/v1/cis" \

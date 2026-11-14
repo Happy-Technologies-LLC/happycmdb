@@ -7,6 +7,7 @@
  */
 
 import * as jwt from 'jsonwebtoken';
+import { randomUUID } from 'crypto';
 import type { ConfigSchema } from '@cmdb/common';
 import { TokenPayload, UserRole } from './types';
 
@@ -79,10 +80,12 @@ export class JWTService {
       _authTime: authTime,
     };
 
+    // A unique `jti`: two refresh tokens minted for one user in the same second would otherwise be byte-identical.
     return jwt.sign(payload, this.secret, {
       expiresIn: this.refreshTokenExpiresIn as any,
       issuer: this.issuer,
       audience: this.audience,
+      jwtid: randomUUID(),
     });
   }
 

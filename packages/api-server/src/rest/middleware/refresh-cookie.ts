@@ -5,11 +5,15 @@
  * Refresh cookie of /api/v1/auth (HAP-1211 H1, B1/B4/B5/B6; H2 renamed it __Secure-cmdb_rt).
  *
  * The refresh JWT travels only in this HttpOnly cookie, never in a JSON body.
- * SameSite=Strict is the primary CSRF defence. Refresh also requires
- * AUTH_HEADER (logout does not: operator ruling Q1), and login sets the cookie only
+ * SameSite=Strict keeps the browser from sending this cookie on a cross-site request, so a cross-site
+ * request cannot refresh with it. Refresh also requires AUTH_HEADER, and login sets the cookie only
  * when AUTH_HEADER is present (H2 gate F2: a cross-site form login cannot plant one).
  * A cross-origin request can only add the header after a CORS preflight, and the
  * default cors() never allows credentials, so such a request cannot carry the cookie.
+ * Accepted residual (HAP-1297): logout requires neither AUTH_HEADER nor the cookie (operator ruling Q1), so a
+ * cross-site POST can still sign a browser out. SameSite=Strict does not limit that: the request needs no
+ * cookie to be answered with the expiring Set-Cookie. The impact is bounded by what logout does: it only
+ * expires this cookie; it reads, issues and revokes nothing.
  * Nothing here logs the Cookie header, the token or a Set-Cookie value.
  */
 

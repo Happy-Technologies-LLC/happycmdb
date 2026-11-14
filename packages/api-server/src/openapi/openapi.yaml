@@ -172,16 +172,30 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [success, data]
                 properties:
-                  token:
-                    type: string
-                    description: JWT access token
-                  expiresIn:
-                    type: integer
-                    description: Access token lifetime in seconds (15 minutes by default)
-                    example: 900
-                  user:
-                    $ref: '#/components/schemas/User'
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    type: object
+                    description: No refresh token in the body (it is the __Secure-cmdb_rt cookie)
+                    required: [_accessToken, _expiresIn, _user]
+                    properties:
+                      _accessToken:
+                        type: string
+                        description: JWT access token
+                      _expiresIn:
+                        type: integer
+                        description: Access token lifetime in seconds (15 minutes by default)
+                        example: 900
+                      _user:
+                        type: object
+                        required: [_id, _username, _role]
+                        properties:
+                          _id: { type: string }
+                          _username: { type: string }
+                          _role: { type: string }
         '401':
           description: Fixed Authentication failed response for credential, account, or store failures
           content:
@@ -232,6 +246,10 @@ paths:
       tags: [Authentication]
       summary: "Expire this browser's __Secure-cmdb_rt (no header, no access token). Stateless: a captured __Secure-cmdb_rt can be renewed by refresh until 7 days after its login (HAP-1285 absolute cap), or until a password change, operator rotation, disable or delete."
       security: []
+      description: >-
+        Accepted residual (HAP-1297): neither X-CMDB-Auth nor the cookie is needed to be answered, so a cross-site POST
+        can sign a browser out. SameSite=Strict does not limit that; the impact is bounded because logout only expires
+        the cookie (it reads, issues and revokes nothing).
       responses:
         '200':
           description: Set-Cookie expires __Secure-cmdb_rt (Max-Age=0)

@@ -202,7 +202,8 @@ jobs:
           set -euo pipefail
           changed=$(git diff --name-only "$BASE_SHA" HEAD -- \
             packages/api-server/src/auth packages/api-server/src/middleware/auth.middleware.ts \
-            packages/api-server/src/rest/auth.controller.ts "$HARNESS" .github/workflows/test.yml)
+            packages/api-server/src/rest/auth.controller.ts packages/api-server/src/rest/middleware/refresh-cookie.ts \
+            packages/api-server/src/validation/schemas.ts "$HARNESS" .github/workflows/test.yml)
           if [ -n "$changed" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
           printf 'Relevant changes:\n%s\n' "${changed:-<none>}"
 

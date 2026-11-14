@@ -532,13 +532,16 @@ describe('AuthController profile/password/account routes', () => {
       expect([next.status, next.headers['set-cookie']]).toEqual([401, undefined]);
     });
 
-    it('stateless per founder H1b; valid until refresh-token expiry or the 7-day cap: a cmdb_rt captured before logout still refreshes after it', async () => {
+    it('logout is stateless (founder H1b): a __Secure-cmdb_rt captured before logout still refreshes after it, and the refresh renews the cookie with a full TTL (sliding) within the 7-day cap', async () => {
+      spies.push(jest.spyOn(Date, 'now').mockReturnValue(Math.floor(Date.now() / 1000) * 1000)); // see the login test above
       const captured = refreshCookieOf(await login()).value;
       sensitive.push(captured);
       expect((await request(app).post('/api/v1/auth/logout').set('Cookie', `${REFRESH_COOKIE}=${captured}`)).status).toBe(200);
       const replay = await refresh(captured);
       expect(replay.status).toBe(200);
-      sensitive.push(refreshCookieOf(replay).value, replay.body.data._accessToken);
+      const renewed = refreshCookieOf(replay);
+      sensitive.push(renewed.value, replay.body.data._accessToken);
+      expect(renewed.attributes).toEqual(cookieAttributes(jwtService.getTokenExpiresIn('refresh')));
     });
 
     it('HP1-S6: a cmdb_rt of an older credential generation is 401 (revoked); the current one refreshes', async () => {

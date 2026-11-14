@@ -414,13 +414,16 @@ export class CredentialSetService {
         [id, createdBy, organizationId]
       );
       if (owned.rows.length === 0) throw new CredentialSetNotFoundError(id);
-      // Check if credential set is in use
+      // Check if credential set is in use. Same-organization references only, identical to the usage_count in
+      // getWithCredentials/list: a foreign or org-less reference is not counted here and is refused by the
+      // fk_discovery_definitions_credential_set RESTRICT (23503) with a count-free message.
       const usageResult = await client.query(
         `
         SELECT COUNT(*) as count
         FROM discovery_definitions dd
         JOIN credential_sets cs ON cs.id = dd.credential_set_id
         WHERE cs.id = $1 AND cs.created_by = $2 AND cs.organization_id = $3
+          AND dd.organization_id = cs.organization_id
         `,
         [id, createdBy, organizationId]
       );

@@ -248,7 +248,14 @@ GRAFANA_DS_SSL_MODE=require
 ```
 
 Unset `GRAFANA_DS_USER` / `GRAFANA_DS_PASSWORD` do not fall back to `POSTGRES_*`: the datasources are provisioned
-but cannot connect. If your Postgres has TLS off (the compose default), set `GRAFANA_DS_SSL_MODE=disable`.
+but cannot connect. `GRAFANA_DS_USER` must be non-empty: an empty user makes the PostgreSQL driver fall back to the
+OS user and `PG*` environment instead of failing outright. If your Postgres has TLS off (the compose default), set
+`GRAFANA_DS_SSL_MODE=disable`.
+
+Grafana 10.2 provisioning has **no** `${VAR:-default}` syntax: inside `${...}` the whole content is the variable
+name, so a `:-default` makes the value empty (url `:`, database and sslmode empty). The provisioning file therefore
+uses plain `${VAR}`; the defaults (`postgres`, `5432`, `cmdb`, `require`) come from the compose `grafana` service
+environment. Do not add `:-default` to `postgres.yml`.
 
 ### Datasource Provisioning
 
@@ -259,13 +266,13 @@ Two datasources are **auto-configured** via `/provisioning/datasources/postgres.
 datasources:
   - name: HappyCMDB
     type: postgres
-    url: ${GRAFANA_DS_HOST:-postgres}:${GRAFANA_DS_PORT:-5432}
-    database: ${GRAFANA_DS_DATABASE:-cmdb}
+    url: ${GRAFANA_DS_HOST}:${GRAFANA_DS_PORT}
+    database: ${GRAFANA_DS_DATABASE}
     user: ${GRAFANA_DS_USER}
     secureJsonData:
       password: ${GRAFANA_DS_PASSWORD}
     jsonData:
-      sslmode: ${GRAFANA_DS_SSL_MODE:-require}
+      sslmode: ${GRAFANA_DS_SSL_MODE}
       postgresVersion: 1600
       timescaledb: true
 ```

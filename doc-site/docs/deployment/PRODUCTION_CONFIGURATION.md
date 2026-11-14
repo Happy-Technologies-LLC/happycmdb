@@ -308,8 +308,28 @@ GRANT SELECT (connector_type, config_name, started_at, status, duration_ms, reco
   every Grafana user may see all tenants. Multi-tenant Grafana needs a design decision first: a role per tenant plus RLS
   or `security_invoker` views whose filter keys on `current_user` (a role-to-organization mapping), **not** on a
   `SET`-able session setting such as `app.organization_id`, which anyone running free-form SQL can change.
-- **Password delivery**: Grafana 10.2 provisioning expands environment variables only (no file reads), so
-  `GRAFANA_DS_PASSWORD` must reach the container's environment from the deploy-time secret store, not from `.env` in git.
+- **Password delivery**: Grafana 10.2 provisioning expands `${VAR}` / `$__env{VAR}` from the environment and
+  `$__file{path}` from a file (contents, trimmed). The shipped `postgres.yml` uses `password: ${GRAFANA_DS_PASSWORD}`,
+  so by default the password reaches the container's environment (from the deploy-time secret store, not from `.env`
+  in git). **Recommended**: deliver it as a file secret, which keeps it out of the container environment
+  (`docker inspect`, `/proc/<pid>/environ`). In `postgres.yml` use
+  `password: $__file{/run/secrets/grafana_ds_password}` and mount the secret in a compose override:
+
+  ```yaml
+  services:
+    grafana:
+      secrets:
+        - grafana_ds_password
+  secrets:
+    grafana_ds_password:
+      file: ./secrets/grafana_ds_password   # operator-provided host file, not in git
+  ```
+
+  The shipped compose file does not make this switch: it needs a host secret file that the operator provides, and the
+  file must be readable by the Grafana container user [INFERENCE: not exercised]. Grafana provisioning has no
+  `${VAR:-default}` either: use plain `${VAR}` and let compose supply defaults.
+  `GRAFANA_DS_USER` must be non-empty: with an empty user the driver falls back to the OS user and `PG*` environment,
+  which fails only because the stock Postgres image requires password authentication [INFERENCE: not exercised].
 - **Who can run free-form SQL**: Grafana provisioning has no read-only switch for the Postgres datasource, and [INFERENCE,
   Grafana OSS 10.2] any member of the Grafana organization, Viewers included, can send raw SQL to any datasource of
   that organization (per-datasource query permissions are Enterprise/Cloud only). That covers the default `HappyCMDB`

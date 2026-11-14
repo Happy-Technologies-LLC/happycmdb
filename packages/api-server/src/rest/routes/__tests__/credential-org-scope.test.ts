@@ -92,7 +92,7 @@ CREATE UNIQUE INDEX idx_credentials_unique_name ON credentials(name, created_by)
 CREATE UNIQUE INDEX idx_credential_sets_unique_name ON credential_sets(name, created_by);
 -- Mirrors 001 + 018/024: credential_id REFERENCES credentials(id) ON DELETE RESTRICT (fk_discovery_definitions_credential,
 -- fk_connector_configurations_credential), while organization_id is a plain nullable UUID the FK does not check.
-CREATE TABLE discovery_definitions (credential_id UUID REFERENCES credentials(id) ON DELETE RESTRICT, credential_set_id UUID, created_by VARCHAR(255), organization_id UUID);
+CREATE TABLE discovery_definitions (credential_id UUID REFERENCES credentials(id) ON DELETE RESTRICT, credential_set_id UUID REFERENCES credential_sets(id) ON DELETE RESTRICT, created_by VARCHAR(255), organization_id UUID);
 CREATE TABLE connector_configurations (credential_id UUID REFERENCES credentials(id) ON DELETE RESTRICT, created_by VARCHAR(255), organization_id UUID);`, [], 'exec');
   await sql(`INSERT INTO credentials (id, name, protocol, scope, credentials, created_by)
     VALUES ($1, 'legacy', 'api_key', 'api', '{"key":"legacy-secret"}', 'a')`, [legacyId]);
@@ -381,6 +381,43 @@ it('scopes credential sets and their member IDs to the verified owner/org', asyn
   expect(selected.body.data[0].credentials).toBe('***REDACTED***');
   expect((await request(app).delete(`/api/v1/credential-sets/${setId}`).set(as('a'))).status).toBe(204);
   expect((await request(app).delete(`/api/v1/credentials/${foreignId}`).set(as('b'))).status).toBe(204);
+});
+
+// credential_set_summaries (021) counts every discovery_definitions row naming the set, whatever its organization. The
+// set service recomputes usage_count over same-organization definitions only, so a foreign or org-less definition that
+// names the set id neither inflates the count nor reveals that it exists. The delete refusal applies the same rule; a
+// foreign-only reference is still refused by the fk_discovery_definitions_credential_set RESTRICT, count-free.
+it('credential set list and detail usage_count count same-organization definitions only', async () => {
+  const created = await request(app).post('/api/v1/credential-sets').set(as('a')).send({ name: 'A-counted-set', credential_ids: [aId] });
+  expect(created.status).toBe(201);
+  const setId: string = created.body.data.id;
+  const counts = async () => {
+    const listed = (await request(app).get('/api/v1/credential-sets').set(as('a'))).body.data.find((item: { id: string }) => item.id === setId);
+    const detail = await request(app).get(`/api/v1/credential-sets/${setId}`).set(as('a'));
+    expect(detail.status).toBe(200);
+    return [listed.usage_count, detail.body.data.usage_count];
+  };
+  await sql(`INSERT INTO discovery_definitions (credential_set_id, created_by, organization_id) VALUES ($1, 'b', $2), ($1, 'b', $2), ($1, 'legacy', NULL)`, [setId, B]);
+  expect(await counts()).toEqual([0, 0]);
+
+  await sql(`INSERT INTO discovery_definitions (credential_set_id, created_by, organization_id) VALUES ($1, 'd', $2), ($1, 'a', $2)`, [setId, A]);
+  expect(await counts()).toEqual([2, 2]);
+
+  const del = () => request(app).delete(`/api/v1/credential-sets/${setId}`).set(as('a'));
+  const countFree = { success: false, error: 'Conflict', message: 'Cannot delete credential set: it is currently in use' };
+  // Same-org references: the refusal counts them, and only them; the list/detail usage_count agrees.
+  const sameOrg = await del();
+  expect([sameOrg.status, sameOrg.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential set: it is currently used by 2 discovery definition(s)' }]);
+
+  // Foreign-only references (org B and NULL-org): count 0 everywhere, delete still refused by the FK, with no count.
+  await sql('DELETE FROM discovery_definitions WHERE credential_set_id = $1 AND organization_id = $2', [setId, A]);
+  expect(await counts()).toEqual([0, 0]);
+  const foreignOnly = await del();
+  expect([foreignOnly.status, foreignOnly.body]).toEqual([409, countFree]);
+  expect((await sql('SELECT count(*)::int AS n FROM credential_sets WHERE id = $1', [setId]))[0].n).toBe(1);
+
+  await sql('DELETE FROM discovery_definitions WHERE credential_set_id = $1', [setId]);
+  expect((await del()).status).toBe(204);
 });
 
 it('enforces owner and organization in SQL even when the service is called directly', async () => {

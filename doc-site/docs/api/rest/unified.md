@@ -594,6 +594,8 @@ Credential sets allow trying multiple credentials in sequence with configurable 
 }
 ```
 
+`usage_count` counts discovery definitions of the set's own organization that reference the set; references from other organizations are not counted.
+
 ---
 
 ### Get Credential Set
@@ -682,7 +684,7 @@ Credential sets allow trying multiple credentials in sequence with configurable 
 
 **Error Responses**:
 - `404 Not Found` - The set does not exist
-- `409 Conflict` - The set is used by a discovery definition
+- `409 Conflict` - The set is used by a discovery definition. The message carries the count of same-organization references only; a reference from another organization (or with no organization) is not counted but still refuses the delete, with a count-free message (`Cannot delete credential set: it is currently in use`)
 
 ---
 

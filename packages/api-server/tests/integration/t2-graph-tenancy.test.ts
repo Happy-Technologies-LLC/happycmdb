@@ -192,8 +192,10 @@ it('default business-service dashboard reads no graph even with over 100 active 
     const foreign = await request(app).get('/api/v1/dashboards/business-service').set(auth('b'));
     expect(own.status).toBe(200);
     expect(foreign.status).toBe(200);
-    expect(own.body.data.serviceHealth.flatMap((unit: { businessServices: unknown[] }) => unit.businessServices)).toHaveLength(4);
-    expect(own.body.data.serviceHealth).toEqual(foreign.body.data.serviceHealth);
+    // No per-service health exists in the graph, so the list is empty (never fabricated) and says so.
+    expect(own.body.data.serviceHealth).toEqual([]);
+    expect(foreign.body.data.serviceHealth).toEqual([]);
+    expect(own.body.data.unavailable).toContain('serviceHealth');
     expect(Object.keys(own.body.data).sort()).toEqual(Object.keys(foreign.body.data).sort());
     expect(statements).toEqual([]);
   } finally {

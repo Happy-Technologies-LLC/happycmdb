@@ -14,7 +14,7 @@ import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
 import type { PoolClient } from 'pg';
-import { logger, type AuditLogEntry, type ConfigSchema } from '@cmdb/common';
+import { getLogger, logger, type AuditLogEntry, type ConfigSchema } from '@cmdb/common';
 import { appendAuditEntry } from '@cmdb/database/postgres/audit.service';
 import { AuthController } from '../auth.controller';
 import { AuthService, PASSWORD_CHANGE_OUTCOMES, type AuthRepository, type PasswordChangeOutcome } from '../../auth/auth.service';
@@ -85,8 +85,20 @@ const ADDRESS_UNAVAILABLE = ['req.ip undefined', 'socket without remoteAddress']
 
 /** Sorted sets as the sliding-window limiter uses them; `clear` is a fresh store. */
 class FakeRedis {
+  /** SET ... PX ... NX rejects, as a store outage on the refusal hook's claim (the limiter's own pipelines still work). */
+  failSet = false;
   private sets = new Map<string, number[]>();
-  clear() { this.sets.clear(); }
+  private claims = new Map<string, number>();
+  clear() { this.sets.clear(); this.claims.clear(); }
+  /** Drops the refusal-audit claims only: the limiter's counters stay as they are. */
+  forgetClaims() { this.claims.clear(); }
+  /** SET key value PX ttl NX on the (test-controllable) clock: 'OK' for the first caller until the ttl passes, then null. */
+  async set(key: string, _value: string, _px: 'PX', ttl: number, _nx: 'NX') {
+    if (this.failSet) throw new Error('Connection is closed.');
+    if ((this.claims.get(key) ?? 0) > Date.now()) return null;
+    this.claims.set(key, Date.now() + ttl);
+    return 'OK';
+  }
   pipeline() {
     const ops: Array<() => unknown> = [];
     const set = (key: string) => this.sets.get(key) ?? this.sets.set(key, []).get(key)!;
@@ -103,17 +115,18 @@ class FakeRedis {
 /** The real limiter: a generous per-client budget and a per-user budget of one, so the second change by a user is a 429. */
 const redis = new FakeRedis();
 const budgetWindow = { windowMs: 900_000 };
-const realLimiter = new RateLimitMiddleware(redis as never, {
+const limiterOver = (store: FakeRedis, budgets: { client: number; user: number }) => new RateLimitMiddleware(store as never, {
   enabled: true,
   bypassHeader: 'X-Internal-Service',
   tierMultipliers: { standard: 1, premium: 1, enterprise: 1 },
   endpoints: {
     rest: { max: 100, ...budgetWindow }, graphql: { max: 100, ...budgetWindow }, health: { max: 0, ...budgetWindow },
-    auth: { max: 100, ...budgetWindow }, authAccount: { max: 1, ...budgetWindow }, authAccountGlobal: { max: 1, ...budgetWindow },
-    discovery: { max: 100, ...budgetWindow }, admin: { max: 100, ...budgetWindow },
+    auth: { max: budgets.client, ...budgetWindow }, authAccount: { max: budgets.user, ...budgetWindow },
+    authAccountGlobal: { max: 1, ...budgetWindow }, discovery: { max: 100, ...budgetWindow }, admin: { max: 100, ...budgetWindow },
   },
   monitoring: { enabled: false, logRateLimitHits: false },
 } as unknown as ConfigSchema['rateLimit']);
+const realLimiter = limiterOver(redis, { client: 100, user: 1 });
 
 function mount(limiter: RateLimitMiddleware) {
   const mounted = express();
@@ -239,6 +252,8 @@ const outcomes: Record<PasswordChangeOutcome, Scenario> = {
   },
   rate_limited: {
     ...direct, status: 429, target: limitedApp, body: { _error: 'Too Many Requests', _limit: 100 },
+    // Only the first 429 per user and bucket per window is audited: each attempt starts a new window for the claim.
+    beforeAttempt: () => redis.forgetClaims(),
     // The user's one change in the window is spent (a wrong password, 400, audited before the rows are counted).
     setup: async () => {
       redis.clear();
@@ -319,4 +334,77 @@ it('no audit row carries a password: only the fixed outcome code and operation n
   expect(JSON.stringify(row!['record'])).not.toContain(guess);
   expect(JSON.stringify(row!['record'])).not.toContain(next);
   expect(row!['record'].metadata).toMatchObject({ operation: 'password_change', outcome: 'policy_failure' });
+});
+
+/**
+ * cmdb#321 B1: every audit write takes the global chain lock, so a client retrying past the limit must not append a row
+ * per 429. The real limiter and the real claim (SET NX PX) over a store on a controllable clock.
+ */
+describe('rate_limited rows: the first refusal per user and refusing bucket per window', () => {
+  const WINDOW = budgetWindow.windowMs;
+  let now = Date.now();
+  let clock: jest.SpiedFunction<typeof Date.now>;
+  beforeEach(() => { now = Date.now(); clock = jest.spyOn(Date, 'now').mockImplementation(() => now); });
+  afterEach(() => { clock.mockRestore(); });
+
+  const tokenNow = () => new JWTService(authConfig.jwt as any).generateAccessToken('user-1', 'alice', 'operator', ORG);
+  const attempt = (target: express.Express, address: string, bearer = token) => request(target).put('/api/v1/auth/password')
+    .set({ Authorization: `Bearer ${bearer}`, 'X-Forwarded-For': address })
+    .send({ currentPassword: randomUUID(), newPassword: randomUUID() });
+  const rateLimitedRows = async () => (await rows()).filter(row => row['outcome'] === 'rate_limited').length;
+  const statuses = async (target: express.Express, address: string, count: number, bearer = token) => {
+    const out: number[] = [];
+    for (let i = 0; i < count; i++) out.push((await attempt(target, address, bearer)).status);
+    return out;
+  };
+
+  it('N consecutive 429s in one window append exactly one row; the next window appends one again', async () => {
+    const target = mount(limiterOver(new FakeRedis(), { client: 100, user: 1 }));
+    const before = await rateLimitedRows();
+    now = Date.now();
+    expect(await statuses(target, '198.51.100.1', 6)).toEqual([400, 429, 429, 429, 429, 429]);
+    expect(await rateLimitedRows() - before).toBe(1);
+
+    now += WINDOW + 1;
+    const fresh = tokenNow();
+    expect(await statuses(target, '198.51.100.1', 5, fresh)).toEqual([400, 429, 429, 429, 429]);
+    expect(await rateLimitedRows() - before).toBe(2);
+  });
+
+  it('a refusal by the per-client bucket is audited once too, separately from the per-user bucket\'s', async () => {
+    const target = mount(limiterOver(new FakeRedis(), { client: 1, user: 1 }));
+    const before = await rateLimitedRows();
+    expect((await attempt(target, '198.51.100.1')).status).toBe(400);
+    // Other client addresses (one request each: a refused request still spends its client bucket): the user's bucket is spent.
+    for (const address of ['198.51.100.2', '198.51.100.3', '198.51.100.4']) expect((await attempt(target, address)).status).toBe(429);
+    expect(await rateLimitedRows() - before).toBe(1);
+    // The first address: its client bucket is spent, which is a different refusing bucket.
+    expect(await statuses(target, '198.51.100.1', 3)).toEqual([429, 429, 429]);
+    expect(await rateLimitedRows() - before).toBe(2);
+    for (const address of ['198.51.100.5', '198.51.100.6']) expect((await attempt(target, address)).status).toBe(429);
+    expect(await statuses(target, '198.51.100.1', 2)).toEqual([429, 429]);
+    expect(await rateLimitedRows() - before).toBe(2);
+  });
+
+  it('when the claim cannot be made (Redis fails) the 429 is unchanged and nothing is audited', async () => {
+    const healthy = mount(limiterOver(new FakeRedis(), { client: 100, user: 1 }));
+    const store = new FakeRedis();
+    const broken = mount(limiterOver(store, { client: 100, user: 1 }));
+    await attempt(healthy, '198.51.100.1');
+    const reference = await attempt(healthy, '198.51.100.1');
+    await attempt(broken, '198.51.100.1');
+    store.failSet = true;
+    const before = await rateLimitedRows();
+    const errors = jest.spyOn(getLogger(), 'error').mockImplementation(() => undefined);
+    try {
+      const refusals = [await attempt(broken, '198.51.100.1'), await attempt(broken, '198.51.100.1')];
+      expect(refusals.map(res => res.status)).toEqual([429, 429]);
+      expect(refusals.map(res => stable(res.body))).toEqual([stable(reference.body), stable(reference.body)]);
+      expect(errors.mock.calls.map(call => call[0])).toEqual(['Rate limit refusal hook failed', 'Rate limit refusal hook failed']);
+      expect(JSON.stringify(errors.mock.calls)).not.toContain('Connection is closed');
+    } finally {
+      errors.mockRestore();
+    }
+    expect(await rateLimitedRows()).toBe(before);
+  });
 });

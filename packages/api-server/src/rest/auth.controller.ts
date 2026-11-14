@@ -17,7 +17,7 @@ import { ValidationMiddleware } from './middleware/validation.middleware';
 import { clearRefreshCookie, hasAuthHeader, readRefreshCookie, requireAuthHeader, setRefreshCookie } from './middleware/refresh-cookie';
 import { authSchemas } from '../validation/schemas';
 import { AuthMiddleware, AuthenticatedRequest, logAuthFailure, optionalRequestOrganizationId } from '../middleware/auth.middleware';
-import { RateLimitMiddleware } from '../middleware/rate-limit.middleware';
+import { RateLimitMiddleware, type Refusal } from '../middleware/rate-limit.middleware';
 
 const AUTHENTICATION_FAILURE = { success: false, error: 'Authentication failed' };
 /** HAP-1368: a password change that could not be audited is refused before anything changes. */
@@ -190,7 +190,7 @@ export class AuthController {
       this.rateLimiter.limit('auth', {
         perUser: true,
         failClosed: true,
-        onRefused: req => this.auditPasswordChange(req, 'rate_limited'),
+        onRefused: (req, refusal) => this.auditFirstRefusal(req, refusal),
       }),
       this.validator.validate(authSchemas._changePassword),
       this.changePassword.bind(this)
@@ -468,6 +468,20 @@ export class AuthController {
     return this.authService.auditPasswordChange(req.user!._userId, optionalRequestOrganizationId(req), req.ip, outcome);
   }
 
+  /**
+   * cmdb#321: only the first refusal per user and refusing bucket per window is audited. Each audit write takes the
+   * global audit-chain lock, so a client retrying past the limit must not turn every 429 into one. The claim is a
+   * Redis SET NX PX of the bucket's window; if Redis fails the claim rejects (the limiter logs the class) and nothing
+   * is audited.
+   */
+  private async auditFirstRefusal(req: AuthenticatedRequest, refusal: Refusal): Promise<void> {
+    const userId = req.user!._userId;
+    const suffix = refusal.bucket === 'user' ? '' : `:${refusal.bucket}`;
+    if (await refusal.firstInWindow(`rate-limit:auth-user-refused:${userId}${suffix}`)) {
+      await this.auditPasswordChange(req, 'rate_limited');
+    }
+  }
+
   /** HAP-1368/HAP-1712: a password change is refused (503; the router sets no-store) before the limiter and before anything changes while it cannot be audited. */
   private requireAuditChain(_req: Request, res: Response, next: NextFunction): void {
     if (this.authService.auditChainReady()) {
@@ -480,7 +494,8 @@ export class AuthController {
   /**
    * Change password endpoint
    * HAP-1368: each attempt appends one audit row (best-effort once the outcome is decided): success, wrong current
-   * password, and (cmdb#321) policy failure, lost rotation, unknown user and rate limited (the limiter's onRefused).
+   * password, and (cmdb#321) policy failure, lost rotation, unknown user and rate limited (the limiter's onRefused: the first refusal
+   * per user and bucket per window).
    * The audit-chain readiness refusal is the requireAuditChain step before the limiter and is not audited: the chain
    * cannot be written then. Refusal bodies are unchanged.
    */

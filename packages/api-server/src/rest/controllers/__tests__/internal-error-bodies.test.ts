@@ -111,7 +111,7 @@ const NO_5XX = [
   'SettingsController.getDatabaseStatus',
 ];
 /** Two-argument private helpers that discovery picks up; they are not request handlers. */
-const HELPERS = new Set(['TBMController.allocateEqual', 'UnifiedCredentialController.refusedC4', 'AuthController.auditPasswordChange']);
+const HELPERS = new Set(['TBMController.allocateEqual', 'UnifiedCredentialController.refusedC4', 'AuthController.auditPasswordChange', 'AuthController.auditFirstRefusal']);
 /**
  * Handlers that log only the error class and code, never the text: auth (HAP-1382; a driver message can quote
  * credentials) and every credential controller (HAP-1814, HAP-1834; a decode failure can quote decrypted plaintext).

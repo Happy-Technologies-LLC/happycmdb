@@ -87,11 +87,18 @@ hash-chained `audit_log` (entity `USER`, the user id as entity and actor, client
 unavailable), organization, a fixed `metadata.outcome`; never a password, hash or token): `success`,
 `wrong_password` (400), `policy_failure` (400, the new password is not allowed), `rotation_lost` (401,
 credentials changed since the session was issued), `user_not_found` (404) and `rate_limited` (429).
-Response bodies are the same with or without the audit row. The `503` for an audit chain that is not
+Response bodies are the same with or without the audit row. `policy_failure`, `user_not_found` and
+`rotation_lost` rows are recorded before (or without) proof of the current password: the request has a
+valid session but has not shown the current password, so a row records a refused attempt by that
+session, not a verified one (`rotation_lost` is also written when the guarded write loses a race after
+the proof; the row does not say which). The `503` for an audit chain that is not
 ready (`AUDIT_CHAIN_KEY` unset) is refused before the current password is checked and is not audited:
 the chain cannot be written then. Request-validation `400`s (malformed body) are not audited. A user
-without an organization claim is not audited (an error is logged). Every `429` writes a row, so a
-signed-in client that keeps retrying past the limit appends a row per request. Requires PostgreSQL
+without an organization claim is not audited (an error is logged). `rate_limited` is the first `429`
+per user and refusing bucket (the client bucket, the user bucket) per window: each audit write takes the
+global audit-chain lock, so retries past the limit append no further rows until the window passes
+(a Redis `SET rate-limit:auth-user-refused:<userId>[:client] NX PX <window>` decides; if Redis fails the
+`429` is unchanged and no row is written). Requires PostgreSQL
 migration `049_audit_entity_user.sql`.
 
 **Platform administrators** are a dedicated flag, set only by the operator command

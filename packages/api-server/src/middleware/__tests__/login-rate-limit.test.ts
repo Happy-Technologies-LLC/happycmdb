@@ -42,7 +42,18 @@ class FakeRedis {
   down = false;
   rejects = false;
   failKey: (key: string) => boolean = () => false;
+  /** SET ... PX ... NX rejects (a store error on the refusal hook's claim only; the limiter's own pipelines work). */
+  failSet = false;
   private sets = new Map<string, number[]>();
+  private claims = new Map<string, number>();
+
+  /** SET key value PX ttl NX: 'OK' for the first caller until the ttl passes, then null. */
+  async set(key: string, _value: string, _px: 'PX', ttl: number, _nx: 'NX') {
+    if (this.failSet) throw new Error(STORE_MESSAGE);
+    if ((this.claims.get(key) ?? 0) > Date.now()) return null;
+    this.claims.set(key, Date.now() + ttl);
+    return 'OK';
+  }
 
   pipeline() {
     const ops: Array<() => unknown> = [];
@@ -362,6 +373,9 @@ const changePassword = (app: express.Express, userId: string, clientAddress: str
   request(app).put('/api/v1/auth/password').set({ 'X-Test-User': userId, 'X-Forwarded-For': clientAddress })
     .send({ currentPassword: randomUUID(), newPassword: randomUUID() });
 
+/** A 429 body without its countdown fields, which vary by time. */
+const stableRefusal = (body: Record<string, unknown>) => ({ _error: body['_error'], _limit: body['_limit'] });
+
 describe('PUT /auth/password rate limiting (HAP-1368)', () => {
   it('one client address guessing for many users is refused (429) after the client budget', async () => {
     const { app } = passwordApp(new FakeRedis());
@@ -393,6 +407,40 @@ describe('PUT /auth/password rate limiting (HAP-1368)', () => {
     expect([res.status, res.headers['cache-control']]).toEqual([503, 'no-store']);
     expect(reached).toEqual([]);
     expect(text).not.toContain(STORE_NEEDLE);
+  });
+
+  it('a refusal hook that rejects (the claim\'s store error) still gives the same 429 and logs the class only', async () => {
+    const run = async (failSet: boolean) => {
+      const redis = new FakeRedis();
+      redis.failSet = failSet;
+      const { app } = passwordApp(redis);
+      for (let i = 0; i < ACCOUNT_MAX; i++) await changePassword(app, 'user-a', `198.51.100.${i}`);
+      return capturingLogs(() => changePassword(app, 'user-a', '198.51.100.9'));
+    };
+    const healthy = await run(false);
+    const broken = await run(true);
+    expect(broken.result.status).toBe(429);
+    expect([broken.result.status, broken.result.headers['cache-control'], stableRefusal(broken.result.body)])
+      .toEqual([healthy.result.status, healthy.result.headers['cache-control'], stableRefusal(healthy.result.body)]);
+    expect(healthy.limiterErrors).toEqual([]);
+    expect(broken.limiterErrors).toEqual([['Rate limit refusal hook failed', undefined, { endpoint: 'auth', errorClass: 'Error' }]]);
+    expect(broken.text).not.toContain(STORE_NEEDLE);
+  });
+
+  it('a refusal hook that throws leaves the 429 as it is without a hook, logging the class only', async () => {
+    const respond = async (hook?: () => Promise<void>) => {
+      const limiter = new RateLimitMiddleware(new FakeRedis() as never, rateLimitConfig());
+      const app = express();
+      app.get('/limited', limiter.limit('auth', { onRefused: hook }), (_req, res) => { res.sendStatus(204); });
+      for (let i = 0; i < CLIENT_MAX; i++) expect((await request(app).get('/limited')).status).toBe(204);
+      return capturingLogs(() => request(app).get('/limited'));
+    };
+    const plain = await respond();
+    const throwing = await respond(async () => { throw new Error(STORE_MESSAGE); });
+    expect(throwing.result.status).toBe(429);
+    expect(stableRefusal(throwing.result.body)).toEqual(stableRefusal(plain.result.body));
+    expect(throwing.limiterErrors).toEqual([['Rate limit refusal hook failed', undefined, { endpoint: 'auth', errorClass: 'Error' }]]);
+    expect(throwing.text).not.toContain(STORE_NEEDLE);
   });
 
   it('with the audit chain not ready, the 503 (no-store) spends neither bucket: the full budgets remain once it is ready (HAP-1712)', async () => {

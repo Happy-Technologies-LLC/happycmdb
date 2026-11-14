@@ -319,14 +319,19 @@ describe('limiter store errors outside login (HAP-1764)', () => {
   });
 });
 
-/** Every password change reaches the service as a wrong current password (400) unless the limiter answers first. */
+/**
+ * Every password change reaches the service as a wrong current password (400) unless the limiter or the audit-chain
+ * readiness check answers first. `chain.ready` flips the readiness the service reports; a request without
+ * X-Test-User is unauthenticated (401).
+ */
 function passwordApp(redis: FakeRedis) {
+  const chain = { ready: true };
   const reached: string[] = [];
   const authService = {
     login: async () => {
       throw new AuthFailureError('invalid');
     },
-    auditChainReady: () => true,
+    auditChainReady: () => chain.ready,
     auditPasswordChange: async () => undefined,
     changePassword: async (userId: string) => {
       reached.push(userId);
@@ -335,8 +340,13 @@ function passwordApp(redis: FakeRedis) {
   } as unknown as AuthService;
   const pass = () => (_req: unknown, _res: unknown, next: () => void) => next();
   // The verified subject comes from the test's X-Test-User header (stands in for the JWT).
-  const authenticate = () => (req: express.Request, _res: unknown, next: () => void) => {
-    (req as express.Request & { user?: unknown }).user = { _userId: req.header('X-Test-User') };
+  const authenticate = () => (req: express.Request, res: express.Response, next: () => void) => {
+    const userId = req.header('X-Test-User');
+    if (!userId) {
+      res.status(401).json({ success: false, error: 'Unauthorized' });
+      return;
+    }
+    (req as express.Request & { user?: unknown }).user = { _userId: userId };
     next();
   };
   const authMiddleware = new Proxy({}, { get: (_target, name) => (name === 'authenticate' ? authenticate : pass) });
@@ -346,7 +356,7 @@ function passwordApp(redis: FakeRedis) {
   app.use(express.json());
   app.use('/api/v1/auth', new AuthController(authService, new ValidationMiddleware(),
     authMiddleware as unknown as AuthMiddleware, limiter).getRouter());
-  return { app, reached };
+  return { app, reached, chain };
 }
 
 const changePassword = (app: express.Express, userId: string, clientAddress: string) =>
@@ -384,6 +394,51 @@ describe('PUT /auth/password rate limiting (HAP-1368)', () => {
     expect([res.status, res.headers['cache-control']]).toEqual([503, 'no-store']);
     expect(reached).toEqual([]);
     expect(text).not.toContain(STORE_NEEDLE);
+  });
+
+  describe('with the audit chain not ready (HAP-1712)', () => {
+    it('refuses every change with 503 and spends no client bucket, however many clients ask', async () => {
+      const { app, reached, chain } = passwordApp(new FakeRedis());
+      chain.ready = false;
+      const statuses: number[] = [];
+      for (let i = 0; i <= CLIENT_MAX; i++) statuses.push((await changePassword(app, `user-${i}`, '198.51.100.9')).status);
+      expect(statuses).toEqual(Array(CLIENT_MAX + 1).fill(503));
+
+      chain.ready = true;
+      expect((await changePassword(app, 'user-x', '198.51.100.9')).status).toBe(400);
+      expect(reached).toEqual(['user-x']);
+    });
+
+    it('refuses every change with 503 and spends no per-user bucket, however many clients ask', async () => {
+      const { app, chain } = passwordApp(new FakeRedis());
+      chain.ready = false;
+      const statuses: number[] = [];
+      for (let i = 0; i <= ACCOUNT_MAX; i++) statuses.push((await changePassword(app, 'user-a', `198.51.100.${i}`)).status);
+      expect(statuses).toEqual(Array(ACCOUNT_MAX + 1).fill(503));
+
+      chain.ready = true;
+      expect((await changePassword(app, 'user-a', '198.51.100.99')).status).toBe(400);
+    });
+
+    it('answers 503 with the unavailable body, not 429, even when both buckets were already spent', async () => {
+      const { app, chain } = passwordApp(new FakeRedis());
+      for (let i = 0; i < ACCOUNT_MAX; i++) expect((await changePassword(app, 'user-a', '198.51.100.9')).status).toBe(400);
+      expect((await changePassword(app, 'user-a', '198.51.100.9')).status).toBe(429);
+
+      chain.ready = false;
+      const res = await changePassword(app, 'user-a', '198.51.100.9');
+      expect([res.status, res.body]).toEqual([503, {
+        success: false, error: 'Service Unavailable', message: 'Password change temporarily unavailable',
+      }]);
+    });
+
+    it('an unauthenticated request is still 401 and learns nothing about readiness', async () => {
+      const { app, chain } = passwordApp(new FakeRedis());
+      chain.ready = false;
+      const res = await request(app).put('/api/v1/auth/password')
+        .send({ currentPassword: randomUUID(), newPassword: randomUUID() });
+      expect(res.status).toBe(401);
+    });
   });
 });
 

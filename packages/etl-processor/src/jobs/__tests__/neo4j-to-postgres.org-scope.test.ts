@@ -108,9 +108,9 @@ const neo4jClient = {
       ? { _id: ciId, name: properties.name, _type: properties.type,
           _status: properties.status, environment: properties.environment } : null;
   },
-  legacyCreateCIUnjournaled: async (ci: CI, scope: string | symbol) => {
-    // The production legacy writer stamps only its scope, not CI input.
-    nodes.push(node(ci._id, typeof scope === 'string' ? scope : undefined, { name: ci.name }));
+  createCI: async (ci: CI & { status?: string }, organizationId: string) => {
+    // The journaled create stamps only its organization argument, never CI input.
+    nodes.push(node(ci._id, organizationId, { name: ci.name, ...(ci.status ? { status: ci.status } : {}) }));
     return ci;
   },
   updateCI: async (ciId: string, updates: Record<string, unknown>, scope: string | symbol) => {
@@ -119,16 +119,14 @@ const neo4jClient = {
     if (properties) Object.assign(properties, updates);
     return properties;
   },
+  updateCIProperties: async (ciId: string, props: Record<string, unknown>, organizationId: string) => {
+    // As the production journaled update: strict-org, so an org-less node is not found.
+    const properties = nodes.find(ci => ci.id === ciId && ci.organization_id === organizationId);
+    if (properties) Object.assign(properties, props);
+    return properties ?? null;
+  },
   getSession: () => ({
     run: async (cypher: string, params: { ciId?: string; id?: string; ciTypes?: string[] } = {}) => {
-      if (cypher.includes('SET ci.status = $status')) {
-        const { id, organizationId, internalOrganizationId, status } = params as Record<string, string>;
-        const properties = nodes.find(ci => ci.id === id && (
-          ci.organization_id === undefined || ci.organization_id === null || ci.organization_id === ''
-            ? internalOrganizationId : String(ci.organization_id).toLowerCase()) === organizationId);
-        if (properties) properties.status = status;
-        return { records: properties ? [{ get: () => id }] : [] };
-      }
       if (cypher.includes('MATCH (ci:CI {id: $id})')) {
         beforeReconciliationGraphRead?.();
         beforeReconciliationGraphRead = undefined;
@@ -591,12 +589,23 @@ describe('status-mismatch auto-resolve with an existing row and node', () => {
     expect(result._manualReviewRequired).toBe(1);
   });
 
-  it('still resolves a row and node of the same organization, including internal org-less nodes', async () => {
+  it('still resolves a row and node of the same organization in both directions', async () => {
     expect((await reconcile('own-b', 'neo4j-wins'))._conflictsResolved).toBe(1);
     expect(await status('own-b')).toEqual([{ ci_status: 'maintenance', organization_id: ORG_B }]);
 
-    expect((await reconcile('own-internal', 'postgres-wins'))._conflictsResolved).toBe(1);
-    expect(nodes.find(ci => ci.id === 'own-internal')?.status).toBe('active');
+    await send('exec', `UPDATE cmdb.dim_ci SET ci_status = 'active' WHERE ci_id = 'own-b'`);
+    expect((await reconcile('own-b', 'postgres-wins'))._conflictsResolved).toBe(1);
+    expect(nodes.find(ci => ci.id === 'own-b')?.status).toBe('active');
+  });
+
+  it('copies an org-less internal node status into PostgreSQL, but the strict-org journaled update never writes the node', async () => {
+    expect((await reconcile('own-internal', 'neo4j-wins'))._conflictsResolved).toBe(1);
+    expect(await status('own-internal')).toEqual([{ ci_status: 'maintenance', organization_id: INTERNAL_ORG }]);
+
+    await send('exec', `UPDATE cmdb.dim_ci SET ci_status = 'active' WHERE ci_id = 'own-internal'`);
+    const result = await reconcile('own-internal', 'postgres-wins');
+    expect(result).toMatchObject({ _conflictsResolved: 0, _manualReviewRequired: 1 });
+    expect(nodes.find(ci => ci.id === 'own-internal')?.status).toBe('maintenance');
   });
 });
 

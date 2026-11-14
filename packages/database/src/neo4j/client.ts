@@ -291,60 +291,6 @@ export class Neo4jClient {
   }
 
   // CI Operations
-  /** Pre-journal unscoped create kept ONLY for the S5-owned ETL writer (HP1-S5 cutover). */
-  async legacyCreateCIUnjournaled(ci: CIInput, scope: CIOrganizationScope): Promise<CI> {
-    // The organization comes only from the scope, never from the CI input.
-    const organizationId = organizationIdParam(scope);
-    const session = this.getSession();
-    try {
-      // Handle both API format (id, type) and internal format (_id, _type)
-      const ciId = (ci as any).id || ci._id;
-      const ciType = (ci as any).type || ci._type;
-      // HAP-1442: an AI CI is created only by AISyncWriter (journaled), never by this pre-journal path.
-      if (isSourceOwnedCIType(ciType)) throw new SourceOwnedError();
-
-      // Validate and sanitize CI type to prevent Cypher injection
-      const sanitizedType = sanitizeCITypeForLabel(ciType);
-
-      // Safe to use template literal here because sanitizedType is validated against whitelist
-      const result = await session.run(
-        `
-        CREATE (ci:CI:${sanitizedType} {
-          id: $id,
-          external_id: $external_id,
-          name: $name,
-          type: $type,
-          status: $status,
-          environment: $environment,
-          created_at: datetime(),
-          incarnation_id: randomUUID(),
-          updated_at: datetime(),
-          discovered_at: datetime($discovered_at),
-          discovery_provider: $discovery_provider,
-          metadata: $metadata,
-          organization_id: $organizationId
-        })
-        RETURN ci
-        `,
-        {
-          id: ciId,
-          external_id: ci.external_id ?? null,
-          name: ci.name,
-          type: ciType,
-          status: ci.status || 'active',
-          environment: ci.environment || 'development',
-          discovered_at: ci.discovered_at || new Date().toISOString(),
-          discovery_provider: (ci as any).discovery_provider || null,
-          metadata: JSON.stringify(ci.metadata || {}),
-          organizationId,
-        }
-      );
-      return this.recordToCI(result.records[0]!.get('ci'));
-    } finally {
-      await session.close();
-    }
-  }
-
   /** Raw stored properties of an owned CI (metadata stays its stored string); null when missing or foreign. */
   async getCIProperties(id: string, organizationId: string): Promise<Record<string, unknown> | null> {
     const session = this.getSession();

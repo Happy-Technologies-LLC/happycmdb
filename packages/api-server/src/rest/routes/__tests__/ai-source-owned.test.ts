@@ -394,12 +394,12 @@ describe('A4: every other write path refuses an AI CI with source_owned and writ
     expect([await snapshot(ids['ai-deployment']), await snapshot(server)]).toEqual(before);
   });
 
-  it('the legacy unjournaled create (ETL Postgres-to-Neo4j repair) refuses every AI class', async () => {
+  it('a journaled createCI without the sync writer\'s grant (the ETL Postgres-to-Neo4j repair) refuses every AI class', async () => {
     for (const cls of CLASSES) {
       const id = randomUUID();
       const before = await snapshot(id);
-      await expect(getNeo4jClient().legacyCreateCIUnjournaled({ _id: id, name: 'forged', _type: cls } as unknown as CIInput, A))
-        .rejects.toBeInstanceOf(SourceOwnedError);
+      await expect(getNeo4jClient().createCI({ _id: id, name: 'forged', _type: cls } as unknown as CIInput, A,
+        'system:etl-reconciliation', undefined, 'system')).rejects.toBeInstanceOf(SourceOwnedError);
       expect(await snapshot(id)).toEqual(before);
       expect(mockGraph.nodes.has(id)).toBe(false);
     }

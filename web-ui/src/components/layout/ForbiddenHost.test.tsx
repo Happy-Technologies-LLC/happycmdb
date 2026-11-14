@@ -1,26 +1,31 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import axios, { AxiosError, type AxiosAdapter, type AxiosInstance } from 'axios';
 import { act, cleanup, render, screen } from '@testing-library/react';
-import { MemoryRouter, useNavigate } from 'react-router-dom';
+import { BrowserRouter, useNavigate } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import { attachSession } from '@/lib/session';
 import { ForbiddenHost } from './ForbiddenHost';
 
-/** An axios instance with the app's session interceptors whose server answers every call with this 403. */
-function clientRefusing(data: unknown): AxiosInstance {
-  const adapter: AxiosAdapter = (config) =>
-    Promise.reject(
+/**
+ * An axios instance with the app's session interceptors whose server answers every call with this 403, after
+ * `until` settles when given (a slow server).
+ */
+function clientRefusing(data: unknown, until: Promise<void> = Promise.resolve()): AxiosInstance {
+  const adapter: AxiosAdapter = async (config) => {
+    await until;
+    throw (
       new AxiosError('Request failed with status code 403', 'ERR_BAD_REQUEST', config, {}, {
         status: 403,
         statusText: 'Forbidden',
         data,
         headers: {},
         config,
-      }),
+      })
     );
+  };
   const client = axios.create({ adapter });
   attachSession(client);
   return client;
@@ -33,13 +38,15 @@ function Nav() {
 }
 const mount = () =>
   render(
-    <MemoryRouter>
+    <BrowserRouter>
       <Nav />
       <ForbiddenHost />
       <Toaster />
-    </MemoryRouter>,
+    </BrowserRouter>,
   );
 
+// BrowserRouter: the request's page is window.location.pathname, which only a real history navigation moves
+beforeEach(() => window.history.replaceState({}, '', '/'));
 afterEach(cleanup);
 
 describe('a 403 from the server', () => {
@@ -106,5 +113,39 @@ describe('a 403 from the server', () => {
       await client.get('/anything').catch(() => undefined);
     });
     expect(await screen.findByRole('alert')).toHaveTextContent('Forbidden');
+  });
+
+  it('a refused read that lands after the user navigated to another page shows nothing there', async () => {
+    mount();
+    let release: () => void = () => undefined;
+    const slow = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const client = clientRefusing({ _error: 'Forbidden', _message: "Permission 'admin' required" }, slow);
+    act(() => go('/page-a'));
+    const pending = client.get('/audit').catch(() => undefined); // issued on page A
+    await act(async () => undefined); // the request is on the wire (interceptors ran) before the user leaves
+    act(() => go('/page-b'));
+    await act(async () => {
+      release();
+      await pending;
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('a refused read that lands on the page it was issued on still shows the banner after a slow answer', async () => {
+    mount();
+    let release: () => void = () => undefined;
+    const slow = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const client = clientRefusing({ _error: 'Forbidden', _message: "Permission 'admin' required" }, slow);
+    act(() => go('/page-a'));
+    const pending = client.get('/audit').catch(() => undefined);
+    await act(async () => {
+      release();
+      await pending;
+    });
+    expect(await screen.findByRole('alert')).toHaveTextContent("Permission 'admin' required");
   });
 });

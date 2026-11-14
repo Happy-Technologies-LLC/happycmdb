@@ -59,12 +59,21 @@ class Repository {
   written = false;
   /** How many reads find the user before it vanishes: authentication finds it, the service's own read then misses. */
   readsThatFind = Infinity;
+  /** The credential generation each next read reports, in order (a rotation between reads); once empty, the stored one. */
+  epochs: number[] = [];
   chainReady = true;
-  async findUserById(id: string) { return id === this.user._id && this.readsThatFind-- > 0 ? this.user : null; }
+  /** recordAudit rejects, as a failed audit write. */
+  failAudit = false;
+  async findUserById(id: string) {
+    if (id !== this.user._id || this.readsThatFind-- <= 0) return null;
+    const epoch = this.epochs.shift();
+    return epoch === undefined ? this.user : { ...this.user, _credentialEpoch: epoch };
+  }
   async updatePasswordHashGuarded() { return this.written; }
   async recordCredentialEvent() {}
   auditChainReady() { return this.chainReady; }
   async recordAudit(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>, organizationId: string) {
+    if (this.failAudit) throw new Error('audit store down');
     const client = { query: async (text: string, params?: unknown[]) => ({ rows: await sql(text, params) }) } as unknown as PoolClient;
     await sql('BEGIN');
     try {
@@ -90,12 +99,18 @@ class FakeRedis {
   private sets = new Map<string, number[]>();
   private claims = new Map<string, number>();
   clear() { this.sets.clear(); this.claims.clear(); }
+  /** How many unexpired claims the store holds. */
+  heldClaims() { return [...this.claims.values()].filter(expiresAt => expiresAt > Date.now()).length; }
   /** Drops the refusal-audit claims only: the limiter's counters stay as they are. */
   forgetClaims() { this.claims.clear(); }
+  /** Whether a claim is held (unexpired) on the test-controllable clock. */
+  holds(key: string) { return (this.claims.get(key) ?? 0) > Date.now(); }
+  /** DEL key: the claim is given back. */
+  async del(key: string) { this.claims.delete(key); return 1; }
   /** SET key value PX ttl NX on the (test-controllable) clock: 'OK' for the first caller until the ttl passes, then null. */
   async set(key: string, _value: string, _px: 'PX', ttl: number, _nx: 'NX') {
     if (this.failSet) throw new Error('Connection is closed.');
-    if ((this.claims.get(key) ?? 0) > Date.now()) return null;
+    if (this.holds(key)) return null;
     this.claims.set(key, Date.now() + ttl);
     return 'OK';
   }
@@ -226,6 +241,8 @@ type Scenario = {
   target?: express.Express;
   /** Runs before the rows are counted. */
   setup: () => Promise<void>;
+  /** Fields the row's metadata carries beyond the operation and outcome. */
+  metadata?: Record<string, unknown>;
 };
 const direct = { currentPassword: () => CURRENT, newPassword: () => randomUUID(), setup: async () => undefined };
 
@@ -251,7 +268,7 @@ const outcomes: Record<PasswordChangeOutcome, Scenario> = {
     body: { success: false, error: 'Password Change Failed', message: 'User not found' },
   },
   rate_limited: {
-    ...direct, status: 429, target: limitedApp, body: { _error: 'Too Many Requests', _limit: 100 },
+    ...direct, status: 429, target: limitedApp, body: { _error: 'Too Many Requests', _limit: 100 }, metadata: { bucket: 'user' },
     // Only the first 429 per user and bucket per window is audited: each attempt starts a new window for the claim.
     beforeAttempt: () => redis.forgetClaims(),
     // The user's one change in the window is spent (a wrong password, 400, audited before the rows are counted).
@@ -266,6 +283,8 @@ beforeEach(() => {
   repository.written = false;
   repository.readsThatFind = Infinity;
   repository.chainReady = true;
+  repository.epochs = [];
+  repository.failAudit = false;
 });
 
 describe.each(PASSWORD_CHANGE_OUTCOMES)('outcome %s with the client address unavailable', outcome => {
@@ -301,7 +320,7 @@ describe.each(PASSWORD_CHANGE_OUTCOMES)('outcome %s with the client address unav
       expect(Number(row!['at_ms'])).toBeGreaterThanOrEqual(startedAt - 2000);
       expect(Number(row!['at_ms'])).toBeLessThanOrEqual(Date.now() + 2000);
       // The reason is the fixed code alone: no password, no stored hash, no free text.
-      expect(row!['record'].metadata).toEqual({ operation: 'password_change', outcome, organization_id: ORG });
+      expect(row!['record'].metadata).toEqual({ operation: 'password_change', outcome, organization_id: ORG, ...scenario.metadata });
       expect(JSON.stringify(row!['record'])).not.toContain(repository.user._passwordHash);
       expect(JSON.stringify(row!['record'])).not.toMatch(/\$2[aby]\$/);
       expect(JSON.stringify(row!['record'])).not.toMatch(new RegExp(`${STALE_CLIENT.replaceAll('.', '\\.')}|None|undefined|"null"`));
@@ -337,6 +356,23 @@ it('no audit row carries a password: only the fixed outcome code and operation n
 });
 
 /**
+ * The epoch mismatch before the proof of the current password: authentication read the session's generation as current,
+ * a rotation advanced it, and the service's own read finds the mismatch. A wrong current password still answers 401
+ * (not 400), so the check ran before the password was verified; the refused attempt is audited as rotation_lost.
+ */
+it('a rotation between authentication and the service read refuses with 401 before the proof and audits rotation_lost', async () => {
+  repository.epochs = [0, 1];
+  repository.written = true; // a write that would win, were the proof ever reached
+  const before = (await rows()).length;
+  const res = await changePassword(randomUUID(), randomUUID());
+  expect([res.status, stable(res.body)]).toEqual([401, { success: false, error: 'Unauthorized', message: 'Credentials changed' }]);
+  const [row, ...extra] = (await rows()).slice(before);
+  expect(extra).toEqual([]);
+  expect(row).toMatchObject({ outcome: 'rotation_lost', organization_id: ORG, entity_id: 'user-1', actor: 'user-1' });
+  expect(row!['record'].metadata).toEqual({ operation: 'password_change', outcome: 'rotation_lost', organization_id: ORG });
+});
+
+/**
  * cmdb#321 B1: every audit write takes the global chain lock, so a client retrying past the limit must not append a row
  * per 429. The real limiter and the real claim (SET NX PX) over a store on a controllable clock.
  */
@@ -352,6 +388,8 @@ describe('rate_limited rows: the first refusal per user and refusing bucket per 
     .set({ Authorization: `Bearer ${bearer}`, 'X-Forwarded-For': address })
     .send({ currentPassword: randomUUID(), newPassword: randomUUID() });
   const rateLimitedRows = async () => (await rows()).filter(row => row['outcome'] === 'rate_limited').length;
+  const rateLimitedBuckets = async () => (await sql(`SELECT metadata->>'bucket' AS bucket FROM audit_log
+    WHERE metadata->>'outcome' = 'rate_limited' ORDER BY timestamp, id`)).map(row => row['bucket']);
   const statuses = async (target: express.Express, address: string, count: number, bearer = token) => {
     const out: number[] = [];
     for (let i = 0; i < count; i++) out.push((await attempt(target, address, bearer)).status);
@@ -384,6 +422,59 @@ describe('rate_limited rows: the first refusal per user and refusing bucket per 
     for (const address of ['198.51.100.5', '198.51.100.6']) expect((await attempt(target, address)).status).toBe(429);
     expect(await statuses(target, '198.51.100.1', 2)).toEqual([429, 429]);
     expect(await rateLimitedRows() - before).toBe(2);
+  });
+
+  it('each row names the refusing bucket', async () => {
+    const target = mount(limiterOver(new FakeRedis(), { client: 1, user: 1 }));
+    const before = (await rateLimitedBuckets()).length;
+    await attempt(target, '198.51.100.1');
+    for (const address of ['198.51.100.2', '198.51.100.3']) await attempt(target, address);
+    await attempt(target, '198.51.100.1');
+    expect((await rateLimitedBuckets()).slice(before)).toEqual(['user', 'client']);
+  });
+
+  it('a failed audit write gives the claim back: the next refusal in the same window writes the row', async () => {
+    const store = new FakeRedis();
+    const target = mount(limiterOver(store, { client: 100, user: 1 }));
+    const before = await rateLimitedRows();
+    expect((await attempt(target, '198.51.100.1')).status).toBe(400);
+    const errors = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    repository.failAudit = true;
+    try {
+      expect((await attempt(target, '198.51.100.1')).status).toBe(429);
+      expect(await rateLimitedRows() - before).toBe(0);
+      expect(store.heldClaims()).toBe(0);
+      expect((await attempt(target, '198.51.100.1')).status).toBe(429);
+      expect(await rateLimitedRows() - before).toBe(0);
+    } finally {
+      repository.failAudit = false;
+      errors.mockRestore();
+    }
+    expect((await attempt(target, '198.51.100.1')).status).toBe(429);
+    expect(await rateLimitedRows() - before).toBe(1);
+    expect(store.heldClaims()).toBe(1);
+    expect((await attempt(target, '198.51.100.1')).status).toBe(429);
+    expect(await rateLimitedRows() - before).toBe(1);
+  });
+
+  it('a refusal with no organization claim is not audited and gives the claim back, so a later one in the window is', async () => {
+    const store = new FakeRedis();
+    const target = mount(limiterOver(store, { client: 100, user: 1 }));
+    const before = await rateLimitedRows();
+    expect((await attempt(target, '198.51.100.1')).status).toBe(400);
+    const errors = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    const organization = repository.user._organizationId;
+    repository.user._organizationId = undefined;
+    try {
+      expect((await attempt(target, '198.51.100.1')).status).toBe(429);
+      expect(await rateLimitedRows() - before).toBe(0);
+      expect(store.heldClaims()).toBe(0);
+    } finally {
+      repository.user._organizationId = organization;
+      errors.mockRestore();
+    }
+    expect((await attempt(target, '198.51.100.1')).status).toBe(429);
+    expect(await rateLimitedRows() - before).toBe(1);
   });
 
   it('when the claim cannot be made (Redis fails) the 429 is unchanged and nothing is audited', async () => {

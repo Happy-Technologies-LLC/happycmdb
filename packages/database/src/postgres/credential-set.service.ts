@@ -17,11 +17,12 @@ import {
   CredentialSetUpdateInput,
   CredentialSetSummary,
   CredentialSetStrategy,
+  CredentialSetNotFoundError,
   CredentialMatchContext,
   UnifiedCredential,
   UnifiedCredentialSummary,
 } from '@cmdb/common';
-import { logger } from '@cmdb/common';
+import { logger, errorClassFields } from '@cmdb/common';
 import { getEncryptionService } from '@cmdb/common';
 
 export class CredentialSetService {
@@ -122,7 +123,7 @@ export class CredentialSetService {
         // Unique constraint violation
         throw new Error(`Credential set with name '${input.name}' already exists`);
       }
-      logger.error('Failed to create credential set', { error, input });
+      logger.error('Failed to create credential set', { error: errorClassFields(error), input });
       throw error;
     } finally {
       client.release();
@@ -283,7 +284,7 @@ export class CredentialSetService {
         `SELECT id FROM credential_sets WHERE id = $1 AND created_by = $2 AND organization_id = $3`,
         [id, createdBy, organizationId]
       );
-      if (owned.rows.length === 0) throw new Error(`Credential set with ID ${id} not found`);
+      if (owned.rows.length === 0) throw new CredentialSetNotFoundError(id);
 
       // If credential_ids provided, validate they exist
       if (input.credential_ids && input.credential_ids.length > 0) {
@@ -343,7 +344,7 @@ export class CredentialSetService {
       if (updates.length === 0) {
         const existing = await this.getById(id, createdBy, organizationId);
         if (!existing) {
-          throw new Error(`Credential set with ID ${id} not found`);
+          throw new CredentialSetNotFoundError(id);
         }
         return existing;
       }
@@ -361,7 +362,7 @@ export class CredentialSetService {
       );
 
       if (result.rows.length === 0) {
-        throw new Error(`Credential set with ID ${id} not found`);
+        throw new CredentialSetNotFoundError(id);
       }
 
       const row = result.rows[0];
@@ -388,7 +389,7 @@ export class CredentialSetService {
       if (error.code === '23505') {
         throw new Error(`Credential set with name '${input.name}' already exists`);
       }
-      logger.error('Failed to update credential set', { error, id });
+      logger.error('Failed to update credential set', { error: errorClassFields(error), id });
       throw error;
     } finally {
       client.release();
@@ -406,7 +407,7 @@ export class CredentialSetService {
         `SELECT id FROM credential_sets WHERE id = $1 AND created_by = $2 AND organization_id = $3`,
         [id, createdBy, organizationId]
       );
-      if (owned.rows.length === 0) throw new Error(`Credential set with ID ${id} not found`);
+      if (owned.rows.length === 0) throw new CredentialSetNotFoundError(id);
       // Check if credential set is in use
       const usageResult = await client.query(
         `
@@ -436,7 +437,7 @@ export class CredentialSetService {
       );
 
       if (result.rows.length === 0) {
-        throw new Error(`Credential set with ID ${id} not found`);
+        throw new CredentialSetNotFoundError(id);
       }
 
       logger.info('Credential set deleted', {
@@ -444,7 +445,7 @@ export class CredentialSetService {
         name: result.rows[0].name,
       });
     } catch (error) {
-      logger.error('Failed to delete credential set', { error, id });
+      logger.error('Failed to delete credential set', { error: errorClassFields(error), id });
       throw error;
     } finally {
       client.release();
@@ -471,7 +472,7 @@ export class CredentialSetService {
       // Fetch credential set
       const set = await this.getById(setId, createdBy, organizationId);
       if (!set) {
-        throw new Error(`Credential set with ID ${setId} not found`);
+        throw new CredentialSetNotFoundError(setId);
       }
 
       const effectiveStrategy = strategy || set.strategy;
@@ -703,7 +704,7 @@ export class CredentialSetService {
       // Check if IP is in network
       return (ipInt & mask) === (networkInt & mask);
     } catch (error) {
-      logger.warn('Failed to parse CIDR', { ip, cidr, error });
+      logger.warn('Failed to parse CIDR', { ip, cidr, error: errorClassFields(error) });
       return false;
     }
   }
@@ -723,7 +724,7 @@ export class CredentialSetService {
       const regex = new RegExp(`^${regexPattern}$`, 'i'); // Case-insensitive
       return regex.test(hostname);
     } catch (error) {
-      logger.warn('Failed to match hostname pattern', { hostname, pattern, error });
+      logger.warn('Failed to match hostname pattern', { hostname, pattern, error: errorClassFields(error) });
       return false;
     }
   }

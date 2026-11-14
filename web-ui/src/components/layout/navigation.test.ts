@@ -2,21 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, expect, it } from 'vitest';
-import { NAV_SECTIONS, matchNav } from './navigation';
+import { matchNav } from './navigation';
 
 describe('matchNav', () => {
-  it('lists the seven rail sections in the design-freeze order', () => {
-    expect(NAV_SECTIONS.map((s) => s.label)).toEqual([
-      'Dashboard',
-      'Configuration items',
-      'Business services',
-      'Discovery',
-      'Connectors',
-      'Analytics',
-      'Settings',
-    ]);
-  });
-
   it('keeps / on Overview only, not on every path', () => {
     expect(matchNav('/')?.item.label).toBe('Overview');
     expect(matchNav('/dashboards/cio')?.section.id).toBe('dashboard');

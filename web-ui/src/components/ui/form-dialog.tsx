@@ -5,12 +5,13 @@ import * as React from "react"
 import * as DialogPrimitive from "@radix-ui/react-dialog"
 import { Icon } from "@happy-technologies/design-system"
 import { cn } from "@/lib/utils"
+import { themedPortal } from "@/components/ui/themed-portal"
 
 const FormDialog = DialogPrimitive.Root
 
 const FormDialogTrigger = DialogPrimitive.Trigger
 
-const FormDialogPortal = DialogPrimitive.Portal
+const FormDialogPortal = themedPortal(DialogPrimitive.Portal)
 
 const FormDialogClose = DialogPrimitive.Close
 

@@ -229,7 +229,8 @@ describe('error and unknown-route states', () => {
     const user = userEvent.setup();
     renderShell('/crash');
     expect(await screen.findByText('Something went wrong')).toBeInTheDocument();
-    expect(screen.getByText('screen blew up')).toBeInTheDocument();
+    expect(screen.getByText('An unexpected error occurred.')).toBeInTheDocument();
+    expect(screen.queryByText('screen blew up')).not.toBeInTheDocument();
     await user.click(within(rail()).getByRole('link', { name: /^discovery/i }));
     expect(screen.getByText('Discovery screen')).toBeInTheDocument();
   });

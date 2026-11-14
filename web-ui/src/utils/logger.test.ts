@@ -16,6 +16,17 @@ import { useWebSocket } from '@/hooks/useWebSocket';
 import { PROTOCOL_DISPLAY_NAMES } from '@/lib/credential-display';
 import { logClientError, logger } from './logger';
 
+// One fixed string per logger call (HAP-1210, HAP-1280): a quoted literal on one line, or a backtick literal with no
+// `${`. True when every `logger.<m>(` / `logger[...](` call in `text` is exactly that.
+const LOGGER_CALL = String.raw`\blogger\s*(?:\.\s*\w+|\[[^\]]*\])\s*\(`;
+const LOGGER_FIXED = new RegExp(
+  LOGGER_CALL + String.raw`\s*(?:'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|` + '`(?:[^`\\\\$]|\\\\[\\s\\S]|\\$(?!\\{))*`)' + String.raw`\s*\)`,
+  'g',
+);
+function loggerCallsAreFixed(text: string): boolean {
+  return (text.match(new RegExp(LOGGER_CALL, 'g')) ?? []).length === (text.match(LOGGER_FIXED) ?? []).length;
+}
+
 // Built at runtime from neutral parts so no fixture looks like a real value.
 const MARK = ['h1210', 's2a', 'mark'].join('-');
 const TOK = ['h1210', 's2a', 'tok'].join('-');
@@ -146,10 +157,18 @@ describe('every non-test web-ui/src file (HAP-1210 S2b, T2)', () => {
   });
 
   it('pass the logger one fixed string, never an error or object', () => {
-    const hits = sources.filter(([, text]) =>
-      (text.match(/\blogger\s*(?:\.\s*\w+|\[[^\]]*\])\s*\(/g) ?? []).length !==
-      (text.match(/\blogger\s*(?:\.\s*\w+|\[[^\]]*\])\s*\(\s*(['"`])(?:(?!\1)[^\\]|\\.)*\1\s*\)/g) ?? []).length);
+    const hits = sources.filter(([, text]) => !loggerCallsAreFixed(text));
     expect(hits.map(([file]) => file)).toEqual([]);
+  });
+
+  it('accepts a plain literal and rejects interpolation, concatenation and non-literal arguments (HAP-1280)', () => {
+    const accepted = ["logger.warn('fixed')", 'logger.warn("fixed")', 'logger.warn(`fixed`)', "logger['error']('fixed')",
+      "logger.error('it\\'s')", 'logger.error(`cost \\${x}`)', 'logger.error(`cost $5`)', "logger.info('a'); logger.warn('b')"];
+    const rejected = ['logger.error(`a ${x}`)', 'logger.error(`${err}`)', "logger.error('a' + x)", "logger.error('a', x)",
+      'logger.error(err)', 'logger.error(String(err))', 'logger.error()', "logger.error('a'\n+ x)", "logger.error('a\nb')",
+      "logger.info('a'); logger.warn(`b ${x}`)", "logger['error'](`a ${x}`)"];
+    expect(accepted.filter((text) => !loggerCallsAreFixed(text))).toEqual([]);
+    expect(rejected.filter((text) => loggerCallsAreFixed(text))).toEqual([]);
   });
 
   it('log through logClientError with a fixed string-literal label', () => {
@@ -161,6 +180,52 @@ describe('every non-test web-ui/src file (HAP-1210 S2b, T2)', () => {
       if (calls.length > 0) counts[file] = calls.length;
     }
     expect(counts).toEqual(SITES);
+  });
+});
+
+describe('logger output arity (HAP-1280)', () => {
+  const argsOf = (method: 'log' | 'debug' | 'warn' | 'error') => vi.mocked(console[method]).mock.calls;
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([['warn', 'warn', 'WARN'], ['error', 'error', 'ERROR']] as const)(
+    'logger.%s calls console.%s once with the single argument "[%s] message"', (level, method, tag) => {
+      logger[level]('message');
+      expect(argsOf(method)).toEqual([[`[${tag}] message`]]);
+      expect(CONSOLE.filter((m) => m !== method).flatMap((m) => vi.mocked(console[m]).mock.calls)).toEqual([]);
+    });
+
+  it.each([['info', 'log', 'INFO'], ['debug', 'debug', 'DEBUG']] as const)(
+    'logger.%s calls console.%s once with the single argument "[%s] message" in development', (level, method, tag) => {
+      vi.stubEnv('NODE_ENV', 'development');
+      logger[level]('message');
+      expect(argsOf(method)).toEqual([[`[${tag}] message`]]);
+      expect(CONSOLE.filter((m) => m !== method).flatMap((m) => vi.mocked(console[m]).mock.calls)).toEqual([]);
+    });
+
+  it.each(['info', 'debug'] as const)('logger.%s emits nothing outside development', (level) => {
+    vi.stubEnv('NODE_ENV', 'production');
+    logger[level]('message');
+    expect(CONSOLE.flatMap((m) => vi.mocked(console[m]).mock.calls)).toEqual([]);
+  });
+
+  it.each([['info', 'log'], ['debug', 'debug'], ['warn', 'warn'], ['error', 'error']] as const)(
+    'logger.%s never forwards an extra argument', (level, method) => {
+      vi.stubEnv('NODE_ENV', 'development');
+      const extra = { marker: 'h1280-extra' };
+      (logger[level] as (...args: unknown[]) => void)('message', extra, 'more');
+      expect(argsOf(method)).toHaveLength(1);
+      expect(argsOf(method)[0]).toHaveLength(1);
+      expect(inspect(argsOf(method))).not.toContain('h1280-extra');
+    });
+
+  it('logClientError calls console.error once with exactly the label line and the fields object', () => {
+    logClientError('Label', new TypeError('boom'));
+    expect(argsOf('error')).toEqual([['[ERROR] Label', { errorClass: 'TypeError' }]]);
+    expect(argsOf('error')[0]).toHaveLength(2);
+    expect(CONSOLE.filter((m) => m !== 'error').flatMap((m) => vi.mocked(console[m]).mock.calls)).toEqual([]);
   });
 });
 

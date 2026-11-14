@@ -240,6 +240,7 @@ production scheduling. Credential-backed discovery is restored by HP1-S5
 
 ### Analytics (`/api/v1/analytics`)
 - `GET /analytics/dashboard` - Dashboard statistics for the caller's organization. `health_score` is `null` (unavailable) until a CI health state exists; `critical_relationships` counts relationships with at least one endpoint whose `bsm_business_criticality` is `tier_1` or `tier_2` (`services/critical-ci.ts`)
+- `GET /analytics/topology-summary` - Estate topology summary: per-category CI counts, a capped node sample (`limit` 1..500, default 200) and capped edges (`edge_limit` 1..1000, default 400); decommissioned CIs only with `includeInactive=true`. Reads inside the `readCIList` fence, so CIs with a pending or failed reconciliation operation are absent from every field. Shares the `analytics` admission scope (below); 503 for more than 100 CI types or an unavailable CI list, 504 for a Neo4j timeout.
 - `GET /analytics/ci-counts` - CI counts by type
 - `GET /analytics/discovery-stats` - Discovery statistics
 - `GET /analytics/dependency-depth` and GraphQL `getDependencyDepthStats` share a bounded tenant-edge traversal (128 edges, depth 10, 5-second SQL timeout). Larger graphs return a fixed resource-limit failure; request admission holds REST slots until work finishes.

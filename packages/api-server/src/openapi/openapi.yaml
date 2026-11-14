@@ -2746,6 +2746,95 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /analytics/topology-summary:
+    get:
+      tags: [Analytics]
+      summary: Estate topology summary
+      description: >-
+        Caller-organization estate summary: per-category CI counts, a capped node sample
+        (critical first, then highest degree, then id) and a capped edge list between sampled nodes.
+        Decommissioned CIs are excluded unless includeInactive=true. Out-of-range limits are clamped, not rejected.
+        CIs with a pending or failed reconciliation operation are excluded everywhere (nodes, counts, degrees, edges),
+        as in `GET /cis`. Shares the `analytics` admission scope: 1 in flight per principal, 2 per organization,
+        10 requests/principal/minute and 40/organization/minute.
+      operationId: getTopologySummary
+      parameters:
+        - name: limit
+          in: query
+          description: Node sample cap, clamped to 1..500.
+          schema: { type: integer, default: 200 }
+        - name: edge_limit
+          in: query
+          description: Edge cap, clamped to 1..1000.
+          schema: { type: integer, default: 400 }
+        - name: includeInactive
+          in: query
+          description: Include decommissioned CIs when `true`.
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Topology summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [categories, unmapped_types, nodes, edges, totals]
+                properties:
+                  categories:
+                    type: object
+                    required: [services, apps, data, infra, critical]
+                    properties:
+                      services: { type: integer }
+                      apps: { type: integer }
+                      data: { type: integer }
+                      infra: { type: integer }
+                      critical: { type: integer, description: CIs with bsm_business_criticality tier_1 or tier_2. }
+                  unmapped_types:
+                    type: array
+                    description: Stored CI types with no category mapping (counted under infra).
+                    items: { type: string }
+                  nodes:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, type, category, status, critical, health]
+                      properties:
+                        id: { type: string }
+                        name: { type: string }
+                        type: { type: string }
+                        category: { type: string, enum: [services, apps, data, infra] }
+                        status: { type: string, nullable: true }
+                        critical: { type: boolean }
+                        health: { nullable: true, description: Reserved for the CI health state (BW1); always null. }
+                  edges:
+                    type: array
+                    items:
+                      type: object
+                      required: [source, target, type]
+                      properties:
+                        source: { type: string }
+                        target: { type: string }
+                        type: { type: string }
+                  totals:
+                    type: object
+                    required: [cis, relationships, nodes_returned, edges_returned, truncated]
+                    properties:
+                      cis: { type: integer }
+                      relationships: { type: integer }
+                      nodes_returned: { type: integer }
+                      edges_returned: { type: integer }
+                      truncated: { type: boolean, description: True when the node cap or the edge cap cut data. }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          description: Analytics rate or concurrency limit exceeded
+        '503':
+          description: More CI types than the group cap, or the CI list is temporarily unavailable
+        '504':
+          description: Topology summary timed out
+
   /analytics/ci-counts:
     get:
       tags: [Analytics]

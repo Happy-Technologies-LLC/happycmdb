@@ -9,12 +9,26 @@ import { Badge } from '@/components/ui/badge';
 import { Eyebrow } from '@/components/ui/eyebrow';
 import { brand } from '@/lib/brandColors';
 import cytoscape from 'cytoscape';
+import { UnavailableNotice } from '@/components/dashboard/UnavailableNotice';
+import {
+  EMPTY_VALUE,
+  NOT_AVAILABLE,
+  formatCount,
+  formatCurrency,
+  formatDecimal,
+  formatPercent,
+  isKnown,
+  isUnavailable,
+} from '@/lib/dashboardValue';
+
+const COMPLIANCE_FRAMEWORK_COUNT = 4;
 
 export const BusinessServiceDashboard: React.FC = () => {
   const [selectedService, setSelectedService] = useState<string>('');
   const [selectedBusinessUnit, setSelectedBusinessUnit] = useState<string>('');
 
   const {
+    unavailable,
     serviceHealth,
     revenueAtRisk,
     customerImpact,
@@ -62,6 +76,8 @@ export const BusinessServiceDashboard: React.FC = () => {
               style: {
                 'background-color': (ele: any) => {
                   const health = ele.data('healthScore');
+                  // Unknown health is neutral, never danger.
+                  if (!isKnown(health)) return brand.inkSoft;
                   if (health >= 80) return brand.success;
                   if (health >= 60) return brand.warning;
                   return brand.danger;
@@ -146,16 +162,17 @@ export const BusinessServiceDashboard: React.FC = () => {
     );
   }
 
-  const formatCurrency = (value: number) => {
-    if (value == null || isNaN(value)) return '$0';
-    if (value >= 1000000) {
-      return `$${(value / 1000000).toFixed(1)}M`;
-    }
-    if (value >= 1000) {
-      return `$${(value / 1000).toFixed(0)}K`;
-    }
-    return `$${value.toFixed(0)}`;
-  };
+  const dependencyNodes = serviceDependencies.data?.nodes ?? [];
+  const anyHealthKnown = dependencyNodes.some((node) => isKnown(node.healthScore));
+  const anyHealthUnknown = dependencyNodes.some((node) => !isKnown(node.healthScore));
+
+  const knownComplianceFlags = [
+    complianceStatus.data?.pciCompliant,
+    complianceStatus.data?.hipaaCompliant,
+    complianceStatus.data?.soxCompliant,
+    complianceStatus.data?.gdprCompliant,
+  ].filter((flag): flag is boolean => typeof flag === 'boolean');
+  const compliantCount = knownComplianceFlags.filter(Boolean).length;
 
   return (
     <div className="p-6 space-y-6">
@@ -223,40 +240,51 @@ export const BusinessServiceDashboard: React.FC = () => {
             <div className="flex justify-center py-8">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
             </div>
-          ) : serviceHealth.data ? (
+          ) : serviceHealth.data && serviceHealth.data.length > 0 ? (
             <div className="space-y-4">
               {serviceHealth.data.map((bu: any) => (
                 <div key={bu.businessUnit}>
                   <h4 className="font-semibold mb-2 capitalize">{bu.businessUnit}</h4>
                   <div className="grid grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
-                    {bu.businessServices.map((service: any) => (
-                      <button
-                        key={service.serviceId}
-                        className={`p-3 rounded-lg text-center cursor-pointer transition-all hover:scale-105 ${
-                          selectedService === service.serviceId
-                            ? 'ring-2 ring-primary'
-                            : ''
-                        }`}
-                        style={{
-                          backgroundColor:
-                            service.healthScore >= 80
-                              ? brand.success
-                              : service.healthScore >= 60
-                              ? brand.warning
-                              : brand.danger,
-                          color: '#fff',
-                        }}
-                        onClick={() => setSelectedService(service.serviceId)}
-                        title={`${service.serviceName}: ${service.healthScore}%`}
-                      >
-                        <p className="text-xs font-medium truncate">{service.serviceName}</p>
-                        <p className="text-lg font-bold mt-1">{service.healthScore}%</p>
-                      </button>
-                    ))}
+                    {bu.businessServices.map((service: any) => {
+                      const healthKnown = isKnown(service.healthScore);
+                      return (
+                        <button
+                          key={service.serviceId}
+                          className={`p-3 rounded-lg text-center cursor-pointer transition-all hover:scale-105 ${
+                            selectedService === service.serviceId
+                              ? 'ring-2 ring-primary'
+                              : ''
+                          } ${healthKnown ? '' : 'bg-warm-alt text-ink-soft'}`}
+                          style={
+                            healthKnown
+                              ? {
+                                  backgroundColor:
+                                    service.healthScore >= 80
+                                      ? brand.success
+                                      : service.healthScore >= 60
+                                      ? brand.warning
+                                      : brand.danger,
+                                  color: '#fff',
+                                }
+                              : undefined
+                          }
+                          onClick={() => setSelectedService(service.serviceId)}
+                          title={`${service.serviceName}: ${healthKnown ? `${service.healthScore}%` : NOT_AVAILABLE}`}
+                        >
+                          <p className="text-xs font-medium truncate">{service.serviceName}</p>
+                          <p className="text-lg font-bold mt-1">
+                            {healthKnown ? `${service.healthScore}%` : EMPTY_VALUE}
+                          </p>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               ))}
             </div>
+          ) : serviceHealth.data && isUnavailable(unavailable, 'serviceHealth') ? (
+            <UnavailableNotice label="Service health" />
           ) : (
             <p className="text-center text-muted-foreground py-8">
               Select a business unit to view services
@@ -271,42 +299,75 @@ export const BusinessServiceDashboard: React.FC = () => {
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
             <KPICard
               title="Revenue at Risk"
-              value={formatCurrency(revenueAtRisk.data?.revenueAtRisk || 0)}
+              value={formatCurrency(revenueAtRisk.data?.revenueAtRisk)}
               icon="currency-dollar"
-              color={(revenueAtRisk.data?.percentageAtRisk ?? 0) > 10 ? 'red' : 'green'}
-              description={`${revenueAtRisk.data?.percentageAtRisk?.toFixed(1) || 0}% of total revenue`}
+              color={
+                isKnown(revenueAtRisk.data?.percentageAtRisk)
+                  ? revenueAtRisk.data.percentageAtRisk > 10 ? 'red' : 'green'
+                  : 'blue'
+              }
+              description={
+                isKnown(revenueAtRisk.data?.percentageAtRisk)
+                  ? `${formatPercent(revenueAtRisk.data.percentageAtRisk)} of total revenue`
+                  : NOT_AVAILABLE
+              }
             />
             <KPICard
               title="Customers Impacted"
-              value={customerImpact.data?.customersImpacted || 0}
+              value={formatCount(customerImpact.data?.customersImpacted)}
               icon="users"
-              color={(customerImpact.data?.customersImpacted ?? 0) > 0 ? 'red' : 'green'}
-              description={`${customerImpact.data?.totalCustomers || 0} total customers`}
+              color={
+                isKnown(customerImpact.data?.customersImpacted)
+                  ? customerImpact.data.customersImpacted > 0 ? 'red' : 'green'
+                  : 'blue'
+              }
+              description={
+                isKnown(customerImpact.data?.totalCustomers)
+                  ? `${formatCount(customerImpact.data.totalCustomers)} total customers`
+                  : NOT_AVAILABLE
+              }
             />
             <KPICard
               title="Estimated User Impact"
-              value={customerImpact.data?.estimatedUserImpact?.toLocaleString() || '0'}
+              value={formatCount(customerImpact.data?.estimatedUserImpact)}
               icon="warning"
-              color={(customerImpact.data?.estimatedUserImpact ?? 0) > 0 ? 'red' : 'green'}
-              description="Users affected by incidents"
+              color={
+                isKnown(customerImpact.data?.estimatedUserImpact)
+                  ? customerImpact.data.estimatedUserImpact > 0 ? 'red' : 'green'
+                  : 'blue'
+              }
+              description={
+                isKnown(customerImpact.data?.estimatedUserImpact)
+                  ? 'Users affected by incidents'
+                  : NOT_AVAILABLE
+              }
             />
             <KPICard
               title="Compliance Score"
-              value={`${
-                Object.values(complianceStatus.data || {}).filter((v) => v === true).length
-              }/${Object.keys(complianceStatus.data || {}).filter((k) => k.endsWith('Compliant')).length}`}
+              value={knownComplianceFlags.length > 0 ? `${compliantCount}/${knownComplianceFlags.length}` : EMPTY_VALUE}
               icon="shield"
               color={
-                Object.values(complianceStatus.data || {}).filter((v) => v === true).length ===
-                Object.keys(complianceStatus.data || {}).filter((k) => k.endsWith('Compliant')).length
+                knownComplianceFlags.length === 0
+                  ? 'blue'
+                  : knownComplianceFlags.length === COMPLIANCE_FRAMEWORK_COUNT &&
+                    compliantCount === COMPLIANCE_FRAMEWORK_COUNT
                   ? 'green'
                   : 'yellow'
               }
-              description="Compliance frameworks"
+              description={
+                knownComplianceFlags.length === 0
+                  ? NOT_AVAILABLE
+                  : knownComplianceFlags.length < COMPLIANCE_FRAMEWORK_COUNT
+                  ? `${knownComplianceFlags.length} of ${COMPLIANCE_FRAMEWORK_COUNT} frameworks reported`
+                  : 'Compliance frameworks'
+              }
             />
           </div>
 
           {/* Revenue at Risk Details */}
+          {revenueAtRisk.data && revenueAtRisk.data.affectedIncidents.length === 0 && isUnavailable(unavailable, 'revenueAtRisk') && (
+            <UnavailableNotice label="Revenue at risk details" />
+          )}
           {revenueAtRisk.data && revenueAtRisk.data.affectedIncidents.length > 0 && (
             <LiquidGlass variant="default" rounded="xl">
               <div>
@@ -345,41 +406,53 @@ export const BusinessServiceDashboard: React.FC = () => {
           )}
 
           {/* Compliance Status */}
+          {complianceStatus.data && (
           <LiquidGlass variant="default" rounded="xl">
             <div>
           <h3 className="text-lg font-semibold mb-1">Compliance Status</h3>
           <p className="text-sm text-muted-foreground mb-4">
-                Last audit: {complianceStatus.data?.lastAuditDate
+                Last audit: {complianceStatus.data.lastAuditDate
                   ? new Date(complianceStatus.data.lastAuditDate).toLocaleDateString()
-                  : 'N/A'}
+                  : NOT_AVAILABLE}
               </p>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                 {[
-                  { name: 'PCI', value: complianceStatus.data?.pciCompliant },
-                  { name: 'HIPAA', value: complianceStatus.data?.hipaaCompliant },
-                  { name: 'SOX', value: complianceStatus.data?.soxCompliant },
-                  { name: 'GDPR', value: complianceStatus.data?.gdprCompliant },
+                  { name: 'PCI', value: complianceStatus.data.pciCompliant },
+                  { name: 'HIPAA', value: complianceStatus.data.hipaaCompliant },
+                  { name: 'SOX', value: complianceStatus.data.soxCompliant },
+                  { name: 'GDPR', value: complianceStatus.data.gdprCompliant },
                 ].map((compliance) => (
                   <div key={compliance.name} className="p-4 border border-border rounded-lg text-center">
                     <div className="flex items-center justify-center mb-2">
-                      {compliance.value ? (
+                      {compliance.value === true ? (
                         <Icon name="check-circle" size={32} className="text-success" />
-                      ) : (
+                      ) : compliance.value === false ? (
                         <Icon name="x-circle" size={32} className="text-danger" />
+                      ) : (
+                        <Icon name="minus" size={32} className="text-muted-foreground" />
                       )}
                     </div>
                     <p className="text-sm font-medium">{compliance.name}</p>
-                    <Badge variant={compliance.value ? 'success' : 'destructive'} className="mt-2">
-                      {compliance.value ? 'Compliant' : 'Non-Compliant'}
+                    <Badge
+                      variant={
+                        compliance.value === true ? 'success' : compliance.value === false ? 'destructive' : 'outline'
+                      }
+                      className="mt-2"
+                    >
+                      {compliance.value === true
+                        ? 'Compliant'
+                        : compliance.value === false
+                        ? 'Non-Compliant'
+                        : NOT_AVAILABLE}
                     </Badge>
                   </div>
                 ))}
               </div>
-              {(complianceStatus.data?.nonCompliantItems?.length ?? 0) > 0 && (
+              {(complianceStatus.data.nonCompliantItems?.length ?? 0) > 0 && (
                 <div>
                   <h4 className="font-semibold mb-3">Non-Compliant Items</h4>
                   <div className="space-y-2">
-                    {complianceStatus.data?.nonCompliantItems?.map((item: any, index: number) => (
+                    {complianceStatus.data.nonCompliantItems?.map((item: any, index: number) => (
                       <div key={index} className="p-3 border border-border rounded-lg bg-danger-soft">
                         <p className="text-sm font-medium">{item.requirement}</p>
                         <p className="text-xs text-muted-foreground mt-1">
@@ -392,6 +465,7 @@ export const BusinessServiceDashboard: React.FC = () => {
               )}
             </div>
           </LiquidGlass>
+          )}
 
           {/* Value Stream Health */}
           {valueStreamHealth.data && (
@@ -399,8 +473,11 @@ export const BusinessServiceDashboard: React.FC = () => {
               <div>
           <h3 className="text-lg font-semibold mb-1">Value Stream Health</h3>
           <p className="text-sm text-muted-foreground mb-4">
-                  Flow rate: {valueStreamHealth.data.flowRate} requests/day | Cycle time: {valueStreamHealth.data.cycleTime}h
+                  Flow rate: {isKnown(valueStreamHealth.data.flowRate) ? `${formatCount(valueStreamHealth.data.flowRate)} requests/day` : EMPTY_VALUE} | Cycle time: {isKnown(valueStreamHealth.data.cycleTime) ? `${formatDecimal(valueStreamHealth.data.cycleTime)}h` : EMPTY_VALUE}
                 </p>
+                {valueStreamHealth.data.stages.length === 0 && isUnavailable(unavailable, 'valueStreamHealth') && (
+                  <UnavailableNotice label="Value stream stages" />
+                )}
                 <div className="space-y-4">
                   {valueStreamHealth.data.stages.map((stage: any, index: number) => (
                     <div key={stage.name}>
@@ -414,25 +491,27 @@ export const BusinessServiceDashboard: React.FC = () => {
                           )}
                         </div>
                         <span className="text-sm">
-                          Health: <span className="font-bold">{stage.healthScore}%</span> | Throughput: {stage.throughput}/day
+                          Health: <span className="font-bold">{formatPercent(stage.healthScore, 0)}</span> | Throughput: {isKnown(stage.throughput) ? `${stage.throughput}/day` : EMPTY_VALUE}
                         </span>
                       </div>
                       <div className="relative pt-1">
                         <div className="flex mb-2 items-center justify-between">
                           <div className="w-full">
                             <div className="overflow-hidden h-3 text-xs flex rounded bg-warm-alt">
-                              <div
-                                style={{
-                                  width: `${stage.healthScore}%`,
-                                  backgroundColor:
-                                    stage.healthScore >= 80
-                                      ? brand.success
-                                      : stage.healthScore >= 60
-                                      ? brand.warning
-                                      : brand.danger,
-                                }}
-                                className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center"
-                              ></div>
+                              {isKnown(stage.healthScore) && (
+                                <div
+                                  style={{
+                                    width: `${stage.healthScore}%`,
+                                    backgroundColor:
+                                      stage.healthScore >= 80
+                                        ? brand.success
+                                        : stage.healthScore >= 60
+                                        ? brand.warning
+                                        : brand.danger,
+                                  }}
+                                  className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center"
+                                ></div>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -469,18 +548,31 @@ export const BusinessServiceDashboard: React.FC = () => {
                 </p>
               )}
               <div className="mt-4 flex items-center gap-4 text-sm">
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 rounded-full bg-success"></div>
-                  <span>Healthy (&gt;80%)</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 rounded-full bg-warning"></div>
-                  <span>Warning (60-80%)</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-4 h-4 rounded-full bg-danger"></div>
-                  <span>Critical (&lt;60%)</span>
-                </div>
+                {anyHealthKnown && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 rounded-full bg-success"></div>
+                      <span>Healthy (&gt;80%)</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 rounded-full bg-warning"></div>
+                      <span>Warning (60-80%)</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 rounded-full bg-danger"></div>
+                      <span>Critical (&lt;60%)</span>
+                    </div>
+                  </>
+                )}
+                {anyHealthUnknown && (
+                  <div className="flex items-center gap-2">
+                    <div
+                      className="w-4 h-4 rounded-full"
+                      style={{ backgroundColor: brand.inkSoft }}
+                    ></div>
+                    <span>Health: {NOT_AVAILABLE}</span>
+                  </div>
+                )}
               </div>
             </div>
           </LiquidGlass>

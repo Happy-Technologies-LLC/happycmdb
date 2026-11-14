@@ -212,6 +212,22 @@ describe('analyticsService', () => {
     });
   });
 
+  it('maps topology summary options onto the endpoint query and omits unset ones', async () => {
+    const summary = {
+      categories: { services: 0, apps: 0, data: 0, infra: 0, critical: 0 },
+      unmapped_types: [], nodes: [], edges: [],
+      totals: { cis: 0, relationships: 0, nodes_returned: 0, edges_returned: 0, truncated: false },
+    };
+    request.get.mockResolvedValue({ data: summary });
+
+    expect(await analyticsService.getTopologySummary({ limit: 50, edgeLimit: 80, includeInactive: true })).toEqual(summary);
+    expect(request.get).toHaveBeenLastCalledWith('/analytics/topology-summary',
+      { params: { limit: 50, edge_limit: 80, includeInactive: 'true' } });
+
+    await analyticsService.getTopologySummary();
+    expect(request.get).toHaveBeenLastCalledWith('/analytics/topology-summary', { params: {} });
+  });
+
   it('converts and unwraps discovery statistics into the controller contract', async () => {
     request.get.mockResolvedValue({
       data: {

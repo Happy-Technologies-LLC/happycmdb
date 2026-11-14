@@ -25,10 +25,10 @@ export interface DashboardResponse<T> {
 
 // Executive Dashboard Types
 export interface ExecutiveSummaryData {
-  totalITSpend: number;
+  totalITSpend: number | null;
   costByCapability: Array<{
     capability: string;
-    totalCost: number;
+    totalCost: number | null;
     businessServices: Array<{
       serviceId: string;
       serviceName: string;
@@ -54,9 +54,9 @@ export interface ExecutiveSummaryData {
   }>;
   serviceHealthByTier: Array<{
     tier: string;
-    averageHealthScore: number;
+    averageHealthScore: number | null;
     serviceCount: number;
-    trend: string;
+    trend: string | null;
   }>;
   riskMatrix: {
     services: Array<{
@@ -72,33 +72,35 @@ export interface ExecutiveSummaryData {
     serviceId: string;
     serviceName: string;
     monthlyCost: number;
-    trend: string;
-    changePercent: number;
+    trend: string | null;
+    changePercent: number | null;
   }>;
   valueScorecard: Array<{
     serviceId: string;
     serviceName: string;
-    annualRevenue: number;
-    monthlyCost: number;
-    roi: number;
-    customers: number;
+    annualRevenue: number | null;
+    monthlyCost: number | null;
+    roi: number | null;
+    customers: number | null;
   }>;
+  /** Fields with no backing data; null or empty in this payload. */
+  unavailable: string[];
 }
 
 // CIO Dashboard Types
 export interface CIOMetricsData {
   serviceAvailability: Array<{
     tier: string;
-    averageAvailability: number;
-    slaTarget: number;
-    complianceStatus: string;
+    averageAvailability: number | null;
+    slaTarget: number | null;
+    complianceStatus: string | null;
   }>;
   changeSuccessRates: {
-    successful: number;
-    failed: number;
-    rollbacks: number;
-    total: number;
-    successRate: number;
+    successful: number | null;
+    failed: number | null;
+    rollbacks: number | null;
+    total: number | null;
+    successRate: number | null;
   };
   incidentResponseTimes: Array<{
     priority: string;
@@ -108,16 +110,16 @@ export interface CIOMetricsData {
   }>;
   configurationAccuracy: {
     totalCIs: number;
-    accurateCIs: number;
-    accuracyPercentage: number;
-    driftDetected: number;
-    lastAuditDate: string;
+    accurateCIs: number | null;
+    accuracyPercentage: number | null;
+    driftDetected: number | null;
+    lastAuditDate: string | null;
   };
   costByCapability: Array<{
     capability: string;
-    cost: number;
-    budgetAllocated: number;
-    variance: number;
+    cost: number | null;
+    budgetAllocated: number | null;
+    variance: number | null;
   }>;
   capacityPlanning: Array<{
     month: string;
@@ -126,6 +128,8 @@ export interface CIOMetricsData {
     networkUtilization: number;
     forecast: number;
   }>;
+  /** Fields with no backing data; null or empty in this payload. */
+  unavailable: string[];
 }
 
 // FinOps Dashboard Types
@@ -139,9 +143,9 @@ export interface FinOpsDashboardData {
     forecast: number;
   }>;
   onPremVsCloud: {
-    onPremCost: number;
-    cloudCost: number;
-    totalCost: number;
+    onPremCost: number | null;
+    cloudCost: number | null;
+    totalCost: number | null;
     tcoComparison: Array<{
       category: string;
       onPrem: number;
@@ -150,7 +154,7 @@ export interface FinOpsDashboardData {
   };
   costByTower: Array<{
     tower: string;
-    cost: number;
+    cost: number | null;
     subTowers: Array<{
       name: string;
       cost: number;
@@ -158,10 +162,10 @@ export interface FinOpsDashboardData {
   }>;
   budgetVariance: Array<{
     capability: string;
-    budgetAllocated: number;
-    actualSpend: number;
-    variance: number;
-    variancePercent: number;
+    budgetAllocated: number | null;
+    actualSpend: number | null;
+    variance: number | null;
+    variancePercent: number | null;
   }>;
   unitEconomics: Array<{
     metric: string;
@@ -180,8 +184,10 @@ export interface FinOpsDashboardData {
       description: string;
       priority: string;
     }>;
-    totalPotentialSavings: number;
+    totalPotentialSavings: number | null;
   };
+  /** Fields with no backing data; null or empty in this payload. */
+  unavailable: string[];
 }
 
 // Business Service Dashboard Types
@@ -191,14 +197,14 @@ export interface BusinessServiceDashboardData {
     businessServices: Array<{
       serviceId: string;
       serviceName: string;
-      healthScore: number;
+      healthScore: number | null;
       status: string;
     }>;
   }>;
   revenueAtRisk: {
-    totalAnnualRevenue: number;
-    revenueAtRisk: number;
-    percentageAtRisk: number;
+    totalAnnualRevenue: number | null;
+    revenueAtRisk: number | null;
+    percentageAtRisk: number | null;
     affectedIncidents: Array<{
       id: string;
       priority: string;
@@ -206,9 +212,9 @@ export interface BusinessServiceDashboardData {
     }>;
   };
   customerImpact: {
-    totalCustomers: number;
-    customersImpacted: number;
-    estimatedUserImpact: number;
+    totalCustomers: number | null;
+    customersImpacted: number | null;
+    estimatedUserImpact: number | null;
     incidents: Array<{
       id: string;
       priority: string;
@@ -216,11 +222,11 @@ export interface BusinessServiceDashboardData {
     }>;
   };
   complianceStatus: {
-    pciCompliant: boolean;
-    hipaaCompliant: boolean;
-    soxCompliant: boolean;
-    gdprCompliant: boolean;
-    lastAuditDate: string;
+    pciCompliant: boolean | null;
+    hipaaCompliant: boolean | null;
+    soxCompliant: boolean | null;
+    gdprCompliant: boolean | null;
+    lastAuditDate: string | null;
     nonCompliantItems: Array<{
       requirement: string;
       status: string;
@@ -234,15 +240,15 @@ export interface BusinessServiceDashboardData {
       throughput: number;
       bottleneck: boolean;
     }>;
-    flowRate: number;
-    cycleTime: number;
+    flowRate: number | null;
+    cycleTime: number | null;
   };
   serviceDependencies: {
     nodes: Array<{
       id: string;
       label: string;
       type: string;
-      healthScore: number;
+      healthScore: number | null;
       status: string;
       layer: number;
     }>;
@@ -251,9 +257,11 @@ export interface BusinessServiceDashboardData {
       from: string;
       to: string;
       type: string;
-      healthImpact: number;
+      healthImpact: number | null;
     }>;
   };
+  /** Fields with no backing data; null or empty in this payload. */
+  unavailable: string[];
 }
 
 class DashboardService {

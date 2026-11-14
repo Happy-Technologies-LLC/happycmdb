@@ -932,6 +932,100 @@ describe('AuthController profile/password/account routes', () => {
     });
   });
 
+  describe('HAP-1911 platformAdmin and organizationId from the stored principal', () => {
+    const legacyKeys = ['avatar', 'createdAt', 'email', 'lastLoginAt', 'name', 'role', 'userId', 'username'];
+    const me = () => request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${victimToken}`);
+    const store = (patch: Partial<User>) => Object.assign(repository.users.get('user-1')!, patch);
+    // JSON drops undefined keys, so the wire key set is what the client sees.
+    const wireKeys = (res: request.Response) => Object.keys(res.body.data).sort();
+
+    it('a tenant user sees its own organization and platformAdmin false; every existing field keeps its name and type', async () => {
+      store({ _organizationId: 'org-acme', _name: 'Alice', _avatar: 'data:image/png;base64,AAAA', lastLoginAt: new Date('2024-02-02') });
+      const res = await me();
+
+      expect(res.status).toBe(200);
+      expect(wireKeys(res)).toEqual([...legacyKeys, 'organizationId', 'platformAdmin'].sort());
+      expect(res.body.data).toEqual({
+        userId: 'user-1', username: 'alice', email: 'alice@example.com', name: 'Alice', avatar: 'data:image/png;base64,AAAA',
+        role: 'operator', createdAt: '2024-01-01T00:00:00.000Z', lastLoginAt: '2024-02-02T00:00:00.000Z',
+        platformAdmin: false, organizationId: 'org-acme',
+      });
+    });
+
+    it('a user without an organization gets organizationId null, still present on the wire', async () => {
+      const res = await me();
+      expect(res.body.data).toHaveProperty('organizationId', null);
+      expect(res.body.data.platformAdmin).toBe(false);
+    });
+
+    it('a platform administrator gets true, on GET /me and PUT /profile', async () => {
+      store({ _platformAdmin: true, _organizationId: 'org-internal' });
+      expect((await me()).body.data).toMatchObject({ platformAdmin: true, organizationId: 'org-internal' });
+      const updated = await request(app).put('/api/v1/auth/profile').set('Authorization', `Bearer ${victimToken}`).send({ name: 'Renamed' });
+      expect(updated.body.data).toMatchObject({ name: 'Renamed', platformAdmin: true, organizationId: 'org-internal' });
+    });
+
+    it('the stored flag alone is not enough: a seeded account with the flag set gets false, on both routes', async () => {
+      const env = process.env['NODE_ENV'];
+      try {
+        // A default-password suspect authenticates only in development, so that case runs there.
+        for (const [seeded, nodeEnv] of [
+          [{ _seedProvenance: 'seed-writer' }, env], [{ _username: 'admin' }, env], [{ _email: 'admin@happycmdb.local' }, env],
+          [{ _defaultPasswordSuspect: true }, 'development'],
+        ] as const) {
+          process.env['NODE_ENV'] = nodeEnv;
+          store({ _platformAdmin: true, _seedProvenance: undefined, _defaultPasswordSuspect: false, _username: 'alice', _email: 'alice@example.com', ...seeded });
+          const read = await me();
+          expect([read.status, read.body.data.platformAdmin]).toEqual([200, false]);
+          const updated = await request(app).put('/api/v1/auth/profile').set('Authorization', `Bearer ${victimToken}`).send({ name: 'Renamed' });
+          expect([updated.status, updated.body.data.platformAdmin]).toEqual([200, false]);
+        }
+      } finally {
+        process.env['NODE_ENV'] = env;
+      }
+    });
+
+    it('headers, query and body cannot change either field, and the stored value still wins', async () => {
+      store({ _organizationId: 'org-acme' });
+      const forged = { 'X-Organization-Id': 'org-other', 'X-Tenant-Id': 'org-other', 'X-Platform-Admin': 'true', 'X-Is-Platform-Admin': '1' };
+      const res = await request(app).get('/api/v1/auth/me?organizationId=org-other&platformAdmin=true&platform_admin=true')
+        .set('Authorization', `Bearer ${victimToken}`).set(forged).send({ organizationId: 'org-other', platformAdmin: true });
+      expect(res.body.data).toMatchObject({ platformAdmin: false, organizationId: 'org-acme' });
+
+      const updated = await request(app).put('/api/v1/auth/profile?platformAdmin=true').set('Authorization', `Bearer ${victimToken}`)
+        .set(forged).send({ name: 'Renamed', platformAdmin: true, organizationId: 'org-other', _platformAdmin: true, _organizationId: 'org-other' });
+      expect(updated.status).toBe(200);
+      expect(updated.body.data).toMatchObject({ platformAdmin: false, organizationId: 'org-acme' });
+      expect(repository.users.get('user-1')).toMatchObject({ _organizationId: 'org-acme' });
+      expect(repository.users.get('user-1')!._platformAdmin).toBeUndefined();
+    });
+
+    it('a token claim of another organization does not change the response (verifyToken replaces it with the stored one)', async () => {
+      store({ _organizationId: 'org-acme' });
+      const claimed = jwtService.generateAccessToken('user-1', 'alice', 'operator', 'org-other');
+      const res = await request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${claimed}`);
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ platformAdmin: false, organizationId: 'org-acme' });
+    });
+
+    it('discloses nothing beyond the caller\'s own profile: no hash, credential epoch, seed marker, scopes or element id', async () => {
+      store({ _avatar: 'data:image/png;base64,AAAA', lastLoginAt: new Date('2024-02-02'), _credentialEpoch: 7, _seedProvenance: undefined, _elementId: '4:abc:1', _scopes: ['credentials:manage'] } as Partial<User>);
+      const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', undefined, 7);
+      const auth = { Authorization: `Bearer ${token}` };
+      const bodies = [
+        (await request(app).get('/api/v1/auth/me').set(auth)).body,
+        (await request(app).put('/api/v1/auth/profile').set(auth).send({ name: 'x' })).body,
+      ];
+      for (const body of bodies) {
+        const text = JSON.stringify(body);
+        for (const secret of ['$2', 'correct-horse', 'credentialEpoch', '_cep', 'seedProvenance', 'credentials:manage', '4:abc:1', 'passwordHash']) {
+          expect(text).not.toContain(secret);
+        }
+        expect(Object.keys(body.data).sort()).toEqual([...legacyKeys, 'organizationId', 'platformAdmin'].sort());
+      }
+    });
+  });
+
   describe('PUT /password', () => {
     it('returns 401 without a bearer token', async () => {
       const res = await request(app)

@@ -10,7 +10,7 @@ import { NextFunction, Request, Response, Router } from 'express';
 import { logger, errorClassFields } from '@cmdb/common';
 import {
   ApiKeyNotFoundError, AuthFailureError, AuthService, CredentialsChangedError, CurrentPasswordIncorrectError,
-  PasswordNotAllowedError, type PasswordChangeOutcome,
+  PasswordNotAllowedError, type PasswordChangeOutcome, type UserProfile,
 } from '../auth/auth.service';
 import { UserNotFoundError } from '../auth/types';
 import { ValidationMiddleware } from './middleware/validation.middleware';
@@ -368,20 +368,13 @@ export class AuthController {
   }
 
   /**
-   * Shapes a sanitized user record into the RawUserPayload-compatible
+   * Shapes the caller's own profile into the RawUserPayload-compatible
    * response body the frontend's ApiService.mapUser() expects (see
-   * web-ui/src/services/api.ts).
+   * web-ui/src/services/api.ts). `platformAdmin` and `organizationId` come
+   * from the stored user the service just loaded (HAP-1911), never from the
+   * request.
    */
-  private toRawUserPayload(user: {
-    _id: string;
-    _username: string;
-    _email: string;
-    _role: string;
-    _createdAt?: Date;
-    lastLoginAt?: Date;
-    _name?: string;
-    _avatar?: string;
-  }): Record<string, unknown> {
+  private toRawUserPayload(user: UserProfile): Record<string, unknown> {
     return {
       userId: user._id,
       username: user._username,
@@ -391,6 +384,8 @@ export class AuthController {
       role: user._role,
       createdAt: user._createdAt,
       lastLoginAt: user.lastLoginAt,
+      platformAdmin: user.platformAdmin,
+      organizationId: user._organizationId ?? null,
     };
   }
 

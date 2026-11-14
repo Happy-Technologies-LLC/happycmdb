@@ -178,31 +178,26 @@ Get information about the currently authenticated user.
 Authorization: Bearer YOUR_ACCESS_TOKEN
 ```
 
-**Response** (200 OK):
+**Response** (200 OK), the caller's own record only (also the `data` of `PUT /api/v1/auth/profile`):
 ```json
 {
   "success": true,
   "data": {
-    "_id": "user-admin-001",
-    "_username": "admin",
-    "_email": "admin@happycmdb.local",
-    "_role": "admin",
-    "_enabled": true,
-    "_createdAt": "2025-01-01T00:00:00Z",
-    "_updatedAt": "2025-11-15T09:00:00Z",
-    "_lastLoginAt": "2025-11-15T10:00:00Z",
-    "permissions": [
-      "ci:read",
-      "ci:write",
-      "ci:delete",
-      "discovery:manage",
-      "credentials:manage",
-      "users:manage",
-      "admin:*"
-    ]
+    "userId": "user-1",
+    "username": "alice",
+    "email": "alice@example.com",
+    "name": "Alice",
+    "avatar": "data:image/png;base64,...",
+    "role": "operator",
+    "createdAt": "2025-01-01T00:00:00Z",
+    "lastLoginAt": "2025-11-15T10:00:00Z",
+    "platformAdmin": false,
+    "organizationId": "org-acme"
   }
 }
 ```
+
+`platformAdmin` is the effective platform-administrator status the server enforces (the stored flag, never true for a seeded account). `organizationId` is the caller's organization, `null` for a user without one. Both come from the stored user, not from the request or token claims; the UI displays them and never decides access from them.
 
 **Error Responses**:
 - `401 Unauthorized` - Missing or invalid access token

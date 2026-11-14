@@ -12,6 +12,7 @@ import { errorClassFields, logger, type AuditLogEntry, type ConfigSchema } from 
 import { JWTService, TokenVerificationError } from './jwt.service';
 import { BCRYPT_HASH, PasswordService } from './password.service';
 import { containsNul, defaultCredentialsRefused, isDefaultEquivalent, newPasswordAllowed } from './default-credentials';
+import { isPlatformAdmin } from './platform-admin';
 import {
   User,
   ApiKey,
@@ -25,6 +26,24 @@ import {
   AmbiguousUserIdentityError,
   UserNotFoundError,
 } from './types';
+
+/**
+ * What the authenticated user may read about their own record. Disclosure
+ * is exactly these fields (HAP-1911): see AuthService.toProfile.
+ */
+export interface UserProfile {
+  _id: string;
+  _username: string;
+  _email: string;
+  _role: User['_role'];
+  _createdAt: Date;
+  lastLoginAt?: Date;
+  _name?: string;
+  _avatar?: string;
+  _organizationId?: string;
+  /** Effective platform-administrator status (isPlatformAdmin), not the stored flag. */
+  platformAdmin: boolean;
+}
 
 export interface UserProfileUpdate {
   name?: string;
@@ -525,15 +544,33 @@ export class AuthService {
   }
 
   /**
-   * Get the authenticated user's sanitized profile (no password hash)
+   * The authenticated user's own profile: an explicit projection of the
+   * stored user, never a spread of it. No password hash, credential
+   * generation, seed marker, element id or scopes. `platformAdmin` is the
+   * effective status (isPlatformAdmin: the stored flag, and never for a
+   * seeded account), the same decision the ACL layer makes.
    */
-  async getUserProfile(userId: string): Promise<Omit<User, '_passwordHash'> | null> {
+  private toProfile(user: User): UserProfile {
+    return {
+      _id: user._id,
+      _username: user._username,
+      _email: user._email,
+      _role: user._role,
+      _createdAt: user._createdAt,
+      lastLoginAt: user.lastLoginAt,
+      _name: user._name,
+      _avatar: user._avatar,
+      _organizationId: user._organizationId,
+      platformAdmin: isPlatformAdmin(user),
+    };
+  }
+
+  /**
+   * Get the authenticated user's profile (see toProfile for what it holds)
+   */
+  async getUserProfile(userId: string): Promise<UserProfile | null> {
     const user = await this.repository.findUserById(userId);
-    if (!user) {
-      return null;
-    }
-    const { _passwordHash, ...profile } = user;
-    return profile;
+    return user ? this.toProfile(user) : null;
   }
 
   /**
@@ -542,15 +579,13 @@ export class AuthService {
   async updateProfile(
     userId: string,
     updates: { name?: string; avatar?: string }
-  ): Promise<Omit<User, '_passwordHash'>> {
+  ): Promise<UserProfile> {
     const user = await this.repository.findUserById(userId);
     if (!user) {
       throw new UserNotFoundError();
     }
 
-    const updated = await this.repository.updateUser(userId, updates);
-    const { _passwordHash, ...profile } = updated;
-    return profile;
+    return this.toProfile(await this.repository.updateUser(userId, updates));
   }
 
   /**

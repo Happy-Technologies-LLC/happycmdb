@@ -81,7 +81,7 @@ class InMemoryAuthRepository implements AuthRepository {
     if (!existing || existing._passwordHash !== write.readHash) {
       return false;
     }
-    this.users.set(write.userId, { ...existing, _passwordHash: write.newHash, _credentialEpoch: write.nextEpoch });
+    this.users.set(write.userId, { ...existing, _passwordHash: write.newHash, _credentialEpoch: (existing._credentialEpoch ?? 0) + 1 });
     return true;
   }
 

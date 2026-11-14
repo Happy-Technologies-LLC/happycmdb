@@ -288,7 +288,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     const rotatedHash = (await userProps())['_passwordHash'];
 
     const write = await graph.run(GUARDED_PASSWORD_CYPHER, {
-      elementId: eid, userId: USER, credentialEpoch: neo4j.int(0), readHash, newHash: 'attacker-hash', nextEpoch: neo4j.int(1),
+      elementId: eid, userId: USER, credentialEpoch: neo4j.int(0), readHash, newHash: 'attacker-hash',
     });
     const disable = await graph.run(GUARDED_DISABLE_CYPHER, { elementId: eid, userId: USER, credentialEpoch: neo4j.int(0) });
 
@@ -302,7 +302,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     await unmark();
     const repository = new Neo4jAuthRepository();
     const written = await repository.updatePasswordHashGuarded({
-      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash', nextEpoch: 1,
+      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash',
     });
 
     expect(written).toBe(true);
@@ -312,6 +312,24 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     expect(neo4j.integer.toNumber(props['credentialEpoch'] as never)).toBe(1);
     // The key list carries each key's generation, so AuthService.listApiKeys can mark the pre-change key.
     expect((await repository.listApiKeys(USER)).map(k => k._credentialEpoch)).toEqual([0]);
+  });
+
+  it('HAP-1669: the generation moves by exactly +1 from the guarded value; a stale or replayed write changes nothing', async () => {
+    await unmark();
+    await graph.run('MATCH (u:User {_id: $id}) SET u.credentialEpoch = 4', { id: USER });
+    const repository = new Neo4jAuthRepository();
+    const write = async (credentialEpoch: number, newHash: string) =>
+      repository.updatePasswordHashGuarded({ userId: USER, elementId: await elementId(), credentialEpoch, readHash: (await userProps())['_passwordHash'] as string, newHash });
+    const epoch = async () => neo4j.integer.toNumber((await userProps())['credentialEpoch'] as never);
+
+    expect(await write(3, 'stale-lower')).toBe(false);
+    expect(await write(9, 'stale-higher')).toBe(false);
+    expect([await epoch(), (await userProps())['_passwordHash']]).toEqual([4, defaultHash]);
+
+    expect(await write(4, 'first')).toBe(true);
+    expect([await epoch(), (await userProps())['_passwordHash']]).toEqual([5, 'first']);
+    expect(await write(4, 'replayed')).toBe(false); // the same authorizing generation cannot advance it twice
+    expect([await epoch(), (await userProps())['_passwordHash']]).toEqual([5, 'first']);
   });
 
   it('HAP-1285 (MC): the hash and the generation land in ONE guarded statement; a failure after it cannot split them', async () => {
@@ -326,7 +344,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
       return session;
     });
     await new Neo4jAuthRepository().updatePasswordHashGuarded({
-      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash', nextEpoch: 1,
+      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash',
     }).catch(() => false);
     const props = await userProps();
     // runs === 1 also proves the injection engaged (the write went through the spied client).
@@ -417,7 +435,6 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     }
     const passwordParams = async () => ({
       elementId: await elementId(), userId: USER, credentialEpoch: neo4j.int(0), readHash: defaultHash, newHash: 'attacker-hash',
-      nextEpoch: neo4j.int(1),
     });
 
     it('contrast: the pre-fix password statement does overwrite the rotation (the race is real)', async () => {

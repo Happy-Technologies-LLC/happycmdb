@@ -362,6 +362,7 @@ it('ITSM KPIs are computed from the tenant\'s ITIL rows and graph, never another
     ]);
     expect(own.slaCompliance).toEqual([]);
     expect(own.unavailable).toEqual(['slaCompliance', 'baselineCompliance']);
+    expect(JSON.stringify(own)).not.toMatch(/itsm foreign secret|INC-t2-b/);
 
     const foreign = await get(auth(principalB));
     expect(foreign.openIncidentCount).toBe(2);
@@ -369,7 +370,8 @@ it('ITSM KPIs are computed from the tenant\'s ITIL rows and graph, never another
       { ci_id: 't2-itsm-db', name: null, type: null, incidentCount: 2, mttrMinutes: null,
         lastFailure: expect.any(String) },
     ]);
-    expect(JSON.stringify(foreign)).not.toMatch(/itsm db|INC-t2-a|itsm foreign secret/);
+    // t2-itsm-foreign is B's own CI (visible to B); A's CI name and incidents are not.
+    expect(JSON.stringify(foreign)).not.toMatch(/itsm db|INC-t2-a/);
   } finally {
     delete users[principalB];
     await sql.query("DELETE FROM itil_incidents WHERE incident_number LIKE 'INC-t2-%'");

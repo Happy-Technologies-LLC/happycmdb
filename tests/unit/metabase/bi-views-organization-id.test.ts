@@ -322,5 +322,35 @@ describe('BI views carry organization_id (migration 052)', () => {
       expect(await tenantOrgViolations(tenantViews)).toEqual([]);
       expect(await aclSnapshot(snapshotViews)).toEqual(before);
     }, 120000);
+
+    it('the rollback revokes grants that ALTER DEFAULT PRIVILEGES put on the re-created views, so the ACL is exactly the snapshot', async () => {
+      await run(`INSERT INTO cmdb.schema_migrations (migration_name) VALUES ('052_bi_views_organization_id.sql')`);
+      await run('CREATE ROLE bi_default');
+      const snapshotViews = allowlist.filter(v => v !== baselineView);
+      const before = await aclSnapshot(snapshotViews);
+      // premise: bi_default holds nothing, and neither PUBLIC nor the BI role can yet write to any of these views
+      expect(before.filter(r => r['grantee'] === 'bi_default'
+        || (['PUBLIC', 'metabase_readonly'].includes(String(r['grantee'])) && ['INSERT', 'UPDATE'].includes(String(r['privilege']))))).toEqual([]);
+      const defaults = (verb: 'GRANT' | 'REVOKE') => ['public', 'cmdb'].map(schema =>
+        `ALTER DEFAULT PRIVILEGES IN SCHEMA ${schema} ${verb} INSERT, UPDATE ON TABLES ${verb === 'GRANT' ? 'TO' : 'FROM'} PUBLIC, metabase_readonly, bi_default;`).join('\n');
+      await run(defaults('GRANT'));
+      try {
+        // premise: a view created now does pick up the default grants (PUBLIC, the BI role and another role)
+        await run('CREATE VIEW public.default_privileges_probe AS SELECT 1 AS one');
+        const probe = (await aclSnapshot(['public.default_privileges_probe'])).map(r => `${r['grantee']}:${r['privilege']}`);
+        await run('DROP VIEW public.default_privileges_probe');
+        expect(probe).toEqual(expect.arrayContaining(['PUBLIC:INSERT', 'metabase_readonly:INSERT', 'bi_default:UPDATE']));
+
+        await run(down052);
+        expect(await columns('public.v_incident_summary')).not.toContainEqual({ attname: 'organization_id', type: 'uuid' });
+        expect(await aclSnapshot(snapshotViews)).toEqual(before);
+        await asBi('SELECT * FROM v_incident_summary LIMIT 1'); // the BI SELECT survived the revoke
+      } finally {
+        await run(defaults('REVOKE'));
+      }
+      await run(up052);
+      for (const file of viewFiles) await run(read(file));
+      expect(await withoutOrganizationId()).toEqual([]);
+    }, 120000);
   });
 });

@@ -508,7 +508,7 @@ export class AuthController {
         return;
       }
       if (credentialRefusal(res, error)) return;
-      if (error instanceof Error && error.message === 'User not found') {
+      if (error instanceof UserNotFoundError) {
         res.status(404).json({ success: false, error: 'Password Change Failed', message: 'User not found' });
         return;
       }
@@ -539,7 +539,7 @@ export class AuthController {
       });
     } catch (error: any) {
       if (credentialRefusal(res, error)) return;
-      const notFound = error.message === 'User not found';
+      const notFound = error instanceof UserNotFoundError;
       if (!notFound) logger.error('Error deleting account', { ...errorClassFields(error), userId: req.user?._userId });
       res.status(notFound ? 404 : 500).json({
         success: false,

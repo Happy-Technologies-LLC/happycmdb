@@ -382,7 +382,7 @@ export class AuthService {
     // Find user
     const user = await this.repository.findUserById(userId);
     if (!user) {
-      throw new Error('User not found');
+      throw new UserNotFoundError();
     }
 
     // Generate random API key (64 characters hex)
@@ -544,7 +544,7 @@ export class AuthService {
 
     const user = await this.repository.findUserById(userId);
     if (!user) {
-      throw new Error('User not found');
+      throw new UserNotFoundError();
     }
     const credentialEpoch = credentialEpochOf(user);
     if (!sameGeneration(authorizingEpoch, credentialEpoch)) {
@@ -612,7 +612,7 @@ export class AuthService {
   async deleteAccount(userId: string, authorizingEpoch: number): Promise<void> {
     const user = await this.repository.findUserById(userId);
     if (!user) {
-      throw new Error('User not found');
+      throw new UserNotFoundError();
     }
     const credentialEpoch = credentialEpochOf(user);
     if (!sameGeneration(authorizingEpoch, credentialEpoch)) {

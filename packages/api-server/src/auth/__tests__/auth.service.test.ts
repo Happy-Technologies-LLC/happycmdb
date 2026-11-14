@@ -170,7 +170,7 @@ describe('AuthService profile/password/account lifecycle', () => {
     });
 
     it('throws for an unknown user id', async () => {
-      await expect(service.changePassword('ghost', 'a-new-password', 'b-new-password', 0)).rejects.toThrow('User not found');
+      await expect(service.changePassword('ghost', 'a-new-password', 'b-new-password', 0)).rejects.toBeInstanceOf(UserNotFoundError);
     });
   });
 
@@ -195,7 +195,7 @@ describe('AuthService profile/password/account lifecycle', () => {
     });
 
     it('throws for an unknown user id instead of silently succeeding', async () => {
-      await expect(service.deleteAccount('ghost', 0)).rejects.toThrow('User not found');
+      await expect(service.deleteAccount('ghost', 0)).rejects.toBeInstanceOf(UserNotFoundError);
       expect(repository.deletedUserIds).toEqual([]);
     });
   });

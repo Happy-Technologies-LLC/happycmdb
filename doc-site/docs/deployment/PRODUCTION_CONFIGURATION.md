@@ -315,21 +315,22 @@ GRANT SELECT (connector_type, config_name, started_at, status, duration_ms, reco
   (`docker inspect`, `/proc/<pid>/environ`). In `postgres.yml` use
   `password: $__file{/run/secrets/grafana_ds_password}` and mount the secret in a compose override:
 
-  ```yaml
-  services:
-    grafana:
-      secrets:
-        - grafana_ds_password
-  secrets:
-    grafana_ds_password:
-      file: ./secrets/grafana_ds_password   # operator-provided host file, not in git
-  ```
+```yaml
+services:
+  grafana:
+    secrets:
+      - grafana_ds_password
+secrets:
+  grafana_ds_password:
+    file: ./secrets/grafana_ds_password   # operator-provided host file, not in git
+```
 
-  The shipped compose file does not make this switch: it needs a host secret file that the operator provides, and the
-  file must be readable by the Grafana container user [INFERENCE: not exercised]. Grafana provisioning has no
-  `${VAR:-default}` either: use plain `${VAR}` and let compose supply defaults.
-  `GRAFANA_DS_USER` must be non-empty: with an empty user the driver falls back to the OS user and `PG*` environment,
-  which fails only because the stock Postgres image requires password authentication [INFERENCE: not exercised].
+- **Secret file prerequisite, no defaults, non-empty user**: the shipped compose file does not make this switch: it
+  needs a host secret file that the operator provides, and the file must be readable by the Grafana container user
+  [INFERENCE: not exercised]. Grafana provisioning has no `${VAR:-default}` either: use plain `${VAR}` and let compose
+  supply defaults. `GRAFANA_DS_USER` must be non-empty: with an empty user the driver falls back to the OS user and
+  `PG*` environment, which fails only because the stock Postgres image requires password authentication
+  [INFERENCE: not exercised].
 - **Who can run free-form SQL**: Grafana provisioning has no read-only switch for the Postgres datasource, and [INFERENCE,
   Grafana OSS 10.2] any member of the Grafana organization, Viewers included, can send raw SQL to any datasource of
   that organization (per-datasource query permissions are Enterprise/Cloud only). That covers the default `HappyCMDB`

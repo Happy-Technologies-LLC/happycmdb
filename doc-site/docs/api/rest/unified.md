@@ -254,6 +254,7 @@ Update credential properties (name, affinity, tags, or credentials).
 **Error Responses**:
 - `404 Not Found` - Credential does not exist
 - `400 Bad Request` - Invalid update data
+  - A `credentials` value that is not an object, holds `***REDACTED***` anywhere, has an all-digit key (`0`, `1`, ...) or holds a string made only of `*` is refused with the fixed message `Invalid credentials update` before anything is written (HAP-1227, HAP-1279). These are the shapes the old edit dialog produced from the read placeholder.
 - `409 Conflict` - Another of your credentials already has the new name
 - `401 Unauthorized` - Missing or invalid JWT token
 - `403 Forbidden` (`code: c4_principal_admin_required`) - Non-admin added the `happylab-c4` tag or edited a credential that carries it

@@ -466,6 +466,30 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       expect(created!['name']).toBe(base.name);
       expect(created).toHaveProperty('organization_id', 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
     });
+
+    // HAP-1732
+    it('createNewCI keeps the top-level name, status and environment over same-named attributes and identifiers', async () => {
+      const base = physicalServerDuplicates[0];
+      const ci = {
+        ...base, name: 'top-name', status: 'retired', environment: 'production',
+        attributes: { ...base.attributes, name: 'attr-name', status: 'attr-status', environment: 'attr-env', ci_type: 'attr-type', owner: 'o1' },
+        identifiers: { ...base.identifiers, status: 'id-status', name: 'id-name' } as typeof base.identifiers,
+      };
+      let created: Record<string, unknown> | undefined;
+
+      mockSession.run.mockImplementation(async (cypher: string, params: { properties?: Record<string, unknown> }) => {
+        if (cypher.includes('SET ci = $properties')) {
+          created = { ...params.properties };
+          return { records: [{ get: () => created!['id'] }] };
+        }
+        return { records: [] }; // no match by any strategy
+      });
+      mockPostgresClient.query.mockResolvedValue({ rows: [] });
+
+      await engine.reconcileCI(ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
+
+      expect(created).toMatchObject({ name: 'top-name', ci_type: ci.ci_type, status: 'retired', environment: 'production', owner: 'o1' });
+    });
   });
 
   describe('CI Update with Merge Strategies', () => {

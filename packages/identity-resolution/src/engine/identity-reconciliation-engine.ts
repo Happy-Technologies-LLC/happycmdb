@@ -76,6 +76,14 @@ export type ConflictResolution = 'accept_source' | 'accept_target' | 'merge' | '
 /** v16 §4.4, HAP-499: the mergeable entries of an attribute or identifier map; everything else is never written. */
 const mergeable = (map: object = {}): Record<string, unknown> => Object.fromEntries(Object.entries(map)
   .filter(([key, value]) => value !== undefined && isMergeable(key)));
+/**
+ * HAP-1732: the request's top-level fields; a new node always carries them as sent, so an attribute or identifier of the
+ * same name is never written, recorded or audited on create. An update never writes the top-level fields: there such an
+ * attribute is a policy-governed field like any other (source authority, review rules, field sources).
+ */
+const TOP_LEVEL_FIELDS = new Set(['name', 'ci_type', 'status', 'environment']);
+const mergeableOnCreate = (map: object = {}): Record<string, unknown> => Object.fromEntries(Object.entries(mergeable(map))
+  .filter(([key]) => !TOP_LEVEL_FIELDS.has(key)));
 
 export class IdentityReconciliationEngine {
   private static instance: IdentityReconciliationEngine;
@@ -436,8 +444,8 @@ export class IdentityReconciliationEngine {
             ci_type: ci.ci_type,
             environment: ci.environment,
             status: ci.status || 'active',
-            ...mergeable(ci.attributes),
-            ...mergeable(ci.identifiers),
+            ...mergeableOnCreate(ci.attributes),
+            ...mergeableOnCreate(ci.identifiers),
             id: ciId,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
@@ -481,9 +489,9 @@ export class IdentityReconciliationEngine {
   private async createFromMerge(ci: TransformedCI, organizationId: string, actor: string): Promise<MergeOutcome> {
     const { source, source_id: sourceId } = ci;
     if (typeof sourceId !== 'string' || !sourceId || sourceId.length > 255 || source.length > 255) throw new PlanUnrepresentableError();
-    const attributes = mergeable(ci.attributes);
+    const attributes = mergeableOnCreate(ci.attributes);
     const fields = { name: ci.name, ci_type: ci.ci_type, status: ci.status || 'active',
-      ...(ci.environment ? { environment: ci.environment } : {}), ...attributes, ...mergeable(ci.identifiers) };
+      ...(ci.environment ? { environment: ci.environment } : {}), ...attributes, ...mergeableOnCreate(ci.identifiers) };
     // One stable slot per (O, source, source_id): a retry while T2 is pending meets the in-flight gap (409), never a 2nd CI.
     const ciId = `ci_${createHash('sha256').update(JSON.stringify([organizationId, source, sourceId])).digest('hex').slice(0, 32)}`;
     const incarnationId = randomUUID();

@@ -51,7 +51,7 @@ const MARKED = '(coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaul
 
 // The node write lock is taken before every guard below (see user-lock.ts).
 
-/** HP1-S6 changePassword write: lands only on the node read, at the authorizing generation, unmarked, still holding the verified hash; advances the generation with the hash (HAP-1285). */
+/** HP1-S6 changePassword write: lands only on the node read, at the authorizing generation, unmarked, still holding the verified hash; advances the generation by exactly one with the hash, computed here from the guarded value so no caller can set it (HAP-1285, HAP-1669). */
 export const GUARDED_PASSWORD_CYPHER = `
 MATCH (u:User) WHERE elementId(u) = $elementId
 ${LOCK_USER}
@@ -60,7 +60,7 @@ WHERE (u._id = $userId OR u.id = $userId)
   AND coalesce(u.credentialEpoch, 0) = $credentialEpoch
   AND NOT ${MARKED}
   AND coalesce(u._passwordHash, u.passwordHash) = $readHash
-SET u._passwordHash = $newHash, u.passwordHash = $newHash, u.credentialEpoch = $nextEpoch,
+SET u._passwordHash = $newHash, u.passwordHash = $newHash, u.credentialEpoch = $credentialEpoch + 1,
     u._updatedAt = datetime(), u.updatedAt = datetime()
 RETURN count(u) AS n`;
 
@@ -245,7 +245,7 @@ export class Neo4jAuthRepository implements AuthRepository {
   async updatePasswordHashGuarded(write: GuardedPasswordWrite): Promise<boolean> {
     return this.guardedWrite(GUARDED_PASSWORD_CYPHER, {
       elementId: write.elementId ?? null, userId: write.userId, credentialEpoch: neo4j.int(write.credentialEpoch),
-      readHash: write.readHash, newHash: write.newHash, nextEpoch: neo4j.int(write.nextEpoch),
+      readHash: write.readHash, newHash: write.newHash,
     });
   }
 

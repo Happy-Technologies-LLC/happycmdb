@@ -16,7 +16,7 @@ jest.mock('@cmdb/database', () => ({
 
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import neo4j from 'neo4j-driver';
-import { Neo4jAuthRepository } from '../neo4j-auth.repository';
+import { GUARDED_PASSWORD_CYPHER, Neo4jAuthRepository } from '../neo4j-auth.repository';
 import { AmbiguousUserIdentityError, UserNotFoundError } from '../types';
 
 type AnyMock = jest.Mock<(...args: any[]) => any>;
@@ -191,6 +191,31 @@ describe('Neo4jAuthRepository', () => {
         _platformAdmin: true, _seedProvenance: 'seed-data', _elementId: '4:abc:1',
       });
       expect((await load({ _id: 'u', platformAdmin: 'true' }))?._platformAdmin).toBe(false);
+    });
+  });
+
+  describe('updatePasswordHashGuarded (HAP-1669)', () => {
+    it('hands the writer no next generation: every parameter of the statement is supplied, and none is an epoch but the guard', async () => {
+      mockSession.run.mockResolvedValue({ records: [{ get: () => neo4j.int(1) }] });
+
+      await expect(repository.updatePasswordHashGuarded({
+        userId: 'user-1', elementId: '4:a', credentialEpoch: 7, readHash: 'old', newHash: 'new',
+      })).resolves.toBe(true);
+
+      const [cypher, params] = mockSession.run.mock.calls[0] as [string, Record<string, unknown>];
+      expect(cypher).toBe(GUARDED_PASSWORD_CYPHER);
+      const used = [...new Set([...cypher.matchAll(/\$(\w+)/g)].map(m => m[1]))].sort();
+      expect(Object.keys(params).sort()).toEqual(used);
+      expect(used.filter(name => /epoch/i.test(name))).toEqual(['credentialEpoch']);
+      expect(params['credentialEpoch']).toEqual(neo4j.int(7));
+    });
+
+    it('reports a write that matched nothing (stale generation) as not written', async () => {
+      mockSession.run.mockResolvedValue({ records: [{ get: () => neo4j.int(0) }] });
+
+      await expect(repository.updatePasswordHashGuarded({
+        userId: 'user-1', elementId: '4:a', credentialEpoch: 7, readHash: 'old', newHash: 'new',
+      })).resolves.toBe(false);
     });
   });
 

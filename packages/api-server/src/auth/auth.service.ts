@@ -43,8 +43,6 @@ export interface GuardedPasswordWrite extends GuardedUserWrite {
   /** Hash the current password was verified against; the write lands only while it is still stored. */
   readHash: string;
   newHash: string;
-  /** Generation stored with the new hash (credentialEpoch + 1): every earlier token, refresh token and API key ends (HAP-1285). */
-  nextEpoch: number;
 }
 
 export interface CredentialEventInput {
@@ -168,6 +166,13 @@ const BCRYPT_HASH = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
 /** Absolute session cap (HAP-1285, founder decision): refresh is refused once now − `_authTime` exceeds it. Not configurable. */
 export const SESSION_ABSOLUTE_CAP_SECONDS = 7 * 24 * 60 * 60;
 
+/**
+ * Clock-skew allowance (HAP-1669): a refresh token's `_authTime` may exceed its own `iat` by at most this many seconds.
+ * Both claims are minted by this service in one call (`_authTime` is `iat` at login, earlier on a renewal), so any real
+ * excess is a forged or corrupted claim; without the bound a future `_authTime` never reaches the 7-day cap.
+ */
+export const AUTH_TIME_TOLERANCE_SECONDS = 60;
+
 export class AuthService {
   private jwtService: JWTService;
   private passwordService: PasswordService;
@@ -274,8 +279,10 @@ export class AuthService {
     }
     if (payload._type !== 'refresh') throw new AuthFailureError('wrong_type');
     // HAP-1285: a hard cap from the login, checked before any store read. A token without the claim predates it.
-    const authTime = payload._authTime;
-    if (!Number.isSafeInteger(authTime)) throw new AuthFailureError('invalid');
+    const { _authTime: authTime, iat } = payload;
+    if (!Number.isSafeInteger(authTime) || !Number.isSafeInteger(iat)) throw new AuthFailureError('invalid');
+    // HAP-1669: the login time cannot lie after this token's own issue time (beyond skew), or the cap would never end it.
+    if (authTime! > iat! + AUTH_TIME_TOLERANCE_SECONDS) throw new AuthFailureError('invalid');
     if (Math.floor(Date.now() / 1000) - authTime! > SESSION_ABSOLUTE_CAP_SECONDS) throw new AuthFailureError('expired');
 
     try {
@@ -556,13 +563,14 @@ export class AuthService {
     }
 
     const newHash = await this.passwordService.hash(newPassword);
-    const nextEpoch = credentialEpoch + 1;
     const written = await this.repository.updatePasswordHashGuarded({
-      userId, elementId: user._elementId, credentialEpoch, readHash: user._passwordHash, newHash, nextEpoch,
+      userId, elementId: user._elementId, credentialEpoch, readHash: user._passwordHash, newHash,
     });
     if (!written) {
       throw new CredentialsChangedError();
     }
+    // The writer advanced the generation by exactly one (in Cypher, guarded by `credentialEpoch`).
+    const nextEpoch = credentialEpoch + 1;
     // A new session for this device at the new generation; a fresh authentication, so its login time is now.
     return {
       _accessToken: this.jwtService.generateAccessToken(

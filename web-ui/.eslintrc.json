@@ -1,0 +1,17 @@
+{
+  // HAP-1951: the web-ui lint gate (CI job "Lint"). Not type-aware, so it runs in seconds, unlike the root config.
+  // Deferred, each with a count that is not clean today (see the HAP-1951 PR): no-explicit-any (236), no-unused-vars
+  // (87) and react-hooks/exhaustive-deps (15). Turn one on only together with the cleanup of its sites.
+  "root": true,
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": { "ecmaVersion": 2022, "sourceType": "module", "ecmaFeatures": { "jsx": true } },
+  "env": { "browser": true, "es2022": true },
+  "plugins": ["@typescript-eslint", "react-hooks"],
+  "extends": ["eslint:recommended", "plugin:@typescript-eslint/recommended"],
+  "rules": {
+    "react-hooks/rules-of-hooks": "error",
+    "react-hooks/exhaustive-deps": "off",
+    "@typescript-eslint/no-explicit-any": "off",
+    "@typescript-eslint/no-unused-vars": "off"
+  }
+}

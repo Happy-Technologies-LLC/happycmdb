@@ -95,10 +95,14 @@ the proof; the row does not say which). The `503` for an audit chain that is not
 ready (`AUDIT_CHAIN_KEY` unset) is refused before the current password is checked and is not audited:
 the chain cannot be written then. Request-validation `400`s (malformed body) are not audited. A user
 without an organization claim is not audited (an error is logged). `rate_limited` is the first `429`
-per user and refusing bucket (the client bucket, the user bucket) per window: each audit write takes the
+per user and refusing bucket (the client bucket, the user bucket) per window, and its row's
+`metadata.bucket` names the refusing bucket (`client`, `user`; the login-only `account` and
+`account-global` buckets do not apply here). Each audit write takes the
 global audit-chain lock, so retries past the limit append no further rows until the window passes
 (a Redis `SET rate-limit:auth-user-refused:<userId>[:client] NX PX <window>` decides; if Redis fails the
-`429` is unchanged and no row is written). Requires PostgreSQL
+`429` is unchanged and no row is written). The claim is taken before the write so concurrent refusals
+write one row; when the write fails or is skipped (no organization claim) the claim is released
+(`DEL`), so the next `429` in the window retries and the window is not left without its row. Requires PostgreSQL
 migration `049_audit_entity_user.sql`.
 
 **Platform administrators** are a dedicated flag, set only by the operator command

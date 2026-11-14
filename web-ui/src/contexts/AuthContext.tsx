@@ -11,10 +11,16 @@ import type { AuthState, LoginCredentials, User } from '../types';
 import { logClientError } from '../utils/logger';
 import { OrganizationContext } from './OrganizationContext';
 
+/**
+ * Outcome of `refreshUser`. `session-ended` means the session this refresh belonged to is gone (a failed token renewal
+ * after an organization change signed the user out, or a logout landed meanwhile): callers must not report success.
+ */
+export type RefreshUserResult = 'refreshed' | 'session-ended';
+
 interface AuthContextType extends AuthState {
   login: (credentials: LoginCredentials) => Promise<void>;
   logout: () => Promise<void>;
-  refreshUser: () => Promise<void>;
+  refreshUser: () => Promise<RefreshUserResult>;
   hasRole: (roles: string[]) => boolean;
 }
 
@@ -182,15 +188,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   }, [navigate, signOutLocally]);
 
-  const refreshUser = useCallback(async () => {
+  const refreshUser = useCallback(async (): Promise<RefreshUserResult> => {
     const epoch = sessionEpoch.current;
     try {
       const user = await api.getCurrentUser();
-      if (epoch !== sessionEpoch.current) return;
+      if (epoch !== sessionEpoch.current) return 'session-ended';
       const previous = stateRef.current.user;
       if (!previous || (previous.organization_id ?? null) === (user.organization_id ?? null)) {
         setState((prev) => ({ ...prev, user }));
-        return;
+        return 'refreshed';
       }
 
       // The organization changed, but the access token still carries the old `_organizationId` claim until it renews.
@@ -201,16 +207,17 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       let confirmed: User;
       try {
         await api.refresh();
-        if (epoch !== sessionEpoch.current) return;
+        if (epoch !== sessionEpoch.current) return 'session-ended';
         confirmed = await api.getCurrentUser();
       } catch (error) {
         logClientError('Session renewal after organization change failed', error);
         if (epoch === sessionEpoch.current) signOutLocally();
-        return;
+        return 'session-ended';
       }
-      if (epoch !== sessionEpoch.current) return;
+      if (epoch !== sessionEpoch.current) return 'session-ended';
       queryClient.clear();
       setState((prev) => ({ ...prev, user: confirmed, token: getToken() ?? prev.token }));
+      return 'refreshed';
     } catch (error) {
       logClientError('Failed to refresh user:', error);
       throw error;

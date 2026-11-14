@@ -16,7 +16,7 @@ import request from 'supertest';
 import type { PoolClient } from 'pg';
 import { getLogger, logger, type AuditLogEntry, type ConfigSchema } from '@cmdb/common';
 import { appendAuditEntry } from '@cmdb/database/postgres/audit.service';
-import { AuthController } from '../auth.controller';
+import { AuthController, REFUSAL_AUDIT_BACKOFF_MS } from '../auth.controller';
 import { AuthService, PASSWORD_CHANGE_OUTCOMES, type AuthRepository, type PasswordChangeOutcome } from '../../auth/auth.service';
 import { ValidationMiddleware } from '../middleware/validation.middleware';
 import { AuthMiddleware } from '../../middleware/auth.middleware';
@@ -64,6 +64,10 @@ class Repository {
   chainReady = true;
   /** recordAudit rejects, as a failed audit write. */
   failAudit = false;
+  /** How many audit writes were attempted (each one takes the chain lock in production). */
+  auditAttempts = 0;
+  /** recordAudit, once started, waits for this (a slow write); a write fails or succeeds as `failAudit` was when it started. */
+  auditGate: Promise<void> | undefined;
   async findUserById(id: string) {
     if (id !== this.user._id || this.readsThatFind-- <= 0) return null;
     const epoch = this.epochs.shift();
@@ -73,7 +77,10 @@ class Repository {
   async recordCredentialEvent() {}
   auditChainReady() { return this.chainReady; }
   async recordAudit(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>, organizationId: string) {
-    if (this.failAudit) throw new Error('audit store down');
+    const { failAudit, auditGate } = this;
+    this.auditAttempts++;
+    await auditGate;
+    if (failAudit) throw new Error('audit store down');
     const client = { query: async (text: string, params?: unknown[]) => ({ rows: await sql(text, params) }) } as unknown as PoolClient;
     await sql('BEGIN');
     try {
@@ -96,23 +103,36 @@ const ADDRESS_UNAVAILABLE = ['req.ip undefined', 'socket without remoteAddress']
 class FakeRedis {
   /** SET ... PX ... NX rejects, as a store outage on the refusal hook's claim (the limiter's own pipelines still work). */
   failSet = false;
+  /** EVAL rejects, as a store outage on the claim's backoff. */
+  failEval = false;
   private sets = new Map<string, number[]>();
-  private claims = new Map<string, number>();
+  private claims = new Map<string, { token: string; expiresAt: number }>();
   clear() { this.sets.clear(); this.claims.clear(); }
   /** How many unexpired claims the store holds. */
-  heldClaims() { return [...this.claims.values()].filter(expiresAt => expiresAt > Date.now()).length; }
+  heldClaims() { return [...this.claims.values()].filter(claim => claim.expiresAt > Date.now()).length; }
   /** Drops the refusal-audit claims only: the limiter's counters stay as they are. */
   forgetClaims() { this.claims.clear(); }
   /** Whether a claim is held (unexpired) on the test-controllable clock. */
-  holds(key: string) { return (this.claims.get(key) ?? 0) > Date.now(); }
-  /** DEL key: the claim is given back. */
-  async del(key: string) { this.claims.delete(key); return 1; }
-  /** SET key value PX ttl NX on the (test-controllable) clock: 'OK' for the first caller until the ttl passes, then null. */
-  async set(key: string, _value: string, _px: 'PX', ttl: number, _nx: 'NX') {
+  holds(key: string) { return (this.claims.get(key)?.expiresAt ?? 0) > Date.now(); }
+  /** Milliseconds until the claim expires on the test-controllable clock (0 when it is not held). */
+  ttl(key: string) { return Math.max(0, (this.claims.get(key)?.expiresAt ?? 0) - Date.now()); }
+  /** SET key token PX ttl NX on the (test-controllable) clock: 'OK' for the first caller until the ttl passes, then null. */
+  async set(key: string, token: string, _px: 'PX', ttl: number, _nx: 'NX') {
     if (this.failSet) throw new Error('Connection is closed.');
     if (this.holds(key)) return null;
-    this.claims.set(key, Date.now() + ttl);
+    this.claims.set(key, { token, expiresAt: Date.now() + ttl });
     return 'OK';
+  }
+  /**
+   * The limiter's one EVAL (compare-and-shorten, see BACKOFF_CLAIM_SCRIPT): the script's semantics, not its Lua; a
+   * held key whose token is the caller's has its TTL cut to ms (never extended), anything else answers 0.
+   */
+  async eval(_script: string, _keys: 1, key: string, token: string, ms: number) {
+    if (this.failEval) throw new Error('Connection is closed.');
+    const claim = this.claims.get(key);
+    if (!this.holds(key) || claim?.token !== token) return 0;
+    claim.expiresAt = Math.min(claim.expiresAt, Date.now() + ms);
+    return 1;
   }
   pipeline() {
     const ops: Array<() => unknown> = [];
@@ -433,31 +453,53 @@ describe('rate_limited rows: the first refusal per user and refusing bucket per 
     expect((await rateLimitedBuckets()).slice(before)).toEqual(['user', 'client']);
   });
 
-  it('a failed audit write gives the claim back: the next refusal in the same window writes the row', async () => {
+  const CLAIM = 'rate-limit:auth-user-refused:user-1';
+  const failingAudit = async <T>(run: () => Promise<T>) => {
+    const errors = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    repository.failAudit = true;
+    try { return await run(); } finally { repository.failAudit = false; errors.mockRestore(); }
+  };
+
+  it('repeated 429s during a failing audit write cause at most one write attempt per backoff window', async () => {
     const store = new FakeRedis();
     const target = mount(limiterOver(store, { client: 100, user: 1 }));
     const before = await rateLimitedRows();
     expect((await attempt(target, '198.51.100.1')).status).toBe(400);
-    const errors = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
-    repository.failAudit = true;
-    try {
-      expect((await attempt(target, '198.51.100.1')).status).toBe(429);
-      expect(await rateLimitedRows() - before).toBe(0);
-      expect(store.heldClaims()).toBe(0);
-      expect((await attempt(target, '198.51.100.1')).status).toBe(429);
-      expect(await rateLimitedRows() - before).toBe(0);
-    } finally {
-      repository.failAudit = false;
-      errors.mockRestore();
-    }
-    expect((await attempt(target, '198.51.100.1')).status).toBe(429);
-    expect(await rateLimitedRows() - before).toBe(1);
-    expect(store.heldClaims()).toBe(1);
-    expect((await attempt(target, '198.51.100.1')).status).toBe(429);
-    expect(await rateLimitedRows() - before).toBe(1);
+    repository.auditAttempts = 0;
+    await failingAudit(async () => {
+      for (let backoffWindow = 1; backoffWindow <= 3; backoffWindow++) {
+        expect(await statuses(target, '198.51.100.1', 5)).toEqual([429, 429, 429, 429, 429]);
+        expect(repository.auditAttempts).toBe(backoffWindow);
+        expect(store.holds(CLAIM)).toBe(true);
+        now += REFUSAL_AUDIT_BACKOFF_MS + 1;
+      }
+    });
+    expect(await rateLimitedRows() - before).toBe(0);
   });
 
-  it('a refusal with no organization claim is not audited and gives the claim back, so a later one in the window is', async () => {
+  it('after the backoff expires, a retry writes the row, and the claim then holds for the window', async () => {
+    const store = new FakeRedis();
+    const target = mount(limiterOver(store, { client: 100, user: 1 }));
+    const before = await rateLimitedRows();
+    expect((await attempt(target, '198.51.100.1')).status).toBe(400);
+    repository.auditAttempts = 0;
+    await failingAudit(async () => { expect((await attempt(target, '198.51.100.1')).status).toBe(429); });
+    expect(repository.auditAttempts).toBe(1);
+    // The store has recovered, but the backoff is still running: no attempt yet.
+    now += REFUSAL_AUDIT_BACKOFF_MS - 1_000;
+    expect(await statuses(target, '198.51.100.1', 2)).toEqual([429, 429]);
+    expect([repository.auditAttempts, await rateLimitedRows() - before]).toEqual([1, 0]);
+
+    now += 1_001;
+    expect((await attempt(target, '198.51.100.1')).status).toBe(429);
+    expect([repository.auditAttempts, await rateLimitedRows() - before]).toEqual([2, 1]);
+    expect(store.ttl(CLAIM)).toBe(WINDOW);
+    now += REFUSAL_AUDIT_BACKOFF_MS * 2;
+    expect(await statuses(target, '198.51.100.1', 2)).toEqual([429, 429]);
+    expect([repository.auditAttempts, await rateLimitedRows() - before]).toEqual([2, 1]);
+  });
+
+  it('a refusal with no organization claim is not audited and backs off like a failed write, so one after the backoff is', async () => {
     const store = new FakeRedis();
     const target = mount(limiterOver(store, { client: 100, user: 1 }));
     const before = await rateLimitedRows();
@@ -468,13 +510,90 @@ describe('rate_limited rows: the first refusal per user and refusing bucket per 
     try {
       expect((await attempt(target, '198.51.100.1')).status).toBe(429);
       expect(await rateLimitedRows() - before).toBe(0);
-      expect(store.heldClaims()).toBe(0);
+      expect(store.ttl(CLAIM)).toBe(REFUSAL_AUDIT_BACKOFF_MS);
     } finally {
       repository.user._organizationId = organization;
       errors.mockRestore();
     }
     expect((await attempt(target, '198.51.100.1')).status).toBe(429);
+    expect(await rateLimitedRows() - before).toBe(0);
+    now += REFUSAL_AUDIT_BACKOFF_MS + 1;
+    expect((await attempt(target, '198.51.100.1')).status).toBe(429);
     expect(await rateLimitedRows() - before).toBe(1);
+  });
+
+  it('a slow write that fails after its claim expired and a later request retook it leaves the newer claim alone', async () => {
+    const store = new FakeRedis();
+    const target = mount(limiterOver(store, { client: 100, user: 1 }));
+    const before = await rateLimitedRows();
+    expect((await attempt(target, '198.51.100.1')).status).toBe(400);
+    const gate = Promise.withResolvers<void>();
+    repository.auditAttempts = 0;
+    repository.failAudit = true;
+    repository.auditGate = gate.promise;
+    const errors = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    let fresh = token;
+    try {
+      // Request A is refused, takes the claim and its write stalls (it will fail).
+      const stale = attempt(target, '198.51.100.1').then(res => res);
+      while (repository.auditAttempts === 0) await new Promise(resolve => setImmediate(resolve));
+      repository.failAudit = false;
+      repository.auditGate = undefined;
+
+      // A's claim expires; request B (a fresh token: the old one expired with the window) is refused in the next
+      // window, retakes the claim and writes the row.
+      now += WINDOW + 1;
+      fresh = tokenNow();
+      expect((await attempt(target, '198.51.100.2', fresh)).status).toBe(400);
+      expect((await attempt(target, '198.51.100.2', fresh)).status).toBe(429);
+      expect(await rateLimitedRows() - before).toBe(1);
+      expect(store.ttl(CLAIM)).toBe(WINDOW);
+
+      // A's write now fails: its backoff must not cut B's claim.
+      gate.resolve();
+      expect((await stale).status).toBe(429);
+      expect(store.ttl(CLAIM)).toBe(WINDOW);
+    } finally {
+      gate.resolve();
+      repository.failAudit = false;
+      repository.auditGate = undefined;
+      errors.mockRestore();
+    }
+    now += REFUSAL_AUDIT_BACKOFF_MS + 1;
+    expect(await statuses(target, '198.51.100.2', 2, fresh)).toEqual([429, 429]);
+    expect(await rateLimitedRows() - before).toBe(1);
+  });
+
+  it('when the backoff cannot be made (Redis fails) the 429 is unchanged, nothing throws and the window keeps its claim', async () => {
+    const healthy = mount(limiterOver(new FakeRedis(), { client: 100, user: 1 }));
+    const store = new FakeRedis();
+    const broken = mount(limiterOver(store, { client: 100, user: 1 }));
+    await attempt(healthy, '198.51.100.1');
+    const reference = await failingAudit(() => attempt(healthy, '198.51.100.1'));
+    await attempt(broken, '198.51.100.1');
+    store.failEval = true;
+    const before = await rateLimitedRows();
+    repository.auditAttempts = 0;
+    const hookErrors = jest.spyOn(getLogger(), 'error').mockImplementation(() => undefined);
+    const auditErrors = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    repository.failAudit = true;
+    try {
+      const refusal = await attempt(broken, '198.51.100.1');
+      expect([refusal.status, stable(refusal.body)]).toEqual([429, stable(reference.body)]);
+      expect([...auditErrors.mock.calls, ...hookErrors.mock.calls].map(call => call[0]).sort())
+        .toEqual(['Password change audit write failed', 'Rate limit refusal hook failed']);
+      expect(JSON.stringify([auditErrors.mock.calls, hookErrors.mock.calls])).not.toContain('Connection is closed');
+      // The claim keeps the window TTL: no further attempt and no row until the window passes (the documented mode).
+      expect(store.ttl(CLAIM)).toBe(WINDOW);
+      repository.failAudit = false;
+      now += REFUSAL_AUDIT_BACKOFF_MS + 1;
+      expect((await attempt(broken, '198.51.100.1')).status).toBe(429);
+      expect([repository.auditAttempts, await rateLimitedRows() - before]).toEqual([1, 0]);
+    } finally {
+      repository.failAudit = false;
+      hookErrors.mockRestore();
+      auditErrors.mockRestore();
+    }
   });
 
   it('when the claim cannot be made (Redis fails) the 429 is unchanged and nothing is audited', async () => {

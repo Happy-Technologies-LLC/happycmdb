@@ -18,7 +18,7 @@
  * - A store error is logged by class and code only, never its message (HAP-1764, the HAP-1382 pattern)
  */
 
-import { createHash, timingSafeEqual } from 'crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { isIP } from 'net';
 import { Request, Response, NextFunction } from 'express';
 import { Redis } from 'ioredis';
@@ -111,17 +111,30 @@ export interface LimitOptions {
 /** The buckets a refusal can come from. */
 export type RefusalBucket = 'client' | 'account' | 'account-global' | 'user';
 
+/**
+ * Compare-and-shorten for a refusal claim: only while the key still holds the caller's token is its TTL cut to the
+ * given milliseconds (never extended). KEYS[1] = claim, ARGV[1] = token, ARGV[2] = ms. 1 when the caller still owned it.
+ */
+const BACKOFF_CLAIM_SCRIPT = `if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+local ttl = redis.call('PTTL', KEYS[1])
+if ttl < 0 or ttl > tonumber(ARGV[2]) then redis.call('PEXPIRE', KEYS[1], ARGV[2]) end
+return 1`;
+
 /** What onRefused is told about the refusal: the bucket that denied it and a once-per-window claim for a hook's own key. */
 export interface Refusal {
   /** The denying bucket. */
   bucket: RefusalBucket;
   /**
-   * Redis SET key 1 NX PX (the denying bucket's window): true for the first caller per key per window. Rejects on a
-   * store error, so a hook that awaits it does nothing further (fail cheap).
+   * Redis SET key <random token> NX PX (the denying bucket's window): the token for the first caller per key per
+   * window, null for everyone else. Rejects on a store error, so a hook that awaits it does nothing further (fail cheap).
    */
-  firstInWindow: (key: string) => Promise<boolean>;
-  /** Redis DEL key: gives a claim back, so the next refusal in the window claims it again. Rejects on a store error. */
-  release: (key: string) => Promise<void>;
+  claim: (key: string) => Promise<string | null>;
+  /**
+   * Owner-checked: if the key still holds `token`, its TTL is cut to `ms` (a short backoff claim: no further claim
+   * until it expires) and true is returned; a key that expired or was claimed by a later request is left alone and
+   * false is returned. Rejects on a store error.
+   */
+  backoff: (key: string, token: string, ms: number) => Promise<boolean>;
 }
 
 export class RateLimitMiddleware {
@@ -456,8 +469,11 @@ export class RateLimitMiddleware {
         try {
           await options.onRefused(req, {
             bucket: bucket.name,
-            firstInWindow: async key => (await this.redis.set(key, '1', 'PX', bucket.budget._windowMs, 'NX')) === 'OK',
-            release: async key => { await this.redis.del(key); },
+            claim: async key => {
+              const token = randomBytes(16).toString('hex');
+              return (await this.redis.set(key, token, 'PX', bucket.budget._windowMs, 'NX')) === 'OK' ? token : null;
+            },
+            backoff: async (key, token, ms) => (await this.redis.eval(BACKOFF_CLAIM_SCRIPT, 1, key, token, ms)) === 1,
           });
         } catch (error) {
           logger.error('Rate limit refusal hook failed', undefined, { endpoint: endpointType, ...errorClassFields(error) });

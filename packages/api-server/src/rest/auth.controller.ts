@@ -22,6 +22,11 @@ import { RateLimitMiddleware, type Refusal, type RefusalBucket } from '../middle
 const AUTHENTICATION_FAILURE = { success: false, error: 'Authentication failed' };
 /** HAP-1368: a password change that could not be audited is refused before anything changes. */
 const PASSWORD_CHANGE_UNAVAILABLE = { success: false, error: 'Service Unavailable', message: 'Password change temporarily unavailable' };
+/**
+ * After a refusal-audit write fails (or is skipped), the claim for that user and bucket is cut to this many
+ * milliseconds: at most one further attempt per user and bucket per backoff window. Documented in api/authentication.md.
+ */
+export const REFUSAL_AUDIT_BACKOFF_MS = 30_000;
 
 /**
  * HAP-1382 P-4: every /auth response may carry an access token, an API key, the refresh cookie or account data, so no
@@ -474,21 +479,25 @@ export class AuthController {
   /**
    * cmdb#321: only the first refusal per user and refusing bucket per window is audited. Each audit write takes the
    * global audit-chain lock, so a client retrying past the limit must not turn every 429 into one. The claim is a
-   * Redis SET NX PX of the bucket's window; if Redis fails the claim rejects (the limiter logs the class) and nothing
-   * is audited. The claim is taken before the write (concurrent refusals must not both write), so a write that fails
-   * or is skipped (no organization claim) gives the claim back (DEL): the next refusal retries instead of the window
-   * losing its row.
+   * Redis SET NX PX of the bucket's window holding a random owner token; if Redis fails the claim rejects (the
+   * limiter logs the class) and nothing is audited. The claim is taken before the write (concurrent refusals must not
+   * both write). A write that fails or is skipped (no organization claim) does not give the claim back: its TTL is
+   * cut to REFUSAL_AUDIT_BACKOFF_MS, owner-checked, so an audit-store fault costs at most one attempt per user and
+   * bucket per backoff window and the row is still written by the first refusal after it. A slow writer whose claim
+   * has since expired and been retaken leaves the newer claim alone. If the backoff itself fails (Redis), the claim
+   * keeps its window TTL: no row for the rest of that window, as when the claim itself fails.
    */
   private async auditFirstRefusal(req: AuthenticatedRequest, refusal: Refusal): Promise<void> {
     const userId = req.user!._userId;
     const suffix = refusal.bucket === 'user' ? '' : `:${refusal.bucket}`;
     const claim = `rate-limit:auth-user-refused:${userId}${suffix}`;
-    if (!(await refusal.firstInWindow(claim))) return;
+    const token = await refusal.claim(claim);
+    if (token === null) return;
     let audited = false;
     try {
       audited = await this.auditPasswordChange(req, 'rate_limited', refusal.bucket);
     } finally {
-      if (!audited) await refusal.release(claim);
+      if (!audited) await refusal.backoff(claim, token, REFUSAL_AUDIT_BACKOFF_MS);
     }
   }
 

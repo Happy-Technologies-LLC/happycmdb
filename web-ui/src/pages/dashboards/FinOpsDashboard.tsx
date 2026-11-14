@@ -174,7 +174,7 @@ export const FinOpsDashboard: React.FC = () => {
           title="Potential Savings"
           value={formatCurrency(totalPotentialSavings)}
           icon="lightbulb"
-          color="green"
+          color={isKnown(totalPotentialSavings) ? 'green' : 'blue'}
           description="Optimization opportunities"
         />
       </div>

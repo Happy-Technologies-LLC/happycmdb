@@ -278,6 +278,49 @@ it('aggregates four mounted dashboards across large tenant CIs without returning
   }
 });
 
+it('FinOps and executive costs are null, not 0, where no CI carries tbm_monthly_cost (real Cypher)', async () => {
+  // Organization B's only active CI at this point is the uncosted 't2-b'.
+  const principal = 'finops-null-gate';
+  users[principal] = { _id: principal, _username: principal, _role: 'operator', _enabled: true, _organizationId: B };
+  const get = async (path: string) => {
+    const response = await request(app).get(`/api/v1/dashboards/${path}`).set(auth(principal));
+    expect(response.status).toBe(200);
+    return response.body.data;
+  };
+  try {
+    // Uncosted CIs only: every total is unknown.
+    await run(`CREATE (:CI {id:'t2-seg-aws-uncosted', name:'aws', type:'server', status:'active',
+      organization_id:$b, discovery_provider:'aws', tbm_resource_tower:'compute'})`, { b: B });
+    const none = await get('finops');
+    expect(none.onPremVsCloud).toEqual({ onPremCost: null, cloudCost: null, totalCost: null, tcoComparison: [] });
+    expect(none.unavailable).toEqual(expect.arrayContaining([
+      'onPremVsCloud.totalCost', 'onPremVsCloud.onPremCost', 'onPremVsCloud.cloudCost']));
+    expect(none.costByTower.every((tower: { cost: number | null }) => tower.cost === null)).toBe(true);
+    const executiveNone = await get('executive');
+    expect(executiveNone.totalITSpend).toBeNull();
+    expect(executiveNone.costByCapability.every((cap: { totalCost: number | null }) => cap.totalCost === null)).toBe(true);
+
+    // Costed on-prem next to an uncosted cloud CI: cloud is unknown, not $0.
+    await run(`CREATE (:CI {id:'t2-seg-onprem', name:'onprem', type:'server', status:'active',
+      organization_id:$b, tbm_monthly_cost:500, tbm_resource_tower:'compute'})`, { b: B });
+    const onPremOnly = await get('finops');
+    expect(onPremOnly.onPremVsCloud).toEqual({ onPremCost: 500, cloudCost: null, totalCost: 500, tcoComparison: [] });
+    expect(onPremOnly.unavailable).toContain('onPremVsCloud.cloudCost');
+    expect(onPremOnly.unavailable).not.toContain('onPremVsCloud.onPremCost');
+
+    // Costed cloud next to uncosted on-prem CIs: on-prem is unknown, not $0.
+    await run(`MATCH (ci:CI {id:'t2-seg-onprem'}) DETACH DELETE ci`);
+    await run(`MATCH (ci:CI {id:'t2-seg-aws-uncosted'}) SET ci.tbm_monthly_cost = 40`);
+    const cloudOnly = await get('finops');
+    expect(cloudOnly.onPremVsCloud).toEqual({ onPremCost: null, cloudCost: 40, totalCost: 40, tcoComparison: [] });
+    expect(cloudOnly.unavailable).toContain('onPremVsCloud.onPremCost');
+    expect(cloudOnly.unavailable).not.toContain('onPremVsCloud.cloudCost');
+  } finally {
+    delete users[principal];
+    await run("MATCH (ci:CI) WHERE ci.id STARTS WITH 't2-seg-' DETACH DELETE ci");
+  }
+});
+
 it('refuses over 100 distinct dashboard cost towers or statuses on real Neo4j', async () => {
   await run(`UNWIND range(1,101) AS ordinal
     CREATE (:CI {id:'t2-groups-'+toString(ordinal), name:'group', type:'server',

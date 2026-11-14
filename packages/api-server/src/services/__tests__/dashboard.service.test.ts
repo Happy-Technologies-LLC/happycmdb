@@ -10,8 +10,6 @@
  * answers the statements the service issues.
  */
 
-import { readFileSync } from 'fs';
-import { join } from 'path';
 import neo4j from 'neo4j-driver';
 
 type Props = Record<string, unknown>;
@@ -58,9 +56,10 @@ function run(rawQuery: string): Array<ReturnType<typeof row>> {
   if (query.includes('AS cloudCost')) {
     const costed = active.filter(ci => cost(ci) !== null);
     const sum = (rows: Props[]) => rows.reduce((total, ci) => total + cost(ci)!, 0);
+    const cloud = costed.filter(ci => ci['discovery_provider'] === 'aws');
     return [row({
       totalCost: int(sum(costed)), costedCIs: int(costed.length),
-      cloudCost: int(sum(costed.filter(ci => ci['discovery_provider'] === 'aws'))),
+      cloudCost: int(sum(cloud)), cloudCostedCIs: int(cloud.length),
     })];
   }
   throw new Error(`fake Neo4j: unmodelled statement: ${query}`);
@@ -192,12 +191,15 @@ describe('DashboardService carries no fabricated numbers', () => {
     const second = await allPayloads();
     expect(second).toEqual(first);
   });
-});
 
-describe('dashboard.service.ts source fence', () => {
-  // Extra regression fence next to the behavior tests above.
-  it('never calls Math.random', () => {
-    const source = readFileSync(join(__dirname, '../dashboard.service.ts'), 'utf8');
-    expect(source).not.toMatch(/Math\.random/);
+  it('reports a segment with no costed CI as null, not 0', async () => {
+    CIS = [
+      { id: 'a', name: 'a', type: 'server', status: 'active', organization_id: ORG, tbm_monthly_cost: 500 },
+      { id: 'b', name: 'b', type: 'server', status: 'active', organization_id: ORG, discovery_provider: 'aws' },
+    ];
+    const { finops } = await allPayloads();
+    expect(finops.onPremVsCloud).toEqual({ onPremCost: 500, cloudCost: null, totalCost: 500, tcoComparison: [] });
+    expect(finops.unavailable).toContain('onPremVsCloud.cloudCost');
+    expect(finops.unavailable).not.toContain('onPremVsCloud.onPremCost');
   });
 });

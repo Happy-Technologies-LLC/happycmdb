@@ -633,24 +633,31 @@ export class DashboardService {
     try {
       const session = this.neo4j.getSession();
       let totalCost: number | null;
-      let cloudCost: number;
+      let cloudCost: number | null;
+      let onPremCost: number | null;
       let capabilities: ExecutiveSummaryData['costByCapability'];
       try {
         const costs = await session.run(`
           MATCH (ci:CI)
           WHERE ci.status = 'active' AND ci.organization_id = $organizationId
           RETURN sum(ci.tbm_monthly_cost) AS totalCost, count(ci.tbm_monthly_cost) AS costedCIs,
-            sum(CASE WHEN ci.discovery_provider IN ['aws', 'azure', 'gcp'] THEN ci.tbm_monthly_cost END) AS cloudCost
+            sum(CASE WHEN ci.discovery_provider IN ['aws', 'azure', 'gcp'] THEN ci.tbm_monthly_cost END) AS cloudCost,
+            count(CASE WHEN ci.discovery_provider IN ['aws', 'azure', 'gcp'] THEN ci.tbm_monthly_cost END) AS cloudCostedCIs
         `, { organizationId }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
         const row = costs.records[0];
-        totalCost = graphNumber(row?.get('costedCIs')) > 0 ? graphNumber(row?.get('totalCost')) : null;
-        cloudCost = graphNumber(row?.get('cloudCost'));
+        const costedCIs = graphNumber(row?.get('costedCIs'));
+        const cloudCostedCIs = graphNumber(row?.get('cloudCostedCIs'));
+        totalCost = costedCIs > 0 ? graphNumber(row?.get('totalCost')) : null;
+        // Each segment is known only if a CI in that segment carries a cost.
+        cloudCost = cloudCostedCIs > 0 ? graphNumber(row?.get('cloudCost')) : null;
+        onPremCost = totalCost !== null && costedCIs - cloudCostedCIs > 0
+          ? totalCost - graphNumber(row?.get('cloudCost')) : null;
         capabilities = await this.aggregateCostByCapability(session, organizationId);
       } finally {
         await session.close();
       }
 
-      const onPremVsCloud = this.calculateOnPremVsCloud(totalCost, cloudCost);
+      const onPremVsCloud = this.calculateOnPremVsCloud(totalCost, cloudCost, onPremCost);
       const costByTower = capabilities.map(cap => ({
         tower: cap.capability, cost: cap.totalCost, subTowers: [],
       }));
@@ -668,8 +675,9 @@ export class DashboardService {
           'cloudCosts', 'onPremVsCloud.tcoComparison',
           'budgetVariance.budgetAllocated', 'budgetVariance.variance', 'budgetVariance.variancePercent',
           'unitEconomics', 'costOptimization',
-          ...(totalCost === null
-            ? ['onPremVsCloud.onPremCost', 'onPremVsCloud.cloudCost', 'onPremVsCloud.totalCost'] : []),
+          ...(totalCost === null ? ['onPremVsCloud.totalCost'] : []),
+          ...(onPremCost === null ? ['onPremVsCloud.onPremCost'] : []),
+          ...(cloudCost === null ? ['onPremVsCloud.cloudCost'] : []),
           ...(capabilities.some(cap => cap.totalCost === null) ? ['costByTower.cost', 'budgetVariance.actualSpend'] : []),
         ],
       };
@@ -791,12 +799,10 @@ export class DashboardService {
   }
 
   private calculateOnPremVsCloud(
-    totalCost: number | null, cloudCost: number
+    totalCost: number | null, cloudCost: number | null, onPremCost: number | null
   ): FinOpsDashboardData['onPremVsCloud'] {
     // The per-category TCO split has no backing data.
-    return totalCost === null
-      ? { onPremCost: null, cloudCost: null, totalCost: null, tcoComparison: [] }
-      : { onPremCost: totalCost - cloudCost, cloudCost, totalCost, tcoComparison: [] };
+    return { onPremCost, cloudCost, totalCost, tcoComparison: [] };
   }
 
   private calculateBudgetVariance(

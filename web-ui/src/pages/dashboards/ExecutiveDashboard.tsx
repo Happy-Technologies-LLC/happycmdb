@@ -52,6 +52,7 @@ export const ExecutiveDashboard: React.FC = () => {
 
   // Mean of the known tier scores; null (not 0) when no tier has a health score.
   const overallHealthScore = averageKnown(serviceHealthByTier.map((tier: any) => tier.averageHealthScore));
+  const averageRoi = averageKnown(valueScorecard.map((s: any) => s.roi));
 
   // Calculate total risk exposure (services in critical+high risk)
   const highRiskServices = riskMatrixServices.filter(
@@ -130,9 +131,9 @@ export const ExecutiveDashboard: React.FC = () => {
         />
         <KPICard
           title="Average ROI"
-          value={formatPercent(averageKnown(valueScorecard.map((s: any) => s.roi)))}
+          value={formatPercent(averageRoi)}
           icon="trend-up"
-          color="green"
+          color={isKnown(averageRoi) ? 'green' : 'blue'}
           description="Return on IT investment"
         />
       </div>

@@ -19,6 +19,18 @@ import { requestOrganizationId } from '../../middleware/auth.middleware';
 /** What every credential read returns instead of the secret. HAP-1227: an update carrying it is refused. */
 export const REDACTED_PLACEHOLDER = '***REDACTED***';
 export const INVALID_CREDENTIALS_UPDATE = 'Invalid credentials update';
+
+/**
+ * HAP-1279 F-1: the pre-HAP-1227 edit dialog spread the placeholder string into {0:'*', 1:'*', ...}. No protocol has an
+ * all-digit credential key, and a value made only of '*' is a redaction artefact, so either refuses an update. Keys are
+ * checked at the top level (where the spread landed); star-only values at any depth.
+ */
+const INDEX_KEY = /^(0|[1-9]\d*)$/;
+const STAR_ONLY = /^\*+$/;
+const holdsStarOnly = (value: unknown): boolean =>
+  typeof value === 'string' ? STAR_ONLY.test(value) : value !== null && typeof value === 'object' && Object.values(value).some(holdsStarOnly);
+export const isRedactionArtefact = (credentials: Record<string, unknown>): boolean =>
+  Object.keys(credentials).some((k) => INDEX_KEY.test(k)) || holdsStarOnly(credentials);
 /** HAP-1613: CredentialCRUDService's refusal code for the happylab-c4 tag; the body names the rule only (no input echo). */
 const C4_PRINCIPAL_ADMIN_REQUIRED = 'c4_principal_admin_required';
 const C4_REFUSAL = {

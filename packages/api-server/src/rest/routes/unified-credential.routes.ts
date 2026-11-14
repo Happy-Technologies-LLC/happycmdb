@@ -11,7 +11,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import Joi from 'joi';
 import { CredentialProtocolAdapter } from '@cmdb/common';
-import { UnifiedCredentialController, REDACTED_PLACEHOLDER, INVALID_CREDENTIALS_UPDATE } from '../controllers/unified-credential.controller';
+import { UnifiedCredentialController, REDACTED_PLACEHOLDER, INVALID_CREDENTIALS_UPDATE, isRedactionArtefact } from '../controllers/unified-credential.controller';
 import { CredentialSetController } from '../controllers/credential-set.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
@@ -127,9 +127,10 @@ const updateCredentialSchema = Joi.object({
   description: descriptionSchema,
   // The body carries no protocol, so the SSH port rule is applied in the CRUD service against the locked stored protocol.
   // HAP-1227: a non-object payload, or one holding the read placeholder anywhere, is refused before any write.
+  // HAP-1279 F-1: the old UI's junk-key shape ({0:'*', 1:'*', ..., field: value}) and any star-only value are refused the same way.
   // The bare fixed Error carries no Joi details, so no client value is echoed or logged.
   credentials: Joi.object()
-    .custom((value, helpers) => (JSON.stringify(value).includes(REDACTED_PLACEHOLDER) ? helpers.error('any.invalid') : value))
+    .custom((value, helpers) => (JSON.stringify(value).includes(REDACTED_PLACEHOLDER) || isRedactionArtefact(value) ? helpers.error('any.invalid') : value))
     .error(new Error(INVALID_CREDENTIALS_UPDATE))
     .optional(),
   affinity: credentialAffinitySchema.optional(),

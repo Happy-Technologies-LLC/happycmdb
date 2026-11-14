@@ -34,7 +34,12 @@ async function createAttachedDatabase(): Promise<Client> {
   const session = new Client(connection(DB));
   session.on('error', () => { /* terminated by teardown */ });
   await session.connect();
-  await session.query('CREATE EXTENSION timescaledb');
+  // The CI image already ships timescaledb in template1, so no CREATE EXTENSION message wakes the launcher: ask for the scheduler.
+  await session.query('CREATE EXTENSION IF NOT EXISTS timescaledb');
+  await session.query(`SELECT COALESCE(to_regprocedure('_timescaledb_functions.start_background_workers()'),
+    to_regprocedure('_timescaledb_internal.start_background_workers()'))::text`).then(async ({ rows }) => {
+    await session.query(`SELECT ${rows[0].coalesce as string}`);
+  });
   await session.query(`GRANT USAGE ON SCHEMA public TO ${ROLE}`);
   await eventually(async () => (await schedulerSessions(DB)) === 1, 'the Timescale scheduler to attach');
   return session;

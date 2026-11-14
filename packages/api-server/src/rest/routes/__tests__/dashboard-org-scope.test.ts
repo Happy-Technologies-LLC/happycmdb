@@ -162,14 +162,18 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
       return record({ status, count: int(group.length), sampleCIs: group.slice(0, 5).map(node) });
     }).slice(0, 101);
   }
-  if (query.includes('RETURN capability, sum(monthlyCost) AS totalCost')) {
-    const groups = new Map<string, number>();
+  if (query.includes('RETURN capability, sum(monthlyCost) AS totalCost, count(monthlyCost) AS costedCIs')) {
+    const groups = new Map<string, { cost: number; costed: number }>();
     for (const ci of matched) {
       const tower = (ci['tbm_capability_tower'] || ci['tbm_resource_tower'] || 'Uncategorized') as string;
-      groups.set(tower, (groups.get(tower) || 0) + ((ci['tbm_monthly_cost'] as number) || 0));
+      const group = groups.get(tower) ?? { cost: 0, costed: 0 };
+      if (typeof ci['tbm_monthly_cost'] === 'number') { group.cost += ci['tbm_monthly_cost']; group.costed++; }
+      groups.set(tower, group);
     }
     return [...groups].sort(([a], [b]) => a.localeCompare(b)).slice(0, 101)
-      .map(([capability, cost]) => record({ capability, totalCost: int(cost) }));
+      .map(([capability, { cost, costed }]) => record({
+        capability, totalCost: int(cost), costedCIs: int(costed),
+      }));
   }
   if (query.includes('RETURN count(ci) AS totalCIs')) {
     return [record({ totalCIs: int(matched.length) })];
@@ -185,7 +189,7 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
         id: ci['id'], name: ci['name'], type: ci['type'], criticality: ci['bsm_business_criticality'],
       }));
   }
-  if (query.includes('AS id, ci.name AS name, ci.tbm_monthly_cost AS monthlyCost')) {
+  if (query.includes('AS id, ci.name AS name, ci.tbm_monthly_cost AS monthlyCost') && query.includes('ci.tbm_monthly_cost > 0')) {
     return matched.filter(ci => (ci['tbm_monthly_cost'] as number) > 0)
       .sort((a, b) => ((b['tbm_monthly_cost'] as number) - (a['tbm_monthly_cost'] as number))
         || String(a['id']).localeCompare(String(b['id']))).slice(0, 10)
@@ -194,21 +198,19 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
   if (query.includes('ci.bsm_customer_facing = true')) {
     return matched.filter(ci => ci['bsm_customer_facing'] === true)
       .sort((a, b) => String(a['id']).localeCompare(String(b['id']))).slice(0, 5)
-      .map(ci => record({ id: ci['id'], name: ci['name'], monthlyCost: int((ci['tbm_monthly_cost'] as number) || 0) }));
+      .map(ci => record({
+        id: ci['id'], name: ci['name'],
+        monthlyCost: typeof ci['tbm_monthly_cost'] === 'number' ? int(ci['tbm_monthly_cost']) : null,
+      }));
   }
-  if (query.includes('AS awsCost,')) {
-    const sum = (rows: Props[]) => rows.reduce((total, ci) => total + ((ci['tbm_monthly_cost'] as number) || 0), 0);
+  if (query.includes('AS cloudCost')) {
+    const costed = matched.filter(ci => typeof ci['tbm_monthly_cost'] === 'number');
+    const sum = (rows: Props[]) => rows.reduce((total, ci) => total + (ci['tbm_monthly_cost'] as number), 0);
     return [record({
-      totalCost: int(sum(matched)),
-      awsCost: int(sum(matched.filter(ci => ci['discovery_provider'] === 'aws'))),
-      azureCost: int(sum(matched.filter(ci => ci['discovery_provider'] === 'azure'))),
-      gcpCost: int(sum(matched.filter(ci => ci['discovery_provider'] === 'gcp'))),
+      totalCost: int(sum(costed)),
+      costedCIs: int(costed.length),
+      cloudCost: int(sum(costed.filter(ci => ['aws', 'azure', 'gcp'].includes(ci['discovery_provider'] as string)))),
     })];
-  }
-  if (query.includes('ci.tbm_monthly_cost > 100')) {
-    return matched.filter(ci => (ci['tbm_monthly_cost'] as number) > 100)
-      .sort((a, b) => String(a['id']).localeCompare(String(b['id']))).slice(0, 5)
-      .map(ci => record({ name: ci['name'], monthlyCost: int(ci['tbm_monthly_cost'] as number) }));
   }
   throw new Error(`fake Neo4j: unmodelled statement: ${query}`);
 }
@@ -385,22 +387,25 @@ describe('GET /api/v1/dashboards/business-service/:serviceId', () => {
     expect(own.body.data.serviceDependencies.edges.map(
       (edge: { from: string; to: string }) => ({ from: edge.from, to: edge.to })
     )).toEqual([{ from: 'bs-a-app', to: 'a-web' }]);
+    // The graph holds no CI health state, so no health score or impact is invented.
+    expect(own.body.data.serviceDependencies.nodes.map((n: { healthScore: unknown }) => n.healthScore)).toEqual([null, null]);
+    expect(own.body.data.serviceDependencies.edges.map((e: { healthImpact: unknown }) => e.healthImpact)).toEqual([null]);
     expect(unscopedCIMatches()).toEqual([]);
   });
-  it('returns unchanged static service health for over 100 owned active CIs without querying Neo4j', async () => {
+  it('returns a null-health payload for over 100 owned active CIs without querying Neo4j', async () => {
     const baseline = CIS.length;
     try {
       const small = await request(app).get('/api/v1/dashboards/business-service').set(AS_A);
       expect(small.status).toBe(200);
-      expect(small.body.data.serviceHealth.flatMap((unit: { businessServices: unknown[] }) => unit.businessServices)).toHaveLength(4);
+      expect(small.body.data.serviceHealth).toEqual([]);
+      expect(small.body.data.unavailable).toContain('serviceHealth');
       expect(cypherRuns).toEqual([]);
       CIS.push(...Array.from({ length: 121 }, (_, index) => ({
         id: `budget-${index}`, name: `Budget ${index}`, status: 'active', organization_id: ORG_A,
       })));
       const large = await request(app).get(`/api/v1/dashboards/business-service?organizationId=${ORG_B}`).set(AS_A);
       expect(large.status).toBe(200);
-      expect(large.body.data.serviceHealth).toEqual(small.body.data.serviceHealth);
-      expect(Object.keys(large.body.data).sort()).toEqual(Object.keys(small.body.data).sort());
+      expect(large.body.data).toEqual(small.body.data);
       expect(cypherRuns).toEqual([]);
     } finally {
       CIS.length = baseline;
@@ -475,7 +480,7 @@ describe('global dashboards', () => {
       expect(owned[0]!.body.data.topCostDrivers).toHaveLength(10);
       expect(owned[1]!.body.data.configurationAccuracy.totalCIs).toBe(A_ACTIVE.length + 130);
       expect(owned[2]!.body.data.onPremVsCloud.totalCost).toBe(A_ACTIVE_COST + 260);
-      expect(owned[2]!.body.data.cloudCosts[0].gcp).toBe(0);
+      expect(owned[2]!.body.data.cloudCosts).toEqual([]);
       expect(owned[3]!.body.data.ciStatus.find((status: { status: string }) =>
         status.status === 'active').count).toBe(A_ACTIVE.length + 130);
       expect(owned[3]!.body.data.ciStatus.find((status: { status: string }) =>
@@ -541,7 +546,7 @@ describe('global dashboards', () => {
     const spy = jest.spyOn(neo4jSession, 'run').mockImplementation(async (query, params = {}, config) => {
       if (params['organizationId'] === ORG_A
         && ((ownRuns === 0 && query.includes('RETURN capability, sum(monthlyCost) AS totalCost'))
-          || (ownRuns === 1 && query.includes('AS awsCost,')))) {
+          || (ownRuns === 1 && query.includes('AS cloudCost')))) {
         if (++ownRuns === 1) entered.resolve();
         else secondEntered.resolve();
         await hold.promise;

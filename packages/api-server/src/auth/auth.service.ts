@@ -7,9 +7,9 @@
  */
 
 import { randomBytes, createHash } from 'crypto';
-import { logger, type AuditLogEntry, type ConfigSchema } from '@cmdb/common';
+import { errorClassFields, logger, type AuditLogEntry, type ConfigSchema } from '@cmdb/common';
 import { JWTService, TokenVerificationError } from './jwt.service';
-import { PasswordService } from './password.service';
+import { BCRYPT_HASH, PasswordService } from './password.service';
 import { containsNul, defaultCredentialsRefused, isDefaultEquivalent, newPasswordAllowed } from './default-credentials';
 import {
   User,
@@ -47,6 +47,13 @@ export interface GuardedPasswordWrite extends GuardedUserWrite {
   nextEpoch: number;
 }
 
+/** Cost-convergence write of a successful login: the same password at the configured cost, same generation (HAP-1090). */
+export interface GuardedPasswordRehash extends GuardedUserWrite {
+  /** Hash the password was verified against; the write lands only while it is still stored. */
+  readHash: string;
+  newHash: string;
+}
+
 export interface CredentialEventInput {
   userId: string;
   event: 'default_marker_set_login';
@@ -64,6 +71,11 @@ export interface AuthRepository {
    * generation, is unmarked and stores `readHash`. False when nothing was written.
    */
   updatePasswordHashGuarded(write: GuardedPasswordWrite): Promise<boolean>;
+  /**
+   * Replaces the hash with the same password at a new cost only while the node still has the verified
+   * generation, is unmarked and stores `readHash`. Never changes the generation. False when nothing was written.
+   */
+  rehashPasswordGuarded(write: GuardedPasswordRehash): Promise<boolean>;
   /** Disables the account only while the authorizing generation is current and it is unmarked. */
   disableUserGuarded(write: GuardedUserWrite): Promise<boolean>;
   /**
@@ -162,9 +174,6 @@ function asAuthFailure(error: unknown): AuthFailureError {
   return new AuthFailureError('store_error', error);
 }
 
-/** A stored hash bcrypt compares at its own cost ($2a/$2b/$2y, two-digit cost, 53-char salt+digest). */
-const BCRYPT_HASH = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
-
 /** Absolute session cap (HAP-1285, founder decision): refresh is refused once now − `_authTime` exceeds it. Not configurable. */
 export const SESSION_ABSOLUTE_CAP_SECONDS = 7 * 24 * 60 * 60;
 
@@ -196,6 +205,10 @@ export class AuthService {
    * the credential generation of the user read whose hash was compared, and
    * a re-read after bcrypt refuses when the generation, hash, marker or
    * enabled flag moved meanwhile (a concurrent operator rotation).
+   *
+   * Cost convergence (HAP-1090): once every check above has passed, a stored hash at a cost other than the configured
+   * one is replaced by the same password at the configured cost (guarded, same generation, best-effort). Never on a
+   * refused attempt, an unknown or disabled user, or a hash already at the configured cost.
    */
   async login(request: LoginRequest): Promise<LoginResponse> {
     const { username, password } = request;
@@ -239,6 +252,7 @@ export class AuthService {
       }
 
       await this.repository.updateUserLastLogin(user._id);
+      await this.rehashStoredPassword(user, password, credentialEpoch);
       // Tenant claim comes from the user record, never the request.
       const accessToken = this.jwtService.generateAccessToken(
         user._id, user._username, user._role, user._organizationId, credentialEpoch
@@ -572,6 +586,24 @@ export class AuthService {
       _expiresIn: this.jwtService.getTokenExpiresIn('access'),
       _user: { _id: user._id, _username: user._username, _role: user._role },
     };
+  }
+
+  /**
+   * Converges a verified login's stored hash to the configured cost (HAP-1090). Best-effort: the login has already
+   * succeeded, so a lost guard or a store error logs the error class only (never the password, hash or message) and
+   * the login completes with the response it would have had. The write keeps the generation, so no session or API key ends.
+   */
+  private async rehashStoredPassword(user: User, password: string, credentialEpoch: number): Promise<void> {
+    const readHash = user._passwordHash;
+    try {
+      if (!this.passwordService.needsRehash(readHash)) return;
+      const newHash = await this.passwordService.hash(password);
+      await this.repository.rehashPasswordGuarded({
+        userId: user._id, elementId: user._elementId, credentialEpoch, readHash, newHash,
+      });
+    } catch (error) {
+      logger.warn('Login password rehash failed', errorClassFields(error));
+    }
   }
 
   /** HAP-1368: a self-service password change is refused (503) before anything changes while it cannot be audited. */

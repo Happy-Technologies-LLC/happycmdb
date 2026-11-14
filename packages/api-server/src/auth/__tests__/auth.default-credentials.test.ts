@@ -18,6 +18,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, jest } from '@j
 import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'crypto';
 import type { Response } from 'express';
+import { logger } from '@cmdb/common';
 import { AuthService, AuthRepository, UserProfileUpdate } from '../auth.service';
 import { JWTService } from '../jwt.service';
 import { bcryptKey, isDefaultEquivalent } from '../default-credentials';
@@ -78,6 +79,17 @@ class FakeRepository implements AuthRepository {
     return updated;
   }
   async updatePasswordHashGuarded(args: {
+    userId: string; elementId?: string; credentialEpoch: number; readHash: string; newHash: string;
+  }): Promise<boolean> {
+    await this.beforeWrite?.();
+    const user = this.users.get(args.userId);
+    if (!user || (user._credentialEpoch ?? 0) !== args.credentialEpoch || user._defaultPasswordSuspect === true
+      || user._passwordHash !== args.readHash) return false;
+    this.users.set(args.userId, { ...user, _passwordHash: args.newHash });
+    return true;
+  }
+  /** Like GUARDED_REHASH_CYPHER: the same guards as the password change, but the generation is never written. */
+  async rehashPasswordGuarded(args: {
     userId: string; elementId?: string; credentialEpoch: number; readHash: string; newHash: string;
   }): Promise<boolean> {
     await this.beforeWrite?.();
@@ -572,5 +584,147 @@ describe('N-21 P-6 dedicated platform-admin flag with seeded-account exclusion',
     let nextCalled = false;
     await new AuthMiddleware(service, authConfig as never).requirePlatformAdmin()(req, res as unknown as Response, () => { nextCalled = true; });
     expect({ status: res.statusCode, body: res.body, nextCalled }).toEqual(FORBIDDEN);
+  });
+});
+
+describe('HAP-1090 a successful login converges the stored hash to the configured cost', () => {
+  const configured = authConfig.bcrypt.rounds;
+  let costly: string;
+  beforeAll(async () => {
+    costly = await bcrypt.hash(OPERATOR_PASSWORD, configured + 1);
+  });
+  const login = (password = OPERATOR_PASSWORD, id = 'u') => service.login({ username: id, password });
+  const stored = (id = 'u') => repository.users.get(id)!._passwordHash;
+
+  it.each([
+    ['above the configured cost', configured, configured + 1],
+    ['below the configured cost', configured + 2, configured],
+  ])('rewrites a hash %s with the same password, keeping the generation and every credential', async (_label, rounds, storedCost) => {
+    const converging = new AuthService({ ...authConfig, bcrypt: { rounds } }, repository);
+    repository.users.set('u', user('u', { _passwordHash: await bcrypt.hash(OPERATOR_PASSWORD, storedCost), _credentialEpoch: 3 }));
+    const key = await addKey('u', 3);
+
+    const result = await converging.login({ username: 'u', password: OPERATOR_PASSWORD });
+
+    expect(bcrypt.getRounds(stored())).toBe(rounds);
+    expect(await bcrypt.compare(OPERATOR_PASSWORD, stored())).toBe(true);
+    expect(repository.users.get('u')!._credentialEpoch).toBe(3);
+    await expect(converging.verifyToken(result._accessToken)).resolves.toMatchObject({ _userId: 'u', _cep: 3 });
+    await expect(converging.refreshToken({ refreshToken: result._refreshToken })).resolves.toBeDefined();
+    await expect(converging.verifyApiKey(key)).resolves.toBeDefined();
+  });
+
+  it('leaves a hash already at the configured cost as it is', async () => {
+    repository.users.set('u', user('u', { _passwordHash: operatorHash }));
+
+    await login();
+
+    expect(stored()).toBe(operatorHash);
+  });
+
+  it.each([
+    ['a wrong password', OPERATOR_PASSWORD + '-wrong', {}, 'invalid'],
+    ['a disabled account', OPERATOR_PASSWORD, { _enabled: false }, 'disabled'],
+    ['a marked account', OPERATOR_PASSWORD, { _defaultPasswordSuspect: true }, 'invalid'],
+    ['a password with U+0000', OPERATOR_PASSWORD + '\u0000x', {}, 'invalid'],
+  ] as Array<[string, string, Partial<User>, string]>)('never rewrites on %s', async (_label, password, overrides, reason) => {
+    repository.users.set('u', user('u', { _passwordHash: costly, ...overrides }));
+
+    await expect(login(password)).rejects.toMatchObject({ reason });
+
+    expect(stored()).toBe(costly);
+  });
+
+  it('never rewrites a default-equivalent login, and never for an unknown account', async () => {
+    const costlyDefault = await bcrypt.hash(DEFAULT, configured + 1);
+    repository.users.set('d', user('d', { _passwordHash: costlyDefault }));
+
+    await expect(login(DEFAULT, 'd')).rejects.toMatchObject(DEFAULT_REFUSED);
+    await expect(login(OPERATOR_PASSWORD, 'ghost')).rejects.toMatchObject(INVALID);
+
+    expect(stored('d')).toBe(costlyDefault);
+    expect([...repository.users.keys()]).toEqual(['d']);
+  });
+
+  it.each([
+    ['the stored hash changed after it was read', async () => {
+      repository.users.set('u', { ...repository.users.get('u')!, _passwordHash: await bcrypt.hash('newer-secret', configured + 2) });
+    }],
+    ['the account was marked after it was read', async () => {
+      repository.users.set('u', { ...repository.users.get('u')!, _defaultPasswordSuspect: true });
+    }],
+    ['an operator rotation moved the generation after it was read', async () => {
+      repository.rotate('u', await bcrypt.hash('rotated-secret', configured + 2));
+    }],
+  ])('a lost guard writes nothing and the login still succeeds: %s', async (_label, interfere) => {
+    repository.users.set('u', user('u', { _passwordHash: costly }));
+    let left = '';
+    repository.beforeWrite = async () => {
+      await interfere();
+      left = stored();
+    };
+
+    await expect(login()).resolves.toMatchObject({ _accessToken: expect.any(String), _user: { _id: 'u' } });
+
+    expect(left).not.toBe('');
+    expect(stored()).toBe(left);
+    expect(bcrypt.getRounds(stored())).not.toBe(configured);
+  });
+
+  it('a store error is logged by class only and the login completes', async () => {
+    repository.users.set('u', user('u', { _passwordHash: costly }));
+    const leak = `boom ${costly} ${OPERATOR_PASSWORD}`;
+    jest.spyOn(repository, 'rehashPasswordGuarded').mockRejectedValue(new TypeError(leak));
+    const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+    const error = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+
+    try {
+      await expect(login()).resolves.toMatchObject({ _accessToken: expect.any(String), _user: { _id: 'u', _username: 'u', _role: 'admin' } });
+
+      expect(warn.mock.calls).toEqual([['Login password rehash failed', { errorClass: 'TypeError' }]]);
+      expect(error).not.toHaveBeenCalled();
+      expect(stored()).toBe(costly);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  describe('one cost feeds the dummy hash and every create or change path', () => {
+    const rounds = configured + 6;
+    const NEXT = randomBytes(12).toString('hex');
+
+    it('hashes the login dummy, a changed password and a converged login at the configured cost', async () => {
+      const single = new AuthService({ ...authConfig, bcrypt: { rounds } }, repository);
+      repository.users.set('u', user('u', { _passwordHash: operatorHash }));
+      const verify = jest.spyOn(PasswordService.prototype, 'verify');
+
+      await expect(single.login({ username: 'ghost', password: OPERATOR_PASSWORD })).rejects.toMatchObject(INVALID);
+      const dummy = verify.mock.calls[0]![1];
+      await single.changePassword('u', OPERATOR_PASSWORD, NEXT, 0);
+      const changed = stored();
+      repository.users.set('u', user('u', { _passwordHash: operatorHash }));
+      await single.login({ username: 'u', password: OPERATOR_PASSWORD });
+
+      expect([bcrypt.getRounds(dummy), bcrypt.getRounds(changed), bcrypt.getRounds(stored())]).toEqual([rounds, rounds, rounds]);
+    });
+  });
+
+  it.each([
+    ['$2y$ (bcrypt rejects it without work)', (hash: string) => hash.replace('$2b$', '$2y$')],
+    ['$2x$', (hash: string) => hash.replace('$2b$', '$2x$')],
+    ['legacy $2$', (hash: string) => hash.replace('$2b$', '$2$')],
+    ['cost 03', (hash: string) => hash.replace('$04$', '$03$')],
+    ['cost 31', (hash: string) => hash.replace('$04$', '$31$')],
+    ['a trailing newline', (hash: string) => `${hash}\n`],
+  ])('a stored hash with prefix or cost %s takes the dummy compare, one per attempt, and fails closed', async (_label, mangle) => {
+    repository.users.set('u', user('u', { _passwordHash: mangle(operatorHash) }));
+    const verify = jest.spyOn(PasswordService.prototype, 'verify');
+
+    await expect(login()).rejects.toMatchObject(INVALID);
+
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(verify.mock.calls[0]![1]).not.toBe(stored());
+    expect(bcrypt.getRounds(verify.mock.calls[0]![1])).toBe(configured);
   });
 });

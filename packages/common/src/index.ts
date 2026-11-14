@@ -58,6 +58,7 @@ export * from './metrics';
 
 // Export config
 export type { ConfigSchema } from './config/config.schema';
+export { BCRYPT_ROUNDS_MIN, BCRYPT_ROUNDS_MAX, BCRYPT_ROUNDS_DEFAULT } from './config/config.schema';
 export { getConfigLoader, getConfig, loadConfig, ConfigurationLoader } from './config/config.loader';
 
 // Export secrets

@@ -57,7 +57,7 @@ import { dirname, join } from 'path';
 import { Neo4jClient } from '../../../database/src/neo4j/client';
 import { PostgresClient } from '../../../database/src/postgres/client';
 import { getMigrationStatus, runMigrations } from '../../../database/src/postgres/migrator';
-import { PasswordService } from '../auth/password.service';
+import { configuredBcryptRounds, PasswordService } from '../auth/password.service';
 
 /** Same shape the api-server accepts as an organization claim (auth.middleware.ts). */
 const ORGANIZATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -68,8 +68,6 @@ const SERVICE_ID_RE = /^bs-[a-z0-9-]{1,47}$/;
 /** validation/schemas.ts authSchemas._login: alphanum, 3-30 chars; password min 8. */
 const USERNAME_RE = /^[A-Za-z0-9]{3,30}$/;
 const MIN_PASSWORD_LENGTH = 8;
-/** config.schema.ts auth.bcrypt.rounds default. */
-const BCRYPT_ROUNDS = 12;
 export const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['127.0.0.1', '::1', '[::1]', 'localhost']);
 /** Marks a service row as created by this seed (no schema change needed). */
 const SERVICE_MARKER = '{"tenant_fixture": true}';
@@ -460,6 +458,12 @@ export async function seedTenantFixture(
   return { migrations_applied: migrations.filter(m => m._applied).length, services, users };
 }
 
+/** The seed's hasher, at the cost the API is configured with (BCRYPT_ROUNDS, HAP-1090). */
+export function seedHasher(env: NodeJS.ProcessEnv): (password: string) => Promise<string> {
+  const passwords = new PasswordService({ rounds: configuredBcryptRounds(env) });
+  return password => passwords.hash(password);
+}
+
 /**
  * CLI entry: validates arguments and target, seeds, prints the summary, and
  * returns the exit code. Errors go to stderr without connection details.
@@ -482,9 +486,8 @@ export async function main(
       _password: target.postgres.password,
     });
     neo4j = new Neo4jClient(target.neo4j.uri, target.neo4j.username, target.neo4j.password);
-    const passwords = new PasswordService({ rounds: BCRYPT_ROUNDS });
     const summary = await seedTenantFixture(
-      { postgres, neo4j, hash: password => passwords.hash(password) },
+      { postgres, neo4j, hash: seedHasher(env) },
       spec
     );
     io.stdout(JSON.stringify(summary));

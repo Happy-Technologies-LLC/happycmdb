@@ -44,6 +44,7 @@
 import * as bcrypt from 'bcrypt';
 import neo4j from 'neo4j-driver';
 import { DEFAULT_PLAINTEXTS, newPasswordAllowed, ROTATION_MIN_LENGTH } from '../auth/default-credentials';
+import { configuredBcryptRounds } from '../auth/password.service';
 import { LOCK_USER } from '../auth/user-lock';
 import { isolateOperatorEnvironment, LockBusyError, openOperatorStores, type OperatorStores } from './operator-stores';
 
@@ -479,6 +480,18 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   return { mode: 'rotate', userId, operator };
 }
 
+/**
+ * The rotation's hasher, at the cost the API is configured with (BCRYPT_ROUNDS, HAP-1090). The former
+ * CMDB_ROTATE_BCRYPT_ROUNDS is refused so a stale setting cannot silently pick another cost.
+ */
+export function rotationHasher(env: NodeJS.ProcessEnv): (password: string) => Promise<string> {
+  if (env['CMDB_ROTATE_BCRYPT_ROUNDS'] !== undefined) {
+    throw new Error('CMDB_ROTATE_BCRYPT_ROUNDS is no longer read; the cost is BCRYPT_ROUNDS');
+  }
+  const rounds = configuredBcryptRounds(env);
+  return password => bcrypt.hash(password, rounds);
+}
+
 export function exitCodeOf(result: RotationResult): number {
   if (result.outcome === 'APPLIED') {
     return 0;
@@ -507,10 +520,7 @@ export async function main(
   let stores: OperatorStores | undefined;
   try {
     const args = parseArgs(argv);
-    const rounds = Number(env['CMDB_ROTATE_BCRYPT_ROUNDS'] ?? '12');
-    if (!Number.isInteger(rounds) || rounds < 10 || rounds > 15) {
-      throw new Error('CMDB_ROTATE_BCRYPT_ROUNDS must be 10-15');
-    }
+    const hasher = rotationHasher(env);
     stores = openOperatorStores(env);
     if (args.mode === 'prepare') {
       await prepareDecisionConstraint(stores.graph);
@@ -519,7 +529,7 @@ export async function main(
     }
     const deps: RotationDeps = {
       graph: stores.graph, sql: stores.sql, lock: stores.lock,
-      hash: password => bcrypt.hash(password, rounds),
+      hash: hasher,
       compare: (password, hash) => bcrypt.compare(password, hash),
     };
 

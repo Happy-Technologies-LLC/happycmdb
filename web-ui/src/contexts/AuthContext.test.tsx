@@ -144,6 +144,24 @@ describe('AuthContext session (HAP-1211 H2: in-memory access token, refresh cook
     expect(screen.getByTestId('isAuthenticated').textContent).toBe('true');
   });
 
+  it('(HAP-1688 c) a token whose exp or iat is not a number is renewed no sooner than 30 s, never in a tight loop', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const payload = btoa(JSON.stringify({ id: 'user-1', jti: crypto.randomUUID(), iat: 'soon', exp: 'later' }));
+    const malformed = `${btoa(JSON.stringify({ alg: 'HS256' }))}.${payload}.mock-signature`;
+    refreshIssues(malformed, createToken(3600));
+    vi.mocked(api.api.getCurrentUser).mockResolvedValue(user);
+    const after = async (ms: number) => {
+      await act(() => vi.advanceTimersByTimeAsync(ms));
+      return [vi.mocked(api.api.refresh).mock.calls.length, screen.getByTestId('token').textContent === malformed];
+    };
+
+    renderAuthProbe();
+
+    expect(await after(0)).toEqual([1, true]); // the boot restore
+    expect(await after(29_000)).toEqual([1, true]);
+    expect(await after(1_000)).toEqual([2, false]); // 30 s after the token arrived: MIN_RENEW_MS
+  });
+
   it('logout in one tab signs the other tabs out (BroadcastChannel)', async () => {
     refreshIssues(createToken(3600), createToken(3600));
     vi.mocked(api.api.getCurrentUser).mockResolvedValue(user);

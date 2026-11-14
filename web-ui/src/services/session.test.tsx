@@ -6,8 +6,8 @@ import type React from 'react';
 import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getToken, removeToken, setToken } from '../utils/token';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getToken, removeToken, setToken, subscribeToken } from '../utils/token';
 
 const jwtLike = () => [
   btoa(JSON.stringify({ alg: 'HS256' })),
@@ -19,6 +19,8 @@ const loc = { href: '' };
 let refreshStatus = 200;
 let accepted = '';
 let calls: Array<[string, unknown, unknown]> = [];
+// When set, a refresh is answered only after it settles: a renewal held in flight.
+let holdRefresh: Promise<void> | null = null;
 // What the server saw, in order: each request as it arrives, and `refresh answered` when its reply (and Set-Cookie) leaves.
 let wire: string[] = [];
 
@@ -35,6 +37,7 @@ axios.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
     const { promise, resolve } = Promise.withResolvers<void>(); // a real gap, so both 401s meet one in-flight refresh
     setTimeout(resolve, 10);
     await promise;
+    await holdRefresh;
     wire.push('refresh answered');
     if (refreshStatus !== 200) return reply(refreshStatus, { success: false, error: 'Authentication failed' });
     accepted = jwtLike();
@@ -50,6 +53,7 @@ axios.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
 };
 // Dynamic on purpose: axios.create copies defaults, so the clients must be created after the adapter is set.
 const { api } = await import('./api');
+const { abandonSession } = await import('../lib/session');
 const { AuthProvider, useAuth } = await import('../contexts/AuthContext');
 
 const urls = () => calls.map(([url]) => url);
@@ -58,6 +62,7 @@ beforeEach(() => {
   refreshStatus = 200;
   accepted = '';
   calls = [];
+  holdRefresh = null;
   wire = [];
   loc.href = '';
   removeToken();
@@ -137,4 +142,108 @@ it('logout while a renewal is in flight: the renewal is answered before the logo
   expect(wire).toEqual(['/auth/refresh', 'refresh answered', '/auth/logout']);
   expect(getToken()).toBeNull();
   expect(screen.getByTestId('session').textContent).toBe('signed-out');
+});
+
+describe('HAP-1688: sign-out races', () => {
+  const noop = () => undefined;
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it('(a) a logout from another tab discards a renewal already in flight: its token is never published', async () => {
+    render(<MemoryRouter><AuthProvider><Probe /></AuthProvider></MemoryRouter>);
+    await waitFor(() => expect(screen.getByTestId('session').textContent).toBe(accepted));
+    const published: Array<string | null> = [];
+    const unsubscribe = subscribeToken((token) => published.push(token));
+    const gate = Promise.withResolvers<void>();
+    holdRefresh = gate.promise;
+    const otherTab = new BroadcastChannel('cmdb-auth');
+    try {
+      const renewal = api.refresh(); // started before the other tab's logout is heard
+      otherTab.postMessage('logout');
+      await waitFor(() => expect(screen.getByTestId('session').textContent).toBe('signed-out'));
+      gate.resolve();
+      await act(() => renewal.catch(noop));
+
+      expect(published).toEqual([null]);
+      expect(getToken()).toBeNull();
+    } finally {
+      unsubscribe();
+      otherTab.close();
+    }
+  });
+
+  it('(b) a 401 while this tab logs out does not navigate away from the logout POST', async () => {
+    setToken(STALE);
+
+    const loggingOut = api.logout();
+    await expect(api.getCurrentUser()).rejects.toMatchObject({ response: { status: 401 } });
+
+    expect(loc.href).toBe('');
+    await loggingOut;
+    expect(wire).toContain('/auth/logout');
+  });
+
+  describe('LOW-A: a renewal in another tab cannot set the refresh cookie after this tab logs out', () => {
+    let peer: BroadcastChannel;
+    let announced: string[] = [];
+    beforeEach(() => {
+      peer = new BroadcastChannel('cmdb-session');
+      announced = [];
+    });
+    afterEach(() => {
+      peer.close();
+      abandonSession(); // releases any hold a test left behind
+    });
+
+    it('the logout POST waits for a peer tab that is renewing to answer', async () => {
+      peer.onmessage = (event) => {
+        if (event.data.type !== 'logout-pending') return;
+        announced.push(event.data.from);
+        peer.postMessage({ type: 'busy', from: 'peer-tab', to: event.data.from });
+      };
+
+      const loggingOut = api.logout();
+      await sleep(400); // past the grace window in which an idle tab is assumed
+      expect(wire).not.toContain('/auth/logout');
+
+      wire.push('peer renewal answered');
+      peer.postMessage({ type: 'settled', from: 'peer-tab', to: announced[0] });
+      await loggingOut;
+
+      expect(wire).toEqual(['peer renewal answered', '/auth/logout']);
+    });
+
+    it('a tab that hears the announcement drops its in-flight renewal, answers busy then settled, and renews nothing until the logout', async () => {
+      const heard: string[] = [];
+      peer.onmessage = (event) => {
+        if (event.data.to === 'peer-tab') {
+          heard.push(event.data.type);
+          wire.push(`peer ${event.data.type}`);
+        }
+      };
+      const published: Array<string | null> = [];
+      const unsubscribe = subscribeToken((token) => published.push(token));
+      const gate = Promise.withResolvers<void>();
+      holdRefresh = gate.promise;
+      try {
+        const renewal = api.refresh();
+        peer.postMessage({ type: 'logout-pending', from: 'peer-tab' });
+        await waitFor(() => expect(heard).toEqual(['busy']));
+        await expect(api.refresh()).rejects.toThrow('Signing out');
+
+        gate.resolve();
+        await renewal.catch(noop);
+        await waitFor(() => expect(heard).toEqual(['busy', 'settled']));
+
+        expect(wire.indexOf('refresh answered')).toBeLessThan(wire.indexOf('peer settled'));
+        expect(published).toEqual([]);
+        expect(getToken()).toBeNull();
+
+        abandonSession(); // the other tab's logout completed
+        await api.refresh();
+        expect(getToken()).toBe(accepted);
+      } finally {
+        unsubscribe();
+      }
+    });
+  });
 });

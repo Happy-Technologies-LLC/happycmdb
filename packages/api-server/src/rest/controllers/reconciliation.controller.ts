@@ -7,7 +7,7 @@
  */
 
 import { Request, Response } from 'express';
-import { logger } from '@cmdb/common';
+import { errorClassFields, logger } from '@cmdb/common';
 import { getIdentityReconciliationEngine } from '@cmdb/identity-resolution';
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { TransformedCI, IdentificationAttributes } from '@cmdb/integration-framework';
@@ -88,7 +88,7 @@ export class ReconciliationController {
         }
       });
     } catch (error) {
-      logger.error('Error finding CI matches', error);
+      logger.error('Error finding CI matches', errorClassFields(error));
       res.status(500).json({
         success: false,
         error: 'Failed to find matches',
@@ -133,7 +133,7 @@ export class ReconciliationController {
       });
     } catch (error) {
       if (sendJournalError(res, error)) return;
-      logger.error('Error merging CI', error);
+      logger.error('Error merging CI', errorClassFields(error));
       res.status(500).json({
         success: false,
         error: 'Failed to merge CI',
@@ -179,7 +179,7 @@ export class ReconciliationController {
         }
       });
     } catch (error) {
-      logger.error('Error listing conflicts', error);
+      logger.error('Error listing conflicts', errorClassFields(error));
       res.status(500).json({
         success: false,
         error: 'Failed to list conflicts',
@@ -209,7 +209,7 @@ export class ReconciliationController {
       });
     } catch (error) {
       if (sendJournalError(res, error)) return;
-      logger.error('Error resolving conflict', error);
+      logger.error('Error resolving conflict', errorClassFields(error));
       res.status(500).json({ success: false, error: 'Failed to resolve conflict' });
     }
   }
@@ -219,7 +219,7 @@ export class ReconciliationController {
     try {
       res.json({ success: true, data: (await listOrgRules(this.postgresClient, requestOrganizationId(req))).rows });
     } catch (error) {
-      logger.error('Error listing rules', error);
+      logger.error('Error listing rules', errorClassFields(error));
       res.status(500).json({ success: false, error: 'Failed to list rules' });
     }
   }
@@ -246,7 +246,7 @@ export class ReconciliationController {
         res.status(409).json({ success: false, error: 'Conflict', message: 'Rule name already exists' });
         return;
       }
-      logger.error('Error writing rule', error);
+      logger.error('Error writing rule', errorClassFields(error));
       res.status(500).json({ success: false, error: 'Failed to write rule' });
     }
   }
@@ -256,7 +256,7 @@ export class ReconciliationController {
     try {
       res.json({ success: true, data: (await listOrgAuthorities(this.postgresClient, requestOrganizationId(req))).rows });
     } catch (error) {
-      logger.error('Error listing source authorities', error);
+      logger.error('Error listing source authorities', errorClassFields(error));
       res.status(500).json({ success: false, error: 'Failed to list source authorities' });
     }
   }
@@ -268,7 +268,7 @@ export class ReconciliationController {
         req.body.authority_score, req.body.description ?? null);
       res.json({ success: true, data: result.rows[0] });
     } catch (error) {
-      logger.error('Error updating source authority', error);
+      logger.error('Error updating source authority', errorClassFields(error));
       res.status(500).json({ success: false, error: 'Failed to update source authority' });
     }
   }
@@ -311,7 +311,7 @@ export class ReconciliationController {
         res.status(409).json(CI_GAP_RESPONSE);
         return;
       }
-      logger.error('Error getting CI lineage', error);
+      logger.error('Error getting CI lineage', errorClassFields(error));
       res.status(500).json({
         success: false,
         error: 'Failed to get lineage',
@@ -356,7 +356,7 @@ export class ReconciliationController {
         res.status(409).json(CI_GAP_RESPONSE);
         return;
       }
-      logger.error('Error getting CI field sources', error);
+      logger.error('Error getting CI field sources', errorClassFields(error));
       res.status(500).json({
         success: false,
         error: 'Failed to get field sources',

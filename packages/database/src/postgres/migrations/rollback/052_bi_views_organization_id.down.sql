@@ -5,7 +5,9 @@
 -- v_top_cost_drivers_bi, a single global LIMIT 20). A view cannot lose a column through CREATE OR REPLACE, hence the
 -- drop. Every privilege on each view and on its columns (all grantees, PUBLIC and grant options included, not only
 -- SELECT), its owner, reloptions and comment are carried over. A Metabase card that references organization_id
--- breaks until 052 is applied again. Loses no data.
+-- breaks until 052 is applied again. Loses no data. After each re-creation every grant the new view picked up from
+-- ALTER DEFAULT PRIVILEGES is revoked (REVOKE ALL from PUBLIC and from every other grantee, the BI role included)
+-- before the snapshot is re-applied, so the restored ACL is exactly the snapshot.
 -- v_baseline_drift_detection is only dropped: its pre-052 definition (jsonb cast to text[]) could never be created.
 -- A view that does not exist is skipped. Afterwards use the pre-052 versions of the three BI view files, or a
 -- later run of the current ones fails with "cannot drop columns from view".
@@ -51,6 +53,14 @@ FROM audit_log
 WHERE timestamp >= NOW() - INTERVAL '30 days'
 ORDER BY timestamp DESC
 $q$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.recent_audit_activity FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.recent_audit_activity FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.recent_audit_activity') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.recent_audit_activity', owner_name);
   END IF;
@@ -103,6 +113,14 @@ INNER JOIN cmdb.fact_discovery f ON c.ci_key = f.ci_key
 WHERE c.is_current = TRUE
 GROUP BY c.ci_id, c.ci_name, c.ci_type, f.discovery_provider
 $q$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON cmdb.v_ci_discovery_summary FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON cmdb.v_ci_discovery_summary FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('cmdb.v_ci_discovery_summary') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'cmdb.v_ci_discovery_summary', owner_name);
   END IF;
@@ -175,6 +193,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_business_service_summary IS 'v3.0 Business service summary with key metrics from ITIL, TBM, and BSM'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_business_service_summary FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_business_service_summary FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_business_service_summary') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_business_service_summary', owner_name);
   END IF;
@@ -247,6 +273,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_application_service_summary IS 'v3.0 Application service summary with TBM costs and ITIL lifecycle'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_application_service_summary FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_application_service_summary FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_application_service_summary') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_application_service_summary', owner_name);
   END IF;
@@ -314,6 +348,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_business_capability_summary IS 'v3.0 Business capability summary with TBM cost allocation and value metrics'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_business_capability_summary FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_business_capability_summary FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_business_capability_summary') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_business_capability_summary', owner_name);
   END IF;
@@ -386,6 +428,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_service_dependency_graph IS 'v3.0 Service dependency relationships with resolved entity names'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_service_dependency_graph FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_service_dependency_graph FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_service_dependency_graph') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_service_dependency_graph', owner_name);
   END IF;
@@ -460,6 +510,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_itil_incident_summary IS 'v3.0 ITIL incident summary with business impact metrics'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_itil_incident_summary FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_itil_incident_summary FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_itil_incident_summary') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_itil_incident_summary', owner_name);
   END IF;
@@ -531,6 +589,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_itil_change_summary IS 'v3.0 ITIL change summary with risk assessment and business impact'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_itil_change_summary FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_itil_change_summary FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_itil_change_summary') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_itil_change_summary', owner_name);
   END IF;
@@ -595,6 +661,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_tbm_cost_pool_summary IS 'v3.0 TBM cost pool summary with budget tracking and GL mappings'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_tbm_cost_pool_summary FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_tbm_cost_pool_summary FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_tbm_cost_pool_summary') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_tbm_cost_pool_summary', owner_name);
   END IF;
@@ -667,6 +741,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_tbm_depreciation_tracking IS 'v3.0 TBM depreciation tracking with calculated remaining life and percentages'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_tbm_depreciation_tracking FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_tbm_depreciation_tracking FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_tbm_depreciation_tracking') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_tbm_depreciation_tracking', owner_name);
   END IF;
@@ -738,6 +820,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_unified_service_health IS 'v3.0 Unified service health dashboard combining ITIL, TBM, and BSM metrics'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_unified_service_health FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_unified_service_health FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_unified_service_health') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_unified_service_health', owner_name);
   END IF;
@@ -816,6 +906,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_criticality_distribution IS 'Distribution of CIs by business criticality tier with cost and impact metrics'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_criticality_distribution FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_criticality_distribution FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_criticality_distribution') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_criticality_distribution', owner_name);
   END IF;
@@ -897,6 +995,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_revenue_at_risk IS 'Revenue at risk analysis from open incidents affecting business services'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_revenue_at_risk FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_revenue_at_risk FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_revenue_at_risk') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_revenue_at_risk', owner_name);
   END IF;
@@ -964,6 +1070,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_compliance_summary IS 'Compliance status summary by regulatory framework'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_compliance_summary FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_compliance_summary FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_compliance_summary') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_compliance_summary', owner_name);
   END IF;
@@ -1053,6 +1167,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_sox_pci_inventory IS 'SOX and PCI in-scope business services with compliance metrics'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_sox_pci_inventory FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_sox_pci_inventory FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_sox_pci_inventory') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_sox_pci_inventory', owner_name);
   END IF;
@@ -1126,6 +1248,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_disaster_recovery_tiers IS 'Disaster recovery tier analysis with RTO/RPO metrics'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_disaster_recovery_tiers FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_disaster_recovery_tiers FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_disaster_recovery_tiers') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_disaster_recovery_tiers', owner_name);
   END IF;
@@ -1213,6 +1343,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_business_capability_health IS 'Business capability health scorecard with financial and operational metrics'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_business_capability_health FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_business_capability_health FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_business_capability_health') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_business_capability_health', owner_name);
   END IF;
@@ -1293,6 +1431,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_service_dependency_map IS 'Service dependency relationship map for impact analysis'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_service_dependency_map FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_service_dependency_map FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_service_dependency_map') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_service_dependency_map', owner_name);
   END IF;
@@ -1372,6 +1518,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_customer_impact_analysis IS 'Customer-facing services with impact scores and cost per customer'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_customer_impact_analysis FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_customer_impact_analysis FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_customer_impact_analysis') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_customer_impact_analysis', owner_name);
   END IF;
@@ -1449,6 +1603,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_executive_cost_summary IS 'Executive cost summary by business capability and service with unit economics'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_executive_cost_summary FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_executive_cost_summary FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_executive_cost_summary') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_executive_cost_summary', owner_name);
   END IF;
@@ -1520,6 +1682,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_cost_by_tower IS 'TBM cost breakdown by resource tower and cost pool'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_cost_by_tower FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_cost_by_tower FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_cost_by_tower') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_cost_by_tower', owner_name);
   END IF;
@@ -1583,6 +1753,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_cost_trends IS 'Monthly cost trends over time by tower and CI type'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_cost_trends FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_cost_trends FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_cost_trends') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_cost_trends', owner_name);
   END IF;
@@ -1666,6 +1844,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_unit_economics IS 'Unit economics by business service with cost per transaction and customer'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_unit_economics FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_unit_economics FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_unit_economics') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_unit_economics', owner_name);
   END IF;
@@ -1734,6 +1920,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_cloud_vs_onprem_costs IS 'Cloud vs on-premises cost comparison'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_cloud_vs_onprem_costs FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_cloud_vs_onprem_costs FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_cloud_vs_onprem_costs') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_cloud_vs_onprem_costs', owner_name);
   END IF;
@@ -1816,6 +2010,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_cost_allocation_summary IS 'Cost allocation summary with budget variance by cost center'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_cost_allocation_summary FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_cost_allocation_summary FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_cost_allocation_summary') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_cost_allocation_summary', owner_name);
   END IF;
@@ -1884,6 +2086,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_depreciation_summary IS 'Asset depreciation summary with remaining life and book value'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_depreciation_summary FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_depreciation_summary FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_depreciation_summary') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_depreciation_summary', owner_name);
   END IF;
@@ -1946,6 +2156,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_top_cost_drivers_bi IS 'Top 20 configuration items by monthly cost, without ci.metadata (BI-readable)'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_top_cost_drivers_bi FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_top_cost_drivers_bi FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_top_cost_drivers_bi') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_top_cost_drivers_bi', owner_name);
   END IF;
@@ -2015,6 +2233,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_underutilized_resources IS 'Active CIs under 50% utilization with monthly cost and potential savings'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_underutilized_resources FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_underutilized_resources FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_underutilized_resources') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_underutilized_resources', owner_name);
   END IF;
@@ -2088,6 +2314,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_incident_summary IS 'Incident summary by priority and status with business impact (90 days)'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_incident_summary FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_incident_summary FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_incident_summary') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_incident_summary', owner_name);
   END IF;
@@ -2150,6 +2384,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_incident_trends IS 'Monthly incident trends by priority and category (12 months)'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_incident_trends FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_incident_trends FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_incident_trends') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_incident_trends', owner_name);
   END IF;
@@ -2223,6 +2465,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_change_success_rates IS 'Change success rates by type with risk and business impact (12 months)'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_change_success_rates FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_change_success_rates FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_change_success_rates') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_change_success_rates', owner_name);
   END IF;
@@ -2295,6 +2545,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_change_calendar IS 'Upcoming scheduled changes with risk and impact assessment'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_change_calendar FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_change_calendar FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_change_calendar') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_change_calendar', owner_name);
   END IF;
@@ -2370,6 +2628,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_configuration_accuracy IS 'Configuration item accuracy and audit compliance by type and lifecycle'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_configuration_accuracy FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_configuration_accuracy FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_configuration_accuracy') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_configuration_accuracy', owner_name);
   END IF;
@@ -2453,6 +2719,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_sla_compliance IS 'SLA compliance by business service with availability and incident metrics'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_sla_compliance FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_sla_compliance FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_sla_compliance') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_sla_compliance', owner_name);
   END IF;
@@ -2531,6 +2805,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_service_health_scorecard IS 'Comprehensive service health scorecard with calculated health scores'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_service_health_scorecard FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_service_health_scorecard FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_service_health_scorecard') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_service_health_scorecard', owner_name);
   END IF;
@@ -2608,6 +2890,14 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_mttr_mtbf_analysis IS 'MTTR and MTBF analysis by business service (90 days)'
 $c$;
+  -- A default privilege (ALTER DEFAULT PRIVILEGES) may have granted on the re-created view: clear every grant it
+  -- carries (PUBLIC, the BI role, any other role), so only the snapshot below is re-applied.
+  EXECUTE 'REVOKE ALL ON public.v_mttr_mtbf_analysis FROM PUBLIC';
+  FOR r IN SELECT format('REVOKE ALL ON public.v_mttr_mtbf_analysis FROM %I', g.rolname)
+             FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a JOIN pg_roles g ON g.oid = a.grantee
+            WHERE c.oid = to_regclass('public.v_mttr_mtbf_analysis') AND a.grantee <> c.relowner LOOP
+    EXECUTE r;
+  END LOOP;
   IF owner_name <> quote_ident(current_user) THEN
     EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_mttr_mtbf_analysis', owner_name);
   END IF;

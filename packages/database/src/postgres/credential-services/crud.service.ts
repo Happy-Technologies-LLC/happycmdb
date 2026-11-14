@@ -14,7 +14,7 @@ import {
   UnifiedCredentialUpdateInput,
   UnifiedCredentialSummary,
 } from '@cmdb/common';
-import { getEncryptionService, CredentialProtocolAdapter } from '@cmdb/common';
+import { getEncryptionService, CredentialProtocolAdapter, DuplicateCredentialNameError, CredentialInUseError } from '@cmdb/common';
 import { logger, errorClassFields } from '@cmdb/common';
 
 export interface CredentialFilters {
@@ -157,9 +157,7 @@ export class CredentialCRUDService {
       };
     } catch (error: any) {
       if (error.code === '23505') {
-        throw new Error(
-          `Credential with name '${input.name}' already exists for this user`
-        );
+        throw new DuplicateCredentialNameError();
       }
       logger.error('Failed to create unified credential', {
         error: errorClassFields(error),
@@ -485,9 +483,7 @@ export class CredentialCRUDService {
         });
       }
       if (error.code === '23505') {
-        throw new Error(
-          `Credential with name '${input.name}' already exists for this user`
-        );
+        throw new DuplicateCredentialNameError();
       }
       logger.error('Failed to update unified credential', { error: errorClassFields(error), id });
       throw error;
@@ -537,20 +533,10 @@ export class CredentialCRUDService {
 
       const totalUsage = discoveryUsageCount + connectorUsageCount;
       if (totalUsage > 0) {
-        const usageDetails = [];
-        if (discoveryUsageCount > 0) {
-          usageDetails.push(
-            `${discoveryUsageCount} discovery definition(s)`
-          );
-        }
-        if (connectorUsageCount > 0) {
-          usageDetails.push(
-            `${connectorUsageCount} connector configuration(s)`
-          );
-        }
-        throw new Error(
-          `Cannot delete credential: it is currently used by ${usageDetails.join(' and ')}`
-        );
+        throw new CredentialInUseError({
+          discoveryDefinitions: discoveryUsageCount,
+          connectorConfigurations: connectorUsageCount,
+        });
       }
 
       const setUsageResult = await client.query(
@@ -562,9 +548,7 @@ export class CredentialCRUDService {
       const setUsageCount = parseInt(setUsageResult.rows[0].count, 10);
 
       if (setUsageCount > 0) {
-        throw new Error(
-          `Cannot delete credential: it is currently used by ${setUsageCount} credential set(s)`
-        );
+        throw new CredentialInUseError({ credentialSets: setUsageCount });
       }
 
       const result = await client.query(

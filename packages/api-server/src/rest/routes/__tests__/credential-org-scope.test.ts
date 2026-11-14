@@ -152,7 +152,8 @@ it('foreign and missing writes/deletes are indistinguishable with no mutation; o
   }
   expect(await sql('SELECT credentials::text AS encrypted FROM credentials WHERE id = $1', [bId])).toEqual(before);
   expect((await sql('SELECT name FROM credentials WHERE id = $1', [bId]))[0].name).toBe('B-private');
-  expect((await request(app).delete(`/api/v1/credentials/${bId}`).set(as('b'))).status).toBe(409);
+  const inUse = await request(app).delete(`/api/v1/credentials/${bId}`).set(as('b'));
+  expect([inUse.status, inUse.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently used by 1 discovery definition(s)' }]);
   await sql('DELETE FROM discovery_definitions WHERE credential_id = $1', [bId]);
   const ownerPut = await request(app).put(`/api/v1/credentials/${bId}`).set(as('b'))
     .send({ name: 'B-renamed', credentials: { key: 'owner-test-only' } });

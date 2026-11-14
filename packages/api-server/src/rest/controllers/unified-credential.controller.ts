@@ -12,6 +12,8 @@ import {
   logger,
   errorClassFields,
   CredentialProtocolAdapter,
+  DuplicateCredentialNameError,
+  CredentialInUseError,
 } from '@cmdb/common';
 import { ROLE_PERMISSIONS, type AuthenticatedRequest } from '../../auth/types';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
@@ -36,6 +38,21 @@ const C4_PRINCIPAL_ADMIN_REQUIRED = 'c4_principal_admin_required';
 const C4_REFUSAL = {
   success: false, error: 'Forbidden', code: C4_PRINCIPAL_ADMIN_REQUIRED,
   message: 'Only organization admins may manage the happylab-c4 credential tag',
+};
+
+/** SQLSTATE of a pg error, if it carries one. */
+const sqlState = (error: unknown): unknown => (error as { code?: unknown } | null)?.code;
+
+/** HAP-1734: a duplicate name is the typed service error or a raw unique violation (23505); never message text. */
+const isDuplicateName = (error: unknown): boolean =>
+  error instanceof DuplicateCredentialNameError || sqlState(error) === '23505';
+
+/** The only text echoed is the request's own `name`, already limited by the route validator to a 1-255 character string. */
+const duplicateNameMessage = (req: Request): string => {
+  const name = (req.body as { name?: unknown } | undefined)?.name;
+  return typeof name === 'string'
+    ? `Credential with name '${name}' already exists for this user`
+    : 'Credential name already exists for this user';
 };
 
 /**
@@ -93,11 +110,11 @@ export class UnifiedCredentialController {
       logger.error('Error creating credential', { error: errorClassFields(error) });
 
       // Check for duplicate name error
-      if (error instanceof Error && error.message.includes('already exists')) {
+      if (isDuplicateName(error)) {
         res.status(409).json({
           success: false,
           error: 'Conflict',
-          message: error.message,
+          message: duplicateNameMessage(req),
         });
         return;
       }
@@ -242,11 +259,11 @@ export class UnifiedCredentialController {
       }
 
       // Check for duplicate name error
-      if (error instanceof Error && error.message.includes('already exists')) {
+      if (isDuplicateName(error)) {
         res.status(409).json({
           success: false,
           error: 'Conflict',
-          message: error.message,
+          message: duplicateNameMessage(req),
         });
         return;
       }
@@ -295,11 +312,13 @@ export class UnifiedCredentialController {
       }
 
       // Check for in-use error
-      if (error instanceof Error && error.message.includes('currently used')) {
+      if (error instanceof CredentialInUseError || sqlState(error) === '23503') {
         res.status(409).json({
           success: false,
           error: 'Conflict',
-          message: error.message,
+          message: error instanceof CredentialInUseError
+            ? error.clientMessage
+            : 'Cannot delete credential: it is currently in use',
         });
         return;
       }

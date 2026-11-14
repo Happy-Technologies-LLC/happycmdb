@@ -9,6 +9,7 @@ import { execFileSync } from 'child_process';
 import { join } from 'path';
 import neo4j, { Driver } from 'neo4j-driver';
 import { Pool } from 'pg';
+import { dropDatabaseForce } from './drop-database.helper';
 
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
@@ -197,7 +198,7 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
       expect(stillTyped[0].data_type).toBe('character varying');
     } finally {
       await fresh.end();
-      await db.query(`DROP DATABASE ${database} WITH (FORCE)`);
+      await dropDatabaseForce(db, database);
     }
   });
 
@@ -211,6 +212,7 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
       '029_reconciliation_conflict_identity_rules', '030_drift_impact_org_provenance',
       '031_business_service_mapping_ownership'];
     await db.query('CREATE ROLE metabase_readonly LOGIN');
+    let completed = false;
     try {
       for (const [database, before] of [['hp1_s1_bi_before', true], ['hp1_s1_bi_after', false]] as const) {
         await db.query(`CREATE DATABASE ${database}`);
@@ -300,11 +302,13 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
           await assertPrivate(); // A named default grant must also be stripped by 028 reapply.
         } finally {
           await fresh.end();
-          await db.query(`DROP DATABASE ${database} WITH (FORCE)`);
+          await dropDatabaseForce(db, database);
         }
       }
+      completed = true;
     } finally {
-      await db.query('DROP ROLE metabase_readonly');
+      // A role-drop failure must not hide the failure that left the grants behind.
+      await db.query('DROP ROLE metabase_readonly').catch(error => { if (completed) throw error; });
     }
   });
 
@@ -440,7 +444,7 @@ describe('HP1-S1 expand contract on actual Timescale hypertables', () => {
       await existing.end();
       await fresh.end();
       for (const name of ['hp1_s1_existing_v2', 'hp1_s1_fresh_v3']) {
-        await db.query(`DROP DATABASE ${name} WITH (FORCE)`);
+        await dropDatabaseForce(db, name);
       }
     }
   });

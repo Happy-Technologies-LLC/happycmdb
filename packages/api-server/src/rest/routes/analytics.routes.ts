@@ -42,6 +42,9 @@ const ciIdParamSchema = Joi.object({
 // Dashboard summary statistics
 analyticsRoutes.get('/dashboard', controller.getDashboardStats.bind(controller));
 
+// Estate topology summary (category counts, capped node sample, capped edge list)
+analyticsRoutes.get('/topology-summary', controller.getTopologySummary.bind(controller));
+
 // CI counts by type
 analyticsRoutes.get('/ci-counts', controller.getCICountsByType.bind(controller));
 

@@ -6,6 +6,8 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Icon, ProductLockup, Sidebar, SidebarNavItem, SidebarSection } from '@happy-technologies/design-system';
 import ciService from '@services/ci.service';
+import { useOrganizationId } from '@/contexts/OrganizationContext';
+import { orgScopedKey } from '@/lib/queryKeys';
 import { NAV_SECTIONS, matchNav } from './navigation';
 
 /** A plain left click is ours to route; a modified or non-primary click is the browser's (new tab, new window, download). */
@@ -17,10 +19,11 @@ export function AppRail() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const activeId = matchNav(pathname)?.section.id;
+  const organizationId = useOrganizationId();
 
-  // Shares the ['dashboard-stats'] query (and cache) with the Dashboard: the CI badge tracks the live estate total.
+  // Shares the ['dashboard-stats', organizationId] query (and cache) with the Dashboard: the CI badge tracks the live estate total.
   const { data: stats } = useQuery({
-    queryKey: ['dashboard-stats'],
+    queryKey: orgScopedKey('dashboard-stats', organizationId),
     queryFn: () => ciService.getDashboardStats(),
     staleTime: 60000,
     refetchInterval: 300000,

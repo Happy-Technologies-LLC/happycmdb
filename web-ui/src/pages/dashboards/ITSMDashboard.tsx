@@ -4,6 +4,8 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiClient } from '@/services/api';
 import dashboardService from '@/services/dashboard.service';
+import { useOrganizationId } from '@/contexts/OrganizationContext';
+import { orgScopedKey } from '@/lib/queryKeys';
 import { UnavailableNotice } from '@/components/dashboard/UnavailableNotice';
 import { formatCount, isKnown, isUnavailable } from '@/lib/dashboardValue';
 
@@ -17,10 +19,11 @@ const incidentTone = (count: number | null): string => {
 };
 
 export const ITSMDashboard = () => {
+  const organizationId = useOrganizationId();
   // Incident and change totals come from the record routes guarded by HP1-S2
   // ownership predicates; the KPI aggregate below is a separate request.
   const { data, isPending, isError } = useQuery({
-    queryKey: ['itil-record-counts'],
+    queryKey: orgScopedKey('itil-record-counts', organizationId),
     queryFn: async () => {
       const [incidents, changes] = await Promise.all([
         apiClient.get<RecordCount>('/itil/incidents', { params: { limit: 1 } }),
@@ -32,7 +35,7 @@ export const ITSMDashboard = () => {
 
   // KPIs are computed server-side from the caller's organization; null means no backing data.
   const kpis = useQuery({
-    queryKey: ['itsm-dashboard'],
+    queryKey: orgScopedKey('itsm-dashboard', organizationId),
     queryFn: () => dashboardService.getITSMDashboard(),
   });
   const kpi = kpis.data;

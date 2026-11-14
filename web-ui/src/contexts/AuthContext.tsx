@@ -3,11 +3,13 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { api } from '@services/api';
 import { abandonSession } from '../lib/session';
 import { decodeToken, getToken, removeToken, subscribeToken } from '../utils/token';
 import type { AuthState, LoginCredentials } from '../types';
 import { logClientError } from '../utils/logger';
+import { OrganizationContext } from './OrganizationContext';
 
 interface AuthContextType extends AuthState {
   login: (credentials: LoginCredentials) => Promise<void>;
@@ -53,8 +55,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     isLoading: true,
   });
   const logoutChannel = useRef<BroadcastChannel | null>(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   // Every new access token (login, renewal, password change) reaches state.token, so useWebSocket reconnects with it.
   useEffect(() => subscribeToken((token) => setState((prev) => ({ ...prev, token }))), []);
@@ -101,12 +106,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     const timer = setTimeout(() => {
       api.refresh().catch((error) => {
         logClientError('Session renewal failed', error);
+        queryClient.clear();
         removeToken();
         setState(SIGNED_OUT);
       });
     }, delay);
     return () => clearTimeout(timer);
-  }, [state.isAuthenticated, state.token]);
+  }, [state.isAuthenticated, state.token, queryClient]);
 
   // Another tab logged out: drop this tab's token too.
   useEffect(() => {
@@ -115,6 +121,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     channel.onmessage = (event) => {
       if (event.data !== LOGOUT_MESSAGE) return;
       abandonSession();
+      queryClient.clear();
       removeToken();
       setState(SIGNED_OUT);
       navigate('/login');
@@ -124,7 +131,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       channel.close();
       logoutChannel.current = null;
     };
-  }, [navigate]);
+  }, [navigate, queryClient]);
 
   const login = useCallback(async (credentials: LoginCredentials) => {
     try {
@@ -139,6 +146,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       const authToken = await api.login(credentials);
       const user = await api.getCurrentUser();
 
+      // Whatever the cache holds was fetched for a previous session, possibly another organization's.
+      queryClient.clear();
       setState({
         user,
         token: authToken.access_token,
@@ -148,11 +157,12 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
       navigate('/');
     } catch (error) {
+      queryClient.clear();
       removeToken();
       setState(SIGNED_OUT);
       throw error;
     }
-  }, [navigate]);
+  }, [navigate, queryClient]);
 
   const logout = useCallback(async () => {
     try {
@@ -161,21 +171,25 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       logClientError('Logout error:', error);
     } finally {
       logoutChannel.current?.postMessage(LOGOUT_MESSAGE);
+      queryClient.clear();
       removeToken();
       setState(SIGNED_OUT);
       navigate('/login');
     }
-  }, [navigate]);
+  }, [navigate, queryClient]);
 
   const refreshUser = useCallback(async () => {
     try {
       const user = await api.getCurrentUser();
+      // A changed organization invalidates everything cached for the previous one.
+      const previous = stateRef.current.user;
+      if (previous && (previous.organization_id ?? null) !== (user.organization_id ?? null)) queryClient.clear();
       setState((prev) => ({ ...prev, user }));
     } catch (error) {
       logClientError('Failed to refresh user:', error);
       throw error;
     }
-  }, []);
+  }, [queryClient]);
 
   const hasRole = useCallback(
     (roles: string[]): boolean => {
@@ -192,7 +206,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     hasRole,
   };
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      <OrganizationContext.Provider value={state.user?.organization_id ?? null}>{children}</OrganizationContext.Provider>
+    </AuthContext.Provider>
+  );
 };
 
 export default AuthContext;

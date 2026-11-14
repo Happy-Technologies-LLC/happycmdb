@@ -4,10 +4,28 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { AxiosResponse } from 'axios';
 import { render, screen } from '@testing-library/react';
+import type { ITSMDashboardData } from '@/services/dashboard.service';
 import { ITSMDashboard } from './ITSMDashboard';
 import { apiClient } from '@/services/api';
 
 vi.mock('@/services/api', () => ({ apiClient: { get: vi.fn() } }));
+
+// Shaped as the API returns it; overrides model the organization's data.
+const kpiPayload = (over: Partial<ITSMDashboardData> = {}): ITSMDashboardData => ({
+  openIncidents: [], openIncidentCount: 7, changesInProgress: [], changesInProgressCount: 4,
+  ciStatus: [{ status: 'active', count: 11 }], topFailingCIs: [], slaCompliance: [], baselineCompliance: [],
+  unavailable: ['slaCompliance', 'baselineCompliance'], ...over,
+});
+
+function mockApi(kpis: ITSMDashboardData | Error, records = { incidents: 2, changes: 3 }) {
+  vi.mocked(apiClient.get).mockImplementation(async (path) => {
+    if (path === '/dashboards/itsm') {
+      if (kpis instanceof Error) throw kpis;
+      return { data: { success: true, data: kpis } } as unknown as AxiosResponse;
+    }
+    return { data: { success: true, pagination: { total: path === '/itil/incidents' ? records.incidents : records.changes } } } as unknown as AxiosResponse;
+  });
+}
 
 function renderDashboard() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -15,9 +33,7 @@ function renderDashboard() {
 }
 
 it('shows only totals from scoped record endpoints', async () => {
-  vi.mocked(apiClient.get).mockImplementation(async (path) => ({
-    data: { success: true, pagination: { total: path === '/itil/incidents' ? 2 : 3 } },
-  } as unknown as AxiosResponse));
+  mockApi(kpiPayload());
   renderDashboard();
   expect(await screen.findByText('2')).toBeVisible();
   expect(screen.getByText('3')).toBeVisible();
@@ -28,9 +44,50 @@ it('shows only totals from scoped record endpoints', async () => {
 it('does not render partial totals when record tables are unavailable', async () => {
   vi.mocked(apiClient.get).mockImplementation(async (path) => {
     if (path === '/itil/changes') throw new Error('503');
+    if (path === '/dashboards/itsm') return { data: { success: true, data: kpiPayload() } } as unknown as AxiosResponse;
     return { data: { success: true, pagination: { total: 42 } } } as unknown as AxiosResponse;
   });
   renderDashboard();
   expect(await screen.findByRole('alert')).toHaveTextContent('ITIL records unavailable');
   expect(screen.queryByText('42')).not.toBeInTheDocument();
+});
+
+it('shows computed KPIs with status colour and flags SLA compliance as not available', async () => {
+  mockApi(kpiPayload());
+  renderDashboard();
+  expect(await screen.findByTestId('kpi-open-incidents')).toHaveTextContent('7');
+  expect(screen.getByTestId('kpi-open-incidents')).toHaveClass('text-warning');
+  expect(screen.getByTestId('kpi-changes-in-progress')).toHaveTextContent('4');
+  expect(screen.getByTestId('kpi-active-cis')).toHaveTextContent('11');
+  expect(screen.getByRole('status')).toHaveTextContent('SLA compliance: Not available yet');
+});
+
+it('renders a dash in a neutral colour, never 0, when the ITIL records are not available', async () => {
+  mockApi(kpiPayload({
+    openIncidentCount: null, changesInProgressCount: null, ciStatus: [],
+    unavailable: ['openIncidents', 'openIncidentCount', 'changesInProgress', 'changesInProgressCount',
+      'topFailingCIs', 'slaCompliance', 'baselineCompliance'],
+  }));
+  renderDashboard();
+  const open = await screen.findByTestId('kpi-open-incidents');
+  expect(open).toHaveTextContent('—');
+  expect(open).toHaveClass('text-muted-foreground');
+  expect(open).not.toHaveClass('text-success');
+  expect(screen.getByTestId('kpi-changes-in-progress')).toHaveTextContent('—');
+  expect(screen.getByTestId('kpi-active-cis')).toHaveTextContent('—');
+});
+
+it('a genuine zero is shown as 0 and green, distinct from unavailable', async () => {
+  mockApi(kpiPayload({ openIncidentCount: 0, unavailable: ['slaCompliance', 'baselineCompliance'] }));
+  renderDashboard();
+  const open = await screen.findByTestId('kpi-open-incidents');
+  expect(open).toHaveTextContent('0');
+  expect(open).toHaveClass('text-success');
+});
+
+it('keeps the record totals when only the KPI aggregate fails', async () => {
+  mockApi(new Error('503'));
+  renderDashboard();
+  expect(await screen.findByText('2')).toBeVisible();
+  expect(await screen.findByText('ITSM KPIs unavailable.')).toBeVisible();
 });

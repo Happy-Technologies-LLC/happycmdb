@@ -53,6 +53,14 @@ function run(rawQuery: string): Array<ReturnType<typeof row>> {
       id: ci['id'], name: ci['name'], monthlyCost: cost(ci) === null ? null : int(cost(ci)!),
     }));
   }
+  if (query.includes('WITH ci.status AS status, count(ci) AS count')) {
+    const owned = CIS.filter(ci => ci['organization_id'] === ORG);
+    const statuses = [...new Set(owned.map(ci => ci['status'] as string))];
+    return statuses.map(status => row({
+      status, count: int(owned.filter(ci => ci['status'] === status).length),
+      sampleCIs: owned.filter(ci => ci['status'] === status).map(properties => ({ properties })),
+    }));
+  }
   if (query.includes('AS cloudCost')) {
     const costed = active.filter(ci => cost(ci) !== null);
     const sum = (rows: Props[]) => rows.reduce((total, ci) => total + cost(ci)!, 0);
@@ -65,8 +73,10 @@ function run(rawQuery: string): Array<ReturnType<typeof row>> {
   throw new Error(`fake Neo4j: unmodelled statement: ${query}`);
 }
 
+let mockPgQuery: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> = async () => ({ rows: [] });
+
 jest.mock('@cmdb/database', () => ({
-  getPostgresClient: () => ({ query: async () => ({ rows: [] }) }),
+  getPostgresClient: () => ({ query: (sql: string, params?: unknown[]) => mockPgQuery(sql, params) }),
   getNeo4jClient: () => ({
     getSession: () => ({ run: async (query: string) => ({ records: run(query) }), close: async () => undefined }),
   }),
@@ -201,5 +211,39 @@ describe('DashboardService carries no fabricated numbers', () => {
     expect(finops.onPremVsCloud).toEqual({ onPremCost: 500, cloudCost: null, totalCost: 500, tcoComparison: [] });
     expect(finops.unavailable).toContain('onPremVsCloud.cloudCost');
     expect(finops.unavailable).not.toContain('onPremVsCloud.onPremCost');
+  });
+});
+
+describe('ITSM dashboard when the ITIL records cannot be read', () => {
+  const pgError = (code: string) => Object.assign(new Error('relation "itil_incidents" does not exist'), { code });
+
+  it('a schema without ITIL tables yields null counts and empty lists, all named; the graph KPI still computes', async () => {
+    CIS = [
+      { id: 'a', name: 'a', type: 'server', status: 'active', organization_id: ORG },
+      { id: 'b', name: 'b', type: 'server', status: 'retired', organization_id: ORG },
+      { id: 'other', name: 'other', type: 'server', status: 'active', organization_id: 'someone-else' },
+    ];
+    for (const code of ['42P01', '42703']) {
+      mockPgQuery = async () => { throw pgError(code); };
+      const itsm = await service.getITSMDashboard(ORG);
+
+      expect(itsm.openIncidents).toEqual([]);
+      expect(itsm.changesInProgress).toEqual([]);
+      expect(itsm.topFailingCIs).toEqual([]);
+      expect(itsm.openIncidentCount).toBeNull();
+      expect(itsm.changesInProgressCount).toBeNull();
+      expect(itsm.unavailable).toEqual(expect.arrayContaining([
+        'openIncidents', 'openIncidentCount', 'changesInProgress', 'changesInProgressCount',
+        'topFailingCIs', 'slaCompliance', 'baselineCompliance',
+      ]));
+      expect(itsm.ciStatus.map(group => [group.status, group.count]).sort()).toEqual([['active', 1], ['retired', 1]]);
+      expect(numericLeaves({ ...itsm, ciStatus: [] })).toEqual({});
+    }
+  });
+
+  it('any other Postgres failure is an error, not an empty dashboard', async () => {
+    CIS = [];
+    mockPgQuery = async () => { throw pgError('57014'); };
+    await expect(service.getITSMDashboard(ORG)).rejects.toMatchObject({ code: '57014' });
   });
 });

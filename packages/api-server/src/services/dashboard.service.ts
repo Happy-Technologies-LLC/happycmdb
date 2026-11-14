@@ -16,6 +16,11 @@ import { ownsBusinessService } from './business-service-ownership';
 
 const DASHBOARD_QUERY_TIMEOUT_MS = 5000;
 const MAX_DASHBOARD_GROUPS = 100;
+const MAX_ITSM_ROWS = 25;
+const MAX_TOP_FAILING_CIS = 5;
+const TOP_FAILING_WINDOW_DAYS = 90;
+/** itil_* tables or their organization_id column are absent (V2/V3 schemas): undefined_table, undefined_column. */
+const ITIL_SCHEMA_ABSENT = new Set(['42P01', '42703']);
 
 export class DashboardAggregateLimitError extends Error {
   constructor() {
@@ -155,28 +160,35 @@ export interface CIOMetricsData {
 }
 
 export interface ITSMDashboardData {
+  /** Incidents not yet resolved, closed or cancelled; most urgent first, at most MAX_ITSM_ROWS. */
   openIncidents: Array<{
     id: string;
     title: string;
     priority: string;
     status: string;
-    affectedCI: string;
-    assignedTeam: string;
+    affectedCI: string | null;
+    assignedTeam: string | null;
     createdAt: string;
     updatedAt: string;
+    /** Whole hours since the incident was reported. */
     age: number;
   }>;
+  /** Total open incidents (not capped by the list); null when the ITIL records are unavailable. */
+  openIncidentCount: number | null;
+  /** Scheduled or in-progress changes; at most MAX_ITSM_ROWS. */
   changesInProgress: Array<{
     id: string;
     title: string;
     status: string;
     type: string;
-    riskLevel: string;
-    scheduledDate: string;
+    riskLevel: string | null;
+    scheduledDate: string | null;
     affectedCIs: string[];
-    assignedTo: string;
+    assignedTo: string | null;
     createdAt: string;
   }>;
+  /** Total scheduled or in-progress changes; null when the ITIL records are unavailable. */
+  changesInProgressCount: number | null;
   ciStatus: Array<{
     status: string;
     count: number;
@@ -189,15 +201,18 @@ export interface ITSMDashboardData {
       lastSeen: string;
     }>;
   }>;
+  /** CIs with the most incidents reported in the last TOP_FAILING_WINDOW_DAYS days. */
   topFailingCIs: Array<{
     ci_id: string;
-    name: string;
-    type: string;
+    /** Null when the incident's CI id is not a CI of this organization's graph. */
+    name: string | null;
+    type: string | null;
     incidentCount: number;
-    mttr: number;
+    /** Mean of the recorded time_to_resolve_minutes; null when no incident of the CI is resolved. */
+    mttrMinutes: number | null;
     lastFailure: string;
-    recommendation: string;
   }>;
+  /** No SLA targets are stored, so compliance cannot be computed: always empty. */
   slaCompliance: Array<{
     priority: string;
     withinSLA: number;
@@ -205,6 +220,7 @@ export interface ITSMDashboardData {
     compliancePercentage: number;
     target: number;
   }>;
+  /** No drift evaluation is stored: always empty. */
   baselineCompliance: Array<{
     ci_id: string;
     name: string;
@@ -214,6 +230,8 @@ export interface ITSMDashboardData {
     remediationStatus: string;
     lastChecked: string;
   }>;
+  /** Fields with no backing data; null or empty in this payload. */
+  unavailable: string[];
 }
 
 export interface FinOpsDashboardData {
@@ -531,14 +549,23 @@ export class DashboardService {
   }
 
   /**
-   * Get ITSM Dashboard data
+   * Get ITSM Dashboard data.
+   *
+   * Incidents and changes come from the organization's itil_* rows; CI status
+   * and CI names from its graph. Nothing is invented: SLA compliance (no stored
+   * targets) and baseline drift (no stored evaluation) are empty and named in
+   * `unavailable`, and every ITIL-derived field is too when the ITIL tables are
+   * absent from the deployed schema.
    */
   async getITSMDashboard(organizationId: string): Promise<ITSMDashboardData> {
     logger.info('Fetching ITSM dashboard data');
 
     try {
+      const itil = await this.queryITILRecords(organizationId);
+
       const session = this.neo4j.getSession();
       let ciStatus: ITSMDashboardData['ciStatus'];
+      let ciIdentity = new Map<string, { name: string | null; type: string | null }>();
       try {
         const statusResult = await session.run(`
           MATCH (ci:CI)
@@ -568,58 +595,142 @@ export class DashboardService {
             lastSeen: ci.properties['updated_at'] || ci.properties['created_at'],
           })),
         }));
+
+        if (itil.topFailing.length > 0) {
+          // An incident's CI id is free text; only this organization's CIs name it.
+          const identities = await session.run(
+            `MATCH (ci:CI) WHERE ci.organization_id = $organizationId AND ci.id IN $ids
+             RETURN ci.id AS id, ci.name AS name, ci.type AS type`,
+            { organizationId, ids: itil.topFailing.map(row => row.ciId) },
+            { timeout: DASHBOARD_QUERY_TIMEOUT_MS }
+          );
+          ciIdentity = new Map(identities.records.map(record => [
+            record.get('id') as string,
+            { name: (record.get('name') as string | null) ?? null, type: (record.get('type') as string | null) ?? null },
+          ]));
+        }
       } finally {
         await session.close();
       }
 
-      // Mock incident and change data (would come from ITIL tables)
-      const openIncidents = [
-        {
-          id: 'INC-001',
-          title: 'Database performance degradation',
-          priority: 'P2',
-          status: 'In Progress',
-          affectedCI: 'db-prod-01',
-          assignedTeam: 'Database Team',
-          createdAt: new Date(Date.now() - 2 * 3600000).toISOString(),
-          updatedAt: new Date(Date.now() - 1800000).toISOString(),
-          age: 2,
-        },
-      ];
-
-      const changesInProgress = [
-        {
-          id: 'CHG-001',
-          title: 'Upgrade PostgreSQL to 15.4',
-          status: 'Scheduled',
-          type: 'Standard',
-          riskLevel: 'Medium',
-          scheduledDate: new Date(Date.now() + 86400000).toISOString(),
-          affectedCIs: ['db-prod-01', 'db-prod-02'],
-          assignedTo: 'Database Team',
-          createdAt: new Date(Date.now() - 86400000).toISOString(),
-        },
-      ];
-
-      const topFailingCIs: any[] = [];
-      const slaCompliance = [
-        { priority: 'P1', withinSLA: 95, total: 100, compliancePercentage: 95, target: 95 },
-        { priority: 'P2', withinSLA: 88, total: 100, compliancePercentage: 88, target: 90 },
-        { priority: 'P3', withinSLA: 92, total: 100, compliancePercentage: 92, target: 85 },
-      ];
-
-      const baselineCompliance: any[] = [];
-
       return {
-        openIncidents,
-        changesInProgress,
+        openIncidents: itil.openIncidents,
+        openIncidentCount: itil.openIncidentCount,
+        changesInProgress: itil.changesInProgress,
+        changesInProgressCount: itil.changesInProgressCount,
         ciStatus,
-        topFailingCIs,
-        slaCompliance,
-        baselineCompliance,
+        topFailingCIs: itil.topFailing.map(row => ({
+          ci_id: row.ciId,
+          name: ciIdentity.get(row.ciId)?.name ?? null,
+          type: ciIdentity.get(row.ciId)?.type ?? null,
+          incidentCount: row.incidentCount,
+          mttrMinutes: row.mttrMinutes,
+          lastFailure: row.lastFailure,
+        })),
+        slaCompliance: [],
+        baselineCompliance: [],
+        unavailable: [
+          ...(itil.available ? [] : [
+            'openIncidents', 'openIncidentCount', 'changesInProgress', 'changesInProgressCount', 'topFailingCIs',
+          ]),
+          'slaCompliance', 'baselineCompliance',
+        ],
       };
     } catch (error) {
       logger.error('Error fetching ITSM dashboard data', { error });
+      throw error;
+    }
+  }
+
+  /**
+   * The organization's open incidents, in-flight changes and most incident-prone
+   * CIs. Every statement is bound to `organization_id = $1`; rows with a NULL
+   * owner (pre-ownership records) never match. A deployment without the ITIL
+   * tables answers `available: false`; any other failure propagates.
+   */
+  private async queryITILRecords(organizationId: string): Promise<{
+    available: boolean;
+    openIncidents: ITSMDashboardData['openIncidents'];
+    openIncidentCount: number | null;
+    changesInProgress: ITSMDashboardData['changesInProgress'];
+    changesInProgressCount: number | null;
+    topFailing: Array<{
+      ciId: string; incidentCount: number; mttrMinutes: number | null; lastFailure: string;
+    }>;
+  }> {
+    try {
+      const incidents = await this.postgres.query(
+        `SELECT incident_number, title, priority, status, affected_ci_id, assigned_group,
+                reported_at, updated_at, count(*) OVER () AS total
+           FROM itil_incidents
+          WHERE organization_id = $1 AND status NOT IN ('resolved', 'closed', 'cancelled')
+          ORDER BY priority ASC, reported_at ASC, id
+          LIMIT ${MAX_ITSM_ROWS}`,
+        [organizationId]
+      );
+      const changes = await this.postgres.query(
+        `SELECT change_number, title, status, change_type, risk_assessment->>'risk_level' AS risk_level,
+                scheduled_start, affected_ci_ids, assigned_to, created_at, count(*) OVER () AS total
+           FROM itil_changes
+          WHERE organization_id = $1 AND status IN ('scheduled', 'in_progress')
+          ORDER BY scheduled_start ASC NULLS LAST, created_at DESC, id
+          LIMIT ${MAX_ITSM_ROWS}`,
+        [organizationId]
+      );
+      const failing = await this.postgres.query(
+        `SELECT affected_ci_id, count(*) AS incident_count,
+                avg(time_to_resolve_minutes) AS mttr_minutes, max(reported_at) AS last_failure
+           FROM itil_incidents
+          WHERE organization_id = $1 AND affected_ci_id IS NOT NULL AND affected_ci_id <> ''
+            AND reported_at >= now() - make_interval(days => $2::int)
+          GROUP BY affected_ci_id
+          ORDER BY incident_count DESC, last_failure DESC, affected_ci_id
+          LIMIT ${MAX_TOP_FAILING_CIS}`,
+        [organizationId, TOP_FAILING_WINDOW_DAYS]
+      );
+
+      const now = Date.now();
+      return {
+        available: true,
+        // A page with no rows has no window total: nothing matched.
+        openIncidentCount: incidents.rows.length === 0 ? 0 : Number(incidents.rows[0].total),
+        openIncidents: incidents.rows.map(row => ({
+          id: row.incident_number,
+          title: row.title,
+          priority: `P${row.priority}`,
+          status: row.status,
+          affectedCI: row.affected_ci_id ?? null,
+          assignedTeam: row.assigned_group ?? null,
+          createdAt: new Date(row.reported_at).toISOString(),
+          updatedAt: new Date(row.updated_at).toISOString(),
+          age: Math.max(0, Math.floor((now - new Date(row.reported_at).getTime()) / 3600000)),
+        })),
+        changesInProgressCount: changes.rows.length === 0 ? 0 : Number(changes.rows[0].total),
+        changesInProgress: changes.rows.map(row => ({
+          id: row.change_number,
+          title: row.title,
+          status: row.status,
+          type: row.change_type,
+          riskLevel: row.risk_level ?? null,
+          scheduledDate: row.scheduled_start ? new Date(row.scheduled_start).toISOString() : null,
+          affectedCIs: row.affected_ci_ids ?? [],
+          assignedTo: row.assigned_to ?? null,
+          createdAt: new Date(row.created_at).toISOString(),
+        })),
+        topFailing: failing.rows.map(row => ({
+          ciId: row.affected_ci_id,
+          incidentCount: Number(row.incident_count),
+          mttrMinutes: row.mttr_minutes == null ? null : Math.round(Number(row.mttr_minutes)),
+          lastFailure: new Date(row.last_failure).toISOString(),
+        })),
+      };
+    } catch (error) {
+      if (ITIL_SCHEMA_ABSENT.has((error as { code?: string } | null)?.code ?? '')) {
+        return {
+          available: false, openIncidents: [], openIncidentCount: null,
+          changesInProgress: [], changesInProgressCount: null, topFailing: [],
+        };
+      }
       throw error;
     }
   }

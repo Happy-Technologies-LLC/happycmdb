@@ -96,6 +96,7 @@ export type {
 
 // Unified Credential Types (Protocol-based system)
 export {
+  CredentialNotFoundError,
   CredentialSetNotFoundError,
   DuplicateCredentialSetNameError,
   DuplicateCredentialNameError,

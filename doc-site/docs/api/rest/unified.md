@@ -278,7 +278,7 @@ curl -X DELETE "http://localhost:3000/api/v1/credentials/550e8400-e29b-41d4-a716
 
 **Error Responses**:
 - `404 Not Found` - Credential does not exist
-- `409 Conflict` - Credential is in use by discovery definitions
+- `409 Conflict` - Credential is in use by discovery definitions, connector configurations or credential sets. The message carries counts of same-organization references only; a reference from another organization (or with no organization) is not counted but still refuses the delete, with a count-free message (`Cannot delete credential: it is currently in use`)
 - `401 Unauthorized` - Missing or invalid JWT token
 - `403 Forbidden` (`code: c4_principal_admin_required`) - Non-admin deleting a credential tagged `happylab-c4`
 
@@ -861,7 +861,7 @@ AWS_REGION=us-east-1
 4. **Regular Validation**: Periodically validate credentials using the `/validate` endpoint
 5. **Least Privilege**: Create credentials with minimum required permissions
 6. **Rotation**: Regularly rotate credentials and update via the API
-7. **Monitoring**: Track `usage_count`, `connector_usage_count` and `last_validated_at` ([List Credentials](#list-credentials)) to identify unused or stale credentials
+7. **Monitoring**: Track `usage_count`, `connector_usage_count` and `last_validated_at` ([List Credentials](#list-credentials)) to identify unused or stale credentials. The two usage counts include references from the credential's own organization only
 
 ---
 

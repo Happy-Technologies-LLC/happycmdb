@@ -3,7 +3,8 @@
   "server": {
     "port": 3000,
     "host": "0.0.0.0",
-    "trustProxy": 1
+    "_comment": "trustProxy 2 matches the Build01 staging compose default (TRUST_PROXY, deploy/build01-staging.compose.yml, HAP-1091). Hop chain: tailnet client -> tailscale serve :8449 -> nginx container -> api; two hops back is the tailnet client. With nginx as the only proxy in front of the api, use 1. See deploy/BUILD01-STAGING.md. The loader ignores this key.",
+    "trustProxy": 2
   },
   "databases": {
     "neo4j": {

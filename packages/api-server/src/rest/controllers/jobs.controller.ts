@@ -19,7 +19,7 @@ import type { DiscoveryProvider, ETLJobType } from '@cmdb/common';
 import { getDiscoveryJobScheduler } from '@cmdb/discovery-engine';
 import { getNeo4jClient } from '@cmdb/database';
 import { getETLScheduler } from '@cmdb/etl-processor';
-import { JOB_NOT_FOUND, publicJob } from './job-scope';
+import { JOB_LOCKED, JOB_NOT_FOUND, isJobLockedError, publicJob } from './job-scope';
 
 interface ScheduleUpdate {
   cronExpression?: string;
@@ -231,7 +231,11 @@ export class JobsController {
           message: 'Job cancelled successfully',
         },
       });
-    } catch {
+    } catch (error) {
+      if (isJobLockedError(error)) {
+        res.status(409).json(JOB_LOCKED);
+        return;
+      }
       logger.error('Error cancelling job');
       res.status(500).json({ success: false, error: 'Failed to cancel job' });
     }
@@ -398,9 +402,12 @@ export class JobsController {
               }
             }
 
+            // `active` and `wait` are Redis lists (only completed/failed/delayed are sorted
+            // sets), so they are read through the BullMQ Queue API, not zrange.
             if (status === 'active' || !status) {
               try {
-                const activeIds = await redis.zrange(`bull:${queueName}:active`, 0, 99);
+                const activeJobs = await queue.getActive(0, 99);
+                const activeIds = activeJobs.map((job) => job.id).filter((id): id is string => !!id);
                 if (activeIds.length > 0) jobIdSets.push(activeIds);
               } catch (err: any) {
                 logger.warn(`Failed to fetch active jobs for ${queueName}`);
@@ -409,7 +416,8 @@ export class JobsController {
 
             if (status === 'pending' || !status) {
               try {
-                const waitingIds = await redis.zrange(`bull:${queueName}:waiting`, 0, 99);
+                const waitingJobs = await queue.getWaiting(0, 99);
+                const waitingIds = waitingJobs.map((job) => job.id).filter((id): id is string => !!id);
                 if (waitingIds.length > 0) jobIdSets.push(waitingIds);
               } catch (err: any) {
                 logger.warn(`Failed to fetch waiting jobs for ${queueName}`);

@@ -11,7 +11,7 @@
 
 import { describe, it, expect, beforeEach } from '@jest/globals';
 import { ApiKeyNotFoundError, AuthService, AuthRepository, UserProfileUpdate } from '../auth.service';
-import type { GuardedPasswordWrite, GuardedUserWrite } from '../auth.service';
+import type { GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite } from '../auth.service';
 import { AmbiguousUserIdentityError, User, ApiKey, UserNotFoundError } from '../types';
 import { PasswordService } from '../password.service';
 import { JWTService } from '../jwt.service';
@@ -61,6 +61,15 @@ class InMemoryAuthRepository implements AuthRepository {
   }
 
   async updatePasswordHashGuarded(write: GuardedPasswordWrite): Promise<boolean> {
+    const existing = this.users.get(write.userId);
+    if (!existing || existing._passwordHash !== write.readHash) {
+      return false;
+    }
+    this.users.set(write.userId, { ...existing, _passwordHash: write.newHash });
+    return true;
+  }
+
+  async rehashPasswordGuarded(write: GuardedPasswordRehash): Promise<boolean> {
     const existing = this.users.get(write.userId);
     if (!existing || existing._passwordHash !== write.readHash) {
       return false;

@@ -466,6 +466,22 @@ After every successful restore, `restore-postgres.sh` prints a bash block from `
 
 Where `infrastructure/database/metabase-init.sql` created `metabase_readonly`, 032, 033, 039, 050 and 051 re-grant its view and function grants. 050 and 051 grant the per-CI cost views `v_top_cost_drivers_bi` and `v_underutilized_resources` by shape. 051 skips (and removes any grant on) a view that is not owned by the owner of `cmdb.dim_ci`, has a column named `metadata`, or carries json/jsonb in any column, including through a domain, array or composite type, so BI never reads `dim_ci.metadata`. 051 also sets `security_barrier` on the eight unbounded cost views of `cost-analysis.sql` (a dump keeps it; re-running that file keeps it) and revokes `TEMPORARY` on the database from `metabase_readonly` (PUBLIC keeps its default `TEMPORARY` grant, which 051 does not touch). Its schema USAGE and `get_fiscal_*` EXECUTE grants exist only in `metabase-init.sql`, which is not re-runnable (it creates the user), so BI may still lack them after a restore: re-apply those grants from that file by hand. The staging path (`deploy/build01-staging-app-login.sql` plus migrations) does not create that role, so there is nothing to restore there.
 
+**051 warned `is not a view owned by the owner of cmdb.dim_ci; security_barrier not set`.** A cost view of `cost-analysis.sql` is owned by another role (typical after a manual `CREATE VIEW` by a different login), so 051 left it without `security_barrier`; for the two per-CI views it also withdrew BI's grant. The fix is to put the view under the `cmdb.dim_ci` owner and re-run `cost-analysis.sql` as that owner. Re-running the file alone does not do it: `CREATE OR REPLACE VIEW` needs ownership of the existing view (`ERROR: must be owner of view ...` for the `cmdb.dim_ci` owner), and when a superuser runs it, the view keeps its wrong owner. Either:
+1. as the view's owner or a superuser, `DROP VIEW <view>;`, then run `psql -X -f infrastructure/database/views/cost-analysis.sql` as the `cmdb.dim_ci` owner. The file recreates every cost view `WITH (security_barrier)`, owned by that login, and re-grants `metabase_readonly` (the drop removed the grants on the view); or
+2. as a superuser, `ALTER VIEW <view> OWNER TO <cmdb.dim_ci owner>;`. Grants are kept.
+
+Then re-run 051 as the `cmdb.dim_ci` owner: `psql -X -v ON_ERROR_STOP=1 --single-transaction -f packages/database/src/postgres/migrations/051_bi_view_security_barrier.sql`. It must print no warning naming the view. Verify:
+
+```sql
+SELECT c.relname, pg_get_userbyid(c.relowner) AS owner, c.reloptions
+FROM pg_class c
+WHERE c.relkind = 'v' AND c.relname IN ('v_executive_cost_summary', 'v_cost_by_tower', 'v_cost_trends',
+  'v_unit_economics', 'v_cloud_vs_onprem_costs', 'v_cost_allocation_summary', 'v_depreciation_summary',
+  'v_underutilized_resources', 'v_top_cost_drivers_bi');
+```
+
+Every row's `owner` is the owner of `cmdb.dim_ci` (`SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'cmdb.dim_ci'::regclass`), and every row but `v_top_cost_drivers_bi` (its `LIMIT 20` already blocks push-down) shows `{security_barrier=true}`.
+
 Then restart the services that log in as those roles. Until the block has printed `GRANT STEP COMPLETE`, do not treat the application as working.
 
 ### Rollback Process

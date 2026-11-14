@@ -321,14 +321,19 @@ export class CredentialCRUDService {
       const limit = filters?.limit || 100;
       const offset = filters?.offset || 0;
 
+      // usage_count / connector_usage_count are recomputed here, not read from the view: credential_summaries counts
+      // every referencing row with no organization filter. Keep this rule identical to the delete refusal below.
       const result = await client.query(
         `SELECT
-          id, name, description, protocol, scope, affinity, tags,
-          created_at, updated_at, last_validated_at, validation_status,
-          usage_count, connector_usage_count
-        FROM credential_summaries
+          cs.id, cs.name, cs.description, cs.protocol, cs.scope, cs.affinity, cs.tags,
+          cs.created_at, cs.updated_at, cs.last_validated_at, cs.validation_status,
+          (SELECT COUNT(*) FROM discovery_definitions dd
+            WHERE dd.credential_id = cs.id AND dd.organization_id = cs.organization_id) AS usage_count,
+          (SELECT COUNT(*) FROM connector_configurations cc
+            WHERE cc.credential_id = cs.id AND cc.organization_id = cs.organization_id) AS connector_usage_count
+        FROM credential_summaries cs
         ${whereClause}
-        ORDER BY created_at DESC
+        ORDER BY cs.created_at DESC
         LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
         [...params, limit, offset]
       );
@@ -508,44 +513,42 @@ export class CredentialCRUDService {
       if (isOrgAdmin !== true && carriesC4Tag(owned.rows[0]?.tags)) {
         throw c4AdminRequired();
       }
-      // Check usage. A reference by another user of the organization blocks the delete but is only counted when the
-      // caller created it (`own`): the refusal never tells the caller how many foreign objects use its credential.
-      const usage = (result: { rows: Array<{ total: string; own: string }> }) => {
-        const row = result.rows[0];
-        return { total: parseInt(row?.total ?? '0', 10), own: parseInt(row?.own ?? '0', 10) };
-      };
-      const discoveryUsage = usage(await client.query<{ total: string; own: string }>(
-        `SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE dd.created_by = $2) AS own
+      // Check usage. Only references of the credential's own organization count, for the refusal and for the list
+      // alike: credential_id has no FK or trigger, so a row of another organization (or with no organization) can
+      // carry this id and must neither be counted nor reported.
+      const count = (result: { rows: Array<{ total: string }> }) => parseInt(result.rows[0]?.total ?? '0', 10);
+      const discoveryUsage = count(await client.query<{ total: string }>(
+        `SELECT COUNT(*) AS total
          FROM discovery_definitions dd
-         JOIN credentials c ON c.id = dd.credential_id
+         JOIN credentials c ON c.id = dd.credential_id AND dd.organization_id = c.organization_id
          WHERE c.id = $1 AND c.created_by = $2 AND c.organization_id = $3`,
         [id, createdBy, organizationId]
       ));
-      const connectorUsage = usage(await client.query<{ total: string; own: string }>(
-        `SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE cc.created_by = $2) AS own
+      const connectorUsage = count(await client.query<{ total: string }>(
+        `SELECT COUNT(*) AS total
          FROM connector_configurations cc
-         JOIN credentials c ON c.id = cc.credential_id
+         JOIN credentials c ON c.id = cc.credential_id AND cc.organization_id = c.organization_id
          WHERE c.id = $1 AND c.created_by = $2 AND c.organization_id = $3`,
         [id, createdBy, organizationId]
       ));
 
-      if (discoveryUsage.total + connectorUsage.total > 0) {
+      if (discoveryUsage + connectorUsage > 0) {
         throw new CredentialInUseError({
-          discoveryDefinitions: discoveryUsage.own,
-          connectorConfigurations: connectorUsage.own,
+          discoveryDefinitions: discoveryUsage,
+          connectorConfigurations: connectorUsage,
         });
       }
 
-      const setUsage = usage(await client.query<{ total: string; own: string }>(
-        `SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE cs.created_by = $2) AS own
+      const setUsage = count(await client.query<{ total: string }>(
+        `SELECT COUNT(*) AS total
          FROM credential_sets cs
-         JOIN credentials c ON c.id = ANY(cs.credential_ids)
+         JOIN credentials c ON c.id = ANY(cs.credential_ids) AND cs.organization_id = c.organization_id
          WHERE c.id = $1 AND c.created_by = $2 AND c.organization_id = $3`,
         [id, createdBy, organizationId]
       ));
 
-      if (setUsage.total > 0) {
-        throw new CredentialInUseError({ credentialSets: setUsage.own });
+      if (setUsage > 0) {
+        throw new CredentialInUseError({ credentialSets: setUsage });
       }
 
       const result = await client.query(

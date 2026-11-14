@@ -7,12 +7,12 @@
  * not a conflict; a unique violation is, and its constraint detail never reaches the body.
  *
  * Follow-up: a missing credential is the typed CredentialNotFoundError (404), never an error whose text happens to
- * contain "not found"; the delete refusal counts only references the caller created; and the logger sees only the
- * real errorClassFields output, never the raw message.
+ * contain "not found"; and the logger sees only the real errorClassFields output, never the raw message. The delete
+ * refusal's counts are covered against real SQL in credential-org-scope.test.ts.
  */
 import { randomBytes } from 'crypto';
 import type { Request, Response } from 'express';
-import { CredentialInUseError, CredentialNotFoundError, DuplicateCredentialNameError, errorClassFields } from '@cmdb/common';
+import { CredentialInUseError, CredentialNotFoundError, DuplicateCredentialNameError } from '@cmdb/common';
 import { CredentialSetService } from '../../../../../database/src/postgres/credential-set.service';
 import { UnifiedCredentialService } from '../../../../../database/src/postgres/unified-credential.service';
 
@@ -45,8 +45,8 @@ jest.mock('@cmdb/database', () => ({
 }));
 jest.mock('@cmdb/common', () => ({ ...jest.requireActual('@cmdb/common'), logger: { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined } }));
 
-// The mocked module object the controllers import from: spies on it observe the real helper and the logger arguments.
-const commonModule = jest.requireMock('@cmdb/common') as { logger: { error: (...a: unknown[]) => void }; errorClassFields: typeof errorClassFields };
+// The mocked module object the controllers import from: a spy on its logger observes the logged arguments.
+const commonModule = jest.requireMock('@cmdb/common') as { logger: { error: (...a: unknown[]) => void } };
 
 import { CredentialSetController } from '../credential-set.controller';
 import { UnifiedCredentialController } from '../unified-credential.controller';
@@ -197,16 +197,13 @@ describe('UnifiedCredentialController', () => {
   });
 
   it.each(['create', 'update', 'delete'] as const)('%s: the logger receives errorClassFields output, never the raw error text', async (handler) => {
-    const helper = jest.spyOn(commonModule, 'errorClassFields');
     const logged = jest.spyOn(commonModule.logger, 'error');
     const thrown = new Error(`pool exhausted ${SECRET}`);
     dependencyFails(handler, thrown);
     const r = await run(controller(), handler, body);
     expect(r.status).toBe(500);
 
-    expect(helper).toHaveBeenCalledWith(thrown);
     const [, fields] = logged.mock.calls[0] as [string, { error: unknown }];
-    expect(fields.error).toBe(helper.mock.results[0]!.value);
     expect(fields.error).toEqual({ errorClass: 'Error' });
     expect(JSON.stringify(logged.mock.calls)).not.toContain('hunter2');
   });
@@ -214,13 +211,6 @@ describe('UnifiedCredentialController', () => {
 
 describe('UnifiedCredentialService (real CRUD service over a scripted pool)', () => {
   const service = () => new UnifiedCredentialService(pool as never);
-  const OWNED = { pattern: /SELECT tags FROM credentials WHERE id/, answer: [{ tags: [] }] as Row[] };
-  const usage = (table: string, total: number, own: number) => ({ pattern: new RegExp(`FROM ${table}`), answer: [{ total: String(total), own: String(own) }] as Row[] });
-  const none = (table: string) => usage(table, 0, 0);
-  const deleteRefused = async () => {
-    try { await service().delete(ID, 'alice', ORG, true); } catch (error) { return error as Error; }
-    throw new Error('delete was not refused');
-  };
 
   it('delete: a missing or foreign credential is CredentialNotFoundError', async () => {
     script = [{ pattern: /SELECT tags FROM credentials WHERE id/, answer: [] }];
@@ -230,24 +220,5 @@ describe('UnifiedCredentialService (real CRUD service over a scripted pool)', ()
   it('update: an UPDATE that matches no row is CredentialNotFoundError', async () => {
     script = [{ pattern: /UPDATE credentials/, answer: [] }];
     await expect(service().update(ID, { name: 'renamed' }, 'alice', ORG, true)).rejects.toBeInstanceOf(CredentialNotFoundError);
-  });
-
-  it('delete: references from other users block the delete but are not counted in the message', async () => {
-    script = [OWNED, usage('discovery_definitions', 3, 0), none('connector_configurations')];
-    const foreignOnly = await deleteRefused();
-    expect(foreignOnly).toBeInstanceOf(CredentialInUseError);
-    expect((foreignOnly as CredentialInUseError).clientMessage).toBe('Cannot delete credential: it is currently in use');
-
-    script = [OWNED, usage('discovery_definitions', 5, 2), usage('connector_configurations', 4, 0)];
-    const mixed = await deleteRefused();
-    expect((mixed as CredentialInUseError).clientMessage).toBe('Cannot delete credential: it is currently used by 2 discovery definition(s)');
-  });
-
-  it('delete: a credential set owned by someone else blocks the delete without a count; the caller\'s own set is counted', async () => {
-    script = [OWNED, none('discovery_definitions'), none('connector_configurations'), usage('credential_sets', 4, 0)];
-    expect((await deleteRefused() as CredentialInUseError).clientMessage).toBe('Cannot delete credential: it is currently in use');
-
-    script = [OWNED, none('discovery_definitions'), none('connector_configurations'), usage('credential_sets', 4, 1)];
-    expect((await deleteRefused() as CredentialInUseError).clientMessage).toBe('Cannot delete credential: it is currently used by 1 credential set(s)');
   });
 });

@@ -521,10 +521,9 @@ export class CredentialSetInUseError extends Error {
 }
 
 /**
- * A credential cannot be deleted while referenced. The counts are only the references the caller created (HAP-1734
- * follow-up): a reference made by another user of the organization still blocks the delete but is never counted or
- * named, so a caller cannot learn how many foreign objects use its credential. With no caller-owned reference the
- * sentence names none.
+ * A credential cannot be deleted while referenced. Only references of the credential's own organization are counted
+ * and block the delete, the same rule as the `usage_count` / `connector_usage_count` the list reports (the owner sees
+ * those totals as a monitoring signal). With no counts the sentence names none (the 23503 fallback).
  */
 export class CredentialInUseError extends Error {
   readonly clientMessage: string;

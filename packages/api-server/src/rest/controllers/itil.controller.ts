@@ -1088,7 +1088,9 @@ export class ITILController {
     try {
       const pool = this.postgresClient.pool;
       const result = await pool.query(
-        'SELECT * FROM itil_baselines WHERE organization_id = $1 ORDER BY created_at DESC LIMIT 100',
+        `SELECT id, name, description, baseline_type, status, created_by, approved_by, approved_at,
+                created_at, updated_at, organization_id
+           FROM itil_baselines WHERE organization_id = $1 ORDER BY created_at DESC LIMIT 100`,
         [requestOrganizationId(req)]
       );
 

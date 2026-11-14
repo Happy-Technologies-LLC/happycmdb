@@ -569,22 +569,29 @@ Create a configuration baseline for one or more CIs.
 
 ### GET /baselines
 
-List all configuration baselines.
+List configuration baselines for the caller's organization (newest first, at most 100). Rows carry summary columns only; `baseline_data` and `scope` are omitted from the list. Fetch `GET /baselines/:id` for the full row.
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "baselines": [
+  "data": [
     {
-      "id": "BL-20251117-001",
+      "id": "0b6f6c3e-5a0e-4a53-9a43-3f4a0f3c7a11",
       "name": "Production Web Tier - Pre-Upgrade",
-      "ciCount": 3,
-      "createdBy": "ops-team@company.com",
-      "createdAt": "2025-11-17T12:00:00Z"
+      "description": "Baseline before upgrading...",
+      "baseline_type": "configuration",
+      "status": "draft",
+      "created_by": "ops-team@company.com",
+      "approved_by": null,
+      "approved_at": null,
+      "created_at": "2025-11-17T12:00:00Z",
+      "updated_at": "2025-11-17T12:00:00Z",
+      "organization_id": "11111111-1111-4111-8111-111111111111"
     }
-  ]
+  ],
+  "count": 1
 }
 ```
 

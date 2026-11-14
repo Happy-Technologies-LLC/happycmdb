@@ -92,6 +92,7 @@ jest.mock('@cmdb/common', () => ({
   strictDiscoveryDefinitionConfig: require('../../../../../common/src/utils/discovery-scan-config').strictDiscoveryDefinitionConfig,
   publicDiscoveryDefinitionConfig: require('../../../../../common/src/utils/discovery-scan-config').publicDiscoveryDefinitionConfig,
   hasUnsafeDiscoveryDefinitionConfig: require('../../../../../common/src/utils/discovery-scan-config').hasUnsafeDiscoveryDefinitionConfig,
+  parseStoredDiscoveryDefinitionConfig: require('../../../../../common/src/utils/discovery-scan-config').parseStoredDiscoveryDefinitionConfig,
   validate: (schema: Joi.Schema, value: unknown) => {
     const result = schema.validate(value);
     return { valid: !result.error, value: result.value, error: result.error?.message, details: result.error?.details };

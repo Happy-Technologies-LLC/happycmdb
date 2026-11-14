@@ -38,7 +38,7 @@ export { ciIncarnationId } from './utils/ci-incarnation';
 export { parseStoredMetadata } from './utils/stored-metadata';
 export {
   safeDiscoveryScanConfig, strictDiscoveryDefinitionConfig, publicDiscoveryDefinitionConfig,
-  hasUnsafeDiscoveryDefinitionConfig, type SafeDiscoveryScanConfig,
+  hasUnsafeDiscoveryDefinitionConfig, parseStoredDiscoveryDefinitionConfig, type SafeDiscoveryScanConfig,
 } from './utils/discovery-scan-config';
 export {
   DISCOVERY_TARGET_REFUSED, assertDiscoveryAddress, assertDiscoveryHostname,

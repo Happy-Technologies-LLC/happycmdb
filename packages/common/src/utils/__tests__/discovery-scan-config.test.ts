@@ -3,7 +3,7 @@
 
 import {
   strictDiscoveryDefinitionConfig, safeDiscoveryScanConfig,
-  publicDiscoveryDefinitionConfig, hasUnsafeDiscoveryDefinitionConfig,
+  publicDiscoveryDefinitionConfig, hasUnsafeDiscoveryDefinitionConfig, parseStoredDiscoveryDefinitionConfig,
 } from '../discovery-scan-config';
 
 function expectAccepted(config: Record<string, unknown>): void {
@@ -66,4 +66,20 @@ it('HAP-1079: a target or range above 4,096 addresses, or a definition above 65,
     rejectEverywhere(value);
   }
   expectRejected({ targets: [...twenties, 'example.com'] });
+});
+
+it('HAP-1737: an unparseable stored config string stays unsafe, though the public projection reads {}', () => {
+  const corrupt = '{"targets": ["192.0.2.1"';
+  const parsed = parseStoredDiscoveryDefinitionConfig(corrupt);
+  expect(hasUnsafeDiscoveryDefinitionConfig(parsed)).toBe(true);
+  expect(publicDiscoveryDefinitionConfig(corrupt)).toEqual({});
+  // {} is a valid config, so a corrupt string must not collapse to it before validation.
+  expect(hasUnsafeDiscoveryDefinitionConfig({})).toBe(false);
+});
+
+it('HAP-1737: parseStoredDiscoveryDefinitionConfig parses valid JSON text and passes objects through', () => {
+  expect(parseStoredDiscoveryDefinitionConfig('{"targets":["192.0.2.1"]}')).toEqual({ targets: ['192.0.2.1'] });
+  const object = { range: '10.0.0.0/24' };
+  expect(parseStoredDiscoveryDefinitionConfig(object)).toBe(object);
+  expect(hasUnsafeDiscoveryDefinitionConfig(parseStoredDiscoveryDefinitionConfig('null'))).toBe(true);
 });

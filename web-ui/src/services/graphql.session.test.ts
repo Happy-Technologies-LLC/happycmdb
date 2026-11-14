@@ -5,7 +5,7 @@
 // adapter plays POST /auth/refresh, a stubbed fetch plays /graphql (it accepts only the newest token it issued).
 import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { gql } from '@apollo/client';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getToken, removeToken, setToken } from '../utils/token';
 
 const jwtLike = () => [
@@ -20,8 +20,13 @@ let accepted = '';
 let refreshes = 0;
 let graphqlStatus: number | null = null; // forces every /graphql answer to this status
 let sent: Array<string | null> = [];
+let posted: string[] = []; // every non-GraphQL request the server saw, in order
 
 axios.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
+  posted.push(String(config.url));
+  if (String(config.url).endsWith('/auth/logout')) {
+    return { data: { success: true }, status: 200, statusText: '', headers: {}, config, request: {} };
+  }
   refreshes += 1;
   const response = { data: {}, status: refreshStatus, statusText: '', headers: {}, config, request: {} };
   if (refreshStatus !== 200) {
@@ -45,6 +50,8 @@ vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
 
 // Dynamic on purpose: the renewal client inside lib/session is created at import, after the adapter is set.
 const { apolloClient } = await import('./graphql');
+const { api } = await import('./api');
+const { abandonSession } = await import('../lib/session');
 const PING = gql`query Ping { ping }`;
 const ping = () => apolloClient.query({ query: PING });
 
@@ -54,6 +61,7 @@ beforeEach(async () => {
   graphqlStatus = null;
   accepted = jwtLike();
   sent = [];
+  posted = [];
   loc.href = '';
   await apolloClient.clearStore();
   removeToken();
@@ -105,5 +113,60 @@ describe('GraphQL 401 renewal from the refresh cookie (HAP-1682)', () => {
     expect(refreshes).toBe(0);
     expect(getToken()).toBe(STALE);
     expect(loc.href).toBe('');
+  });
+});
+
+describe('GraphQL 401 during a sign-out (HAP-1688 b)', () => {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it('while this tab logs out, does not navigate away before the logout POST is sent', async () => {
+    setToken(STALE); // expired access token: the GraphQL 401 cannot be renewed because the sign-out refuses renewals
+
+    const loggingOut = api.logout();
+    await expect(ping()).rejects.toThrow();
+
+    // The logout POST waits for peer tabs (150 ms or more), so it has not gone out yet; a hard navigation now would cancel it.
+    expect(posted).not.toContain('/auth/logout');
+    expect(loc.href).toBe('');
+    await loggingOut;
+
+    expect(posted).toEqual(['/auth/logout']);
+    expect(loc.href).toBe('');
+    expect(getToken()).toBeNull();
+  });
+
+  describe('while another tab logs out', () => {
+    let peer: BroadcastChannel;
+    beforeEach(() => {
+      peer = new BroadcastChannel('cmdb-session');
+    });
+    afterEach(() => {
+      peer.close();
+      abandonSession(); // releases the hold the announcement armed
+    });
+
+    it('does not hard-reload (which would restore the session mid-logout), but still drops the token', async () => {
+      setToken(STALE);
+      peer.postMessage({ type: 'logout-pending', from: 'peer-tab' });
+      await sleep(50); // delivery of the announcement
+
+      await expect(ping()).rejects.toThrow();
+
+      expect(refreshes).toBe(0);
+      expect(loc.href).toBe('');
+      expect(getToken()).toBeNull();
+    });
+
+    it('navigates to /login again once the peer completes its logout', async () => {
+      setToken(STALE);
+      peer.postMessage({ type: 'logout-pending', from: 'peer-tab' });
+      await sleep(50);
+      abandonSession(); // AuthContext's reaction to the peer's completed logout
+      refreshStatus = 401;
+
+      await expect(ping()).rejects.toThrow();
+
+      expect(loc.href).toBe('/login');
+    });
   });
 });

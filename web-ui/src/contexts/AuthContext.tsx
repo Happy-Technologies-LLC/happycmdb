@@ -4,6 +4,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '@services/api';
+import { abandonSession } from '../lib/session';
 import { decodeToken, getToken, removeToken, subscribeToken } from '../utils/token';
 import type { AuthState, LoginCredentials } from '../types';
 import { logClientError } from '../utils/logger';
@@ -93,7 +94,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   useEffect(() => {
     const claims = state.isAuthenticated && state.token ? decodeToken(state.token) : null;
     if (!claims?.exp || !claims.iat) return undefined;
-    const lifetime = (claims.exp - claims.iat) * 1000;
+    const issued = (claims.exp - claims.iat) * 1000;
+    // A non-numeric exp or iat is malformed: treat it as a zero lifetime so MIN_RENEW_MS bounds it (NaN would fire at once).
+    const lifetime = Number.isFinite(issued) ? issued : 0;
     const delay = Math.min(Math.max(lifetime - RENEW_LEAD_MS, lifetime / 2, MIN_RENEW_MS), MAX_TIMER_MS);
     const timer = setTimeout(() => {
       api.refresh().catch((error) => {
@@ -111,6 +114,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     const channel = new BroadcastChannel(LOGOUT_CHANNEL);
     channel.onmessage = (event) => {
       if (event.data !== LOGOUT_MESSAGE) return;
+      abandonSession();
       removeToken();
       setState(SIGNED_OUT);
       navigate('/login');

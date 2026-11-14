@@ -267,10 +267,11 @@ the same 404. Job data, results, failures, progress and free-form logs are not
 returned. Schedule responses omit stored configuration. Queue and failed-job
 lists accept non-negative integer `start`/`end` and optional `limit`, reject
 invalid ranges with fixed 400, and read at most 100 BullMQ jobs per request
-before filtering by organization. Pagination reports queue offsets, bounded
-`limit`, and `truncated: true` for every non-empty page: ownership filtering
-can make the bounded sample incomplete, and the flag does not reveal queue
-occupancy. It does not expose cross-tenant totals. Global queue clean,
+before filtering by organization. Pagination reports the queue offset, the
+bounded `limit`, and an explicit `hasMore`: each request reads one position
+past the page (at most `limit` + 1), returns `limit` jobs at most, and sets
+`hasMore` only when that extra position held a job. It carries no `total` and
+does not expose cross-tenant totals. Global queue clean,
 pause/resume, stats (including repeatable job metadata), worker status, queue
 health and metrics, discovery aggregates, schedule listings and both discovery
 and ETL provider/type schedule updates return the same fixed 403 for every

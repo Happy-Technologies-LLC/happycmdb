@@ -50,7 +50,7 @@ describe('jobsService', () => {
           ],
           count: 1,
         },
-        pagination: { total: 37, limit: 25, offset: 0, hasMore: true },
+        pagination: { limit: 25, offset: 0, hasMore: true },
       },
     });
 
@@ -68,19 +68,30 @@ describe('jobsService', () => {
     });
   });
 
-  it('uses the exact total/limit/offset/hasMore reported by the backend pagination block, never a fabricated offset+limit+1 guess', async () => {
+  it('maps hasMore, limit and offset from the pagination block the mounted API returns, with no total', async () => {
     request.get.mockResolvedValue({
       data: {
         success: true,
         data: { jobs: [{ id: 'job-1', state: 'waiting' }] },
-        pagination: { total: 500, limit: 25, offset: 50, hasMore: true },
+        pagination: { limit: 25, offset: 50, hasMore: true },
       },
     });
 
     const result = await jobsService.getJobs('discovery-nmap', { limit: 25, offset: 50 });
 
-    expect(result).toMatchObject({ total: 500, limit: 25, offset: 50 });
-    expect(result.total).not.toBe(50 + 25 + 1);
+    expect(result).toEqual({ jobs: [expect.objectContaining({ id: 'job-1' })], hasMore: true, limit: 25, offset: 50 });
+    expect(result).not.toHaveProperty('total');
+  });
+
+  it('reports hasMore: false when the response carries no hasMore, never guessing from a full page', async () => {
+    const fullPage = Array.from({ length: 25 }, (_, i) => ({ id: `job-${i}`, state: 'waiting' }));
+    request.get.mockResolvedValue({ data: { success: true, data: { jobs: fullPage } } });
+    expect((await jobsService.getJobs('discovery-nmap', { limit: 25, offset: 0 })).hasMore).toBe(false);
+
+    request.get.mockResolvedValue({
+      data: { success: true, data: { jobs: fullPage }, pagination: { limit: 25, offset: 0 } },
+    });
+    expect((await jobsService.getJobs('discovery-nmap', { limit: 25, offset: 0 })).hasMore).toBe(false);
   });
 
   it('fetches a single job detail by queueName and jobId', async () => {

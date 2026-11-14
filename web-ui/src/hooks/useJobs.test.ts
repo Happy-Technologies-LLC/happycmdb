@@ -21,10 +21,10 @@ import { useJobs } from './useJobs';
 describe('useJobs', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('exposes the exact total/hasMore reported by jobsService.getJobs, never a fabricated value', async () => {
+  it('exposes hasMore exactly as jobsService.getJobs reports it', async () => {
     jobsServiceMock.getJobs.mockResolvedValue({
       jobs: [{ id: 'job-1' }, { id: 'job-2' }],
-      total: 500,
+      hasMore: true,
       limit: 2,
       offset: 0,
     });
@@ -34,15 +34,30 @@ describe('useJobs', () => {
     );
 
     await waitFor(() => expect(result.current.loading).toBe(false));
-
-    expect(result.current.total).toBe(500);
     expect(result.current.hasMore).toBe(true);
+  });
+
+  it('keeps hasMore false for a full last page, however many jobs it holds', async () => {
+    jobsServiceMock.getJobs.mockResolvedValue({
+      jobs: [{ id: 'job-1' }, { id: 'job-2' }],
+      hasMore: false,
+      limit: 2,
+      offset: 0,
+    });
+
+    const { result } = renderHook(() =>
+      useJobs({ queueName: 'discovery-nmap', filters: { limit: 2, offset: 0 } })
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.jobs).toHaveLength(2);
+    expect(result.current.hasMore).toBe(false);
   });
 
   it('does not refetch when the caller passes a new filters object literal with the same field values on every render', async () => {
     jobsServiceMock.getJobs.mockResolvedValue({
       jobs: [],
-      total: 0,
+      hasMore: false,
       limit: 25,
       offset: 0,
     });

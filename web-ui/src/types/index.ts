@@ -88,6 +88,10 @@ export interface User {
   role: ServerRole; // the server's UserRole (packages/api-server/src/auth/types.ts), see lib/permissions.ts
   created_at: string;
   last_login?: string;
+  /** Effective platform-administrator status as the server decided it (GET /auth/me); display only, never a gate. */
+  platform_admin: boolean;
+  /** The caller's organization as the server holds it; null when the user has none. */
+  organization_id: string | null;
 }
 
 // Authentication
@@ -172,7 +176,8 @@ export interface DashboardStats {
   cis_by_status: Record<CIStatus, number>;
   cis_by_environment: Record<Environment, number>;
   recent_discoveries: number;
-  health_score: number;
+  /** null: unavailable (no CI health state yet, BW1). */
+  health_score: number | null;
 }
 
 // Data Table

@@ -62,9 +62,9 @@ it('shows computed KPIs with status colour and flags SLA compliance as not avail
   expect(screen.getByRole('status')).toHaveTextContent('SLA compliance: Not available yet');
 });
 
-it('renders a dash in a neutral colour, never 0, when the ITIL records are not available', async () => {
+it('renders a dash in a neutral colour, never 0, for ITIL KPIs when the ITIL records are not available; graph CIs still count', async () => {
   mockApi(kpiPayload({
-    openIncidentCount: null, changesInProgressCount: null, ciStatus: [],
+    openIncidentCount: null, changesInProgressCount: null, ciStatus: [{ status: 'active', count: 11 }],
     unavailable: ['openIncidents', 'openIncidentCount', 'changesInProgress', 'changesInProgressCount',
       'topFailingCIs', 'slaCompliance', 'baselineCompliance'],
   }));
@@ -74,7 +74,16 @@ it('renders a dash in a neutral colour, never 0, when the ITIL records are not a
   expect(open).toHaveClass('text-muted-foreground');
   expect(open).not.toHaveClass('text-success');
   expect(screen.getByTestId('kpi-changes-in-progress')).toHaveTextContent('—');
-  expect(screen.getByTestId('kpi-active-cis')).toHaveTextContent('—');
+  expect(screen.getByTestId('kpi-active-cis')).toHaveTextContent('11');
+});
+
+it.each([
+  ['no CIs at all', []],
+  ['CIs but none active', [{ status: 'retired', count: 3 }]],
+])('an organization with %s has 0 active CIs, not a dash', async (_name, ciStatus) => {
+  mockApi(kpiPayload({ ciStatus }));
+  renderDashboard();
+  expect(await screen.findByTestId('kpi-active-cis')).toHaveTextContent(/^0$/);
 });
 
 it('a genuine zero is shown as 0 and green, distinct from unavailable', async () => {

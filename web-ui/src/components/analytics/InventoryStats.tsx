@@ -16,6 +16,7 @@ import { TypeDistribution } from './TypeDistribution';
 import { StatusBreakdown } from './StatusBreakdown';
 import { EnvironmentStats } from './EnvironmentStats';
 import { brand } from '@/lib/brandColors';
+import { formatHealthScore } from '@/lib/health-score';
 
 export const InventoryStats: React.FC = () => {
   const {
@@ -62,13 +63,9 @@ export const InventoryStats: React.FC = () => {
     return (activeCIs / totalCIs) * 100;
   };
 
-  const calculateHealthTrend = () => {
-    const healthScore = dashboardStats?.health_score ?? 0;
-    return {
-      value: healthScore,
-      direction: healthScore >= 80 ? ('up' as const) : ('down' as const),
-    };
-  };
+  // null = unavailable (no CI health state yet): the card says so instead of showing 0%, and has no trend.
+  const healthScore = dashboardStats?.health_score ?? null;
+  const healthText = formatHealthScore(healthScore);
 
   return (
     <div className="p-6">
@@ -105,16 +102,20 @@ export const InventoryStats: React.FC = () => {
         <MetricCard
           title="Critical Relationships"
           value={dashboardStats?.critical_relationships ?? 0}
-          subtitle="Relationships requiring attention"
+          subtitle="Touching a tier 1 or tier 2 CI"
           color={brand.navy}
           loading={!dashboardStats}
         />
         <MetricCard
           title="Health Score"
-          value={`${dashboardStats?.health_score ?? 0}%`}
-          subtitle="Overall system health"
+          value={healthText ?? '–'}
+          subtitle={healthText === null ? 'Not available yet' : 'Overall system health'}
           color={brand.warning}
-          trend={calculateHealthTrend()}
+          trend={
+            healthScore === null
+              ? undefined
+              : { value: healthScore, direction: healthScore >= 80 ? 'up' : 'down' }
+          }
           loading={!dashboardStats}
         />
         <MetricCard

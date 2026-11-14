@@ -31,6 +31,8 @@ interface RawUserPayload {
   _createdAt?: string;
   lastLoginAt?: string;
   _lastLoginAt?: string;
+  platformAdmin?: boolean;
+  organizationId?: string | null;
 }
 
 // Create axios instance
@@ -84,6 +86,9 @@ class ApiService {
       role: (userData.role || userData._role || 'viewer') as User['role'],
       created_at: userData.createdAt || userData._createdAt || new Date().toISOString(),
       last_login: userData.lastLoginAt || userData._lastLoginAt,
+      // Server-decided; an older server omits both, which reads as no platform authority and no tenant.
+      platform_admin: userData.platformAdmin === true,
+      organization_id: userData.organizationId ?? null,
     };
   }
 

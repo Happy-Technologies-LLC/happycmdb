@@ -461,6 +461,17 @@ export interface CredentialSetUpdateInput {
 }
 
 /**
+ * A credential that does not exist for the caller (missing, other owner or other organization). Controllers branch on
+ * the class, never on the message: a driver or downstream error that merely contains "not found" is a 500, not a 404.
+ */
+export class CredentialNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Credential with id ${id} not found`);
+    this.name = 'CredentialNotFoundError';
+  }
+}
+
+/**
  * A credential set that does not exist for the caller (missing, or owned by someone else). Controllers branch on the
  * class, never on the message: a decode failure's message can quote decrypted plaintext (HAP-1834).
  */
@@ -509,6 +520,14 @@ export class CredentialSetInUseError extends Error {
   }
 }
 
+/**
+ * A credential cannot be deleted while referenced. Only references of the credential's own organization are counted
+ * and reported, the same rule as the `usage_count` / `connector_usage_count` the list reports (the owner sees those
+ * totals as a monitoring signal). A foreign-org or NULL-org reference is neither counted nor reported, but the
+ * ON DELETE RESTRICT FKs from `discovery_definitions` / `connector_configurations` (001) still refuse the delete;
+ * the controller maps that refusal to a count-free 409 (a documented residual existence bit).
+ * Constructed only with at least one nonzero count.
+ */
 export class CredentialInUseError extends Error {
   readonly clientMessage: string;
   constructor(usage: { discoveryDefinitions?: number; connectorConfigurations?: number; credentialSets?: number }) {

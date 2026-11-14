@@ -310,7 +310,7 @@ EOF
   #    032 grants metabase_readonly the cross-tenant v_business_service_health that 033 then revokes: the same
   #    transaction as 032 revokes it again, so a failing 033 cannot leave the BI role with it. 033 does not re-grant it.
   #    046-048 are guarded no-op migrations here; they take brief ACCESS EXCLUSIVE locks, so stop the API first.
-  for m in 032_secret_table_public_grants.sql 033_public_business_service_audit_acl.sql 034_history_sequence_discovery_acl.sql 039_recent_audit_activity_acl.sql 044_business_service_journal_read_acl.sql 045_staging_app_login_acl.sql 046_service_offerings.sql 047_ai_sync_cursors.sql 048_portfolio_import.sql 050_bi_cost_view_grants.sql; do
+  for m in 032_secret_table_public_grants.sql 033_public_business_service_audit_acl.sql 034_history_sequence_discovery_acl.sql 039_recent_audit_activity_acl.sql 044_business_service_journal_read_acl.sql 045_staging_app_login_acl.sql 046_service_offerings.sql 047_ai_sync_cursors.sql 048_portfolio_import.sql 050_bi_cost_view_grants.sql 051_bi_view_security_barrier.sql; do
     if ! grep -qxF "$m" <<< "$recorded"; then echo "grant step: $m is not in the restored ledger - skipped"; continue; fi
     case "$m" in
       033_*) run "$m" -c "DO \$g\$ BEGIN IF to_regprocedure('cmdb.fn_business_service_health(uuid)') IS NOT NULL THEN ALTER FUNCTION cmdb.fn_business_service_health(uuid) SECURITY INVOKER; END IF; END \$g\$" -f "$mig/$m" ;;

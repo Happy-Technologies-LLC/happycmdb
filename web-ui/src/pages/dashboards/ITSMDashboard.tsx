@@ -17,8 +17,8 @@ const incidentTone = (count: number | null): string => {
 };
 
 export const ITSMDashboard = () => {
-  // The legacy /dashboards/itsm aggregate is not an ITIL record authority.
-  // Read only the record routes guarded by HP1-S2 ownership predicates.
+  // Incident and change totals come from the record routes guarded by HP1-S2
+  // ownership predicates; the KPI aggregate below is a separate request.
   const { data, isPending, isError } = useQuery({
     queryKey: ['itil-record-counts'],
     queryFn: async () => {
@@ -36,7 +36,9 @@ export const ITSMDashboard = () => {
     queryFn: () => dashboardService.getITSMDashboard(),
   });
   const kpi = kpis.data;
-  const activeCIs = kpi?.ciStatus.find(group => group.status === 'active')?.count ?? null;
+  // ciStatus is always computed from the graph: no 'active' group is a real 0.
+  // Only a missing KPI response has no data (rendered as —).
+  const activeCIs = kpi ? (kpi.ciStatus.find(group => group.status === 'active')?.count ?? 0) : null;
 
   return (
     <div className="p-6 space-y-6">

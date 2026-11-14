@@ -214,8 +214,9 @@ The view is the `?view=orbit|graph|list` search parameter. The Stage draws a cap
 
 Health, config drift, coverage, live changes and top services render a "Not available yet" state that names the missing
 backend capability instead of a number: the server has no CI health state, drift count, coverage metric, KPI history,
-tenant-wide change feed or per-service availability on `main`, and the dashboard's `health_score` is a hardcoded `0`.
-Do not wire a number to those cards until the endpoint exists.
+tenant-wide change feed or per-service availability on `main`. The dashboard's `health_score` is `null` (unavailable)
+until a CI health state exists (BW1); the Health card shows "Not available yet" for `null` and a percentage only for a
+number, never `0%` as a placeholder. Do not wire a number to those cards until the endpoint exists.
 
 Every surface has loading, error and 403 states (`SurfaceState.tsx`). Reads that must not refuse the page (incidents,
 relationships) are sent with `sideRead: true`, so a 403 shows on that surface only. "Run discovery" is gated with

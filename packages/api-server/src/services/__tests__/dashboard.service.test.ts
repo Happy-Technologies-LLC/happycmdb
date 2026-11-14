@@ -215,7 +215,8 @@ describe('DashboardService carries no fabricated numbers', () => {
 });
 
 describe('ITSM dashboard when the ITIL records cannot be read', () => {
-  const pgError = (code: string) => Object.assign(new Error('relation "itil_incidents" does not exist'), { code });
+  const pgError = (code: string) => Object.assign(new Error('postgres failure'), { code });
+  const isCatalogCheck = (sql: string) => sql.includes('pg_attribute');
 
   it('a schema without ITIL tables yields null counts and empty lists, all named; the graph KPI still computes', async () => {
     CIS = [
@@ -223,27 +224,38 @@ describe('ITSM dashboard when the ITIL records cannot be read', () => {
       { id: 'b', name: 'b', type: 'server', status: 'retired', organization_id: ORG },
       { id: 'other', name: 'other', type: 'server', status: 'active', organization_id: 'someone-else' },
     ];
-    for (const code of ['42P01', '42703']) {
-      mockPgQuery = async () => { throw pgError(code); };
-      const itsm = await service.getITSMDashboard(ORG);
+    const statements: string[] = [];
+    mockPgQuery = async (sql) => {
+      statements.push(sql);
+      if (isCatalogCheck(sql)) return { rows: [{ available: false }] };
+      throw new Error('record tables must not be queried when the catalog says they are absent');
+    };
+    const itsm = await service.getITSMDashboard(ORG);
 
-      expect(itsm.openIncidents).toEqual([]);
-      expect(itsm.changesInProgress).toEqual([]);
-      expect(itsm.topFailingCIs).toEqual([]);
-      expect(itsm.openIncidentCount).toBeNull();
-      expect(itsm.changesInProgressCount).toBeNull();
-      expect(itsm.unavailable).toEqual(expect.arrayContaining([
-        'openIncidents', 'openIncidentCount', 'changesInProgress', 'changesInProgressCount',
-        'topFailingCIs', 'slaCompliance', 'baselineCompliance',
-      ]));
-      expect(itsm.ciStatus.map(group => [group.status, group.count]).sort()).toEqual([['active', 1], ['retired', 1]]);
-      expect(numericLeaves({ ...itsm, ciStatus: [] })).toEqual({});
-    }
+    expect(statements).toHaveLength(1);
+    expect(itsm.openIncidents).toEqual([]);
+    expect(itsm.changesInProgress).toEqual([]);
+    expect(itsm.topFailingCIs).toEqual([]);
+    expect(itsm.openIncidentCount).toBeNull();
+    expect(itsm.changesInProgressCount).toBeNull();
+    expect(itsm.unavailable).toEqual(expect.arrayContaining([
+      'openIncidents', 'openIncidentCount', 'changesInProgress', 'changesInProgressCount',
+      'topFailingCIs', 'slaCompliance', 'baselineCompliance',
+    ]));
+    expect(itsm.ciStatus.map(group => [group.status, group.count]).sort()).toEqual([['active', 1], ['retired', 1]]);
+    expect(numericLeaves({ ...itsm, ciStatus: [] })).toEqual({});
   });
 
-  it('any other Postgres failure is an error, not an empty dashboard', async () => {
+  it.each([
+    ['column drift in a record query (42703)', '42703', false],
+    ['a statement timeout (57014)', '57014', false],
+    ['a failing catalog check', '57014', true],
+  ])('%s is an error, not an "ITIL unavailable" dashboard', async (_name, code, failCatalog) => {
     CIS = [];
-    mockPgQuery = async () => { throw pgError('57014'); };
-    await expect(service.getITSMDashboard(ORG)).rejects.toMatchObject({ code: '57014' });
+    mockPgQuery = async (sql) => {
+      if (isCatalogCheck(sql) && !failCatalog) return { rows: [{ available: true }] };
+      throw pgError(code);
+    };
+    await expect(service.getITSMDashboard(ORG)).rejects.toMatchObject({ code });
   });
 });

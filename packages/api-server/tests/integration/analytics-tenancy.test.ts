@@ -104,6 +104,34 @@ it('keeps every REST aggregate within own dimension and both relationship endpoi
   expect((await rest('a', '/dashboard')).body.total_cis).toBe(2);
 });
 
+it('counts critical_relationships once per own relationship with at least one tier_1/tier_2 endpoint (real Neo4j, BW4)', async () => {
+  // Org A: c1 tier_1, c2 tier_2, n1 uncategorized, n2 tier_3 (not critical). Org B: bc tier_1, bn uncategorized.
+  //   c1->n1 critical source only        n1->c2 critical target only        c1->c2 both ends critical (once)
+  //   n1->n2 no critical end             c1->bn, n1->bc cross-org (an end is foreign: never A's)
+  //   bc->bn is B's only own critical relationship. A's pre-seeded a->a2 and a->b stay out of both counts.
+  // At-least-one-endpoint = 3 for A. An AND of the two ends would give 1, source-only 2, target-only 2, and
+  // dropping the organization scope on either end 5: each wrong predicate yields a different number.
+  try {
+    await cypher(`
+      CREATE (c1:CI {id:'analytics-crit-c1', name:'c1', type:'server', organization_id:$a, bsm_business_criticality:'tier_1'})
+      CREATE (c2:CI {id:'analytics-crit-c2', name:'c2', type:'server', organization_id:$a, bsm_business_criticality:'tier_2'})
+      CREATE (n1:CI {id:'analytics-crit-n1', name:'n1', type:'server', organization_id:$a})
+      CREATE (n2:CI {id:'analytics-crit-n2', name:'n2', type:'server', organization_id:$a, bsm_business_criticality:'tier_3'})
+      CREATE (bc:CI {id:'analytics-crit-bc', name:'bc', type:'server', organization_id:$b, bsm_business_criticality:'tier_1'})
+      CREATE (bn:CI {id:'analytics-crit-bn', name:'bn', type:'server', organization_id:$b})
+      CREATE (c1)-[:DEPENDS_ON]->(n1) CREATE (n1)-[:DEPENDS_ON]->(c2) CREATE (c1)-[:HOSTS]->(c2)
+      CREATE (n1)-[:DEPENDS_ON]->(n2) CREATE (c1)-[:DEPENDS_ON]->(bn) CREATE (n1)-[:DEPENDS_ON]->(bc)
+      CREATE (bc)-[:DEPENDS_ON]->(bn)`, { a: A, b: B });
+    const forA = await rest('a', '/dashboard');
+    expect(forA.status).toBe(200);
+    expect(forA.body.critical_relationships).toBe(3);
+    expect((await rest('b', '/dashboard')).body.critical_relationships).toBe(1);
+    expect(forA.body.health_score).toBeNull();
+  } finally {
+    await cypher("MATCH (ci:CI) WHERE ci.id STARTS WITH 'analytics-crit-' DETACH DELETE ci");
+  }
+});
+
 it('omits pending, failed, backfilled and graph-reassigned top-connected CIs and their edges in REST and GraphQL', async () => {
   const ids = ['analytics-top-pending', 'analytics-top-failed', 'analytics-top-backfilled', 'analytics-top-recycled'];
   await sql.query(`INSERT INTO cmdb.dim_ci

@@ -56,6 +56,7 @@ jest.mock('../../../auth/auth-bootstrap', () => ({
 jest.mock('../../controllers/analytics.controller', () => ({
   AnalyticsController: jest.fn(() => ({
     getDashboardStats: mockRouteHandler,
+    getTopologySummary: mockRouteHandler,
     getCICountsByType: mockRouteHandler,
     getCICountsByStatus: mockRouteHandler,
     getCICountsByEnvironment: mockRouteHandler,
@@ -87,6 +88,7 @@ function testApp(): express.Express {
 
 const readRoutes: string[] = [
   '/analytics/dashboard',
+  '/analytics/topology-summary',
   '/analytics/ci-counts',
   '/analytics/ci-status',
   '/analytics/ci-environments',
@@ -126,7 +128,7 @@ describe('analytics routes', () => {
     expect(mockRouteHandler).toHaveBeenCalled();
   });
 
-  it.each(['/analytics/change-history?ci_id=ci-1', '/analytics/change-timeline'])(
+  it.each(['/analytics/change-history?ci_id=ci-1', '/analytics/change-timeline', '/analytics/topology-summary'])(
     'rejects GET %s with no organization', async path => {
       const response = await request(testApp()).get(path).set('authorization', 'Bearer no-org-token');
       expect(response.status).toBe(403);

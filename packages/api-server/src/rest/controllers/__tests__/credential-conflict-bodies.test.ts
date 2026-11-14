@@ -5,11 +5,16 @@
  * HAP-1734: the credential and credential-set controllers pick 409/400 by error class or SQLSTATE, never by message
  * text, and answer with fixed client text. An error whose text quotes SECRET and merely contains "already exists" is
  * not a conflict; a unique violation is, and its constraint detail never reaches the body.
+ *
+ * Follow-up: a missing credential is the typed CredentialNotFoundError (404), never an error whose text happens to
+ * contain "not found"; and the logger sees only the real errorClassFields output, never the raw message. The delete
+ * refusal's counts are covered against real SQL in credential-org-scope.test.ts.
  */
 import { randomBytes } from 'crypto';
 import type { Request, Response } from 'express';
-import { CredentialInUseError, DuplicateCredentialNameError } from '@cmdb/common';
+import { CredentialInUseError, CredentialNotFoundError, DuplicateCredentialNameError } from '@cmdb/common';
 import { CredentialSetService } from '../../../../../database/src/postgres/credential-set.service';
+import { UnifiedCredentialService } from '../../../../../database/src/postgres/unified-credential.service';
 
 process.env['CREDENTIAL_ENCRYPTION_KEY'] = randomBytes(32).toString('hex');
 
@@ -40,6 +45,9 @@ jest.mock('@cmdb/database', () => ({
 }));
 jest.mock('@cmdb/common', () => ({ ...jest.requireActual('@cmdb/common'), logger: { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined } }));
 
+// The mocked module object the controllers import from: a spy on its logger observes the logged arguments.
+const commonModule = jest.requireMock('@cmdb/common') as { logger: { error: (...a: unknown[]) => void } };
+
 import { CredentialSetController } from '../credential-set.controller';
 import { UnifiedCredentialController } from '../unified-credential.controller';
 
@@ -56,7 +64,7 @@ function response() {
 }
 const fail = (error: unknown) => () => { throw error; };
 const uniqueViolation = () => Object.assign(new Error(`duplicate key value violates unique constraint "credential_sets_org_name_key" ${SECRET}`), { code: '23505' });
-const fkViolation = () => Object.assign(new Error(`update or delete on table "credentials" violates foreign key constraint ${SECRET} already exists`), { code: '23503' });
+const fkViolation = (code = '23503') => Object.assign(new Error(`update or delete on table "credentials" violates foreign key constraint ${SECRET} already exists`), { code });
 const alreadyExistsButNotAConflict = () => new Error(`relation "tmp_${SECRET}" already exists`);
 
 const setInput = { name: 'ops-set', credential_ids: [ID] };
@@ -159,14 +167,61 @@ describe('UnifiedCredentialController', () => {
     const inUse = await run(controller(), 'delete', {});
     expect([inUse.status, inUse.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently used by 1 discovery definition(s) and 3 connector configuration(s)' }]);
 
-    dependencyFails('delete', fkViolation());
-    const fk = await run(controller(), 'delete', {});
-    expect([fk.status, fk.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently in use' }]);
-    expect(fk.text).not.toContain('hunter2');
+    // 23503 (PostgreSQL <= 16) and 23001 restrict_violation (PostgreSQL 18, PGlite) are the same count-free 409
+    for (const code of ['23503', '23001']) {
+      dependencyFails('delete', fkViolation(code));
+      const fk = await run(controller(), 'delete', {});
+      expect([fk.status, fk.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently in use' }]);
+      expect(fk.text).not.toContain('hunter2');
+    }
 
     dependencyFails('delete', new Error(`pool exhausted, connection currently used ${SECRET}`));
     const other = await run(controller(), 'delete', {});
     expect(other.status).toBe(500);
     expect(other.text).not.toContain('hunter2');
+  });
+
+  it.each(['update', 'delete'] as const)('%s: only the typed CredentialNotFoundError is a 404; "not found" text alone is a 500 without its text', async (handler) => {
+    dependencyFails(handler, new CredentialNotFoundError(ID));
+    const missing = await run(controller(), handler, body);
+    expect([missing.status, missing.body]).toEqual([404, { success: false, error: 'Not Found', message: 'Credential not found' }]);
+
+    dependencyFails(handler, new Error(`relation "connector_${SECRET}" not found`));
+    const other = await run(controller(), handler, body);
+    expect([other.status, other.body]).toEqual([500, { success: false, error: handler === 'update' ? 'Failed to update credential' : 'Failed to delete credential', message: 'Internal error' }]);
+    expect(other.text).not.toContain('hunter2');
+  });
+
+  it('delete: a credential used by credential sets is a 409 with the curated sentence and no database text', async () => {
+    dependencyFails('delete', new CredentialInUseError({ credentialSets: 2 }));
+    const r = await run(controller(), 'delete', {});
+    expect([r.status, r.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently used by 2 credential set(s)' }]);
+    expect(r.text).not.toContain('hunter2');
+  });
+
+  it.each(['create', 'update', 'delete'] as const)('%s: the logger receives errorClassFields output, never the raw error text', async (handler) => {
+    const logged = jest.spyOn(commonModule.logger, 'error');
+    const thrown = new Error(`pool exhausted ${SECRET}`);
+    dependencyFails(handler, thrown);
+    const r = await run(controller(), handler, body);
+    expect(r.status).toBe(500);
+
+    const [, fields] = logged.mock.calls[0] as [string, { error: unknown }];
+    expect(fields.error).toEqual({ errorClass: 'Error' });
+    expect(JSON.stringify(logged.mock.calls)).not.toContain('hunter2');
+  });
+});
+
+describe('UnifiedCredentialService (real CRUD service over a scripted pool)', () => {
+  const service = () => new UnifiedCredentialService(pool as never);
+
+  it('delete: a missing or foreign credential is CredentialNotFoundError', async () => {
+    script = [{ pattern: /SELECT tags FROM credentials WHERE id/, answer: [] }];
+    await expect(service().delete(ID, 'alice', ORG, true)).rejects.toBeInstanceOf(CredentialNotFoundError);
+  });
+
+  it('update: an UPDATE that matches no row is CredentialNotFoundError', async () => {
+    script = [{ pattern: /UPDATE credentials/, answer: [] }];
+    await expect(service().update(ID, { name: 'renamed' }, 'alice', ORG, true)).rejects.toBeInstanceOf(CredentialNotFoundError);
   });
 });

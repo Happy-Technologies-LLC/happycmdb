@@ -115,6 +115,50 @@ const record = (fields: Record<string, unknown>): FakeRecord => ({ get: (key: st
 const node = (props: Props) => ({ labels: ['CI'], properties: props });
 const byId = (id: string) => CIS.find(c => c['id'] === id);
 
+/**
+ * Evaluates a Cypher WHERE predicate against one :CI node: `ci.prop`, `$param` and literal operands,
+ * `=`, `IN`, NOT, AND, OR and parentheses. Anything else throws, so a statement is never silently
+ * treated as filtered. The tenant boundary of a statement this models is its semantics, not its text.
+ */
+function evalWhere(predicate: string, props: Props, params: Params): boolean {
+  const tokens = predicate.match(/\$\w+|ci\.\w+|'[^']*'|\(|\)|=|\w+/g) ?? [];
+  const keyword = () => tokens[pos]?.toUpperCase();
+  let pos = 0;
+  const operand = (): unknown => {
+    const token = tokens[pos++] ?? '';
+    if (token.startsWith('$')) return params[token.slice(1)];
+    if (token.startsWith('ci.')) return props[token.slice(3)];
+    if (token.startsWith("'")) return token.slice(1, -1);
+    if (/^(true|false)$/i.test(token)) return token.toLowerCase() === 'true';
+    throw new Error(`fake Neo4j: unmodelled WHERE operand '${token}' in: ${predicate}`);
+  };
+  const term = (): unknown => {
+    if (keyword() === '(') {
+      pos++;
+      const inner = disjunction();
+      if (tokens[pos++] !== ')') throw new Error(`fake Neo4j: unbalanced parentheses in: ${predicate}`);
+      return inner;
+    }
+    if (keyword() === 'NOT') { pos++; return !term(); }
+    const left = operand();
+    if (keyword() === '=') { pos++; const right = operand(); return left != null && left === right; }
+    if (keyword() === 'IN') { pos++; return (operand() as unknown[]).includes(left); }
+    return left;
+  };
+  const conjunction = (): unknown => {
+    let value = term();
+    while (keyword() === 'AND') { pos++; const right = term(); value = value === true && right === true; }
+    return value;
+  };
+  const disjunction = (): unknown => {
+    let value = conjunction();
+    while (keyword() === 'OR') { pos++; const right = conjunction(); value = value === true || right === true; }
+    return value;
+  };
+  const result = disjunction();
+  if (pos !== tokens.length) throw new Error(`fake Neo4j: unmodelled WHERE syntax in: ${predicate}`);
+  return result === true;
+}
 
 function run(rawQuery: string, params: Params): FakeRecord[] {
   const query = rawQuery.replace(/\s+/g, ' ').trim();
@@ -149,16 +193,16 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
   }
 
   if (!query.startsWith('MATCH (ci:CI)')) throw new Error(`fake Neo4j: unmodelled statement: ${query}`);
+  const identityLookup = query.match(/^MATCH \(ci:CI\) WHERE (.+) RETURN ci\.id AS id, ci\.name AS name, ci\.type AS type$/);
+  if (identityLookup) {
+    return CIS.filter(props => evalWhere(identityLookup[1]!, props, params))
+      .map(ci => record({ id: ci['id'], name: ci['name'], type: ci['type'] }));
+  }
   const matched = CIS.filter(props =>
     (!query.includes('ci.organization_id = $organizationId') || sameOrg(props)) &&
     (!query.includes("ci.status = 'active'") || props['status'] === 'active') &&
-    (!query.includes('ci.id = $serviceId') || props['id'] === params['serviceId']) &&
-    (!query.includes('ci.id IN $ids') || (params['ids'] as string[]).includes(props['id'] as string))
+    (!query.includes('ci.id = $serviceId') || props['id'] === params['serviceId'])
   );
-
-  if (query.includes('RETURN ci.id AS id, ci.name AS name, ci.type AS type')) {
-    return matched.map(ci => record({ id: ci['id'], name: ci['name'], type: ci['type'] }));
-  }
 
   if (query.includes('WITH ci.status AS status, count(ci) AS count')) {
     const statuses = [...new Set(matched.map(props => props['status'] as string))];
@@ -189,7 +233,7 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
     return [record(counts)];
   }
   if (query.includes('AS criticality')) {
-    return matched.filter(ci => ['tier_1', 'tier_2'].includes(ci['bsm_business_criticality'] as string))
+    return matched.filter(ci => (params['criticalTiers'] as string[]).includes(ci['bsm_business_criticality'] as string))
       .sort((a, b) => String(a['id']).localeCompare(String(b['id']))).slice(0, 10).map(ci => record({
         id: ci['id'], name: ci['name'], type: ci['type'], criticality: ci['bsm_business_criticality'],
       }));
@@ -303,7 +347,8 @@ INSERT INTO itil_incidents (incident_number, title, impact, urgency, priority, a
   ('INC-A3', 'A resolved', 'low', 'low', 4, 'a-web', NULL, 'resolved', now() - interval '3 days', 60, 'alice', '${ORG_A}'),
   ('INC-A4', 'A resolved', 'low', 'low', 4, 'a-web', NULL, 'closed', now() - interval '4 days', 120, 'alice', '${ORG_A}'),
   ('INC-A5', 'A old', 'low', 'low', 4, 'a-web', NULL, 'closed', now() - interval '200 days', 999, 'alice', '${ORG_A}'),
-  ('INC-A6', 'A foreign ci id', 'low', 'low', 5, 'b-secret', NULL, 'cancelled', now() - interval '1 day', NULL, 'alice', '${ORG_A}'),
+  ('INC-A6', 'A foreign ci id', 'low', 'low', 5, 'b-secret', NULL, 'resolved', now() - interval '1 day', NULL, 'alice', '${ORG_A}'),
+  ('INC-A7', 'A opened in error', 'low', 'low', 5, 'a-web', NULL, 'cancelled', now() - interval '1 day', NULL, 'alice', '${ORG_A}'),
   ('INC-B1', 'B secret open', 'critical', 'critical', 1, 'b-secret', 'B Team', 'new', now() - interval '2 hours', NULL, 'bob', '${ORG_B}'),
   ('INC-B2', 'B secret open', 'critical', 'critical', 1, 'a-web', 'B Team', 'new', now() - interval '1 hour', NULL, 'bob', '${ORG_B}');
 INSERT INTO itil_incidents (incident_number, title, impact, urgency, priority, affected_ci_id, status, reported_by)
@@ -510,8 +555,9 @@ describe('global dashboards', () => {
     });
     expect(data.changesInProgress[1]).toMatchObject({ id: 'CHG-A1', riskLevel: 'high', assignedTo: null });
 
-    // 90-day window (INC-A5 is 200 days old); mean over resolved incidents only; a CI id
-    // that is not this org's graph node (b-secret) is named null, never B's name.
+    // 90-day window (INC-A5 is 200 days old); mean over resolved incidents only; cancelled
+    // INC-A7 (also on a-web) is not a failure; a CI id that is not this org's graph node
+    // (b-secret) is named null, never B's name.
     expect(data.topFailingCIs).toEqual([
       { ci_id: 'a-web', name: 'a-web name', type: 'server', incidentCount: 3, mttrMinutes: 90,
         lastFailure: expect.any(String) },

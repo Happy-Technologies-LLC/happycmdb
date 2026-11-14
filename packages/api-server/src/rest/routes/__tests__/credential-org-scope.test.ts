@@ -90,8 +90,10 @@ beforeAll(async () => {
   await sql(`${tables.join('\n')}
 CREATE UNIQUE INDEX idx_credentials_unique_name ON credentials(name, created_by);
 CREATE UNIQUE INDEX idx_credential_sets_unique_name ON credential_sets(name, created_by);
-CREATE TABLE discovery_definitions (credential_id UUID, credential_set_id UUID);
-CREATE TABLE connector_configurations (credential_id UUID);`, [], 'exec');
+-- Mirrors 001 + 018/024: credential_id REFERENCES credentials(id) ON DELETE RESTRICT (fk_discovery_definitions_credential,
+-- fk_connector_configurations_credential), while organization_id is a plain nullable UUID the FK does not check.
+CREATE TABLE discovery_definitions (credential_id UUID REFERENCES credentials(id) ON DELETE RESTRICT, credential_set_id UUID, created_by VARCHAR(255), organization_id UUID);
+CREATE TABLE connector_configurations (credential_id UUID REFERENCES credentials(id) ON DELETE RESTRICT, created_by VARCHAR(255), organization_id UUID);`, [], 'exec');
   await sql(`INSERT INTO credentials (id, name, protocol, scope, credentials, created_by)
     VALUES ($1, 'legacy', 'api_key', 'api', '{"key":"legacy-secret"}', 'a')`, [legacyId]);
   await sql(readFileSync(join(migrations, '021_credential_organization_scope.sql'), 'utf8'), [], 'exec');
@@ -139,7 +141,9 @@ it('org A and same-org nonowner cannot enumerate or read B; B owner reads redact
 
 it('foreign and missing writes/deletes are indistinguishable with no mutation; owner succeeds', async () => {
   const before = await sql('SELECT credentials::text AS encrypted FROM credentials WHERE id = $1', [bId]);
-  await sql('INSERT INTO discovery_definitions (credential_id) VALUES ($1)', [bId]);
+  // Same-org references by the owner (b) and by same-org non-owner c all block the delete and are all counted.
+  await sql(`INSERT INTO discovery_definitions (credential_id, created_by, organization_id) VALUES ($1, 'b', $2), ($1, 'c', $2), ($1, 'c', $2)`, [bId, B]);
+  await sql(`INSERT INTO connector_configurations (credential_id, created_by, organization_id) VALUES ($1, 'c', $2)`, [bId, B]);
   for (const principal of ['a', 'c']) {
     const foreignPut = await request(app).put(`/api/v1/credentials/${bId}`).set(as(principal)).send({ credentials: { key: 'poison' } });
     const missingPut = await request(app).put(`/api/v1/credentials/${missing}`).set(as(principal)).send({ credentials: { key: 'poison' } });
@@ -153,8 +157,9 @@ it('foreign and missing writes/deletes are indistinguishable with no mutation; o
   expect(await sql('SELECT credentials::text AS encrypted FROM credentials WHERE id = $1', [bId])).toEqual(before);
   expect((await sql('SELECT name FROM credentials WHERE id = $1', [bId]))[0].name).toBe('B-private');
   const inUse = await request(app).delete(`/api/v1/credentials/${bId}`).set(as('b'));
-  expect([inUse.status, inUse.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently used by 1 discovery definition(s)' }]);
+  expect([inUse.status, inUse.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently used by 3 discovery definition(s) and 1 connector configuration(s)' }]);
   await sql('DELETE FROM discovery_definitions WHERE credential_id = $1', [bId]);
+  await sql('DELETE FROM connector_configurations WHERE credential_id = $1', [bId]);
   const ownerPut = await request(app).put(`/api/v1/credentials/${bId}`).set(as('b'))
     .send({ name: 'B-renamed', credentials: { key: 'owner-test-only' } });
   expect(ownerPut.status).toBe(200);
@@ -162,6 +167,43 @@ it('foreign and missing writes/deletes are indistinguishable with no mutation; o
   expect(await sql('SELECT credentials::text AS encrypted FROM credentials WHERE id = $1', [bId])).not.toEqual(before);
   expect((await request(app).delete(`/api/v1/credentials/${bId}`).set(as('b'))).status).toBe(204);
   expect(await sql('SELECT id FROM credentials WHERE id = $1', [bId])).toEqual([]);
+});
+
+// The FK on credential_id (001, ON DELETE RESTRICT) checks no organization, so a row of another organization (or with a
+// NULL organization) can reference any credential id. Such a row is neither counted nor reported (list and 409 alike),
+// but the FK still refuses the delete: the refusal is the count-free 409, never a 500 (documented residual existence bit).
+it('list counts and the 409 count same-organization references only; a foreign reference still refuses the delete without counts', async () => {
+  const created = await request(app).post('/api/v1/credentials').set(as('a')).send(credential('A-referenced'));
+  expect(created.status).toBe(201);
+  const id = created.body.data.id as string;
+  const listed = async () => {
+    const row = (await request(app).get('/api/v1/credentials').set(as('a'))).body.data.find((item: { id: string }) => item.id === id);
+    return [row.usage_count, row.connector_usage_count];
+  };
+  await sql(`INSERT INTO discovery_definitions (credential_id, created_by, organization_id) VALUES ($1, 'b', $2), ($1, 'b', $2), ($1, 'legacy', NULL)`, [id, B]);
+  await sql(`INSERT INTO connector_configurations (credential_id, created_by, organization_id) VALUES ($1, 'b', $2)`, [id, B]);
+  await sql(`INSERT INTO credential_sets (name, credential_ids, created_by, organization_id) VALUES ('B-set', ARRAY[$1]::uuid[], 'b', $2)`, [id, B]);
+  expect(await listed()).toEqual([0, 0]);
+
+  // Same-org references by another user (d) are counted, by the list and by the refusal alike.
+  await sql(`INSERT INTO discovery_definitions (credential_id, created_by, organization_id) VALUES ($1, 'd', $2), ($1, 'a', $2)`, [id, A]);
+  await sql(`INSERT INTO connector_configurations (credential_id, created_by, organization_id) VALUES ($1, NULL, $2)`, [id, A]);
+  expect(await listed()).toEqual([2, 1]);
+  const refused = await request(app).delete(`/api/v1/credentials/${id}`).set(as('a'));
+  expect([refused.status, refused.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently used by 2 discovery definition(s) and 1 connector configuration(s)' }]);
+
+  await sql(`DELETE FROM discovery_definitions WHERE credential_id = $1 AND organization_id = $2`, [id, A]);
+  await sql(`DELETE FROM connector_configurations WHERE credential_id = $1 AND organization_id = $2`, [id, A]);
+  expect(await listed()).toEqual([0, 0]);
+  const countFree = { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently in use' };
+  const fkRefused = await request(app).delete(`/api/v1/credentials/${id}`).set(as('a'));
+  expect([fkRefused.status, fkRefused.body]).toEqual([409, countFree]);
+  expect(await sql('SELECT id FROM credentials WHERE id = $1', [id])).toEqual([{ id }]);
+
+  await sql('DELETE FROM discovery_definitions WHERE credential_id = $1', [id]);
+  await sql('DELETE FROM connector_configurations WHERE credential_id = $1', [id]);
+  expect((await request(app).delete(`/api/v1/credentials/${id}`).set(as('a'))).status).toBe(204);
+  await sql('DELETE FROM credential_sets WHERE $1 = ANY(credential_ids)', [id]);
 });
 
 it('rejects org-less identities before SQL and prevents match/rank/validate enumeration', async () => {

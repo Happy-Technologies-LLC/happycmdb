@@ -15,6 +15,7 @@ import {
   assertNoCIGap, CIGapError, CI_GAP_RESPONSE, CIListUnavailableError, readCIList,
   readSingleCI, CI_LIST_UNAVAILABLE_RESPONSE,
 } from '../../read-admission';
+import { withNormalizedCIFields } from '../../services/ci-normalized-fields';
 import { sendTraversalFailure } from './traversal-failure';
 
 /**
@@ -166,7 +167,7 @@ export class CIController {
             return {
               total: countResult.records[0]!.get('total').toNumber() as number,
               cis: pageResult.records.map(row =>
-                convertNeo4jTypes((row.get('ci') as { properties: Record<string, unknown> }).properties)),
+                withNormalizedCIFields(convertNeo4jTypes((row.get('ci') as { properties: Record<string, unknown> }).properties))),
             };
           } finally {
             await session.close();
@@ -214,13 +215,19 @@ export class CIController {
         sendCINotFound(res);
         return;
       }
-      const ci = await readSingleCI(organizationId, id,
-        () => this.neo4jClient.getCI(id, organizationId));
-      if (!ci) {
+      // recordToCI narrows the node to a fixed set of keys; the normalized fields project from the raw owned node.
+      const read = await readSingleCI(organizationId, id, async () => {
+        const ci = await this.neo4jClient.getCI(id, organizationId);
+        return ci && { ci, stored: await this.neo4jClient.getCIProperties(id, organizationId) };
+      });
+      if (!read || !read.stored) {
         sendCINotFound(res);
         return;
       }
-      res.json({ success: true, data: convertNeo4jTypes(ci) });
+      res.json({
+        success: true,
+        data: withNormalizedCIFields(convertNeo4jTypes(read.ci), convertNeo4jTypes(read.stored)),
+      });
     } catch (error) {
       if (error instanceof CIGapError) {
         res.status(409).json(CI_GAP_RESPONSE);

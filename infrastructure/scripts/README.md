@@ -171,9 +171,13 @@ grant their own views when created later. `v_top_cost_drivers` is on no BI
 allowlist and is never granted to BI: its unbounded `ci.metadata` makes it
 unsuitable for the BI role. BI reads `v_top_cost_drivers_bi` (no `metadata`)
 and `v_underutilized_resources`; both are granted by shape (skipped when the
-view has any json/jsonb column or a column named `metadata`) in
-`metabase-init.sql`, `cost-analysis.sql` and migration `050`. Keep the BI
-scripts, `032` and `050` allowlists aligned if adding reporting views. Migration `033`
+view is not owned by the owner of `cmdb.dim_ci`, has a column named `metadata`,
+or carries json/jsonb in any column, including through a domain, array or
+composite type) in `metabase-init.sql`, `cost-analysis.sql` and migration
+`051`, which also sets `security_barrier` on the unbounded cost views of
+`cost-analysis.sql` and revokes `TEMPORARY` on the database from
+`metabase_readonly` (PUBLIC's default grant is untouched). Keep the BI
+scripts, `032`, `050` and `051` allowlists aligned if adding reporting views. Migration `033`
 closes unrelated `cmdb` reporting tables to PUBLIC and BI. The guarded
 `rollback/032_*.down.sql` refuses while `033` or `034` remains recorded;
 it is manual, removes its exact ledger row and restores 001's unsafe PUBLIC

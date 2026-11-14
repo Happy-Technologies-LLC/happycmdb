@@ -90,8 +90,8 @@ function play(over: Record<string, Reply> = {}) {
       by_status: { active: 4 },
       by_environment: { production: 4 },
       recent_discoveries: [],
-      // A hardcoded 0 on the server today (BW4): the hub must not show it as a measured health.
-      health_score: 0.94,
+      // The server sends null until a CI health state exists (BW1, BW4): the hub must show it as unavailable.
+      health_score: null,
       critical_relationships: 12,
     }),
     '/cis': ok({
@@ -246,13 +246,13 @@ describe('estate hub: Stage views', () => {
 });
 
 describe('estate hub: KPI stack (N2)', () => {
-  it('shows the real CI count and a named "Not available yet" for health, drift and coverage; never the hardcoded health score', async () => {
+  it('shows the real CI count and a named "Not available yet" for health, drift and coverage; never a 0% health', async () => {
     mount();
     expect(await screen.findByText('CIs managed')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('4 active')).toBeInTheDocument());
     expect(within(screen.getByRole('group', { name: 'CIs managed' })).getByText('4')).toBeInTheDocument();
     for (const [label, missing] of [
-      ['Health', 'BW1, BW4'],
+      ['Health', 'BW1'],
       ['Config drift', 'BW5'],
       ['Coverage', 'BW6'],
     ]) {
@@ -260,7 +260,6 @@ describe('estate hub: KPI stack (N2)', () => {
       expect(within(card).getByText('Not available yet')).toBeInTheDocument();
       expect(within(card).getByText(new RegExp(missing))).toBeInTheDocument();
     }
-    expect(screen.queryByText(/94/)).toBeNull();
     expect(screen.queryByText(/^0%$/)).toBeNull();
   });
 

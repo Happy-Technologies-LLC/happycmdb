@@ -349,7 +349,7 @@ it('S3: the tool holds no unjournaled :CI write (every statement is a read-only 
   const WRITE_CLAUSE = /\b(CREATE|MERGE|SET|DELETE|DETACH|REMOVE|INSERT|UPDATE|UPSERT|DROP|ALTER|TRUNCATE|FOREACH|LOAD|CALL|COPY|GRANT)\b/i;
   expect(literals.filter(text => WRITE_CLAUSE.test(text))).toEqual([]);
   expect(dynamicStatements).toEqual([]);
-  // Neo4jClient's graph writers (createCI, legacyCreateCIUnjournaled, updateCI, deleteCI, writeRelationship, ...): only createCI.
+  // Neo4jClient's graph writers (createCI, updateCI, deleteCI, writeRelationship, ...): only createCI.
   expect([...graphCalls].sort()).toEqual(['close', 'createCI', 'getCI', 'getSession']);
   expect(imports.filter(name => /neo4j-driver|^pg$/.test(name))).toEqual([]);
 });

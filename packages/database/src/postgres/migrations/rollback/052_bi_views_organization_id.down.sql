@@ -3,8 +3,9 @@
 --
 -- Effect: each of the 37 BI views is dropped and recreated in its pre-052 shape (no organization_id column and, for
 -- v_top_cost_drivers_bi, a single global LIMIT 20). A view cannot lose a column through CREATE OR REPLACE, hence the
--- drop. Its SELECT grants (metabase_readonly and every other reader), reloptions and comment are carried over. A Metabase
--- card or data sandbox that references organization_id breaks until 052 is applied again. Loses no data.
+-- drop. Every privilege on each view and on its columns (all grantees, PUBLIC and grant options included, not only
+-- SELECT), its owner, reloptions and comment are carried over. A Metabase card that references organization_id
+-- breaks until 052 is applied again. Loses no data.
 -- v_baseline_drift_detection is only dropped: its pre-052 definition (jsonb cast to text[]) could never be created.
 -- A view that does not exist is skipped. Afterwards use the pre-052 versions of the three BI view files, or a
 -- later run of the current ones fails with "cannot drop columns from view".
@@ -18,16 +19,28 @@ SET LOCAL statement_timeout = '10s';
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.recent_audit_activity') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.recent_audit_activity');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.recent_audit_activity') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.recent_audit_activity');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.recent_audit_activity TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.recent_audit_activity') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.recent_audit_activity TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.recent_audit_activity') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.recent_audit_activity';
   EXECUTE $q$
 CREATE OR REPLACE VIEW recent_audit_activity AS
@@ -38,8 +51,11 @@ FROM audit_log
 WHERE timestamp >= NOW() - INTERVAL '30 days'
 ORDER BY timestamp DESC
 $q$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.recent_audit_activity TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.recent_audit_activity', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.recent_audit_activity', array_to_string(opts, ', '));
@@ -51,16 +67,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('cmdb.v_ci_discovery_summary') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('cmdb.v_ci_discovery_summary');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('cmdb.v_ci_discovery_summary') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('cmdb.v_ci_discovery_summary');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON cmdb.v_ci_discovery_summary TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('cmdb.v_ci_discovery_summary') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON cmdb.v_ci_discovery_summary TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('cmdb.v_ci_discovery_summary') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW cmdb.v_ci_discovery_summary';
   EXECUTE $q$
 CREATE OR REPLACE VIEW cmdb.v_ci_discovery_summary AS
@@ -75,8 +103,11 @@ INNER JOIN cmdb.fact_discovery f ON c.ci_key = f.ci_key
 WHERE c.is_current = TRUE
 GROUP BY c.ci_id, c.ci_name, c.ci_type, f.discovery_provider
 $q$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON cmdb.v_ci_discovery_summary TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'cmdb.v_ci_discovery_summary', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'cmdb.v_ci_discovery_summary', array_to_string(opts, ', '));
@@ -88,16 +119,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_business_service_summary') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_business_service_summary');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_business_service_summary') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_business_service_summary');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_business_service_summary TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_business_service_summary') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_business_service_summary TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_business_service_summary') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_business_service_summary';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_business_service_summary AS
@@ -132,8 +175,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_business_service_summary IS 'v3.0 Business service summary with key metrics from ITIL, TBM, and BSM'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_business_service_summary TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_business_service_summary', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_business_service_summary', array_to_string(opts, ', '));
@@ -145,16 +191,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_application_service_summary') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_application_service_summary');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_application_service_summary') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_application_service_summary');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_application_service_summary TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_application_service_summary') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_application_service_summary TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_application_service_summary') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_application_service_summary';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_application_service_summary AS
@@ -189,8 +247,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_application_service_summary IS 'v3.0 Application service summary with TBM costs and ITIL lifecycle'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_application_service_summary TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_application_service_summary', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_application_service_summary', array_to_string(opts, ', '));
@@ -202,16 +263,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_business_capability_summary') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_business_capability_summary');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_business_capability_summary') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_business_capability_summary');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_business_capability_summary TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_business_capability_summary') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_business_capability_summary TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_business_capability_summary') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_business_capability_summary';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_business_capability_summary AS
@@ -241,8 +314,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_business_capability_summary IS 'v3.0 Business capability summary with TBM cost allocation and value metrics'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_business_capability_summary TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_business_capability_summary', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_business_capability_summary', array_to_string(opts, ', '));
@@ -254,16 +330,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_service_dependency_graph') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_service_dependency_graph');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_service_dependency_graph') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_service_dependency_graph');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_service_dependency_graph TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_service_dependency_graph') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_service_dependency_graph TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_service_dependency_graph') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_service_dependency_graph';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_service_dependency_graph AS
@@ -298,8 +386,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_service_dependency_graph IS 'v3.0 Service dependency relationships with resolved entity names'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_service_dependency_graph TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_service_dependency_graph', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_service_dependency_graph', array_to_string(opts, ', '));
@@ -311,16 +402,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_itil_incident_summary') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_itil_incident_summary');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_itil_incident_summary') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_itil_incident_summary');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_itil_incident_summary TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_itil_incident_summary') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_itil_incident_summary TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_itil_incident_summary') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_itil_incident_summary';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_itil_incident_summary AS
@@ -357,8 +460,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_itil_incident_summary IS 'v3.0 ITIL incident summary with business impact metrics'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_itil_incident_summary TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_itil_incident_summary', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_itil_incident_summary', array_to_string(opts, ', '));
@@ -370,16 +476,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_itil_change_summary') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_itil_change_summary');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_itil_change_summary') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_itil_change_summary');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_itil_change_summary TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_itil_change_summary') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_itil_change_summary TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_itil_change_summary') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_itil_change_summary';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_itil_change_summary AS
@@ -413,8 +531,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_itil_change_summary IS 'v3.0 ITIL change summary with risk assessment and business impact'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_itil_change_summary TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_itil_change_summary', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_itil_change_summary', array_to_string(opts, ', '));
@@ -426,16 +547,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_tbm_cost_pool_summary') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_tbm_cost_pool_summary');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_tbm_cost_pool_summary') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_tbm_cost_pool_summary');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_tbm_cost_pool_summary TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_tbm_cost_pool_summary') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_tbm_cost_pool_summary TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_tbm_cost_pool_summary') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_tbm_cost_pool_summary';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_tbm_cost_pool_summary AS
@@ -462,8 +595,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_tbm_cost_pool_summary IS 'v3.0 TBM cost pool summary with budget tracking and GL mappings'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_tbm_cost_pool_summary TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_tbm_cost_pool_summary', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_tbm_cost_pool_summary', array_to_string(opts, ', '));
@@ -475,16 +611,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_tbm_depreciation_tracking') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_tbm_depreciation_tracking');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_tbm_depreciation_tracking') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_tbm_depreciation_tracking');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_tbm_depreciation_tracking TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_tbm_depreciation_tracking') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_tbm_depreciation_tracking TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_tbm_depreciation_tracking') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_tbm_depreciation_tracking';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_tbm_depreciation_tracking AS
@@ -519,8 +667,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_tbm_depreciation_tracking IS 'v3.0 TBM depreciation tracking with calculated remaining life and percentages'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_tbm_depreciation_tracking TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_tbm_depreciation_tracking', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_tbm_depreciation_tracking', array_to_string(opts, ', '));
@@ -532,16 +683,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_unified_service_health') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_unified_service_health');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_unified_service_health') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_unified_service_health');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_unified_service_health TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_unified_service_health') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_unified_service_health TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_unified_service_health') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_unified_service_health';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_unified_service_health AS
@@ -575,8 +738,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_unified_service_health IS 'v3.0 Unified service health dashboard combining ITIL, TBM, and BSM metrics'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_unified_service_health TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_unified_service_health', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_unified_service_health', array_to_string(opts, ', '));
@@ -588,16 +754,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_criticality_distribution') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_criticality_distribution');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_criticality_distribution') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_criticality_distribution');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_criticality_distribution TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_criticality_distribution') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_criticality_distribution TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_criticality_distribution') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_criticality_distribution';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_criticality_distribution AS
@@ -638,8 +816,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_criticality_distribution IS 'Distribution of CIs by business criticality tier with cost and impact metrics'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_criticality_distribution TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_criticality_distribution', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_criticality_distribution', array_to_string(opts, ', '));
@@ -651,16 +832,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_revenue_at_risk') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_revenue_at_risk');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_revenue_at_risk') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_revenue_at_risk');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_revenue_at_risk TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_revenue_at_risk') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_revenue_at_risk TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_revenue_at_risk') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_revenue_at_risk';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_revenue_at_risk AS
@@ -704,8 +897,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_revenue_at_risk IS 'Revenue at risk analysis from open incidents affecting business services'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_revenue_at_risk TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_revenue_at_risk', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_revenue_at_risk', array_to_string(opts, ', '));
@@ -717,16 +913,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_compliance_summary') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_compliance_summary');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_compliance_summary') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_compliance_summary');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_compliance_summary TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_compliance_summary') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_compliance_summary TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_compliance_summary') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_compliance_summary';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_compliance_summary AS
@@ -756,8 +964,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_compliance_summary IS 'Compliance status summary by regulatory framework'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_compliance_summary TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_compliance_summary', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_compliance_summary', array_to_string(opts, ', '));
@@ -769,16 +980,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_sox_pci_inventory') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_sox_pci_inventory');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_sox_pci_inventory') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_sox_pci_inventory');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_sox_pci_inventory TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_sox_pci_inventory') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_sox_pci_inventory TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_sox_pci_inventory') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_sox_pci_inventory';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_sox_pci_inventory AS
@@ -830,8 +1053,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_sox_pci_inventory IS 'SOX and PCI in-scope business services with compliance metrics'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_sox_pci_inventory TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_sox_pci_inventory', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_sox_pci_inventory', array_to_string(opts, ', '));
@@ -843,16 +1069,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_disaster_recovery_tiers') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_disaster_recovery_tiers');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_disaster_recovery_tiers') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_disaster_recovery_tiers');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_disaster_recovery_tiers TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_disaster_recovery_tiers') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_disaster_recovery_tiers TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_disaster_recovery_tiers') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_disaster_recovery_tiers';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_disaster_recovery_tiers AS
@@ -888,8 +1126,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_disaster_recovery_tiers IS 'Disaster recovery tier analysis with RTO/RPO metrics'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_disaster_recovery_tiers TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_disaster_recovery_tiers', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_disaster_recovery_tiers', array_to_string(opts, ', '));
@@ -901,16 +1142,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_business_capability_health') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_business_capability_health');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_business_capability_health') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_business_capability_health');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_business_capability_health TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_business_capability_health') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_business_capability_health TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_business_capability_health') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_business_capability_health';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_business_capability_health AS
@@ -960,8 +1213,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_business_capability_health IS 'Business capability health scorecard with financial and operational metrics'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_business_capability_health TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_business_capability_health', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_business_capability_health', array_to_string(opts, ', '));
@@ -973,16 +1229,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_service_dependency_map') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_service_dependency_map');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_service_dependency_map') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_service_dependency_map');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_service_dependency_map TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_service_dependency_map') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_service_dependency_map TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_service_dependency_map') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_service_dependency_map';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_service_dependency_map AS
@@ -1025,8 +1293,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_service_dependency_map IS 'Service dependency relationship map for impact analysis'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_service_dependency_map TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_service_dependency_map', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_service_dependency_map', array_to_string(opts, ', '));
@@ -1038,16 +1309,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_customer_impact_analysis') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_customer_impact_analysis');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_customer_impact_analysis') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_customer_impact_analysis');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_customer_impact_analysis TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_customer_impact_analysis') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_customer_impact_analysis TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_customer_impact_analysis') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_customer_impact_analysis';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_customer_impact_analysis AS
@@ -1089,8 +1372,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_customer_impact_analysis IS 'Customer-facing services with impact scores and cost per customer'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_customer_impact_analysis TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_customer_impact_analysis', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_customer_impact_analysis', array_to_string(opts, ', '));
@@ -1102,16 +1388,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_executive_cost_summary') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_executive_cost_summary');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_executive_cost_summary') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_executive_cost_summary');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_executive_cost_summary TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_executive_cost_summary') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_executive_cost_summary TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_executive_cost_summary') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_executive_cost_summary';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_executive_cost_summary AS
@@ -1151,8 +1449,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_executive_cost_summary IS 'Executive cost summary by business capability and service with unit economics'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_executive_cost_summary TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_executive_cost_summary', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_executive_cost_summary', array_to_string(opts, ', '));
@@ -1164,16 +1465,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_cost_by_tower') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_cost_by_tower');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_cost_by_tower') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_cost_by_tower');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_cost_by_tower TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_cost_by_tower') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_cost_by_tower TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_cost_by_tower') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_cost_by_tower';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_cost_by_tower AS
@@ -1207,8 +1520,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_cost_by_tower IS 'TBM cost breakdown by resource tower and cost pool'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_cost_by_tower TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_cost_by_tower', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_cost_by_tower', array_to_string(opts, ', '));
@@ -1220,16 +1536,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_cost_trends') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_cost_trends');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_cost_trends') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_cost_trends');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_cost_trends TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_cost_trends') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_cost_trends TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_cost_trends') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_cost_trends';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_cost_trends AS
@@ -1255,8 +1583,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_cost_trends IS 'Monthly cost trends over time by tower and CI type'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_cost_trends TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_cost_trends', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_cost_trends', array_to_string(opts, ', '));
@@ -1268,16 +1599,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_unit_economics') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_unit_economics');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_unit_economics') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_unit_economics');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_unit_economics TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_unit_economics') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_unit_economics TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_unit_economics') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_unit_economics';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_unit_economics AS
@@ -1323,8 +1666,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_unit_economics IS 'Unit economics by business service with cost per transaction and customer'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_unit_economics TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_unit_economics', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_unit_economics', array_to_string(opts, ', '));
@@ -1336,16 +1682,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_cloud_vs_onprem_costs') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_cloud_vs_onprem_costs');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_cloud_vs_onprem_costs') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_cloud_vs_onprem_costs');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_cloud_vs_onprem_costs TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_cloud_vs_onprem_costs') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_cloud_vs_onprem_costs TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_cloud_vs_onprem_costs') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_cloud_vs_onprem_costs';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_cloud_vs_onprem_costs AS
@@ -1376,8 +1734,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_cloud_vs_onprem_costs IS 'Cloud vs on-premises cost comparison'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_cloud_vs_onprem_costs TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_cloud_vs_onprem_costs', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_cloud_vs_onprem_costs', array_to_string(opts, ', '));
@@ -1389,16 +1750,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_cost_allocation_summary') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_cost_allocation_summary');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_cost_allocation_summary') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_cost_allocation_summary');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_cost_allocation_summary TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_cost_allocation_summary') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_cost_allocation_summary TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_cost_allocation_summary') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_cost_allocation_summary';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_cost_allocation_summary AS
@@ -1443,8 +1816,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_cost_allocation_summary IS 'Cost allocation summary with budget variance by cost center'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_cost_allocation_summary TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_cost_allocation_summary', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_cost_allocation_summary', array_to_string(opts, ', '));
@@ -1456,16 +1832,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_depreciation_summary') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_depreciation_summary');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_depreciation_summary') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_depreciation_summary');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_depreciation_summary TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_depreciation_summary') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_depreciation_summary TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_depreciation_summary') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_depreciation_summary';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_depreciation_summary AS
@@ -1496,8 +1884,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_depreciation_summary IS 'Asset depreciation summary with remaining life and book value'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_depreciation_summary TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_depreciation_summary', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_depreciation_summary', array_to_string(opts, ', '));
@@ -1509,16 +1900,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_top_cost_drivers_bi') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_top_cost_drivers_bi');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_top_cost_drivers_bi') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_top_cost_drivers_bi');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_top_cost_drivers_bi TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_top_cost_drivers_bi') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_top_cost_drivers_bi TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_top_cost_drivers_bi') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_top_cost_drivers_bi';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_top_cost_drivers_bi AS
@@ -1543,8 +1946,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_top_cost_drivers_bi IS 'Top 20 configuration items by monthly cost, without ci.metadata (BI-readable)'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_top_cost_drivers_bi TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_top_cost_drivers_bi', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_top_cost_drivers_bi', array_to_string(opts, ', '));
@@ -1556,16 +1962,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_underutilized_resources') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_underutilized_resources');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_underutilized_resources') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_underutilized_resources');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_underutilized_resources TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_underutilized_resources') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_underutilized_resources TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_underutilized_resources') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_underutilized_resources';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_underutilized_resources AS
@@ -1597,8 +2015,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_underutilized_resources IS 'Active CIs under 50% utilization with monthly cost and potential savings'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_underutilized_resources TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_underutilized_resources', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_underutilized_resources', array_to_string(opts, ', '));
@@ -1610,16 +2031,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_incident_summary') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_incident_summary');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_incident_summary') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_incident_summary');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_incident_summary TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_incident_summary') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_incident_summary TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_incident_summary') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_incident_summary';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_incident_summary AS
@@ -1655,8 +2088,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_incident_summary IS 'Incident summary by priority and status with business impact (90 days)'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_incident_summary TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_incident_summary', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_incident_summary', array_to_string(opts, ', '));
@@ -1668,16 +2104,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_incident_trends') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_incident_trends');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_incident_trends') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_incident_trends');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_incident_trends TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_incident_trends') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_incident_trends TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_incident_trends') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_incident_trends';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_incident_trends AS
@@ -1702,8 +2150,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_incident_trends IS 'Monthly incident trends by priority and category (12 months)'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_incident_trends TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_incident_trends', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_incident_trends', array_to_string(opts, ', '));
@@ -1715,16 +2166,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_change_success_rates') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_change_success_rates');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_change_success_rates') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_change_success_rates');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_change_success_rates TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_change_success_rates') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_change_success_rates TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_change_success_rates') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_change_success_rates';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_change_success_rates AS
@@ -1760,8 +2223,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_change_success_rates IS 'Change success rates by type with risk and business impact (12 months)'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_change_success_rates TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_change_success_rates', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_change_success_rates', array_to_string(opts, ', '));
@@ -1773,16 +2239,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_change_calendar') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_change_calendar');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_change_calendar') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_change_calendar');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_change_calendar TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_change_calendar') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_change_calendar TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_change_calendar') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_change_calendar';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_change_calendar AS
@@ -1817,8 +2295,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_change_calendar IS 'Upcoming scheduled changes with risk and impact assessment'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_change_calendar TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_change_calendar', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_change_calendar', array_to_string(opts, ', '));
@@ -1830,16 +2311,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_configuration_accuracy') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_configuration_accuracy');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_configuration_accuracy') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_configuration_accuracy');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_configuration_accuracy TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_configuration_accuracy') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_configuration_accuracy TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_configuration_accuracy') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_configuration_accuracy';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_configuration_accuracy AS
@@ -1877,8 +2370,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_configuration_accuracy IS 'Configuration item accuracy and audit compliance by type and lifecycle'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_configuration_accuracy TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_configuration_accuracy', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_configuration_accuracy', array_to_string(opts, ', '));
@@ -1890,16 +2386,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_sla_compliance') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_sla_compliance');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_sla_compliance') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_sla_compliance');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_sla_compliance TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_sla_compliance') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_sla_compliance TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_sla_compliance') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_sla_compliance';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_sla_compliance AS
@@ -1945,8 +2453,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_sla_compliance IS 'SLA compliance by business service with availability and incident metrics'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_sla_compliance TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_sla_compliance', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_sla_compliance', array_to_string(opts, ', '));
@@ -1958,16 +2469,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_service_health_scorecard') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_service_health_scorecard');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_service_health_scorecard') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_service_health_scorecard');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_service_health_scorecard TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_service_health_scorecard') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_service_health_scorecard TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_service_health_scorecard') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_service_health_scorecard';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_service_health_scorecard AS
@@ -2008,8 +2531,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_service_health_scorecard IS 'Comprehensive service health scorecard with calculated health scores'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_service_health_scorecard TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_service_health_scorecard', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_service_health_scorecard', array_to_string(opts, ', '));
@@ -2021,16 +2547,28 @@ $v$;
 DO $v$
 DECLARE
   opts text[];
-  readers text[];
+  grants text[];
+  owner_name text;
   r text;
 BEGIN
   IF to_regclass('public.v_mttr_mtbf_analysis') IS NULL THEN
     RETURN;
   END IF;
-  SELECT c.reloptions INTO opts FROM pg_class c WHERE c.oid = to_regclass('public.v_mttr_mtbf_analysis');
-  SELECT array_agg(DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END) INTO readers
-    FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
-    WHERE c.oid = to_regclass('public.v_mttr_mtbf_analysis') AND a.privilege_type = 'SELECT' AND a.grantee <> c.relowner;
+  SELECT c.reloptions, quote_ident(pg_get_userbyid(c.relowner)) INTO opts, owner_name FROM pg_class c WHERE c.oid = to_regclass('public.v_mttr_mtbf_analysis');
+  -- Every privilege on the view and on its columns, grant option included (not only SELECT).
+  SELECT array_agg(q.stmt ORDER BY q.stmt) INTO grants FROM (
+    SELECT format('GRANT %s ON public.v_mttr_mtbf_analysis TO %s%s', a.privilege_type,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END) AS stmt
+      FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE c.oid = to_regclass('public.v_mttr_mtbf_analysis') AND a.grantee <> c.relowner
+    UNION ALL
+    SELECT format('GRANT %s (%I) ON public.v_mttr_mtbf_analysis TO %s%s', a.privilege_type, t.attname,
+                  CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(g.rolname) END,
+                  CASE WHEN a.is_grantable THEN ' WITH GRANT OPTION' ELSE '' END)
+      FROM pg_attribute t CROSS JOIN LATERAL aclexplode(t.attacl) a LEFT JOIN pg_roles g ON g.oid = a.grantee
+      WHERE t.attrelid = to_regclass('public.v_mttr_mtbf_analysis') AND t.attnum > 0 AND NOT t.attisdropped AND t.attname <> 'organization_id'
+  ) q;
   EXECUTE 'DROP VIEW public.v_mttr_mtbf_analysis';
   EXECUTE $q$
 CREATE OR REPLACE VIEW v_mttr_mtbf_analysis AS
@@ -2070,8 +2608,11 @@ $q$;
   EXECUTE $c$
 COMMENT ON VIEW public.v_mttr_mtbf_analysis IS 'MTTR and MTBF analysis by business service (90 days)'
 $c$;
-  FOREACH r IN ARRAY COALESCE(readers, ARRAY[]::text[]) LOOP
-    EXECUTE format('GRANT SELECT ON public.v_mttr_mtbf_analysis TO %s', r);
+  IF owner_name <> quote_ident(current_user) THEN
+    EXECUTE format('ALTER VIEW %s OWNER TO %s', 'public.v_mttr_mtbf_analysis', owner_name);
+  END IF;
+  FOREACH r IN ARRAY COALESCE(grants, ARRAY[]::text[]) LOOP
+    EXECUTE r;
   END LOOP;
   IF opts IS NOT NULL THEN
     EXECUTE format('ALTER VIEW %s SET (%s)', 'public.v_mttr_mtbf_analysis', array_to_string(opts, ', '));

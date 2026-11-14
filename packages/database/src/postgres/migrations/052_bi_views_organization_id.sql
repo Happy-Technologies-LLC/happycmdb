@@ -12,20 +12,20 @@
 --     itil_changes, itil_baselines, audit_log). Aggregate views gain it in GROUP BY, so each row is one tenant's;
 --     the per-total subqueries of v_cost_by_tower / v_cloud_vs_onprem_costs and the CI counts of
 --     v_baseline_drift_detection are scoped to the same tenant; v_top_cost_drivers_bi keeps the top 20 PER tenant
---     (a single global LIMIT 20 would leave a sandboxed tenant fewer than 20 rows, usually none).
+--     (a single global LIMIT 20 would leave a tenant filter fewer than 20 rows, usually none).
 --     audit_log and the ITIL tables hold legacy rows with a NULL organization_id: those rows have no tenant.
 --   * Not tenant-attributable (21 views): the sources (business_services, application_services,
 --     business_capabilities, service_dependencies, tbm_cost_pools, tbm_depreciation_schedules) are the v3.0 legacy
 --     tables and carry no organization_id, and cmdb.dim_ci.ci_id is not unique across organizations, so a join on it
 --     cannot attribute a row. These views expose `NULL::uuid AS organization_id`: a row filter
---     `organization_id = <tenant>` matches nothing, so a sandboxed tenant sees no rows (fail closed). Only an
---     unsandboxed, platform-internal collection shows them. See infrastructure/metabase/README.md, Tenancy.
+--     `organization_id = <tenant>` matches nothing (fail closed). The column is attribution for staff, not an access
+--     control: Metabase is an internal tool and tenant-facing BI is not supported. See infrastructure/metabase/README.md, Tenancy.
 --
 -- A view that does not exist is skipped (the BI view files are run by hand; setup-metabase.sh), so run the three
 -- view files after this migration on a database that never had them; they carry the same definitions.
 -- v_baseline_drift_detection could never be created from itil-analysis.sql (it cast jsonb to text[]); the view file
 -- now builds the id and type lists with jsonb_array_elements_text, so the view appears when that file is run.
--- Reloptions (for example security_barrier set by a later migration) are read before the redefinition and set
+-- Reloptions (for example the security_barrier that 051 sets) are read before the redefinition and set
 -- again afterwards, because CREATE OR REPLACE VIEW without WITH (...) resets them.
 -- Run as the owner of the views. Additive, idempotent. Manual rollback: rollback/052_bi_views_organization_id.down.sql.
 SET LOCAL lock_timeout = '3s';
@@ -1284,7 +1284,7 @@ FROM (
         ci.bsm_attributes->>'business_criticality' AS business_criticality,
         ci.updated_at,
         ci.organization_id,
-        -- Top 20 per organization: a row filter on organization_id (BI data sandboxing) must still leave 20 rows.
+        -- Top 20 per organization: filtering on organization_id must still leave up to 20 rows per tenant.
         row_number() OVER (
             PARTITION BY ci.organization_id
             ORDER BY COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) DESC

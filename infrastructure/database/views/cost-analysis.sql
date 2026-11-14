@@ -328,7 +328,7 @@ FROM (
         ci.bsm_attributes->>'business_criticality' AS business_criticality,
         ci.updated_at,
         ci.organization_id,
-        -- Top 20 per organization: a row filter on organization_id (BI data sandboxing) must still leave 20 rows.
+        -- Top 20 per organization: filtering on organization_id must still leave up to 20 rows per tenant.
         row_number() OVER (
             PARTITION BY ci.organization_id
             ORDER BY COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) DESC

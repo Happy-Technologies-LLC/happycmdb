@@ -299,7 +299,9 @@ describe('Metabase assets query only what the BI role can read (HAP-659)', () =>
       await exec(migration051);
       for (const view of barrierViews) expect(await reloptions(view)).toBe('{security_barrier=true}');
       await exec(migration051); // idempotent
-      expect(await reloptions('v_top_cost_drivers_bi')).toBeNull(); // LIMIT 20 already blocks push-down
+      // not in 051's list, but cost-analysis.sql creates it with the barrier too (052 replaced its LIMIT 20 with a
+      // per-organization row_number() filter, which no longer blocks push-down by itself); 051 leaves that option alone
+      expect(await reloptions('v_top_cost_drivers_bi')).toBe('{security_barrier=true}');
     });
 
     // The barrier's effect: a predicate the BI user supplies must not run on rows the view filters out.

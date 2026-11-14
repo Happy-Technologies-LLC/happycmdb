@@ -89,6 +89,10 @@ spec:
         - name: plugins
           emptyDir: {}
 ---
+# INTERNAL: Metabase is a staff and operator tool, so this Service is ClusterIP only and there is deliberately no
+# Ingress. Reach it with `kubectl port-forward -n happycmdb-cmdb svc/metabase 3000:3000` or from the internal network.
+# The BI views behind it hold ALL organizations' rows and Metabase cannot restrict a user to one tenant, so it MUST NOT
+# be published to tenant users or the internet. See infrastructure/metabase/README.md, Tenancy.
 apiVersion: v1
 kind: Service
 metadata:
@@ -105,38 +109,3 @@ spec:
       name: http
   selector:
     app: metabase
----
-# PUBLIC: metabase.happycmdb.io is reachable from the internet. The BI views behind it span ALL tenants
-# (organization_id is a column, not a filter), so a Metabase that tenant users can reach needs row-level data
-# sandboxing on organization_id, or one instance per tenant, and tenant users must never see an unsandboxed
-# collection. See infrastructure/metabase/README.md, Tenancy.
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: metabase
-  namespace: happycmdb-cmdb
-  labels:
-    app: metabase
-  annotations:
-    kubernetes.io/ingress.class: "nginx"
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
-    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
-    nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
-spec:
-  tls:
-    - hosts:
-        - metabase.happycmdb.io
-      secretName: metabase-tls
-  rules:
-    - host: metabase.happycmdb.io
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: metabase
-                port:
-                  number: 3000

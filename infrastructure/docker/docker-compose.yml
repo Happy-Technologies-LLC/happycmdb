@@ -457,7 +457,8 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "${METABASE_PORT:-3002}:3000"
+      # Staff-only tool: loopback only. The BI views hold every organization's rows (see infrastructure/metabase/README.md, Tenancy).
+      - "127.0.0.1:${METABASE_PORT:-3002}:3000"
     environment:
       # Metabase application database (PostgreSQL)
       MB_DB_TYPE: postgres

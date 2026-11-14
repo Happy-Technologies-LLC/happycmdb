@@ -101,6 +101,24 @@ export interface LimitOptions {
    * a bucket for the verified user across all clients at endpoints.authAccount; both at the base budget (no tier).
    */
   perUser?: boolean;
+  /**
+   * Awaited just before the 429 is sent (cmdb#321: an audit row for a refused password change). It never changes the
+   * response: a rejection is logged by class only and the same 429 follows.
+   */
+  onRefused?: (req: AuthenticatedRequest, refusal: Refusal) => Promise<void>;
+}
+
+/** What onRefused is told about the refusal: the bucket that denied it and a once-per-window claim for a hook's own key. */
+export interface Refusal {
+  /** The denying bucket: 'client', 'account', 'account-global' or 'user'. */
+  bucket: 'client' | 'account' | 'account-global' | 'user';
+  /** That bucket's window. */
+  windowMs: number;
+  /**
+   * Redis SET key 1 NX PX windowMs: true for the first caller per key per window. Rejects on a store error, so a hook
+   * that awaits it does nothing further (fail cheap).
+   */
+  firstInWindow: (key: string) => Promise<boolean>;
 }
 
 export class RateLimitMiddleware {
@@ -367,7 +385,9 @@ export class RateLimitMiddleware {
     options: LimitOptions
   ): Promise<boolean> {
     const identifier = options.perUser === true ? `ip:${this.getClientKeyAddress(req)}` : this.getIdentifier(req);
-    const buckets = [{ key: `rate-limit:${endpointType}:${identifier}`, identifier, budget }];
+    const buckets: Array<{ key: string; identifier: string; budget: RateLimitConfig; name: Refusal['bucket'] }> = [
+      { key: `rate-limit:${endpointType}:${identifier}`, identifier, budget, name: 'client' },
+    ];
     const account = options.account?.(req);
     const { max, windowMs } = this.config.endpoints.authAccount;
     if (typeof account === 'string' && account.trim() !== '') {
@@ -378,6 +398,7 @@ export class RateLimitMiddleware {
         key: `rate-limit:${endpointType}-account:${digest}:${identifier}`,
         identifier: `account:${digest}:${identifier}`,
         budget: { _max: max, _windowMs: windowMs },
+        name: 'account',
       });
       // HAP-1764: the account across every client address, so many addresses cannot each spend a full account+client
       // budget on one account. Its cost: that many attempts from anywhere refuse the account's logins (429) for the
@@ -388,6 +409,7 @@ export class RateLimitMiddleware {
           key: `rate-limit:${endpointType}-account-global:${digest}`,
           identifier: `account-global:${digest}`,
           budget: { _max: global.max, _windowMs: global.windowMs },
+          name: 'account-global',
         });
       }
     }
@@ -400,6 +422,7 @@ export class RateLimitMiddleware {
         key: `rate-limit:${endpointType}-user:${userId}`,
         identifier: `user:${userId}`,
         budget: { _max: max, _windowMs: windowMs },
+        name: 'user',
       });
     }
 
@@ -424,6 +447,18 @@ export class RateLimitMiddleware {
           limit: result._limit,
           resetAt: new Date(result._resetAt).toISOString(),
         });
+      }
+
+      if (options.onRefused) {
+        try {
+          await options.onRefused(req, {
+            bucket: bucket.name,
+            windowMs: bucket.budget._windowMs,
+            firstInWindow: async key => (await this.redis.set(key, '1', 'PX', bucket.budget._windowMs, 'NX')) === 'OK',
+          });
+        } catch (error) {
+          logger.error('Rate limit refusal hook failed', undefined, { endpoint: endpointType, ...errorClassFields(error) });
+        }
       }
 
       const reported = { ...client, _remaining: 0 };

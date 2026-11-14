@@ -141,8 +141,14 @@ export class CurrentPasswordIncorrectError extends Error {
   }
 }
 
-/** Audited outcomes of a self-service password change attempt (HAP-1368); the list is what tests enumerate. */
-export const PASSWORD_CHANGE_OUTCOMES = ['success', 'wrong_password'] as const;
+/**
+ * Audited outcomes of a self-service password change attempt (HAP-1368; refusals: cmdb#321). Fixed codes, never
+ * free text. Not listed: the audit-chain-not-ready 503, which is refused before anything runs because the chain
+ * cannot be written then.
+ */
+export const PASSWORD_CHANGE_OUTCOMES = [
+  'success', 'wrong_password', 'policy_failure', 'rotation_lost', 'user_not_found', 'rate_limited',
+] as const;
 export type PasswordChangeOutcome = (typeof PASSWORD_CHANGE_OUTCOMES)[number];
 
 /**

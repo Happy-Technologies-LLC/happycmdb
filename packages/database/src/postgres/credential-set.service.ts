@@ -171,7 +171,8 @@ export class CredentialSetService {
 
   /**
    * Get credential set with expanded credential details
-   * Uses the credential_set_summaries view which includes full credential info
+   * Uses the credential_set_summaries view for full credential info. usage_count is recomputed here, not read from the
+   * view: the view counts every referencing definition with no organization filter (same rule as CRUD list).
    */
   async getWithCredentials(id: string, createdBy: string, organizationId: string): Promise<CredentialSetSummary | null> {
     const client = await this.pool.connect();
@@ -189,9 +190,10 @@ export class CredentialSetService {
           created_at,
           updated_at,
           credential_ids,
-          usage_count,
+          (SELECT COUNT(*) FROM discovery_definitions dd
+            WHERE dd.credential_set_id = s.id AND dd.organization_id = s.organization_id) AS usage_count,
           credentials
-        FROM credential_set_summaries
+        FROM credential_set_summaries s
         WHERE id = $1 AND created_by = $2 AND organization_id = $3
         `,
         [id, createdBy, organizationId]
@@ -242,9 +244,10 @@ export class CredentialSetService {
           created_at,
           updated_at,
           credential_ids,
-          usage_count,
+          (SELECT COUNT(*) FROM discovery_definitions dd
+            WHERE dd.credential_set_id = s.id AND dd.organization_id = s.organization_id) AS usage_count,
           credentials
-        FROM credential_set_summaries
+        FROM credential_set_summaries s
         WHERE created_by = $1 AND organization_id = $2
         ORDER BY created_at DESC
         `,

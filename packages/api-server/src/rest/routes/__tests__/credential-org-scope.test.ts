@@ -383,6 +383,29 @@ it('scopes credential sets and their member IDs to the verified owner/org', asyn
   expect((await request(app).delete(`/api/v1/credentials/${foreignId}`).set(as('b'))).status).toBe(204);
 });
 
+// credential_set_summaries (021) counts every discovery_definitions row naming the set, whatever its organization. The
+// set service recomputes usage_count over same-organization definitions only, so a foreign or org-less definition that
+// names the set id neither inflates the count nor reveals that it exists.
+it('credential set list and detail usage_count count same-organization definitions only', async () => {
+  const created = await request(app).post('/api/v1/credential-sets').set(as('a')).send({ name: 'A-counted-set', credential_ids: [aId] });
+  expect(created.status).toBe(201);
+  const setId: string = created.body.data.id;
+  const counts = async () => {
+    const listed = (await request(app).get('/api/v1/credential-sets').set(as('a'))).body.data.find((item: { id: string }) => item.id === setId);
+    const detail = await request(app).get(`/api/v1/credential-sets/${setId}`).set(as('a'));
+    expect(detail.status).toBe(200);
+    return [listed.usage_count, detail.body.data.usage_count];
+  };
+  await sql(`INSERT INTO discovery_definitions (credential_set_id, created_by, organization_id) VALUES ($1, 'b', $2), ($1, 'b', $2), ($1, 'legacy', NULL)`, [setId, B]);
+  expect(await counts()).toEqual([0, 0]);
+
+  await sql(`INSERT INTO discovery_definitions (credential_set_id, created_by, organization_id) VALUES ($1, 'd', $2), ($1, 'a', $2)`, [setId, A]);
+  expect(await counts()).toEqual([2, 2]);
+
+  await sql('DELETE FROM discovery_definitions WHERE credential_set_id = $1', [setId]);
+  expect((await request(app).delete(`/api/v1/credential-sets/${setId}`).set(as('a'))).status).toBe(204);
+});
+
 it('enforces owner and organization in SQL even when the service is called directly', async () => {
   const service = new UnifiedCredentialService(pool as unknown as Pool);
   expect(await service.getById(aId, 'b', B)).toBeNull();

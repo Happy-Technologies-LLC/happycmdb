@@ -594,6 +594,8 @@ Credential sets allow trying multiple credentials in sequence with configurable 
 }
 ```
 
+`usage_count` counts discovery definitions of the set's own organization that reference the set; references from other organizations are not counted.
+
 ---
 
 ### Get Credential Set

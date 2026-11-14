@@ -12,8 +12,9 @@ import { logClientError } from '../utils/logger';
 import { OrganizationContext } from './OrganizationContext';
 
 /**
- * Outcome of `refreshUser`. `session-ended` means the session this refresh belonged to is gone (a failed token renewal
- * after an organization change signed the user out, or a logout landed meanwhile): callers must not report success.
+ * Outcome of `refreshUser`. `session-ended` means there is no session this refresh belongs to: no user was loaded when
+ * it started, a failed token renewal after an organization change signed the user out, or a logout or a new login
+ * landed meanwhile. Callers must not report success.
  */
 export type RefreshUserResult = 'refreshed' | 'session-ended';
 

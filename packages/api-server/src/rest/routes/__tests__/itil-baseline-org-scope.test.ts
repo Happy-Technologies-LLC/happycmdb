@@ -252,8 +252,9 @@ it('compares only a caller-owned baseline and conceals foreign, missing, and NUL
   expect(foreign.body).toEqual(missing.body);
   expect(legacy.body).toEqual(missing.body);
   const own = await comparison(ID_B, 'b');
-  expect(own.status).toBe(200);
-  expect(own.body.data.baselineId).toBe(ID_B);
+  // Comparison is unimplemented (HAP-702): an owned baseline is 501, never a "no drift" success.
+  expect(own.status).toBe(501);
+  expect(own.body.success).toBe(false);
   expect((await comparison(ID_NULL, 'admin')).status).toBe(404);
   expect((await comparison(ID_A, 'noorg')).status).toBe(403);
   expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);

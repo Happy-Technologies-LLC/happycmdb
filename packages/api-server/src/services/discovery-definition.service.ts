@@ -1,6 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
+import { randomUUID } from 'crypto';
 import { getPostgresClient, queueManager } from '@cmdb/database';
 import {
   logger, safeDiscoveryScanConfig, strictDiscoveryDefinitionConfig,
@@ -443,8 +444,9 @@ export class DiscoveryDefinitionService {
         throw new Error(`Discovery definition ${id} is not active`);
       }
 
-      // Generate job ID (removed "discovery-" prefix to match new format)
-      const jobId = `${definition.provider}-${Date.now()}`;
+      // Unique per run: a time-based id lets same-millisecond runs collide and BullMQ
+      // silently dedupes a repeated custom jobId.
+      const jobId = `${definition.provider}-${randomUUID()}`;
 
       const jobConfig = safeDiscoveryScanConfig(definition.config);
 

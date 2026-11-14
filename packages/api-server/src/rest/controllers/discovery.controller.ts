@@ -4,6 +4,7 @@
 import { Request, Response } from 'express';
 import { queueManager, QUEUE_NAMES } from '@cmdb/database';
 import { logger } from '@cmdb/common';
+import { JOB_LOCKED, isJobLockedError } from './job-scope';
 
 function discoveryQueues(): string[] {
   return [
@@ -137,7 +138,8 @@ export class DiscoveryController {
       }
       await job.remove();
       res.json({ success: true, message: 'Discovery job cancelled successfully', data: { id: job.id, previousState: state } });
-    } catch {
+    } catch (error) {
+      if (isJobLockedError(error)) { res.status(409).json(JOB_LOCKED); return; }
       logger.error('Error cancelling discovery job');
       res.status(500).json({ success: false, error: 'Failed to cancel discovery job' });
     }

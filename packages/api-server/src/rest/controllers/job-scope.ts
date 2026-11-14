@@ -3,6 +3,13 @@
 import type { Job } from 'bullmq';
 
 export const JOB_NOT_FOUND = { success: false, error: 'Not Found', message: 'Job not found' };
+export const JOB_LOCKED = {
+  success: false, error: 'Conflict', message: 'Job is running and cannot be cancelled',
+};
+/** BullMQ Job.remove() throws this plain Error (no typed class) when a worker holds the job lock. */
+export function isJobLockedError(error: unknown): boolean {
+  return error instanceof Error && /could not be removed because it is locked by another worker/.test(error.message);
+}
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Admin output never includes old BullMQ payloads, errors, or CI-bearing results. */

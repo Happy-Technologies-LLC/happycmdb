@@ -42,10 +42,30 @@ type PeerMessage =
 const BUSY_GRACE_MS = 150;
 /** The longest the logout waits for peers' renewals; the renewal request itself times out at 30 s. */
 const PEER_WAIT_MAX_MS = 5_000;
-/** A peer that announced a logout and never completed it stops holding this tab's renewals after this long. */
+/**
+ * A peer that announced a logout and never completed it stops holding this tab's renewals after this long. The hold
+ * normally ends sooner: the peer's completed logout (success or failure) reaches AuthContext, which calls
+ * abandonSession. The bound only matters when the peer never completes (its tab closed or crashed). It is
+ * deliberately shorter than the peer's worst case (PEER_WAIT_MAX_MS plus the 30 s logout POST): a hold tied to that
+ * would lock a live tab out of renewing for 35 s behind a dead peer. In that worst case a renewal started here after
+ * the bound can race the peer's logout POST; that residual window is accepted.
+ */
 const PEER_HOLD_MAX_MS = 10_000;
 
-const tabId = crypto.randomUUID();
+/**
+ * This tab's id on the coordination channel. `crypto.randomUUID` exists only in secure contexts (https, localhost);
+ * a plain-HTTP origin must still load the app, so fall back to a v4 UUID built from `crypto.getRandomValues`.
+ */
+function newTabId(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+const tabId = newTabId();
 const coordination = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(COORDINATION_CHANNEL);
 let onPeerAnswer: ((message: PeerMessage & { type: 'busy' | 'settled' }) => void) | null = null;
 let peerHold: ReturnType<typeof setTimeout> | null = null;

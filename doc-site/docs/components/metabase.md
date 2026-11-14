@@ -1304,6 +1304,35 @@ HappyCMDB Metabase
 
 ---
 
+## Tenancy
+
+**Metabase is an internal staff and operator tool. Tenant-facing BI is NOT supported.**
+
+**The BI views contain ALL organizations' rows.** Every view on the `metabase_readonly` allowlist reads `cmdb.dim_ci` and the ITIL, audit and service tables across every organization. The `metabase_readonly` role has no row-level security, the views run with their owner's rights, and Metabase does not restrict a user to one tenant. Anyone who can log in to Metabase and run a question sees every tenant's rows. Give Metabase accounts to platform staff and operators only.
+
+Access is internal by design:
+
+- **Kubernetes:** the manifest defines a `ClusterIP` Service and no Ingress. Reach Metabase with `kubectl port-forward -n happycmdb-cmdb svc/metabase 3000:3000` (then `http://localhost:3000`) or from the internal network. Do not add an Ingress, a public DNS name or a load balancer for it.
+- **Docker Compose:** the `metabase` service publishes its port on `127.0.0.1` only (`http://localhost:3002`). Use an SSH tunnel for remote staff access.
+
+Each allowlisted view carries `organization_id uuid` as its last column (migration `052_bi_views_organization_id.sql`). The column attributes each row to its tenant so staff can slice by organization; it is **not an access control**:
+
+- **16 views carry the owning tenant:** `recent_audit_activity`, `cmdb.v_ci_discovery_summary`, `v_itil_incident_summary`, `v_itil_change_summary`, `v_criticality_distribution`, `v_cost_by_tower`, `v_cost_trends`, `v_cloud_vs_onprem_costs`, `v_top_cost_drivers_bi`, `v_underutilized_resources`, `v_incident_summary`, `v_incident_trends`, `v_change_success_rates`, `v_change_calendar`, `v_configuration_accuracy`, `v_baseline_drift_detection`.
+- **21 views always return `NULL`.** They read the v3.0 service, capability, dependency and TBM tables, which have no tenant column. A filter `organization_id = <tenant>` matches none of their rows.
+
+Rows in `audit_log` and the ITIL tables written before tenant scoping also have a `NULL` organization.
+
+Aggregates are split per tenant: the attributed views return one row per organization and category, `pct_of_total_cost` / `pct_of_total` are shares of that organization's own total (they add up to 100 per organization, not across the view), and `v_top_cost_drivers_bi` keeps the top 20 per organization. A pre-built card that neither filters nor re-aggregates by `organization_id` therefore shows one row per organization.
+
+### Tenant-facing BI (future)
+
+Not supported today, and nothing in this repository makes it safe to expose Metabase to tenants. A future story would need one of:
+
+1. **Postgres-enforced per-tenant access:** per-tenant views (row-level security with `security_invoker` views over the base tables, or views filtered on a session setting) plus a per-tenant database login, so the database refuses other tenants' rows regardless of what Metabase does. A shared `metabase_readonly` login with a filter chosen in the Metabase UI does not qualify.
+2. **A paid Metabase edition with data sandboxing** (a Pro/Enterprise feature, not in the open-source `metabase/metabase` image this repository ships), with a licence. This is a founder decision and conflicts with the project's all-open-source stance.
+
+---
+
 ## Scheduled Reports & Exports
 
 Metabase supports automated report delivery via email.

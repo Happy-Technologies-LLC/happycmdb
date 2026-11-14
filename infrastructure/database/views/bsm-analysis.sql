@@ -25,14 +25,16 @@ SELECT
     ROUND(
         100.0 * SUM(CASE WHEN (ci.bsm_attributes->>'customer_facing')::BOOLEAN = TRUE THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0),
         2
-    ) AS pct_customer_facing
+    ) AS pct_customer_facing,
+    ci.organization_id
 FROM cmdb.dim_ci ci
 WHERE ci.is_current = TRUE
   AND ci.ci_status = 'active'
 GROUP BY
     ci.bsm_attributes->>'business_criticality',
     ci.ci_type,
-    ci.environment
+    ci.environment,
+    ci.organization_id
 ORDER BY
     CASE ci.bsm_attributes->>'business_criticality'
         WHEN 'tier_1' THEN 1
@@ -72,7 +74,8 @@ SELECT
     ) AS pct_revenue_at_risk,
     -- Incident details
     MAX(i.priority) AS highest_priority,
-    MAX(i.reported_at) AS latest_incident_at
+    MAX(i.reported_at) AS latest_incident_at,
+    NULL::uuid AS organization_id
 FROM business_services bs
 LEFT JOIN itil_incidents i ON i.affected_business_service_id = bs.id
     AND i.status IN ('new', 'assigned', 'in_progress', 'pending')
@@ -111,7 +114,8 @@ SELECT
     SUM(COALESCE((bs.tbm_attributes->>'total_monthly_cost')::DECIMAL, 0)) AS total_monthly_cost,
     SUM(COALESCE((bs.bsm_attributes->>'annual_revenue_supported')::DECIMAL, 0)) AS total_revenue_supported,
     -- Criticality
-    SUM(CASE WHEN bs.bsm_attributes->>'business_criticality' IN ('tier_1', 'tier_2') THEN 1 ELSE 0 END) AS critical_services
+    SUM(CASE WHEN bs.bsm_attributes->>'business_criticality' IN ('tier_1', 'tier_2') THEN 1 ELSE 0 END) AS critical_services,
+    NULL::uuid AS organization_id
 FROM business_services bs
 CROSS JOIN LATERAL jsonb_array_elements_text(bs.bsm_attributes->'compliance_requirements') AS compliance_framework
 GROUP BY compliance_framework
@@ -160,7 +164,8 @@ SELECT
           AND sd.source_type = 'business_service'
     ) AS total_ci_count,
     -- Last validation
-    bs.last_validated
+    bs.last_validated,
+    NULL::uuid AS organization_id
 FROM business_services bs
 WHERE (bs.bsm_attributes->>'sox_scope')::BOOLEAN = TRUE
    OR (bs.bsm_attributes->>'pci_scope')::BOOLEAN = TRUE
@@ -190,7 +195,8 @@ SELECT
     SUM(COALESCE((bs.bsm_attributes->>'annual_revenue_supported')::DECIMAL, 0)) AS total_revenue_supported,
     -- Customer impact
     SUM(COALESCE((bs.bsm_attributes->>'customer_count')::INTEGER, 0)) AS total_customers,
-    SUM(COALESCE((bs.bsm_attributes->>'transaction_volume_daily')::INTEGER, 0)) AS total_daily_transactions
+    SUM(COALESCE((bs.bsm_attributes->>'transaction_volume_daily')::INTEGER, 0)) AS total_daily_transactions,
+    NULL::uuid AS organization_id
 FROM business_services bs
 WHERE bs.operational_status IN ('operational', 'degraded')
 GROUP BY
@@ -251,7 +257,8 @@ SELECT
     ) AS incidents_30d,
     -- Ownership
     bc.capability_attributes->>'capability_owner' AS capability_owner,
-    bc.tbm_attributes->>'business_unit' AS business_unit
+    bc.tbm_attributes->>'business_unit' AS business_unit,
+    NULL::uuid AS organization_id
 FROM business_capabilities bc
 ORDER BY strategic_importance, monthly_cost DESC;
 
@@ -294,7 +301,8 @@ SELECT
         ELSE NULL
     END AS target_criticality,
     sd.discovered_at,
-    sd.last_verified_at
+    sd.last_verified_at,
+    NULL::uuid AS organization_id
 FROM service_dependencies sd
 ORDER BY sd.is_critical DESC, sd.dependency_strength DESC;
 
@@ -335,7 +343,8 @@ SELECT
     END AS cost_per_customer,
     -- Business criticality
     bs.bsm_attributes->>'business_criticality' AS business_criticality,
-    bs.technical_owner
+    bs.technical_owner,
+    NULL::uuid AS organization_id
 FROM business_services bs
 WHERE COALESCE((bs.bsm_attributes->>'customer_count')::INTEGER, 0) > 0
 ORDER BY customer_impact_score ASC, customer_count DESC;

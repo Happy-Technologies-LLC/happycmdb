@@ -15,9 +15,14 @@ const secretViews = ['active_api_keys', 'credential_summaries',
   'credential_set_summaries', 'discovery_definitions_with_credentials'];
 const privateTables = ['ci_reconciliation_operations', 'ci_reconciliation_epochs'];
 const reporting = ['public.recent_audit_activity', 'cmdb.v_ci_discovery_summary'];
-/** The eight BI-granted cost views of cost-analysis.sql that have no LIMIT: each must be a security barrier. */
+/**
+ * The nine BI-granted cost views of cost-analysis.sql that need security_barrier: eight unbounded ones, plus
+ * v_top_cost_drivers_bi (its per-organization row_number() filter no longer blocks push-down). 051 sets the first
+ * eight; cost-analysis.sql sets all nine.
+ */
 const costBarrierViews = ['v_executive_cost_summary', 'v_cost_by_tower', 'v_cost_trends', 'v_unit_economics',
-  'v_cloud_vs_onprem_costs', 'v_cost_allocation_summary', 'v_depreciation_summary', 'v_underutilized_resources'];
+  'v_cloud_vs_onprem_costs', 'v_cost_allocation_summary', 'v_depreciation_summary', 'v_underutilized_resources',
+  'v_top_cost_drivers_bi'];
 const poolFor = (database?: string) => new Pool({
   host: process.env['POSTGRES_HOST'], port: Number(process.env['POSTGRES_PORT']),
   database: database || process.env['POSTGRES_DB'], user: process.env['POSTGRES_USER'],

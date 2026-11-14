@@ -201,7 +201,8 @@ describe('Metabase assets query only what the BI role can read (HAP-659)', () =>
       await exec(`CREATE ROLE metabase_readonly;
         CREATE SCHEMA cmdb;
         CREATE TABLE cmdb.dim_ci (ci_key serial, ci_id text, ci_name text, ci_type text, ci_status text, environment text,
-          is_current boolean, tbm_attributes jsonb, bsm_attributes jsonb, metadata jsonb, updated_at timestamptz DEFAULT now());
+          is_current boolean, tbm_attributes jsonb, bsm_attributes jsonb, metadata jsonb, updated_at timestamptz DEFAULT now(),
+          organization_id uuid);
         -- the tables the other cost views read (columns as the views use them)
         CREATE TABLE business_services (id int, name text, tbm_attributes jsonb, bsm_attributes jsonb, operational_status text,
           technical_owner text, updated_at timestamptz);
@@ -308,14 +309,18 @@ describe('Metabase assets query only what the BI role can read (HAP-659)', () =>
       await exec(migration051);
       for (const view of barrierViews) expect(await reloptions(view)).toBe('{security_barrier=true}');
       await exec(migration051); // idempotent
-      expect(await reloptions('v_top_cost_drivers_bi')).toBeNull(); // LIMIT 20 already blocks push-down
+      // not in 051's list, but cost-analysis.sql creates it with the barrier too (052 replaced its LIMIT 20 with a
+      // per-organization row_number() filter, which no longer blocks push-down by itself); 051 leaves that option alone
+      expect(await reloptions('v_top_cost_drivers_bi')).toBe('{security_barrier=true}');
     });
 
     // cmdb#328 review: cost-analysis.sql itself must create every unbounded cost view WITH (security_barrier). 051 sets
     // the option too, but runs once; a re-run of cost-analysis.sql (CREATE OR REPLACE VIEW without the option resets it)
     // would silently drop it from a view that lost the clause. Run the whole file's view DDL and read each view back.
     const allCostViewDdl = splitStatements(read(`${viewsDir}/cost-analysis.sql`)).filter(s => /^CREATE (OR REPLACE )?VIEW\b/.test(s));
-    it.each(barrierViews)('cost-analysis.sql creates %s with security_barrier', async view => {
+    // all nine: the eight 051 covers plus v_top_cost_drivers_bi, whose per-organization row_number() filter does not
+    // block push-down, so cost-analysis.sql (not 051) gives it the barrier
+    it.each([...barrierViews, 'v_top_cost_drivers_bi'])('cost-analysis.sql creates %s with security_barrier', async view => {
       await exec(allCostViewDdl.join(';\n'));
       expect(await reloptions(view)).toBe('{security_barrier=true}');
     });

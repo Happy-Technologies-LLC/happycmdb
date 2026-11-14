@@ -1107,7 +1107,8 @@ kubectl rollout restart deployment/etl-processor -n cmdb
 **Solution 3: Verify Metabase connection to data mart**
 
 ```bash
-# Log into Metabase (http://localhost:3002 or https://cmdb.example.com/metabase)
+# Log into Metabase (http://localhost:3002 with Docker Compose; on Kubernetes run
+# `kubectl port-forward -n happycmdb-cmdb svc/metabase 3000:3000`, then http://localhost:3000. Metabase has no public URL.)
 # Settings → Admin → Databases → HappyCMDB Data Mart
 # Click "Test Connection"
 
@@ -1314,7 +1315,7 @@ kubectl cp ./infrastructure/metabase/dashboards/ \
   cmdb/<metabase-pod>:/tmp/dashboards/
 
 # Import via Metabase API
-curl -X POST https://cmdb.example.com/metabase/api/collection/root/items \
+curl -X POST http://localhost:3000/api/collection/root/items \
   -H "X-Metabase-Session: <session-token>" \
   -F "file=@/tmp/dashboards/executive-dashboard.json"
 ```

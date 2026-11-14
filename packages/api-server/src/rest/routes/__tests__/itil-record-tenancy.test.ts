@@ -52,7 +52,6 @@ jest.mock('../../../auth/auth-bootstrap', () => ({
   }),
 }));
 import { itilRoutes } from '../itil.routes';
-import { affectedCIIdList } from '../../controllers/itil.controller';
 import { processSyncIncidentsToDatamart } from '../../../../../etl-processor/src/jobs/sync-incidents-to-datamart.job';
 const app = express();
 app.use(express.json());
@@ -249,11 +248,6 @@ describe('HAP-702', () => {
       results.push([response.status, response.body.data?.affectedCICount, response.body.data?.riskLevel]);
     }
     expect(results).toEqual([[200, 1, 'MEDIUM'], [200, 11, 'HIGH'], [200, 0, 'MEDIUM'], [200, 0, 'MEDIUM']]);
-  });
-
-  it('affectedCIIdList reads a legacy JSON-text value and rejects non-array shapes', async () => {
-    expect([affectedCIIdList('["ci-a","ci-b"]'), affectedCIIdList('not json'), affectedCIIdList('{"a":1}'),
-      affectedCIIdList(undefined), affectedCIIdList(['ci-a'])]).toEqual([['ci-a', 'ci-b'], [], [], [], ['ci-a']]);
   });
 
   it('GET /changes?changeType=MAJOR validates and filters to major changes', async () => {

@@ -167,9 +167,13 @@ this migration's scope.
 
 `metabase-init.sql` revokes historical named blanket grants before allowlisting
 existing reporting views. The three `infrastructure/database/views/*.sql` files
-grant their own views when created later, except `v_top_cost_drivers`: its
-unbounded `ci.metadata` makes it unsuitable for the BI role. Keep the BI scripts
-and `032`/BI allowlists aligned if adding reporting views. Migration `033`
+grant their own views when created later. `v_top_cost_drivers` is on no BI
+allowlist and is never granted to BI: its unbounded `ci.metadata` makes it
+unsuitable for the BI role. BI reads `v_top_cost_drivers_bi` (no `metadata`)
+and `v_underutilized_resources`; both are granted by shape (skipped when the
+view has any json/jsonb column or a column named `metadata`) in
+`metabase-init.sql`, `cost-analysis.sql` and migration `050`. Keep the BI
+scripts, `032` and `050` allowlists aligned if adding reporting views. Migration `033`
 closes unrelated `cmdb` reporting tables to PUBLIC and BI. The guarded
 `rollback/032_*.down.sql` refuses while `033` or `034` remains recorded;
 it is manual, removes its exact ledger row and restores 001's unsafe PUBLIC

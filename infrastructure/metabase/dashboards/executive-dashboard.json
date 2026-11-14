@@ -14,7 +14,7 @@
       "dataset_query": {
         "type": "native",
         "native": {
-          "query": "SELECT SUM(COALESCE((tbm_attributes->>'monthly_cost')::DECIMAL, 0) * 12) AS annual_spend FROM cmdb.dim_ci WHERE is_current = TRUE AND ci_status = 'active'",
+          "query": "SELECT SUM(total_monthly_cost) * 12 AS annual_spend FROM v_cost_by_tower",
           "template-tags": {}
         },
         "database": "HappyCMDB"
@@ -117,7 +117,7 @@
       "dataset_query": {
         "type": "native",
         "native": {
-          "query": "SELECT * FROM v_top_cost_drivers LIMIT 10",
+          "query": "SELECT * FROM v_top_cost_drivers_bi LIMIT 10",
           "template-tags": {}
         },
         "database": "HappyCMDB"

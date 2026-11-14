@@ -273,6 +273,7 @@ Each enricher adds framework-specific attributes:
 
 3. **Caching:**
    - React Query cache: 30-60 seconds stale time
+   - Every dashboard query key carries the signed-in organization id (`['itsm-dashboard', orgId]`, `['executive-dashboard', orgId, days]`, ...), and the whole query cache is cleared on login, logout, session end and an organization change, so one organization's cached data is never shown to another
    - HTTP caching headers (future enhancement)
    - PostgreSQL data mart for historical trends
 

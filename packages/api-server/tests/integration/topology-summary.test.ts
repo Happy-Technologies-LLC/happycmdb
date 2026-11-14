@@ -274,14 +274,16 @@ it('counts only same-organization neighbours toward a node\'s degree (degree sub
 describe('edge query organization clause, with a foreign CI reusing a sampled id', () => {
   const E = '10000000-0000-4000-8000-0000000000e1';
   const F = '10000000-0000-4000-8000-0000000000f1';
-  let constraintExisted = false;
   beforeAll(async () => {
-    constraintExisted = (await cypher("SHOW CONSTRAINTS YIELD name WHERE name = 'ci_id_unique' RETURN name")).records.length > 0;
     await cypher('DROP CONSTRAINT ci_id_unique IF EXISTS');
   });
   afterAll(async () => {
-    await cypher("MATCH (ci:CI) WHERE ci.id STARTS WITH 'topo-scope-edge-' DETACH DELETE ci");
-    if (constraintExisted) await cypher('CREATE CONSTRAINT ci_id_unique IF NOT EXISTS FOR (ci:CI) REQUIRE ci.id IS UNIQUE');
+    try {
+      await cypher("MATCH (ci:CI) WHERE ci.id STARTS WITH 'topo-scope-edge-' DETACH DELETE ci");
+    } finally {
+      // Same definition as tests/setup/integration.global-setup.ts; recreated even when the wipe throws.
+      await cypher('CREATE CONSTRAINT ci_id_unique IF NOT EXISTS FOR (ci:CI) REQUIRE ci.id IS UNIQUE');
+    }
   });
 
   const control = { source: 'topo-scope-edge-1', target: 'topo-scope-edge-2', type: 'CONNECTS_TO' };

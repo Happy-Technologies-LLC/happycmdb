@@ -115,6 +115,50 @@ const record = (fields: Record<string, unknown>): FakeRecord => ({ get: (key: st
 const node = (props: Props) => ({ labels: ['CI'], properties: props });
 const byId = (id: string) => CIS.find(c => c['id'] === id);
 
+/**
+ * Evaluates a Cypher WHERE predicate against one :CI node: `ci.prop`, `$param` and literal operands,
+ * `=`, `IN`, NOT, AND, OR and parentheses. Anything else throws, so a statement is never silently
+ * treated as filtered. The tenant boundary of a statement this models is its semantics, not its text.
+ */
+function evalWhere(predicate: string, props: Props, params: Params): boolean {
+  const tokens = predicate.match(/\$\w+|ci\.\w+|'[^']*'|\(|\)|=|\w+/g) ?? [];
+  const keyword = () => tokens[pos]?.toUpperCase();
+  let pos = 0;
+  const operand = (): unknown => {
+    const token = tokens[pos++] ?? '';
+    if (token.startsWith('$')) return params[token.slice(1)];
+    if (token.startsWith('ci.')) return props[token.slice(3)];
+    if (token.startsWith("'")) return token.slice(1, -1);
+    if (/^(true|false)$/i.test(token)) return token.toLowerCase() === 'true';
+    throw new Error(`fake Neo4j: unmodelled WHERE operand '${token}' in: ${predicate}`);
+  };
+  const term = (): unknown => {
+    if (keyword() === '(') {
+      pos++;
+      const inner = disjunction();
+      if (tokens[pos++] !== ')') throw new Error(`fake Neo4j: unbalanced parentheses in: ${predicate}`);
+      return inner;
+    }
+    if (keyword() === 'NOT') { pos++; return !term(); }
+    const left = operand();
+    if (keyword() === '=') { pos++; const right = operand(); return left != null && left === right; }
+    if (keyword() === 'IN') { pos++; return (operand() as unknown[]).includes(left); }
+    return left;
+  };
+  const conjunction = (): unknown => {
+    let value = term();
+    while (keyword() === 'AND') { pos++; const right = term(); value = value === true && right === true; }
+    return value;
+  };
+  const disjunction = (): unknown => {
+    let value = conjunction();
+    while (keyword() === 'OR') { pos++; const right = conjunction(); value = value === true || right === true; }
+    return value;
+  };
+  const result = disjunction();
+  if (pos !== tokens.length) throw new Error(`fake Neo4j: unmodelled WHERE syntax in: ${predicate}`);
+  return result === true;
+}
 
 function run(rawQuery: string, params: Params): FakeRecord[] {
   const query = rawQuery.replace(/\s+/g, ' ').trim();
@@ -149,6 +193,11 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
   }
 
   if (!query.startsWith('MATCH (ci:CI)')) throw new Error(`fake Neo4j: unmodelled statement: ${query}`);
+  const identityLookup = query.match(/^MATCH \(ci:CI\) WHERE (.+) RETURN ci\.id AS id, ci\.name AS name, ci\.type AS type$/);
+  if (identityLookup) {
+    return CIS.filter(props => evalWhere(identityLookup[1]!, props, params))
+      .map(ci => record({ id: ci['id'], name: ci['name'], type: ci['type'] }));
+  }
   const matched = CIS.filter(props =>
     (!query.includes('ci.organization_id = $organizationId') || sameOrg(props)) &&
     (!query.includes("ci.status = 'active'") || props['status'] === 'active') &&
@@ -273,9 +322,14 @@ const MIGRATIONS = join(__dirname, '../../../../../database/src/postgres/migrati
 
 function baseDdl(): string {
   const sql = readFileSync(join(MIGRATIONS, '001_complete_schema.sql'), 'utf8');
-  const match = sql.match(/CREATE TABLE IF NOT EXISTS dim_business_services \([\s\S]*?\n\);/);
-  if (!match) throw new Error('DDL for dim_business_services not found in 001_complete_schema.sql');
-  return match[0];
+  return ['dim_business_services', 'itil_incidents', 'itil_changes'].map(table => {
+    const match = sql.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
+    if (!match) throw new Error(`DDL for ${table} not found in 001_complete_schema.sql`);
+    return match[0];
+  }).join('\n') + `
+-- 035_itil_record_ownership adds the owner column (its DO block also needs itil_baselines).
+ALTER TABLE itil_incidents ADD COLUMN organization_id uuid;
+ALTER TABLE itil_changes ADD COLUMN organization_id uuid;`;
 }
 
 const SEED = `
@@ -284,7 +338,31 @@ INSERT INTO dim_business_services (service_id, name, service_classification, tbm
   ('bs-hijack', 'A Claims B Node', 'application', 'application', 'high', 'active', '${ORG_A}'),
   ('bs-orphan', 'A Claims Orphan Node', 'application', 'application', 'high', 'active', '${ORG_A}'),
   ('bs-a-nodeless', 'A Without Node', 'application', 'application', 'high', 'active', '${ORG_A}'),
-  ('bs-b-app', 'B Secret App', 'application', 'application', 'medium', 'active', '${ORG_B}');`;
+  ('bs-b-app', 'B Secret App', 'application', 'application', 'medium', 'active', '${ORG_B}');
+
+INSERT INTO itil_incidents (incident_number, title, impact, urgency, priority, affected_ci_id, assigned_group, status,
+    reported_at, resolved_at, reported_by, organization_id) VALUES
+  ('INC-A1', 'A p3 open', 'medium', 'medium', 3, 'a-web', NULL, 'in_progress', now() - interval '5 hours', NULL, 'alice', '${ORG_A}'),
+  ('INC-A2', 'A p1 open', 'critical', 'critical', 1, 'bs-a-app', 'DBA', 'new', now() - interval '2 days', NULL, 'alice', '${ORG_A}'),
+  ('INC-A3', 'A resolved', 'low', 'low', 4, 'a-web', NULL, 'resolved', now() - interval '3 days', now() - interval '3 days' + interval '60 minutes', 'alice', '${ORG_A}'),
+  ('INC-A4', 'A resolved', 'low', 'low', 4, 'a-web', NULL, 'closed', now() - interval '4 days', now() - interval '4 days' + interval '120 minutes', 'alice', '${ORG_A}'),
+  ('INC-A5', 'A old', 'low', 'low', 4, 'a-web', NULL, 'closed', now() - interval '200 days', now() - interval '200 days' + interval '999 minutes', 'alice', '${ORG_A}'),
+  ('INC-A6', 'A foreign ci id', 'low', 'low', 5, 'b-secret', NULL, 'resolved', now() - interval '1 day', NULL, 'alice', '${ORG_A}'),
+  ('INC-A7', 'A opened in error', 'low', 'low', 5, 'a-web', NULL, 'cancelled', now() - interval '1 day', NULL, 'alice', '${ORG_A}'),
+  ('INC-B1', 'B secret open', 'critical', 'critical', 1, 'b-secret', 'B Team', 'new', now() - interval '2 hours', NULL, 'bob', '${ORG_B}'),
+  ('INC-B2', 'B secret open', 'critical', 'critical', 1, 'a-web', 'B Team', 'new', now() - interval '1 hour', NULL, 'bob', '${ORG_B}');
+INSERT INTO itil_incidents (incident_number, title, impact, urgency, priority, affected_ci_id, status, reported_by)
+  VALUES ('INC-NULL', 'legacy owner-less open', 'low', 'low', 1, 'a-web', 'new', 'legacy');
+
+INSERT INTO itil_changes (change_number, title, change_type, status, scheduled_start, affected_ci_ids, assigned_to,
+    risk_assessment, requested_by, organization_id) VALUES
+  ('CHG-A1', 'A later', 'normal', 'scheduled', now() + interval '2 days', ARRAY['a-web'], NULL, '{"risk_level":"high"}', 'alice', '${ORG_A}'),
+  ('CHG-A2', 'A running', 'emergency', 'in_progress', now() - interval '1 hour', ARRAY['bs-a-app','a-web'], 'alice', '{"risk_level":"low"}', 'alice', '${ORG_A}'),
+  ('CHG-A3', 'A draft', 'normal', 'draft', NULL, ARRAY[]::text[], NULL, '{"risk_level":"low"}', 'alice', '${ORG_A}'),
+  ('CHG-A4', 'A done', 'normal', 'closed', NULL, ARRAY[]::text[], NULL, '{"risk_level":"low"}', 'alice', '${ORG_A}'),
+  ('CHG-B1', 'B secret', 'normal', 'in_progress', now(), ARRAY['b-secret'], NULL, '{"risk_level":"low"}', 'bob', '${ORG_B}');
+INSERT INTO itil_changes (change_number, title, change_type, status, requested_by)
+  VALUES ('CHG-NULL', 'legacy owner-less', 'normal', 'in_progress', 'legacy');`;
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (userId: string, organizationId?: string) => {
@@ -451,6 +529,94 @@ describe('global dashboards', () => {
     expect(statusCIs.sort()).toEqual(FAKE_CIS.filter(c => c.organizationId === ORG_A).map(c => c.id).sort());
     expect(cio.body.data.configurationAccuracy.totalCIs).toBe(A_ACTIVE.length);
   });
+  it('itsm serves the token org\'s own ITIL records, never another org\'s or an owner-less row', async () => {
+    const own = await request(app).get(`/api/v1/dashboards/itsm?${SPOOF}`).set(AS_A);
+    expect(own.status).toBe(200);
+    const data = own.body.data;
+
+    // Open = not resolved/closed/cancelled; most urgent first; INC-B*/INC-NULL are not A's.
+    expect(data.openIncidents.map((i: { id: string }) => i.id)).toEqual(['INC-A2', 'INC-A1']);
+    expect(data.openIncidentCount).toBe(2);
+    expect(data.openIncidents[0]).toMatchObject({
+      id: 'INC-A2', title: 'A p1 open', priority: 'P1', status: 'new',
+      affectedCI: 'bs-a-app', assignedTeam: 'DBA',
+    });
+    expect(data.openIncidents[1]).toMatchObject({ priority: 'P3', affectedCI: 'a-web', assignedTeam: null });
+    expect(data.openIncidents[0].age).toBeGreaterThanOrEqual(48);
+    expect(data.openIncidents[0].age).toBeLessThan(50);
+    expect(data.openIncidents[1].age).toBeGreaterThanOrEqual(5);
+    expect(data.openIncidents[1].age).toBeLessThan(7);
+
+    expect(data.changesInProgress.map((c: { id: string }) => c.id)).toEqual(['CHG-A2', 'CHG-A1']);
+    expect(data.changesInProgressCount).toBe(2);
+    expect(data.changesInProgress[0]).toMatchObject({
+      id: 'CHG-A2', type: 'emergency', status: 'in_progress', riskLevel: 'low',
+      affectedCIs: ['bs-a-app', 'a-web'], assignedTo: 'alice',
+    });
+    expect(data.changesInProgress[1]).toMatchObject({ id: 'CHG-A1', riskLevel: 'high', assignedTo: null });
+
+    // 90-day window (INC-A5 is 200 days old); mean over resolved incidents only; cancelled
+    // INC-A7 (also on a-web) is not a failure; a CI id that is not this org's graph node
+    // (b-secret) is named null, never B's name.
+    expect(data.topFailingCIs).toEqual([
+      { ci_id: 'a-web', name: 'a-web name', type: 'server', incidentCount: 3, mttrMinutes: 90,
+        lastFailure: expect.any(String) },
+      { ci_id: 'b-secret', name: null, type: null, incidentCount: 1, mttrMinutes: null,
+        lastFailure: expect.any(String) },
+      { ci_id: 'bs-a-app', name: 'bs-a-app name', type: 'server', incidentCount: 1, mttrMinutes: null,
+        lastFailure: expect.any(String) },
+    ]);
+
+    // No SLA target or drift evaluation is stored: empty and named, not invented.
+    expect(data.slaCompliance).toEqual([]);
+    expect(data.baselineCompliance).toEqual([]);
+    expect(data.unavailable).toEqual(['slaCompliance', 'baselineCompliance']);
+    expect(JSON.stringify(data)).not.toMatch(/INC-B|CHG-B|INC-NULL|CHG-NULL|B Secret|B Team|b-secret name/);
+  });
+
+  it('itsm MTTR is computed from timestamps for an incident resolved through resolveIncident', async () => {
+    // resolveIncident (itil.controller.ts) sets resolved_at = NOW() and never time_to_resolve_minutes.
+    await send('query', `INSERT INTO itil_incidents (incident_number, title, impact, urgency, priority, affected_ci_id,
+        status, reported_at, reported_by, organization_id)
+      VALUES ('INC-A-RESOLVE', 'A resolved via product', 'low', 'low', 4, 'a-resolve-ci', 'in_progress',
+        now() - interval '3 hours', 'alice', $1)`, [ORG_A]);
+    try {
+      const resolved = await send('query', `UPDATE itil_incidents
+        SET status = 'resolved', resolution = $1, resolved_at = NOW(), updated_at = NOW()
+        WHERE incident_number = $2 AND organization_id = $3 RETURNING id`, ['fixed', 'INC-A-RESOLVE', ORG_A]);
+      expect(resolved).toHaveLength(1);
+
+      const res = await request(app).get(`/api/v1/dashboards/itsm?${SPOOF}`).set(AS_A);
+
+      expect(res.status).toBe(200);
+      const entry = res.body.data.topFailingCIs.find((c: { ci_id: string }) => c.ci_id === 'a-resolve-ci');
+      expect(entry).toMatchObject({ incidentCount: 1, mttrMinutes: 180 });
+    } finally {
+      await send('query', `DELETE FROM itil_incidents WHERE incident_number = 'INC-A-RESOLVE'`);
+    }
+  });
+
+  it('itsm for org B sees only B\'s records, and an org with none gets honest zeros', async () => {
+    const foreign = await request(app).get('/api/v1/dashboards/itsm').set(bearer('user-b', ORG_B));
+    expect(foreign.status).toBe(200);
+    expect(foreign.body.data.openIncidents.map((i: { id: string }) => i.id)).toEqual(['INC-B1', 'INC-B2']);
+    expect(foreign.body.data.changesInProgress.map((c: { id: string }) => c.id)).toEqual(['CHG-B1']);
+    // INC-B2's CI belongs to org A: its name is not disclosed to B.
+    expect(foreign.body.data.topFailingCIs).toContainEqual(
+      expect.objectContaining({ ci_id: 'a-web', name: null, type: null, incidentCount: 1 }));
+
+    const ORG_C = '33333333-3333-4333-8333-333333333333';
+    USERS['user-c'] = { _id: 'user-c', _username: 'carol', _role: 'admin', _enabled: true, _organizationId: ORG_C };
+    const empty = await request(app).get('/api/v1/dashboards/itsm').set(bearer('user-c', ORG_C));
+    expect(empty.status).toBe(200);
+    expect(empty.body.data).toMatchObject({
+      openIncidents: [], openIncidentCount: 0, changesInProgress: [], changesInProgressCount: 0, topFailingCIs: [],
+      ciStatus: [],
+    });
+    // Zero open incidents is a real zero: only SLA and drift are unavailable.
+    expect(empty.body.data.unavailable).toEqual(['slaCompliance', 'baselineCompliance']);
+  });
+
   it('keeps large-tenant executive, CIO, FinOps and ITSM counts complete without materializing all CIs', async () => {
     const baseline = CIS.length;
     try {

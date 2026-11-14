@@ -264,6 +264,52 @@ export interface BusinessServiceDashboardData {
   unavailable: string[];
 }
 
+export interface ITSMDashboardData {
+  openIncidents: Array<{
+    id: string;
+    title: string;
+    priority: string;
+    status: string;
+    affectedCI: string | null;
+    assignedTeam: string | null;
+    createdAt: string;
+    updatedAt: string;
+    age: number;
+  }>;
+  openIncidentCount: number | null;
+  changesInProgress: Array<{
+    id: string;
+    title: string;
+    status: string;
+    type: string;
+    riskLevel: string | null;
+    scheduledDate: string | null;
+    affectedCIs: string[];
+    assignedTo: string | null;
+    createdAt: string;
+  }>;
+  changesInProgressCount: number | null;
+  ciStatus: Array<{ status: string; count: number }>;
+  topFailingCIs: Array<{
+    ci_id: string;
+    name: string | null;
+    type: string | null;
+    incidentCount: number;
+    mttrMinutes: number | null;
+    lastFailure: string;
+  }>;
+  slaCompliance: Array<{
+    priority: string;
+    withinSLA: number;
+    total: number;
+    compliancePercentage: number;
+    target: number;
+  }>;
+  baselineCompliance: unknown[];
+  /** Fields with no backing data; null or empty in this payload. */
+  unavailable: string[];
+}
+
 class DashboardService {
   /**
    * Get Executive Dashboard summary data
@@ -292,6 +338,14 @@ class DashboardService {
     const response = await apiClient.get<DashboardResponse<FinOpsDashboardData>>(
       `/dashboards/finops?days=${days}`
     );
+    return response.data.data;
+  }
+
+  /**
+   * Get ITSM Dashboard KPIs
+   */
+  async getITSMDashboard(): Promise<ITSMDashboardData> {
+    const response = await apiClient.get<DashboardResponse<ITSMDashboardData>>('/dashboards/itsm');
     return response.data.data;
   }
 

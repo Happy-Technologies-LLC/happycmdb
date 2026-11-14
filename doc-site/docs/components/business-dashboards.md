@@ -97,18 +97,16 @@ The Business Insights dashboards use a **REST-based architecture** for the follo
 **Purpose:** Day-to-day IT service management operations
 
 **Key Metrics:**
-- Open incidents by priority and status
-- Changes in progress
-- CI status breakdown (active, inactive, maintenance, decommissioned)
-- Top failing CIs (by incident count and MTTR)
-- SLA compliance by priority
-- Configuration baseline compliance
+- Open incidents (most urgent first) and their total
+- Changes in progress (`scheduled` or `in_progress`) and their total
+- CI status breakdown (count per status; no `active` entry means zero active CIs)
+- Top failing CIs (incident count and mean time to resolve over the last 90 days; cancelled incidents excluded)
+
+SLA compliance and configuration baseline compliance are not shown: no SLA targets or drift evaluations are stored, so those fields are empty and listed in the response's `unavailable` array. Where the ITIL tables are absent from the deployed schema (V2/V3), the incident, change and top-failing-CI fields are `null` or empty and listed in `unavailable` too; the UI renders `—`, never `0`.
 
 **Data Sources:**
-- ITIL incident and change records
-- CI status from Neo4j
-- Configuration baselines
-- SLA targets
+- `itil_incidents` and `itil_changes` rows of the caller's organization (never another organization's, nor rows with no owner)
+- CI status and CI names from the caller's organization's Neo4j graph
 
 **Real-time Updates:** WebSocket integration for incident and change notifications (optional)
 

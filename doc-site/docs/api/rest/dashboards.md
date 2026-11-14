@@ -9,7 +9,7 @@ The Dashboard API provides aggregated data for five specialized dashboards:
 1. **Executive Dashboard** - Strategic IT spend, service health, and value metrics
 2. **CIO Dashboard** - Operational KPIs, service availability, and capacity planning
 3. **FinOps Dashboard** - Cost optimization, budget variance, and unit economics
-4. **ITSM Dashboard** - Incident management, change tracking, and SLA compliance
+4. **ITSM Dashboard** - Open incidents, changes in progress, CI status and incident-prone CIs from the caller's own ITIL records
 5. **Business Service Dashboard** - Service-specific health, dependencies, and impact analysis
 
 All dashboard endpoints return data optimized for visualization and decision-making, pulling from both Neo4j (real-time operational data) and PostgreSQL (historical analytics).
@@ -292,6 +292,8 @@ curl -X GET "http://localhost:3000/api/v1/dashboards/cio?days=30" \
 
 Get ITSM Dashboard data for incident and change management operations.
 
+Incidents and changes are read from the caller's organization's `itil_incidents` / `itil_changes` rows and CI status and names from its graph; another organization's records are never counted or named. No value is invented: a field with no backing data is `null` or an empty list and is named in `unavailable`.
+
 **Query Parameters:** None
 
 **Example Request:**
@@ -317,9 +319,10 @@ curl -X GET "http://localhost:3000/api/v1/dashboards/itsm" \
         "assignedTeam": "Database Team",
         "createdAt": "2025-11-17T08:15:00Z",
         "updatedAt": "2025-11-17T08:45:00Z",
-        "age": 120
+        "age": 2
       }
     ],
+    "openIncidentCount": 1,
     "changesInProgress": [
       {
         "id": "CHG0009876",
@@ -333,6 +336,7 @@ curl -X GET "http://localhost:3000/api/v1/dashboards/itsm" \
         "createdAt": "2025-11-10T14:00:00Z"
       }
     ],
+    "changesInProgressCount": 1,
     "ciStatus": [
       {
         "status": "active",
@@ -354,32 +358,34 @@ curl -X GET "http://localhost:3000/api/v1/dashboards/itsm" \
         "cis": []
       }
     ],
-    "topFailingCIs": [],
-    "slaCompliance": {
-      "p1": {
-        "target": 95.0,
-        "actual": 98.2,
-        "breaches": 2
-      },
-      "p2": {
-        "target": 90.0,
-        "actual": 88.7,
-        "breaches": 8
+    "topFailingCIs": [
+      {
+        "ci_id": "db-prod-main-01",
+        "name": "Production Main Database",
+        "type": "database",
+        "incidentCount": 3,
+        "mttrMinutes": 90,
+        "lastFailure": "2025-11-17T08:15:00Z"
       }
-    },
-    "baselineCompliance": []
+    ],
+    "slaCompliance": [],
+    "baselineCompliance": [],
+    "unavailable": ["slaCompliance", "baselineCompliance"]
   }
 }
 ```
 
 **Response Fields:**
 
-- **openIncidents**: Currently open incidents with priority, status, and age
-- **changesInProgress**: Scheduled and in-progress changes
-- **ciStatus**: CI inventory broken down by status (active, maintenance, decommissioned, inactive)
-- **topFailingCIs**: CIs with the most incidents (requires ITIL data)
-- **slaCompliance**: SLA target vs actual performance by priority
-- **baselineCompliance**: Configuration baseline drift detection (future feature)
+- **openIncidents**: Incidents that are not `resolved`, `closed` or `cancelled`, most urgent first (priority, then oldest), at most 25. `age` is whole hours since the incident was reported.
+- **openIncidentCount**: Total open incidents, not capped by the list. `0` when there are none; `null` when the ITIL tables are not present in the deployed schema.
+- **changesInProgress**: Changes with status `scheduled` or `in_progress`, soonest first, at most 25
+- **changesInProgressCount**: Total changes in progress, not capped by the list; `null` when the ITIL tables are not present
+- **ciStatus**: CI inventory of the caller's organization by status, with up to five sample CIs per status. A status that has no CIs is absent, so an organization with no `active` CIs has no `active` entry (zero active CIs).
+- **topFailingCIs**: Up to five CIs with the most incidents reported in the last 90 days, excluding `cancelled` incidents. `name` and `type` are `null` when the incident's CI id is not a CI of the caller's organization. `mttrMinutes` is the mean of `resolved_at - reported_at` in minutes (rounded), the same definition as `GET /itil/metrics/mttr`, or `null` when none of the CI's incidents has a `resolved_at`.
+- **slaCompliance**: Always empty. No SLA targets are stored, so compliance cannot be computed.
+- **baselineCompliance**: Always empty. No baseline drift evaluation is stored.
+- **unavailable**: Names the fields with no backing data. `slaCompliance` and `baselineCompliance` are always listed; when the ITIL tables are not present (V2/V3 schemas) `openIncidents`, `openIncidentCount`, `changesInProgress`, `changesInProgressCount` and `topFailingCIs` are listed too. Any other ITIL read failure is an error response, not an empty dashboard.
 
 ---
 

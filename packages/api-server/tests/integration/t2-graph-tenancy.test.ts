@@ -321,6 +321,64 @@ it('FinOps and executive costs are null, not 0, where no CI carries tbm_monthly_
   }
 });
 
+it('ITSM KPIs are computed from the tenant\'s ITIL rows and graph, never another tenant\'s (real Neo4j + Postgres)', async () => {
+  const principalA = architectureAuth();
+  const principalB = 'itsm-kpi-b';
+  users[principalB] = { _id: principalB, _username: principalB, _role: 'operator', _enabled: true, _organizationId: B };
+  const get = async (header: { authorization: string }) => {
+    const response = await request(app).get('/api/v1/dashboards/itsm').set(header);
+    expect(response.status).toBe(200);
+    return response.body.data;
+  };
+  try {
+    await run(`CREATE (:CI {id:'t2-itsm-db', name:'itsm db', type:'database', status:'active', organization_id:$a})
+      CREATE (:CI {id:'t2-itsm-foreign', name:'itsm foreign secret', type:'server', status:'active', organization_id:$b})`,
+    { a: A, b: B });
+    await sql.query(`INSERT INTO itil_incidents (incident_number, title, impact, urgency, priority, affected_ci_id,
+        status, reported_at, resolved_at, reported_by, organization_id)
+      VALUES
+        ('INC-t2-a1', 'a open on db', 'high', 'high', 2, 't2-itsm-db', 'in_progress', now() - interval '3 hours', NULL, 'alice', $1),
+        ('INC-t2-a2', 'a resolved on db', 'low', 'low', 4, 't2-itsm-db', 'resolved', now() - interval '2 days', now() - interval '2 days' + interval '60 minutes', 'alice', $1),
+        ('INC-t2-a3', 'a resolved on db', 'low', 'low', 4, 't2-itsm-db', 'closed', now() - interval '3 days', now() - interval '3 days' + interval '120 minutes', 'alice', $1),
+        ('INC-t2-a4', 'a open on foreign ci id', 'low', 'low', 5, 't2-itsm-foreign', 'new', now() - interval '1 hour', NULL, 'alice', $1),
+        ('INC-t2-b1', 'b open on db id', 'critical', 'critical', 1, 't2-itsm-db', 'new', now(), NULL, 'bob', $2),
+        ('INC-t2-b2', 'b open on db id', 'critical', 'critical', 1, 't2-itsm-db', 'new', now(), NULL, 'bob', $2)`,
+    [A, B]);
+
+    const own = await get(principalA);
+    const expectedActive = (await run(
+      `MATCH (ci:CI) WHERE ci.organization_id = $a AND ci.status = 'active' RETURN count(ci) AS n`, { a: A },
+    )).records[0].get('n').toNumber();
+    expect(own.ciStatus.find((group: { status: string }) => group.status === 'active').count).toBe(expectedActive);
+    expect(own.openIncidentCount).toBe(2);
+    expect(own.openIncidents.map((i: { id: string }) => i.id)).toEqual(['INC-t2-a1', 'INC-t2-a4']);
+    expect(own.openIncidents[0]).toMatchObject({ priority: 'P2', affectedCI: 't2-itsm-db', status: 'in_progress' });
+    expect(own.topFailingCIs).toEqual([
+      { ci_id: 't2-itsm-db', name: 'itsm db', type: 'database', incidentCount: 3, mttrMinutes: 90,
+        lastFailure: expect.any(String) },
+      // An incident naming another tenant's CI id discloses nothing about that CI.
+      { ci_id: 't2-itsm-foreign', name: null, type: null, incidentCount: 1, mttrMinutes: null,
+        lastFailure: expect.any(String) },
+    ]);
+    expect(own.slaCompliance).toEqual([]);
+    expect(own.unavailable).toEqual(['slaCompliance', 'baselineCompliance']);
+    expect(JSON.stringify(own)).not.toMatch(/itsm foreign secret|INC-t2-b/);
+
+    const foreign = await get(auth(principalB));
+    expect(foreign.openIncidentCount).toBe(2);
+    expect(foreign.topFailingCIs).toEqual([
+      { ci_id: 't2-itsm-db', name: null, type: null, incidentCount: 2, mttrMinutes: null,
+        lastFailure: expect.any(String) },
+    ]);
+    // t2-itsm-foreign is B's own CI (visible to B); A's CI name and incidents are not.
+    expect(JSON.stringify(foreign)).not.toMatch(/itsm db|INC-t2-a/);
+  } finally {
+    delete users[principalB];
+    await sql.query("DELETE FROM itil_incidents WHERE incident_number LIKE 'INC-t2-%'");
+    await run("MATCH (ci:CI) WHERE ci.id STARTS WITH 't2-itsm-' DETACH DELETE ci");
+  }
+});
+
 it('refuses over 100 distinct dashboard cost towers or statuses on real Neo4j', async () => {
   await run(`UNWIND range(1,101) AS ordinal
     CREATE (:CI {id:'t2-groups-'+toString(ordinal), name:'group', type:'server',

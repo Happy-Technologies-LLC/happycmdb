@@ -37,6 +37,9 @@ CREATE USER metabase_readonly WITH ENCRYPTED PASSWORD 'readonly_password_change_
 
 -- Grant connect to database
 GRANT CONNECT ON DATABASE cmdb TO metabase_readonly;
+-- No BI feature needs temporary tables (the BI role only SELECTs the allowlisted views). This removes a grant made
+-- to the role itself; PUBLIC's default TEMPORARY grant is not touched here (see migration 051).
+REVOKE TEMPORARY ON DATABASE cmdb FROM metabase_readonly;
 
 -- Only audited reporting views get named BI grants. Remove grants left by an
 -- older bootstrap (including the HP1 private journal) and its future-table
@@ -84,12 +87,35 @@ BEGIN
             END IF;
             -- HAP-659: per-CI cost views are granted by shape. This file runs without ON_ERROR_STOP (documented
             -- re-run), so a view of this name left in an older shape must not be granted: skip it, and revoke.
+            -- Refused: a view not owned by the migration role (the owner of cmdb.dim_ci), a column named metadata,
+            -- or json/jsonb in any column, including through a domain, array or composite type (migration 051).
             IF name IN ('public.v_top_cost_drivers_bi', 'public.v_underutilized_resources')
-               AND EXISTS (SELECT 1 FROM pg_attribute a
-                           WHERE a.attrelid = to_regclass(name) AND a.attnum > 0 AND NOT a.attisdropped
-                             AND (a.atttypid IN ('jsonb'::regtype, 'json'::regtype, 'jsonb[]'::regtype, 'json[]'::regtype)
-                                  OR lower(a.attname) = 'metadata')) THEN
-                RAISE WARNING 'HAP-659: % has a jsonb or metadata column; not granting it to metabase_readonly', name;
+               AND (NOT EXISTS (SELECT 1 FROM pg_class c
+                                WHERE c.oid = to_regclass(name)
+                                  AND c.relowner IS NOT DISTINCT FROM
+                                      (SELECT d.relowner FROM pg_class d WHERE d.oid = to_regclass('cmdb.dim_ci')))
+                    OR EXISTS (SELECT 1 FROM pg_attribute a
+                               WHERE a.attrelid = to_regclass(name) AND a.attnum > 0 AND NOT a.attisdropped
+                                 AND lower(a.attname) = 'metadata')
+                    OR EXISTS (
+                      WITH RECURSIVE ty(oid) AS (
+                        SELECT a.atttypid FROM pg_attribute a
+                        WHERE a.attrelid = to_regclass(name) AND a.attnum > 0 AND NOT a.attisdropped
+                        UNION
+                        SELECT n.oid
+                        FROM ty
+                          JOIN pg_type t ON t.oid = ty.oid
+                          CROSS JOIN LATERAL (
+                            SELECT t.typbasetype WHERE t.typtype = 'd'
+                            UNION ALL
+                            SELECT t.typelem WHERE t.typcategory = 'A'
+                            UNION ALL
+                            SELECT f.atttypid FROM pg_attribute f
+                            WHERE t.typtype = 'c' AND f.attrelid = t.typrelid AND f.attnum > 0 AND NOT f.attisdropped
+                          ) n(oid)
+                      )
+                      SELECT 1 FROM ty WHERE ty.oid IN ('json'::regtype, 'jsonb'::regtype))) THEN
+                RAISE WARNING 'HAP-659: % is not owned by the owner of cmdb.dim_ci, or carries json/jsonb or a metadata column; not granting it to metabase_readonly', name;
                 EXECUTE format('REVOKE ALL ON %s FROM metabase_readonly', name);
             ELSE
                 EXECUTE format('GRANT SELECT ON %s TO metabase_readonly', name);

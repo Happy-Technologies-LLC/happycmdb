@@ -27,7 +27,9 @@ export async function stopTimescaleBackgroundWorkers(admin: Pool, database: stri
   if (!(await databaseExists(admin, database))) {
     return;
   }
-  const client = new Client({ ...admin.options, database });
+  // pg-pool hides `password` from enumeration, so a spread of `options` would drop it.
+  const { host, port, user, password } = admin.options;
+  const client = new Client({ host, port, user, password, database });
   client.on('error', () => { /* a session killed during teardown is expected */ });
   await client.connect();
   try {

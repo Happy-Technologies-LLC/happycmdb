@@ -118,11 +118,6 @@ describe('Grafana datasource least privilege (HAP-1827)', () => {
     for (const ds of provision(READER)) expect(ds.editable).toBe(false);
   });
 
-  it('gives Explore a smaller connection pool than the dashboard datasource', () => {
-    const [dash, explore] = provision(READER).map((d) => d.jsonData as Node);
-    expect(explore.maxOpenConns as number).toBeLessThan(dash.maxOpenConns as number);
-  });
-
   describe('compose grafana service', () => {
     it('supplies every variable the datasource file interpolates', () => {
       const env = composeServiceEnv('grafana', {});

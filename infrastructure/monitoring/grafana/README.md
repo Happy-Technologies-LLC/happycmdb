@@ -253,7 +253,7 @@ but cannot connect. If your Postgres has TLS off (the compose default), set `GRA
 ### Datasource Provisioning
 
 Two datasources are **auto-configured** via `/provisioning/datasources/postgres.yml`, both `editable: false`:
-`HappyCMDB` (dashboards, default) and `HappyCMDB (Explore)` (free-form SQL, smaller connection pool).
+`HappyCMDB` (dashboards, default) and `HappyCMDB (Explore)`. Neither is read-only at the Grafana level: any member of the Grafana organization can send SQL to either, so keep anonymous access off and rely on the read-only database role.
 
 ```yaml
 datasources:

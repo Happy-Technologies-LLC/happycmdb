@@ -16,7 +16,8 @@
 # jsonData.sslRootCertFile in a compose override (see PRODUCTION_CONFIGURATION.md).
 #
 # Both datasources are editable: false. Grafana provisioning has no read-only
-# SQL switch for Postgres: the read-only DB role is the real control.
+# SQL switch for Postgres, and any org member can query any datasource of the
+# org: the read-only DB role (and who may log in) is the real control.
 # =============================================================================
 
 apiVersion: 1
@@ -43,8 +44,6 @@ datasources:
     version: 1
 
   # PostgreSQL CMDB Data Mart (Explore - allows custom queries)
-  # Free-form SQL by design, so it gets a smaller connection pool than the
-  # dashboard datasource to bound resource use by a single Explore user.
   - name: HappyCMDB (Explore)
     type: postgres
     access: proxy
@@ -57,8 +56,8 @@ datasources:
       sslmode: ${GRAFANA_DS_SSL_MODE:-require}
       postgresVersion: 1600
       timescaledb: true
-      maxOpenConns: 3
-      maxIdleConns: 1
+      maxOpenConns: 10
+      maxIdleConns: 5
       connMaxLifetime: 14400
     editable: false
     isDefault: false

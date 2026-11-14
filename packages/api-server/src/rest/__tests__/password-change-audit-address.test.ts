@@ -196,7 +196,8 @@ const changePassword = (currentPassword: string, newPassword: string, unavailabl
     .set({ Authorization: `Bearer ${token}`, ...(unavailable ? { 'x-test-address-unavailable': unavailable } : { 'X-Forwarded-For': STALE_CLIENT }) })
     .send({ currentPassword, newPassword });
 const rows = () => sql(`SELECT ip_address IS NULL AS no_address, to_jsonb(audit_log) - 'ip_address' AS record,
-  metadata->>'outcome' AS outcome, organization_id, entity_id FROM audit_log ORDER BY timestamp, id`);
+  metadata->>'outcome' AS outcome, organization_id, entity_id, actor, actor_type::text AS actor_type,
+  EXTRACT(EPOCH FROM timestamp) * 1000 AS at_ms FROM audit_log ORDER BY timestamp, id`);
 /** The response fields that must not depend on the address (the 429's countdown and the success tokens vary by time). */
 const stable = (body: Record<string, unknown>) =>
   Object.fromEntries(['success', 'error', 'message', '_error', '_limit'].filter(key => key in body).map(key => [key, body[key]]));
@@ -271,6 +272,7 @@ describe.each(PASSWORD_CHANGE_OUTCOMES)('outcome %s with the client address unav
       expect(previous).toHaveLength(1);
       expect(previous[0]!['no_address']).toBe(false);
 
+      const startedAt = Date.now();
       const without = await attempt(unavailable);
       expect(without.status).toBe(scenario.status);
       expect(without.status).toBe(withAddress.status);
@@ -279,7 +281,14 @@ describe.each(PASSWORD_CHANGE_OUTCOMES)('outcome %s with the client address unav
 
       const [row, ...extra] = (await rows()).slice(before + 1);
       expect(extra).toEqual([]);
-      expect(row).toMatchObject({ no_address: true, outcome, organization_id: ORG, entity_id: 'user-1' });
+      expect(row).toMatchObject({ no_address: true, outcome, organization_id: ORG, entity_id: 'user-1', actor: 'user-1', actor_type: 'user' });
+      // The time is the write's own, inside this attempt (a small slack for the database clock).
+      expect(Number(row!['at_ms'])).toBeGreaterThanOrEqual(startedAt - 2000);
+      expect(Number(row!['at_ms'])).toBeLessThanOrEqual(Date.now() + 2000);
+      // The reason is the fixed code alone: no password, no stored hash, no free text.
+      expect(row!['record'].metadata).toEqual({ operation: 'password_change', outcome, organization_id: ORG });
+      expect(JSON.stringify(row!['record'])).not.toContain(repository.user._passwordHash);
+      expect(JSON.stringify(row!['record'])).not.toMatch(/\$2[aby]\$/);
       expect(JSON.stringify(row!['record'])).not.toMatch(new RegExp(`${STALE_CLIENT.replaceAll('.', '\\.')}|None|undefined|"null"`));
       expect(JSON.stringify([errors.mock.calls, warnings.mock.calls])).not.toContain(STALE_CLIENT);
       expect(errors.mock.calls).toEqual([]);

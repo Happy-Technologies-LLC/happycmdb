@@ -14,13 +14,13 @@ import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
 import type { PoolClient } from 'pg';
-import { logger, type AuditLogEntry } from '@cmdb/common';
+import { logger, type AuditLogEntry, type ConfigSchema } from '@cmdb/common';
 import { appendAuditEntry } from '@cmdb/database/postgres/audit.service';
 import { AuthController } from '../auth.controller';
 import { AuthService, PASSWORD_CHANGE_OUTCOMES, type AuthRepository, type PasswordChangeOutcome } from '../../auth/auth.service';
 import { ValidationMiddleware } from '../middleware/validation.middleware';
 import { AuthMiddleware } from '../../middleware/auth.middleware';
-import type { RateLimitMiddleware } from '../../middleware/rate-limit.middleware';
+import { RateLimitMiddleware } from '../../middleware/rate-limit.middleware';
 import { PasswordService } from '../../auth/password.service';
 import { JWTService } from '../../auth/jwt.service';
 import type { User } from '../../auth/types';
@@ -57,10 +57,13 @@ class Repository {
   user!: User;
   /** Whether the guarded password write wins (a success) or loses to a rotation (credentials changed). */
   written = false;
-  async findUserById(id: string) { return id === this.user._id ? this.user : null; }
+  /** How many reads find the user before it vanishes: authentication finds it, the service's own read then misses. */
+  readsThatFind = Infinity;
+  chainReady = true;
+  async findUserById(id: string) { return id === this.user._id && this.readsThatFind-- > 0 ? this.user : null; }
   async updatePasswordHashGuarded() { return this.written; }
   async recordCredentialEvent() {}
-  auditChainReady() { return true; }
+  auditChainReady() { return this.chainReady; }
   async recordAudit(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>, organizationId: string) {
     const client = { query: async (text: string, params?: unknown[]) => ({ rows: await sql(text, params) }) } as unknown as PoolClient;
     await sql('BEGIN');
@@ -77,19 +80,57 @@ class Repository {
 const repository = new Repository();
 const authService = new AuthService(authConfig as any, repository as unknown as AuthRepository);
 const pass = () => (_req: unknown, _res: unknown, next: () => void) => next();
-const app = express();
-app.set('trust proxy', 1);
 /** The client address is unavailable: req.ip itself is undefined, or the socket has no remote address (a closed peer). */
 const ADDRESS_UNAVAILABLE = ['req.ip undefined', 'socket without remoteAddress'] as const;
-app.use((req, _res, next) => {
-  const mode = req.get('x-test-address-unavailable');
-  if (mode === ADDRESS_UNAVAILABLE[0]) Object.defineProperty(req, 'ip', { value: undefined });
-  if (mode === ADDRESS_UNAVAILABLE[1]) Object.defineProperty(req.socket, 'remoteAddress', { value: undefined });
-  next();
-});
-app.use(express.json());
-app.use('/api/v1/auth', new AuthController(authService, new ValidationMiddleware(),
-  new AuthMiddleware(authService, authConfig as any), { limit: pass, custom: pass, endpointBudget: () => ({ _max: 1, _windowMs: 1 }) } as unknown as RateLimitMiddleware).getRouter());
+
+/** Sorted sets as the sliding-window limiter uses them; `clear` is a fresh store. */
+class FakeRedis {
+  private sets = new Map<string, number[]>();
+  clear() { this.sets.clear(); }
+  pipeline() {
+    const ops: Array<() => unknown> = [];
+    const set = (key: string) => this.sets.get(key) ?? this.sets.set(key, []).get(key)!;
+    const pipe = {
+      zremrangebyscore: (key: string, _min: string, max: string) => ops.push(() => this.sets.set(key, set(key).filter(score => score > Number(max)))),
+      zcard: (key: string) => ops.push(() => set(key).length),
+      zadd: (key: string, score: string) => ops.push(() => set(key).push(Number(score))),
+      expire: () => ops.push(() => 1),
+      exec: async () => ops.map(op => [null, op()]),
+    };
+    return pipe;
+  }
+}
+/** The real limiter: a generous per-client budget and a per-user budget of one, so the second change by a user is a 429. */
+const redis = new FakeRedis();
+const budgetWindow = { windowMs: 900_000 };
+const realLimiter = new RateLimitMiddleware(redis as never, {
+  enabled: true,
+  bypassHeader: 'X-Internal-Service',
+  tierMultipliers: { standard: 1, premium: 1, enterprise: 1 },
+  endpoints: {
+    rest: { max: 100, ...budgetWindow }, graphql: { max: 100, ...budgetWindow }, health: { max: 0, ...budgetWindow },
+    auth: { max: 100, ...budgetWindow }, authAccount: { max: 1, ...budgetWindow }, authAccountGlobal: { max: 1, ...budgetWindow },
+    discovery: { max: 100, ...budgetWindow }, admin: { max: 100, ...budgetWindow },
+  },
+  monitoring: { enabled: false, logRateLimitHits: false },
+} as unknown as ConfigSchema['rateLimit']);
+
+function mount(limiter: RateLimitMiddleware) {
+  const mounted = express();
+  mounted.set('trust proxy', 1);
+  mounted.use((req, _res, next) => {
+    const mode = req.get('x-test-address-unavailable');
+    if (mode === ADDRESS_UNAVAILABLE[0]) Object.defineProperty(req, 'ip', { value: undefined });
+    if (mode === ADDRESS_UNAVAILABLE[1]) Object.defineProperty(req.socket, 'remoteAddress', { value: undefined });
+    next();
+  });
+  mounted.use(express.json());
+  mounted.use('/api/v1/auth', new AuthController(authService, new ValidationMiddleware(),
+    new AuthMiddleware(authService, authConfig as any), limiter).getRouter());
+  return mounted;
+}
+const app = mount({ limit: pass, custom: pass, endpointBudget: () => ({ _max: 1, _windowMs: 1 }) } as unknown as RateLimitMiddleware);
+const limitedApp = mount(realLimiter);
 const token = new JWTService(authConfig.jwt as any).generateAccessToken('user-1', 'alice', 'operator', ORG);
 
 const wrongPassword = (clientAddress: string) => request(app).put('/api/v1/auth/password')
@@ -149,42 +190,92 @@ it.each([
 
 const STALE_CLIENT = '198.51.100.7';
 const CURRENT = 'correct-horse-battery-staple';
-const changePassword = (currentPassword: string, newPassword: string, unavailable?: (typeof ADDRESS_UNAVAILABLE)[number]) =>
-  request(app).put('/api/v1/auth/password')
+const DEFAULT_EQUIVALENT = 'Admin123!';
+const changePassword = (currentPassword: string, newPassword: string, unavailable?: (typeof ADDRESS_UNAVAILABLE)[number], target = app) =>
+  request(target).put('/api/v1/auth/password')
     .set({ Authorization: `Bearer ${token}`, ...(unavailable ? { 'x-test-address-unavailable': unavailable } : { 'X-Forwarded-For': STALE_CLIENT }) })
     .send({ currentPassword, newPassword });
 const rows = () => sql(`SELECT ip_address IS NULL AS no_address, to_jsonb(audit_log) - 'ip_address' AS record,
   metadata->>'outcome' AS outcome, organization_id, entity_id FROM audit_log ORDER BY timestamp, id`);
+/** The response fields that must not depend on the address (the 429's countdown and the success tokens vary by time). */
+const stable = (body: Record<string, unknown>) =>
+  Object.fromEntries(['success', 'error', 'message', '_error', '_limit'].filter(key => key in body).map(key => [key, body[key]]));
+
+type Scenario = {
+  status: number;
+  /** Runs before every attempt. */
+  beforeAttempt?: () => void;
+  /** The exact stable body of a refusal; absent for a success (its body carries tokens). */
+  body?: Record<string, unknown>;
+  currentPassword: () => string;
+  newPassword: () => string;
+  target?: express.Express;
+  /** Runs before the rows are counted. */
+  setup: () => Promise<void>;
+};
+const direct = { currentPassword: () => CURRENT, newPassword: () => randomUUID(), setup: async () => undefined };
 
 /**
  * Every audited outcome has a scenario; the table is keyed by PasswordChangeOutcome and driven by
  * PASSWORD_CHANGE_OUTCOMES, so an outcome added to the code has no scenario and fails here.
  */
-const outcomes: Record<PasswordChangeOutcome, { status: number; currentPassword: () => string; written: boolean }> = {
-  success: { status: 200, currentPassword: () => CURRENT, written: true },
-  wrong_password: { status: 400, currentPassword: () => randomUUID(), written: false },
+const outcomes: Record<PasswordChangeOutcome, Scenario> = {
+  success: { ...direct, status: 200, setup: async () => { repository.written = true; } },
+  wrong_password: {
+    ...direct, status: 400, currentPassword: () => randomUUID(),
+    body: { success: false, error: 'Password Change Failed', message: 'Current password is incorrect' },
+  },
+  policy_failure: {
+    ...direct, status: 400, newPassword: () => DEFAULT_EQUIVALENT,
+    body: { success: false, error: 'Bad Request', message: 'Password not allowed' },
+  },
+  rotation_lost: {
+    ...direct, status: 401, body: { success: false, error: 'Unauthorized', message: 'Credentials changed' },
+  },
+  user_not_found: {
+    ...direct, status: 404, beforeAttempt: () => { repository.readsThatFind = 1; },
+    body: { success: false, error: 'Password Change Failed', message: 'User not found' },
+  },
+  rate_limited: {
+    ...direct, status: 429, target: limitedApp, body: { _error: 'Too Many Requests', _limit: 100 },
+    // The user's one change in the window is spent (a wrong password, 400, audited before the rows are counted).
+    setup: async () => {
+      redis.clear();
+      expect((await changePassword(randomUUID(), randomUUID(), undefined, limitedApp)).status).toBe(400);
+    },
+  },
 };
+
+beforeEach(() => {
+  repository.written = false;
+  repository.readsThatFind = Infinity;
+  repository.chainReady = true;
+});
 
 describe.each(PASSWORD_CHANGE_OUTCOMES)('outcome %s with the client address unavailable', outcome => {
   it.each(ADDRESS_UNAVAILABLE)('%s: same response as with an address, one null-address row, no stale address', async unavailable => {
     const scenario = outcomes[outcome];
     expect(scenario).toBeDefined();
-    repository.written = scenario.written;
     const errors = jest.spyOn(logger, 'error');
     const warnings = jest.spyOn(logger, 'warn');
     try {
+      const attempt = async (address?: (typeof ADDRESS_UNAVAILABLE)[number]) => {
+        scenario.beforeAttempt?.();
+        return changePassword(scenario.currentPassword(), scenario.newPassword(), address, scenario.target);
+      };
+      await scenario.setup();
       // A prior client of the same user: its address must not leak into the next attempt's row.
       const before = (await rows()).length;
-      const withAddress = await changePassword(scenario.currentPassword(), randomUUID());
+      const withAddress = await attempt();
       const previous = (await rows()).slice(before);
       expect(previous).toHaveLength(1);
       expect(previous[0]!['no_address']).toBe(false);
 
-      const without = await changePassword(scenario.currentPassword(), randomUUID(), unavailable);
+      const without = await attempt(unavailable);
       expect(without.status).toBe(scenario.status);
       expect(without.status).toBe(withAddress.status);
-      expect({ success: without.body.success, error: without.body.error, message: without.body.message })
-        .toEqual({ success: withAddress.body.success, error: withAddress.body.error, message: withAddress.body.message });
+      expect(stable(without.body)).toEqual(stable(withAddress.body));
+      if (scenario.body) expect(stable(without.body)).toEqual(scenario.body);
 
       const [row, ...extra] = (await rows()).slice(before + 1);
       expect(extra).toEqual([]);
@@ -199,18 +290,24 @@ describe.each(PASSWORD_CHANGE_OUTCOMES)('outcome %s with the client address unav
   });
 });
 
-/** Attempts that are decided but not audited stay unaudited, and answer the same, when the address is unavailable. */
-it.each([
-  // [name, newPassword, status]
-  ['a default-equivalent new password', 'Admin123!', 400],
-  ['a guarded write lost to a rotation', 'brand-new-password-1', 401],
-] as const)('%s: same refusal with the address unavailable, no audit row', async (_name, next, status) => {
-  repository.written = false;
-  const current = CURRENT;
+it('while the audit chain is not ready the change is refused with 503 and nothing is audited (the chain cannot be written)', async () => {
+  repository.chainReady = false;
   const before = (await rows()).length;
-  expect((await changePassword(current, next)).status).toBe(status);
-  for (const unavailable of ADDRESS_UNAVAILABLE) {
-    expect((await changePassword(current, next, unavailable)).status).toBe(status);
-  }
+  const res = await changePassword(CURRENT, randomUUID());
+  expect([res.status, res.body]).toEqual([503,
+    { success: false, error: 'Service Unavailable', message: 'Password change temporarily unavailable' }]);
   expect((await rows()).length).toBe(before);
+});
+
+it('no audit row carries a password: only the fixed outcome code and operation name', async () => {
+  repository.written = false;
+  const guess = randomUUID();
+  const next = DEFAULT_EQUIVALENT;
+  const before = (await rows()).length;
+  await changePassword(guess, next);
+  const [row] = (await sql(`SELECT to_jsonb(audit_log) AS record FROM audit_log ORDER BY timestamp DESC, id DESC LIMIT 1`));
+  expect((await rows()).length).toBe(before + 1);
+  expect(JSON.stringify(row!['record'])).not.toContain(guess);
+  expect(JSON.stringify(row!['record'])).not.toContain(next);
+  expect(row!['record'].metadata).toMatchObject({ operation: 'password_change', outcome: 'policy_failure' });
 });

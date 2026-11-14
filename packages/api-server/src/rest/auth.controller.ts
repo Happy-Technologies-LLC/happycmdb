@@ -187,7 +187,11 @@ export class AuthController {
       this.authMiddleware.authenticate(),
       this.authMiddleware.requireJwtSession(),
       this.requireAuditChain.bind(this),
-      this.rateLimiter.limit('auth', { perUser: true, failClosed: true }),
+      this.rateLimiter.limit('auth', {
+        perUser: true,
+        failClosed: true,
+        onRefused: req => this.auditPasswordChange(req, 'rate_limited'),
+      }),
       this.validator.validate(authSchemas._changePassword),
       this.changePassword.bind(this)
     );
@@ -459,6 +463,11 @@ export class AuthController {
     }
   }
 
+  /** One audit row for a password change attempt by the verified user; best-effort and never throws (see AuthService.auditPasswordChange). */
+  private auditPasswordChange(req: AuthenticatedRequest, outcome: PasswordChangeOutcome): Promise<void> {
+    return this.authService.auditPasswordChange(req.user!._userId, optionalRequestOrganizationId(req), req.ip, outcome);
+  }
+
   /** HAP-1368/HAP-1712: a password change is refused (503; the router sets no-store) before the limiter and before anything changes while it cannot be audited. */
   private requireAuditChain(_req: Request, res: Response, next: NextFunction): void {
     if (this.authService.auditChainReady()) {
@@ -470,8 +479,10 @@ export class AuthController {
 
   /**
    * Change password endpoint
-   * HAP-1368: each success and each wrong current password appends one audit row (best-effort once the outcome is
-   * decided); the audit-chain readiness refusal is the requireAuditChain step before the limiter.
+   * HAP-1368: each attempt appends one audit row (best-effort once the outcome is decided): success, wrong current
+   * password, and (cmdb#321) policy failure, lost rotation, unknown user and rate limited (the limiter's onRefused).
+   * The audit-chain readiness refusal is the requireAuditChain step before the limiter and is not audited: the chain
+   * cannot be written then. Refusal bodies are unchanged.
    */
   private async changePassword(req: AuthenticatedRequest, res: Response): Promise<void> {
     if (!req.user?._userId) {
@@ -484,8 +495,7 @@ export class AuthController {
     }
 
     const userId = req.user._userId;
-    const audit = (outcome: PasswordChangeOutcome) =>
-      this.authService.auditPasswordChange(userId, optionalRequestOrganizationId(req), req.ip, outcome);
+    const audit = (outcome: PasswordChangeOutcome) => this.auditPasswordChange(req, outcome);
     try {
       const { currentPassword, newPassword } = req.body as {
         currentPassword: string;
@@ -509,8 +519,12 @@ export class AuthController {
         res.status(400).json({ success: false, error: 'Password Change Failed', message: 'Current password is incorrect' });
         return;
       }
+      if (error instanceof PasswordNotAllowedError || error instanceof CredentialsChangedError) {
+        await audit(error instanceof PasswordNotAllowedError ? 'policy_failure' : 'rotation_lost');
+      }
       if (credentialRefusal(res, error)) return;
       if (error instanceof UserNotFoundError) {
+        await audit('user_not_found');
         res.status(404).json({ success: false, error: 'Password Change Failed', message: 'User not found' });
         return;
       }

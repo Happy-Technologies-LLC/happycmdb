@@ -244,17 +244,19 @@ describe('PUT /password and DELETE /account when the user is gone (HAP-1825)', (
     onUpdate = async () => { throw new Error('no write may run after a read-miss'); };
   });
 
+  // The password change now attempts its (cmdb#321) user_not_found audit; this token has no organization claim, so
+  // that is the one fixed-text error. Neither route logs an internal error.
   it.each([
-    ['PUT /password', changePassword, NOT_FOUND_PASSWORD],
-    ['DELETE /account', deleteAccount, NOT_FOUND_DELETE],
-  ])('%s answers 404 with the not-found body, writes nothing and logs no error', async (_name, call, body) => {
+    ['PUT /password', changePassword, NOT_FOUND_PASSWORD, [['Password change not audited: the actor has no organization claim']]],
+    ['DELETE /account', deleteAccount, NOT_FOUND_DELETE, []],
+  ])('%s answers 404 with the not-found body, writes nothing and logs no internal error', async (_name, call, body, errors) => {
     const logs = spyOnLogs();
     try {
       const res = await call();
 
       expect([res.status, res.body]).toEqual([404, body]);
       expect(session.run.mock.calls.map(([cypher]) => cypher)).toEqual([FIND_USER_BY_ID_CYPHER, FIND_USER_BY_ID_CYPHER]);
-      expect(logs.errorCalls()).toEqual([]);
+      expect(logs.errorCalls()).toEqual(errors);
     } finally {
       logs.restore();
     }

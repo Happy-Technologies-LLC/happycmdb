@@ -101,6 +101,11 @@ export interface LimitOptions {
    * a bucket for the verified user across all clients at endpoints.authAccount; both at the base budget (no tier).
    */
   perUser?: boolean;
+  /**
+   * Awaited just before the 429 is sent (cmdb#321: an audit row for a refused password change). It never changes the
+   * response: a rejection is logged by class only and the same 429 follows.
+   */
+  onRefused?: (req: AuthenticatedRequest) => Promise<void>;
 }
 
 export class RateLimitMiddleware {
@@ -424,6 +429,14 @@ export class RateLimitMiddleware {
           limit: result._limit,
           resetAt: new Date(result._resetAt).toISOString(),
         });
+      }
+
+      if (options.onRefused) {
+        try {
+          await options.onRefused(req);
+        } catch (error) {
+          logger.error('Rate limit refusal hook failed', undefined, { endpoint: endpointType, ...errorClassFields(error) });
+        }
       }
 
       const reported = { ...client, _remaining: 0 };

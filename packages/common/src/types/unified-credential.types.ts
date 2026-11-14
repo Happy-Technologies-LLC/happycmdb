@@ -472,6 +472,65 @@ export class CredentialSetNotFoundError extends Error {
 }
 
 /**
+ * Typed refusals from the credential services. Controllers classify by class (or SQLSTATE), never by message text:
+ * a driver error that merely contains "already exists" must not become a 409 (HAP-1734). `clientMessage` is built
+ * from curated text and counts only, so it is safe to send to the caller.
+ */
+export class DuplicateCredentialSetNameError extends Error {
+  constructor() {
+    super('Credential set name already exists');
+    this.name = 'DuplicateCredentialSetNameError';
+  }
+}
+
+export class DuplicateCredentialNameError extends Error {
+  constructor() {
+    super('Credential name already exists for this user');
+    this.name = 'DuplicateCredentialNameError';
+  }
+}
+
+/** A credential set referenced credential IDs that are missing or not owned by the caller. */
+export class CredentialIdsNotFoundError extends Error {
+  readonly clientMessage = 'One or more credential IDs do not exist';
+  constructor() {
+    super('One or more credential IDs do not exist');
+    this.name = 'CredentialIdsNotFoundError';
+  }
+}
+
+export class CredentialSetInUseError extends Error {
+  readonly clientMessage: string;
+  constructor(discoveryDefinitions: number) {
+    const clientMessage = `Cannot delete credential set: it is currently used by ${discoveryDefinitions} discovery definition(s)`;
+    super(clientMessage);
+    this.clientMessage = clientMessage;
+    this.name = 'CredentialSetInUseError';
+  }
+}
+
+export class CredentialInUseError extends Error {
+  readonly clientMessage: string;
+  constructor(usage: { discoveryDefinitions?: number; connectorConfigurations?: number; credentialSets?: number }) {
+    const parts: string[] = [];
+    const { discoveryDefinitions = 0, connectorConfigurations = 0, credentialSets = 0 } = usage;
+    if (discoveryDefinitions > 0) {
+      parts.push(`${discoveryDefinitions} discovery definition(s)`);
+    }
+    if (connectorConfigurations > 0) {
+      parts.push(`${connectorConfigurations} connector configuration(s)`);
+    }
+    if (credentialSets > 0) {
+      parts.push(`${credentialSets} credential set(s)`);
+    }
+    const clientMessage = `Cannot delete credential: it is currently used by ${parts.join(' and ')}`;
+    super(clientMessage);
+    this.clientMessage = clientMessage;
+    this.name = 'CredentialInUseError';
+  }
+}
+
+/**
  * Credential Set Summary - Lightweight info with expanded credential details
  */
 export interface CredentialSetSummary {

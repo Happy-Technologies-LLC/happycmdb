@@ -95,7 +95,14 @@ export type {
 } from './audit.types';
 
 // Unified Credential Types (Protocol-based system)
-export { CredentialSetNotFoundError } from './unified-credential.types';
+export {
+  CredentialSetNotFoundError,
+  DuplicateCredentialSetNameError,
+  DuplicateCredentialNameError,
+  CredentialIdsNotFoundError,
+  CredentialSetInUseError,
+  CredentialInUseError,
+} from './unified-credential.types';
 export type {
   AuthProtocol,
   CredentialScope,

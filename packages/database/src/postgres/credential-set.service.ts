@@ -18,6 +18,9 @@ import {
   CredentialSetSummary,
   CredentialSetStrategy,
   CredentialSetNotFoundError,
+  DuplicateCredentialSetNameError,
+  CredentialIdsNotFoundError,
+  CredentialSetInUseError,
   CredentialMatchContext,
   UnifiedCredential,
   UnifiedCredentialSummary,
@@ -54,7 +57,7 @@ export class CredentialSetService {
       );
 
       if (credentialCheckResult.rows.length !== input.credential_ids.length) {
-        throw new Error('One or more credential IDs do not exist');
+        throw new CredentialIdsNotFoundError();
       }
 
       const id = uuidv4();
@@ -121,7 +124,7 @@ export class CredentialSetService {
     } catch (error: any) {
       if (error.code === '23505') {
         // Unique constraint violation
-        throw new Error(`Credential set with name '${input.name}' already exists`);
+        throw new DuplicateCredentialSetNameError();
       }
       logger.error('Failed to create credential set', { error: errorClassFields(error), input });
       throw error;
@@ -296,7 +299,7 @@ export class CredentialSetService {
         );
 
         if (credentialCheckResult.rows.length !== input.credential_ids.length) {
-          throw new Error('One or more credential IDs do not exist');
+          throw new CredentialIdsNotFoundError();
         }
       }
 
@@ -387,7 +390,7 @@ export class CredentialSetService {
       };
     } catch (error: any) {
       if (error.code === '23505') {
-        throw new Error(`Credential set with name '${input.name}' already exists`);
+        throw new DuplicateCredentialSetNameError();
       }
       logger.error('Failed to update credential set', { error: errorClassFields(error), id });
       throw error;
@@ -421,9 +424,7 @@ export class CredentialSetService {
 
       const usageCount = parseInt(usageResult.rows[0].count, 10);
       if (usageCount > 0) {
-        throw new Error(
-          `Cannot delete credential set: it is currently used by ${usageCount} discovery definition(s)`
-        );
+        throw new CredentialSetInUseError(usageCount);
       }
 
       // Delete credential set

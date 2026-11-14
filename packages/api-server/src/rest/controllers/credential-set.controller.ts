@@ -11,9 +11,29 @@ import {
   logger,
   errorClassFields,
   CredentialSetNotFoundError,
+  DuplicateCredentialSetNameError,
+  CredentialIdsNotFoundError,
+  CredentialSetInUseError,
 } from '@cmdb/common';
 import type { AuthenticatedRequest } from '../../auth/types';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
+
+/** SQLSTATE of a pg error, if it carries one. */
+const sqlState = (error: unknown): unknown => (error as { code?: unknown } | null)?.code;
+
+/**
+ * A duplicate name: the typed service error, or a raw unique violation (23505). The only text echoed is the request's
+ * own `name`, which the route validator has already limited to a 1-255 character string.
+ */
+const isDuplicateName = (error: unknown): boolean =>
+  error instanceof DuplicateCredentialSetNameError || sqlState(error) === '23505';
+
+const duplicateNameMessage = (req: Request): string => {
+  const name = (req.body as { name?: unknown } | undefined)?.name;
+  return typeof name === 'string'
+    ? `Credential set with name '${name}' already exists`
+    : 'Credential set name already exists';
+};
 
 /**
  * Credential Set Controller
@@ -50,21 +70,21 @@ export class CredentialSetController {
       logger.error('Error creating credential set', { error: errorClassFields(error) });
 
       // Check for duplicate name error
-      if (error instanceof Error && error.message.includes('already exists')) {
+      if (isDuplicateName(error)) {
         res.status(409).json({
           success: false,
           error: 'Conflict',
-          message: error.message,
+          message: duplicateNameMessage(req),
         });
         return;
       }
 
       // Check for invalid credential IDs error
-      if (error instanceof Error && error.message.includes('do not exist')) {
+      if (error instanceof CredentialIdsNotFoundError) {
         res.status(400).json({
           success: false,
           error: 'Bad Request',
-          message: error.message,
+          message: error.clientMessage,
         });
         return;
       }
@@ -180,21 +200,21 @@ export class CredentialSetController {
       }
 
       // Check for duplicate name error
-      if (error instanceof Error && error.message.includes('already exists')) {
+      if (isDuplicateName(error)) {
         res.status(409).json({
           success: false,
           error: 'Conflict',
-          message: error.message,
+          message: duplicateNameMessage(req),
         });
         return;
       }
 
       // Check for invalid credential IDs error
-      if (error instanceof Error && error.message.includes('do not exist')) {
+      if (error instanceof CredentialIdsNotFoundError) {
         res.status(400).json({
           success: false,
           error: 'Bad Request',
-          message: error.message,
+          message: error.clientMessage,
         });
         return;
       }
@@ -240,11 +260,13 @@ export class CredentialSetController {
       }
 
       // Check for in-use error
-      if (error instanceof Error && error.message.includes('currently used')) {
+      if (error instanceof CredentialSetInUseError || sqlState(error) === '23503') {
         res.status(409).json({
           success: false,
           error: 'Conflict',
-          message: error.message,
+          message: error instanceof CredentialSetInUseError
+            ? error.clientMessage
+            : 'Cannot delete credential set: it is currently in use',
         });
         return;
       }

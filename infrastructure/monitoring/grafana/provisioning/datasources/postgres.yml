@@ -1,8 +1,31 @@
 # =============================================================================
 # Grafana Datasource Provisioning - PostgreSQL/TimescaleDB
 # =============================================================================
-# This file automatically provisions the HappyCMDB PostgreSQL datasource
-# when Grafana starts. No manual configuration needed.
+# Provisions the HappyCMDB data-mart datasources when Grafana starts.
+#
+# HAP-1827 (SENSITIVE): connection settings come ONLY from GRAFANA_DS_* variables
+# in the Grafana container environment (docker-compose `grafana` service). They
+# must name a least-privilege, read-only reporting role. There is deliberately
+# NO fallback to POSTGRES_USER / POSTGRES_PASSWORD / cmdb_user (the bootstrap
+# superuser): with GRAFANA_DS_USER / GRAFANA_DS_PASSWORD unset the values expand
+# to empty and the datasource health check fails instead of connecting as the owner.
+#
+# Grafana 10.2 has NO `${VAR:-default}` syntax: in `${...}` the WHOLE brace content
+# is the environment variable name (setting.ExpandVar), so `${GRAFANA_DS_HOST:-postgres}`
+# looks up a variable literally named `GRAFANA_DS_HOST:-postgres` and yields "". Use
+# plain `${VAR}` only. The defaults (host postgres, port 5432, database cmdb, sslmode
+# require) live in the docker-compose `grafana` service environment, which Compose
+# expands. GRAFANA_DS_USER must be non-empty (an empty user makes lib/pq fall back
+# to the OS user / PG* environment).
+#
+# sslmode defaults to `require` (TLS, certificate not verified). The shipped
+# compose mounts no CA into Grafana, so `verify-full` would fail until an
+# operator mounts one; set GRAFANA_DS_SSL_MODE=verify-full plus
+# jsonData.sslRootCertFile in a compose override (see PRODUCTION_CONFIGURATION.md).
+#
+# Both datasources are editable: false. Grafana provisioning has no read-only
+# SQL switch for Postgres, and any org member can query any datasource of the
+# org: the read-only DB role (and who may log in) is the real control.
 # =============================================================================
 
 apiVersion: 1
@@ -12,13 +35,13 @@ datasources:
   - name: HappyCMDB
     type: postgres
     access: proxy
-    url: ${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}
-    database: ${POSTGRES_DATABASE:-cmdb}
-    user: ${POSTGRES_USER:-cmdb_user}
+    url: ${GRAFANA_DS_HOST}:${GRAFANA_DS_PORT}
+    database: ${GRAFANA_DS_DATABASE}
+    user: ${GRAFANA_DS_USER}
     secureJsonData:
-      password: ${POSTGRES_PASSWORD}
+      password: ${GRAFANA_DS_PASSWORD}
     jsonData:
-      sslmode: ${POSTGRES_SSL_MODE:-prefer}
+      sslmode: ${GRAFANA_DS_SSL_MODE}
       postgresVersion: 1600  # PostgreSQL 16
       timescaledb: true
       maxOpenConns: 10
@@ -32,18 +55,18 @@ datasources:
   - name: HappyCMDB (Explore)
     type: postgres
     access: proxy
-    url: ${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}
-    database: ${POSTGRES_DATABASE:-cmdb}
-    user: ${POSTGRES_USER:-cmdb_user}
+    url: ${GRAFANA_DS_HOST}:${GRAFANA_DS_PORT}
+    database: ${GRAFANA_DS_DATABASE}
+    user: ${GRAFANA_DS_USER}
     secureJsonData:
-      password: ${POSTGRES_PASSWORD}
+      password: ${GRAFANA_DS_PASSWORD}
     jsonData:
-      sslmode: ${POSTGRES_SSL_MODE:-prefer}
+      sslmode: ${GRAFANA_DS_SSL_MODE}
       postgresVersion: 1600
       timescaledb: true
       maxOpenConns: 10
       maxIdleConns: 5
       connMaxLifetime: 14400
-    editable: true
+    editable: false
     isDefault: false
     version: 1

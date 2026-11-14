@@ -254,11 +254,13 @@ GRAFANA_PORT=3003                      # Web UI port
 GRAFANA_ADMIN_USER=admin               # Initial admin username
 GRAFANA_ADMIN_PASSWORD=admin           # Change on first login!
 
-# Data Sources (auto-configured)
-GRAFANA_POSTGRES_HOST=localhost
-GRAFANA_POSTGRES_DATABASE=cmdb
-GRAFANA_POSTGRES_USER=cmdb_user
-GRAFANA_POSTGRES_PASSWORD=your-postgres-password
+# Data Sources (auto-configured, HAP-1827): a read-only reporting role, never POSTGRES_USER
+GRAFANA_DS_HOST=postgres
+GRAFANA_DS_PORT=5432
+GRAFANA_DS_DATABASE=cmdb
+GRAFANA_DS_USER=                      # read-only reporting role; MUST be non-empty, empty = datasources cannot connect
+GRAFANA_DS_PASSWORD=
+GRAFANA_DS_SSL_MODE=require           # require (default) | disable (Postgres TLS off) | verify-full (needs a CA in Grafana)
 
 # Plugins
 GRAFANA_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource

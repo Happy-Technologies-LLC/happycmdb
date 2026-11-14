@@ -147,7 +147,7 @@ export function endSession(logout: () => Promise<unknown>): Promise<void> {
   return ending;
 }
 
-type ReplayableConfig = InternalAxiosRequestConfig & { _sessionReplayed?: boolean };
+type ReplayableConfig = InternalAxiosRequestConfig & { _sessionReplayed?: boolean; _issuedOnPath?: string };
 
 /**
  * Bearer from memory on every request; on a 401, renew once and replay once, else sign out to /login. A 403 is not
@@ -157,6 +157,8 @@ export function attachSession(client: AxiosInstance): void {
   client.interceptors.request.use((config) => {
     const token = getToken();
     if (token) config.headers.Authorization = `Bearer ${token}`;
+    // Where the request was issued (kept across a 401 replay): a late 403 is attributed to this page, not the current one.
+    (config as ReplayableConfig)._issuedOnPath ??= window.location.pathname;
     return config;
   });
   client.interceptors.response.use(undefined, async (error: AxiosError) => {
@@ -166,6 +168,7 @@ export function attachSession(client: AxiosInstance): void {
         reason: forbiddenReason(error.response.data),
         method: (config?.method ?? 'get').toUpperCase(),
         sideRead: config?.sideRead === true,
+        pathname: config?._issuedOnPath ?? window.location.pathname,
       });
     }
     if (error.response?.status !== 401 || !config || SESSION_ENDPOINT.test(config.url ?? '')) {

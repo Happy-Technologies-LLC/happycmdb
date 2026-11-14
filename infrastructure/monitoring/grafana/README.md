@@ -237,32 +237,47 @@ GRAFANA_DATABASE=grafana
 GRAFANA_ANONYMOUS_ENABLED=false
 GRAFANA_ANONYMOUS_ROLE=Viewer
 
-# PostgreSQL (data source)
-POSTGRES_HOST=postgres
-POSTGRES_PORT=5432
-POSTGRES_DATABASE=cmdb
-POSTGRES_USER=cmdb_user
-POSTGRES_PASSWORD=your-postgres-password
-POSTGRES_SSL_MODE=prefer
+# PostgreSQL datasource (read-only reporting role; never POSTGRES_USER, HAP-1827)
+GRAFANA_DS_HOST=postgres
+GRAFANA_DS_PORT=5432
+GRAFANA_DS_DATABASE=cmdb
+GRAFANA_DS_USER=
+GRAFANA_DS_PASSWORD=
+# require (default) | disable | verify-full (needs a CA mounted into Grafana)
+GRAFANA_DS_SSL_MODE=require
 ```
+
+Unset `GRAFANA_DS_USER` / `GRAFANA_DS_PASSWORD` do not fall back to `POSTGRES_*`: the datasources are provisioned
+but cannot connect. `GRAFANA_DS_USER` must be non-empty: an empty user makes the PostgreSQL driver fall back to the
+OS user and `PG*` environment instead of failing outright. If your Postgres has TLS off (the compose default), set
+`GRAFANA_DS_SSL_MODE=disable`.
+
+Grafana 10.2 provisioning has **no** `${VAR:-default}` syntax: inside `${...}` the whole content is the variable
+name, so a `:-default` makes the value empty (url `:`, database and sslmode empty). The provisioning file therefore
+uses plain `${VAR}`; the defaults (`postgres`, `5432`, `cmdb`, `require`) come from the compose `grafana` service
+environment. Do not add `:-default` to `postgres.yml`.
 
 ### Datasource Provisioning
 
-Datasource is **auto-configured** via `/provisioning/datasources/postgres.yml`:
+Two datasources are **auto-configured** via `/provisioning/datasources/postgres.yml`, both `editable: false`:
+`HappyCMDB` (dashboards, default) and `HappyCMDB (Explore)`. Neither is read-only at the Grafana level: any member of the Grafana organization can send SQL to either, so keep anonymous access off and rely on the read-only database role.
 
 ```yaml
 datasources:
   - name: HappyCMDB
     type: postgres
-    url: postgres:5432
-    database: cmdb
-    user: cmdb_user
+    url: ${GRAFANA_DS_HOST}:${GRAFANA_DS_PORT}
+    database: ${GRAFANA_DS_DATABASE}
+    user: ${GRAFANA_DS_USER}
+    secureJsonData:
+      password: ${GRAFANA_DS_PASSWORD}
     jsonData:
+      sslmode: ${GRAFANA_DS_SSL_MODE}
       postgresVersion: 1600
       timescaledb: true
 ```
 
-No manual datasource configuration needed!
+No manual datasource configuration needed once the reporting role exists.
 
 ---
 
@@ -452,20 +467,13 @@ ttl = 300  # 5 minutes
        - GF_SERVER_CERT_KEY=/etc/grafana/ssl/key.pem
    ```
 
-4. **PostgreSQL read-only user** (recommended):
-   ```sql
-   -- Create read-only user for Grafana
-   CREATE USER grafana_viewer WITH PASSWORD 'secure-password';
-   GRANT USAGE ON SCHEMA cmdb TO grafana_viewer;
-   GRANT SELECT ON ALL TABLES IN SCHEMA cmdb TO grafana_viewer;
-   GRANT SELECT ON ALL SEQUENCES IN SCHEMA cmdb TO grafana_viewer;
-   ```
+4. **PostgreSQL read-only reporting role** (required for the datasources, HAP-1827):
 
-   Update datasource config:
-   ```yaml
-   user: grafana_viewer
-   password: secure-password
-   ```
+   The datasources connect with `GRAFANA_DS_USER` / `GRAFANA_DS_PASSWORD` only. Never put
+   `POSTGRES_USER` (the bootstrap superuser) there: `HappyCMDB (Explore)` runs free-form SQL. The proposed role
+   and grants (not created by this repository, needs an operator) are in
+   [PRODUCTION_CONFIGURATION.md](../../../doc-site/docs/deployment/PRODUCTION_CONFIGURATION.md#grafana-datasource-reporting-role-hap-1827).
+   It sees all organizations' rows (no RLS in the shipped schema), so use it only where that is acceptable.
 
 ---
 

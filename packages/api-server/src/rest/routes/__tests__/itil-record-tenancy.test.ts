@@ -52,6 +52,7 @@ jest.mock('../../../auth/auth-bootstrap', () => ({
   }),
 }));
 import { itilRoutes } from '../itil.routes';
+import { affectedCIIdList } from '../../controllers/itil.controller';
 import { processSyncIncidentsToDatamart } from '../../../../../etl-processor/src/jobs/sync-incidents-to-datamart.job';
 const app = express();
 app.use(express.json());
@@ -227,6 +228,53 @@ it('HAP-922: PATCH persists implementedBy and actualDuration on an owned change;
     { implementedBy: 'nul\u0000' }]) rejected.push((await patch(body)).status);
   expect(rejected).toEqual([400, 400, 400, 400]);
   expect(await sql('SELECT * FROM itil_changes WHERE id = $1', [own])).toEqual([after]);
+});
+
+describe('HAP-702', () => {
+  const seedChange = (id: string, number: string, type: string, ids: string) => sql(
+    `INSERT INTO itil_changes(id, change_number, title, change_type, affected_ci_ids, requested_by, organization_id)
+      VALUES ('${id}', '${number}', 't', '${type}', ${ids}, 'alice', '${A}')`, [], 'exec');
+  const risk = (id: string) => request(app).get(`/itil/changes/${id}/risk-assessment`).set(auth('A'));
+
+  it('risk-assessment counts TEXT[] affected CIs, and tolerates NULL and an empty array', async () => {
+    const many = Array.from({ length: 11 }, (_, n) => `'ci-${n}'`).join(', ');
+    await seedChange('31313131-3131-4131-8131-313131313131', 'CHG-R1', 'normal', 'ARRAY[\'ci-a\']');
+    await seedChange('32323232-3232-4232-8232-323232323232', 'CHG-R2', 'normal', `ARRAY[${many}]`);
+    await seedChange('33333333-3333-4333-8333-333333333333', 'CHG-R3', 'normal', 'NULL');
+    await seedChange('34343434-3434-4434-8434-343434343434', 'CHG-R4', 'normal', "'{}'");
+    const results = [];
+    for (const id of ['31313131-3131-4131-8131-313131313131', '32323232-3232-4232-8232-323232323232',
+      '33333333-3333-4333-8333-333333333333', '34343434-3434-4434-8434-343434343434']) {
+      const response = await risk(id);
+      results.push([response.status, response.body.data?.affectedCICount, response.body.data?.riskLevel]);
+    }
+    expect(results).toEqual([[200, 1, 'MEDIUM'], [200, 11, 'HIGH'], [200, 0, 'MEDIUM'], [200, 0, 'MEDIUM']]);
+  });
+
+  it('affectedCIIdList reads a legacy JSON-text value and rejects non-array shapes', async () => {
+    expect([affectedCIIdList('["ci-a","ci-b"]'), affectedCIIdList('not json'), affectedCIIdList('{"a":1}'),
+      affectedCIIdList(undefined), affectedCIIdList(['ci-a'])]).toEqual([['ci-a', 'ci-b'], [], [], [], ['ci-a']]);
+  });
+
+  it('GET /changes?changeType=MAJOR validates and filters to major changes', async () => {
+    await seedChange('35353535-3535-4535-8535-353535353535', 'CHG-M1', 'major', "ARRAY['ci-a']");
+    await seedChange('36363636-3636-4636-8636-363636363636', 'CHG-M2', 'normal', "ARRAY['ci-a']");
+    const response = await request(app).get('/itil/changes?changeType=MAJOR').set(auth('A'));
+    expect([response.status, response.body.data?.map((row: { change_number: string }) => row.change_number)])
+      .toEqual([200, ['CHG-M1']]);
+    expect((await request(app).get('/itil/changes?changeType=BOGUS').set(auth('A'))).status).toBe(400);
+  });
+
+  it('baseline comparison is not implemented: 501, never a success that reads as no drift; foreign stays 404', async () => {
+    const own = '37373737-3737-4737-8737-373737373737';
+    await sql(`INSERT INTO itil_baselines(id, name, baseline_type, baseline_data, created_by, organization_id)
+      VALUES ('${own}', 'hap702', 'configuration', '{}', 'alice', '${A}')`, [], 'exec');
+    const owned = await request(app).get(`/itil/baselines/${own}/comparison`).set(auth('A'));
+    expect(owned.status).toBe(501);
+    expect(owned.body.success).toBe(false);
+    expect(owned.body.data).toBeUndefined();
+    expect((await request(app).get(`/itil/baselines/${own}/comparison`).set(auth('B'))).status).toBe(404);
+  });
 });
 
 it('ETL does not copy recycled A dimension data into B or legacy incidents', async () => {

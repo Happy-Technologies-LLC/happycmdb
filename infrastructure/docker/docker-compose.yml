@@ -412,6 +412,15 @@ services:
       - GF_DATABASE_USER=${POSTGRES_USER:-cmdb_user}
       - GF_DATABASE_PASSWORD=${POSTGRES_PASSWORD}
       - GF_DATABASE_SSL_MODE=${POSTGRES_SSL_MODE:-disable}
+      # Datasource connection (HAP-1827): read-only reporting role ONLY, read by
+      # provisioning/datasources/postgres.yml. Never defaulted to POSTGRES_* (the
+      # owner/superuser): unset user/password leaves the datasources unable to connect.
+      - GRAFANA_DS_HOST=${GRAFANA_DS_HOST:-postgres}
+      - GRAFANA_DS_PORT=${GRAFANA_DS_PORT:-5432}
+      - GRAFANA_DS_DATABASE=${GRAFANA_DS_DATABASE:-cmdb}
+      - GRAFANA_DS_USER=${GRAFANA_DS_USER:-}
+      - GRAFANA_DS_PASSWORD=${GRAFANA_DS_PASSWORD:-}
+      - GRAFANA_DS_SSL_MODE=${GRAFANA_DS_SSL_MODE:-require}
       # Anonymous access (set to true for demo environments)
       - GF_AUTH_ANONYMOUS_ENABLED=${GRAFANA_ANONYMOUS_ENABLED:-false}
       - GF_AUTH_ANONYMOUS_ORG_ROLE=${GRAFANA_ANONYMOUS_ROLE:-Viewer}

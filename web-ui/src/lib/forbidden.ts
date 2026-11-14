@@ -25,6 +25,8 @@ export interface ForbiddenEvent {
   method: string;
   /** The request was marked `sideRead` (AxiosRequestConfig). */
   sideRead: boolean;
+  /** `window.location.pathname` when the request was sent; the shell drops a refusal that lands on another page. */
+  pathname: string;
 }
 
 const FALLBACK = 'Forbidden';

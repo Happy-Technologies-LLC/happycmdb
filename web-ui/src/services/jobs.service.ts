@@ -34,7 +34,8 @@ export interface JobFilters {
 
 export interface JobListResponse {
   jobs: Job[];
-  total: number;
+  /** True only when the backend reports a job after this page; the API returns no total. */
+  hasMore: boolean;
   limit: number;
   offset: number;
 }
@@ -53,10 +54,9 @@ interface ApiEnvelope<T> {
 }
 
 interface RawPagination {
-  total: number;
-  limit: number;
-  offset: number;
-  hasMore: boolean;
+  limit?: number;
+  offset?: number;
+  hasMore?: boolean;
 }
 
 /**
@@ -129,10 +129,7 @@ class JobsService {
 
     return {
       jobs,
-      // The backend now reports a real total (BullMQ job counts for the
-      // requested state); only fall back to the observed slice length if an
-      // older/unpatched backend omits the pagination block.
-      total: pagination?.total ?? offset + jobs.length,
+      hasMore: pagination?.hasMore === true,
       limit: pagination?.limit ?? limit,
       offset: pagination?.offset ?? offset,
     };

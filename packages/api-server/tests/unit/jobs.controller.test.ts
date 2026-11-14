@@ -261,7 +261,7 @@ describe('JobsController', () => {
   });
 
   describe('getFailedJobs (bounded pagination)', () => {
-    it('defaults to start=0 end=99 and includes queueName + maxAttempts per job', async () => {
+    it('reads the default 100-job page plus one probe position and includes queueName + maxAttempts per job', async () => {
       mockQueueManager.getFailedJobs.mockResolvedValue([mockBullJob({ failedReason: 'boom' })]);
       const req = { params: { queueName: 'discovery-nmap' }, query: {},
         user: { _organizationId: '11111111-1111-4111-8111-111111111111' } } as unknown as Request;
@@ -269,13 +269,13 @@ describe('JobsController', () => {
 
       await controller.getFailedJobs(req, res);
 
-      expect(mockQueueManager.getFailedJobs).toHaveBeenCalledWith('discovery-nmap', 0, 99);
+      expect(mockQueueManager.getFailedJobs).toHaveBeenCalledWith('discovery-nmap', 0, 100);
       const payload = (res.json as jest.Mock).mock.calls[0][0] as { data: { failedJobs: unknown[] } };
       expect(payload.data.failedJobs[0]).toMatchObject({ queueName: 'discovery-nmap', maxAttempts: 3 });
       expect(JSON.stringify(payload.data.failedJobs[0])).not.toContain('boom');
     });
 
-    it('honors explicit start/end query params for bounded pagination', async () => {
+    it('honors explicit start/end query params, reading one probe position past end', async () => {
       mockQueueManager.getFailedJobs.mockResolvedValue([]);
       const req = {
         params: { queueName: 'discovery-nmap' },
@@ -285,7 +285,7 @@ describe('JobsController', () => {
 
       await controller.getFailedJobs(req, res);
 
-      expect(mockQueueManager.getFailedJobs).toHaveBeenCalledWith('discovery-nmap', 10, 19);
+      expect(mockQueueManager.getFailedJobs).toHaveBeenCalledWith('discovery-nmap', 10, 20);
     });
   });
 

@@ -280,9 +280,6 @@ services:
         condition: service_healthy
     ports:
       - "3000:3000"
-    cap_add:
-      - NET_RAW
-      - NET_ADMIN
     environment:
       - NODE_ENV=production
       # HAP-1091: one proxy (web-ui nginx, the first hop) in front of the api. Callers of the published :3000 port

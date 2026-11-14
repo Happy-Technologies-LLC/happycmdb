@@ -319,14 +319,18 @@ describe('limiter store errors outside login (HAP-1764)', () => {
   });
 });
 
-/** Every password change reaches the service as a wrong current password (400) unless the limiter answers first. */
+/**
+ * Every password change reaches the service as a wrong current password (400) unless the limiter answers first.
+ * `chain.ready` is the audit chain's readiness; a request without X-Test-User is unauthenticated (401).
+ */
 function passwordApp(redis: FakeRedis) {
   const reached: string[] = [];
+  const chain = { ready: true };
   const authService = {
     login: async () => {
       throw new AuthFailureError('invalid');
     },
-    auditChainReady: () => true,
+    auditChainReady: () => chain.ready,
     auditPasswordChange: async () => undefined,
     changePassword: async (userId: string) => {
       reached.push(userId);
@@ -334,9 +338,14 @@ function passwordApp(redis: FakeRedis) {
     },
   } as unknown as AuthService;
   const pass = () => (_req: unknown, _res: unknown, next: () => void) => next();
-  // The verified subject comes from the test's X-Test-User header (stands in for the JWT).
-  const authenticate = () => (req: express.Request, _res: unknown, next: () => void) => {
-    (req as express.Request & { user?: unknown }).user = { _userId: req.header('X-Test-User') };
+  // The verified subject comes from the test's X-Test-User header (stands in for the JWT); none = unauthenticated.
+  const authenticate = () => (req: express.Request, res: express.Response, next: () => void) => {
+    const user = req.header('X-Test-User');
+    if (!user) {
+      res.status(401).json({ success: false, error: 'Unauthorized' });
+      return;
+    }
+    (req as express.Request & { user?: unknown }).user = { _userId: user };
     next();
   };
   const authMiddleware = new Proxy({}, { get: (_target, name) => (name === 'authenticate' ? authenticate : pass) });
@@ -346,7 +355,7 @@ function passwordApp(redis: FakeRedis) {
   app.use(express.json());
   app.use('/api/v1/auth', new AuthController(authService, new ValidationMiddleware(),
     authMiddleware as unknown as AuthMiddleware, limiter).getRouter());
-  return { app, reached };
+  return { app, reached, chain };
 }
 
 const changePassword = (app: express.Express, userId: string, clientAddress: string) =>
@@ -384,5 +393,32 @@ describe('PUT /auth/password rate limiting (HAP-1368)', () => {
     expect([res.status, res.headers['cache-control']]).toEqual([503, 'no-store']);
     expect(reached).toEqual([]);
     expect(text).not.toContain(STORE_NEEDLE);
+  });
+
+  it('with the audit chain not ready, the 503 (no-store) spends neither bucket: the full budgets remain once it is ready (HAP-1712)', async () => {
+    const { app, reached, chain } = passwordApp(new FakeRedis());
+    chain.ready = false;
+    const refused = [];
+    for (let i = 0; i < CLIENT_MAX + 1; i++) refused.push(await changePassword(app, 'user-a', '198.51.100.9'));
+    expect(refused.map(res => [res.status, res.headers['cache-control'], res.body])).toEqual(Array(CLIENT_MAX + 1).fill(
+      [503, 'no-store', { success: false, error: 'Service Unavailable', message: 'Password change temporarily unavailable' }]));
+    expect(reached).toEqual([]);
+
+    chain.ready = true;
+    // Same client and user: a spent client bucket (4) or user bucket (2) would answer 429 before the second 400.
+    const statuses: number[] = [];
+    for (let i = 0; i <= ACCOUNT_MAX; i++) statuses.push((await changePassword(app, 'user-a', '198.51.100.9')).status);
+    expect(statuses).toEqual([...Array(ACCOUNT_MAX).fill(400), 429]);
+  });
+
+  it('an unauthenticated request is 401 whether or not the audit chain is ready, never the 503', async () => {
+    const { app, chain } = passwordApp(new FakeRedis());
+    const statuses: number[] = [];
+    for (const ready of [true, false]) {
+      chain.ready = ready;
+      statuses.push((await request(app).put('/api/v1/auth/password')
+        .send({ currentPassword: randomUUID(), newPassword: randomUUID() })).status);
+    }
+    expect(statuses).toEqual([401, 401]);
   });
 });

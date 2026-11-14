@@ -7,6 +7,7 @@
  */
 
 import { randomBytes, createHash } from 'crypto';
+import { isIP } from 'net';
 import { logger, type AuditLogEntry, type ConfigSchema } from '@cmdb/common';
 import { JWTService, TokenVerificationError } from './jwt.service';
 import { PasswordService } from './password.service';
@@ -113,6 +114,16 @@ export class CurrentPasswordIncorrectError extends Error {
 
 /** Audited outcome of a self-service password change attempt (HAP-1368). */
 export type PasswordChangeOutcome = 'success' | 'wrong_password';
+
+/**
+ * HAP-1711: the client address for an audit row, only when it is a bare IPv4/IPv6 literal that Postgres `inet` stores
+ * as a host address; anything else is undefined (a null ip_address). req.ip can be a zone-id IPv6 (net.isIP accepts
+ * `fe80::1%eth0`, inet rejects it), a non-IP leftmost X-Forwarded-For under an over-broad TRUST_PROXY, or text with a
+ * /prefix (inet would store a network mask); one such value would otherwise fail the audit insert and lose the row.
+ */
+export function auditClientAddress(ip: string | undefined): string | undefined {
+  return ip !== undefined && isIP(ip) !== 0 && !ip.includes('%') ? ip : undefined;
+}
 
 /** The user's credential generation (absent = 0; NaN when malformed). */
 function credentialEpochOf(user: Pick<User, '_credentialEpoch'>): number {
@@ -595,7 +606,7 @@ export class AuthService {
     try {
       await this.repository.recordAudit({
         entity_type: 'USER', entity_id: userId, action: 'UPDATE', actor: userId, actor_type: 'user', changes: [],
-        metadata: { operation: 'password_change', outcome }, ip_address: ipAddress,
+        metadata: { operation: 'password_change', outcome }, ip_address: auditClientAddress(ipAddress),
       }, organizationId);
     } catch {
       logger.error('Password change audit write failed');

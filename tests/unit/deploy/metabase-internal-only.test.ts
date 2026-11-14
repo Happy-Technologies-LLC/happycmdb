@@ -2,8 +2,8 @@
  * cm-fu-bi-tenant-scope (cmdb#318 review, operator decision): Metabase is an INTERNAL staff and operator tool. Its BI
  * views contain every organization's rows and Metabase cannot restrict a user to one tenant, so no shipped manifest
  * may publish it: no Ingress / HTTPRoute routes to it, its Service is ClusterIP, and every compose file that publishes
- * its port binds loopback only. Compose files are scanned alone and as merged sets (a sibling `*.override.yml`, every
- * `-f` chain named in tracked scripts and docs), and `include:` fails closed unless it resolves to a tracked file.
+ * its port binds loopback only. Compose files are scanned alone and as merged sets (the default base + override pair
+ * `docker compose` auto-loads per directory, every `-f` chain named in tracked scripts and docs), and `include:` fails closed unless it resolves to a tracked file.
  *
  * Every tracked YAML file is parsed (not grepped). The detectors also run against inline fixtures that DO publish
  * Metabase, so a detector that stopped seeing them (renamed key, new spelling) fails here instead of passing vacuously.
@@ -211,14 +211,24 @@ function nonLoopbackPorts(service: Node): string[] {
   return out;
 }
 
-/** Compose `extends` merge: sequences concatenate, mappings merge key by key, scalars override. */
+/** `networks` as a mapping: the list form `[a, b]` is `{ a: null, b: null }`, which is how compose-go's `mergeNetworks` reads it. */
+const networkMap = (value: unknown): unknown =>
+  Array.isArray(value) ? Object.fromEntries(value.filter((key): key is string => typeof key === 'string').map((key) => [key, null])) : value;
+
+/**
+ * Compose `extends` and multi-file merge: sequences concatenate, mappings merge key by key, scalars override, and a null
+ * override keeps the base (compose-go `MergeYaml`). `networks` may be a list in one file and a mapping in the other: both
+ * are read as mappings and their union is kept, so a host network attached by either survives.
+ */
 function mergeService(base: Node, own: Node): Node {
   const out: Node = { ...base };
   for (const [key, value] of Object.entries(own)) {
-    const inherited = out[key];
-    if (Array.isArray(inherited) && Array.isArray(value)) out[key] = [...inherited, ...value];
-    else if (isMap(inherited) && isMap(value)) out[key] = { ...inherited, ...value };
-    else out[key] = value;
+    if (value === null || value === undefined) continue;
+    const inherited = key === 'networks' ? networkMap(out[key]) : out[key];
+    const next = key === 'networks' ? networkMap(value) : value;
+    if (Array.isArray(inherited) && Array.isArray(next)) out[key] = [...inherited, ...next];
+    else if (isMap(inherited) && isMap(next)) out[key] = { ...inherited, ...next };
+    else out[key] = next;
   }
   return out;
 }
@@ -338,18 +348,25 @@ function composeExposure(doc: unknown): string[] {
   return [...extendsProblems, ...out];
 }
 
-/** Compose multi-file merge of top-level elements: same-named entries merge like `extends` (see `mergeService`), anything else is replaced. */
+/**
+ * Compose multi-file merge of top-level elements: same-named entries merge like `extends` (see `mergeService`), anything
+ * else is replaced. A null element or entry (`services:` or `bi:` with no body) keeps what an earlier file defined.
+ */
 function mergeCompose(docs: readonly Node[]): Node {
   const out: Node = {};
   for (const doc of docs) {
     for (const [key, value] of Object.entries(doc)) {
+      if (value === null || value === undefined) continue;
       const inherited = out[key];
       if (!(isMap(inherited) && isMap(value))) {
         out[key] = value;
         continue;
       }
       const entries: Node = { ...inherited };
-      for (const [name, entry] of Object.entries(value)) entries[name] = isMap(entries[name]) && isMap(entry) ? mergeService(entries[name] as Node, entry) : entry;
+      for (const [name, entry] of Object.entries(value)) {
+        const prior = entries[name];
+        entries[name] = (entry === null || entry === undefined) && prior !== undefined ? prior : isMap(prior) && isMap(entry) ? mergeService(prior, entry) : entry;
+      }
       out[key] = entries;
     }
   }
@@ -407,33 +424,81 @@ function composeSetExposure(files: readonly string[], load: ComposeLoader): stri
   return [...new Set([...loaded.flatMap(({ problems }) => problems), ...composeExposure(mergeCompose(loaded.map(({ doc }) => doc)))])];
 }
 
-const COMPOSE_NAME = /^(.*\/)?([^/]*compose[^/]*?)\.(ya?ml)$/i;
-
-/** The compose files named by `-f` / `--file` in each compose command of a script or doc, per command, in order. */
-function composeChains(text: string): string[][] {
-  return text
-    .replace(/\\\r?\n\s*/g, ' ')
-    .split(/\r?\n/)
-    .flatMap((line) => line.split(/&&|\|\||[;|]/))
-    .filter((command) => /\bcompose\b/i.test(command))
-    .map((command) => [...command.matchAll(/(?:^|\s)(?:-f|--file)(?:\s+|=)["']?([^\s"'<>|;&`$]+\.ya?ml)/g)].map((match) => posix.normalize(match[1])))
-    .filter((chain) => chain.length > 0);
+/** Where a `-f` / `--file` chain's files may be, and what could not be resolved. */
+interface ComposeChains {
+  /** Chains whose files are all tracked, one per base directory they resolve against. */
+  chains: string[][];
+  /** Commands that merge two or more files and could not be resolved to tracked files (fail closed). */
+  unresolved: string[];
 }
 
+const FLAG_VALUE = /(?:^|\s)(?:-f|--file)(?:\s+|=)("[^"]*"|'[^']*'|\S+)/g;
+const COMPOSE_FILE_VALUE = /^[^\s"'<>|;&`$()]+\.ya?ml$/;
+const CD_COMMAND = /^\(?\s*(?:cd|pushd)(?:\s+(?:--\s+)?(\S.*))?$/;
+
+const stripQuotes = (token: string): string => token.replace(/^["']+|["'`)]+$/g, '');
+
 /**
- * The merged sets to scan: every compose file alone; each compose file with its sibling `<name>.override.<ext>` (what
- * `docker compose` loads on its own for `docker-compose.yml`); and every `-f` chain of `chains` whose files are all tracked.
+ * The compose files named by `-f` / `--file` in each compose command of a script or doc, in order. Paths are relative to
+ * the command's working directory, which the text does not fix, so a chain is tried against the repo root, the
+ * directory of the text (`dir`) and every directory a preceding `cd` / `pushd` leads to; every base under which all of its
+ * files are in `known` yields a chain. A command that merges two or more files is reported in `unresolved` when no base
+ * resolves it, when one of its `-f` values is a placeholder (`"$X"`, `<override>`: the whole chain, never a truncated
+ * one), or when a `cd` to an unknown directory precedes it. A single `-f` adds nothing beyond the file scanned alone.
+ */
+function composeChains(text: string, dir: string, known: ReadonlySet<string>): ComposeChains {
+  const home = posix.normalize(dir) === '.' ? '' : posix.normalize(dir);
+  const bases = new Set(['', home]);
+  let cwdKnown = true;
+  const chains = new Map<string, string[]>();
+  const unresolved: string[] = [];
+  const commands = text
+    .replace(/\\\r?\n\s*/g, ' ')
+    .split(/\r?\n/)
+    .flatMap((line) => line.split(/&&|\|\||[;|]/));
+  for (const command of commands) {
+    const cd = CD_COMMAND.exec(command.trim());
+    if (cd) {
+      const target = stripQuotes(/^("[^"]*"|'[^']*'|\S+)/.exec((cd[1] ?? '').trim())?.[1] ?? '');
+      if (target === '' || target === '-' || /[$~`]/.test(target) || posix.isAbsolute(target)) cwdKnown = false;
+      else for (const base of [...bases]) bases.add(posix.normalize(posix.join(base, target)));
+      continue;
+    }
+    if (!/\bcompose\b/i.test(command)) continue;
+    // a `-f` whose value is neither a compose file nor a placeholder (`logs -f --tail=50`, `rm -f dir`) is not a file flag
+    const values = [...command.matchAll(FLAG_VALUE)].map((match) => stripQuotes(match[1])).filter((value) => COMPOSE_FILE_VALUE.test(value) || /[$<`]/.test(value));
+    const files = values.filter((value) => COMPOSE_FILE_VALUE.test(value));
+    const placeholder = values.length > files.length;
+    if (values.length === 0) continue;
+    const resolved = placeholder || files.some((file) => posix.isAbsolute(file))
+      ? []
+      : [...bases].map((base) => files.map((file) => posix.normalize(posix.join(base, file)))).filter((chain) => chain.every((file) => known.has(file)));
+    for (const chain of resolved) chains.set(chain.join('\0'), chain);
+    if (values.length >= 2 && (placeholder || resolved.length === 0 || !cwdKnown)) unresolved.push(command.trim());
+  }
+  return { chains: [...chains.values()], unresolved };
+}
+
+/** compose-go's default file names, in the order it takes the first: `cli/options.go` `DefaultFileNames` / `DefaultOverrideFileNames`. */
+const DEFAULT_COMPOSE_FILES = ['compose.yaml', 'compose.yml', 'docker-compose.yml', 'docker-compose.yaml'];
+const DEFAULT_OVERRIDE_FILES = ['compose.override.yml', 'compose.override.yaml', 'docker-compose.override.yml', 'docker-compose.override.yaml'];
+
+/**
+ * The merged sets to scan: every compose file alone; the pair `docker compose` loads on its own in a directory, which is
+ * the first default base file there (`compose.yaml`, `compose.yml`, `docker-compose.yml`, `docker-compose.yaml`) plus the
+ * first existing default override (`compose.override.yml`, `.yaml`, `docker-compose.override.yml`, `.yaml`), whatever
+ * their stems or extensions; and every `-f` chain of `chains` (already resolved to tracked files).
  */
 function composeSets(files: readonly string[], chains: readonly (readonly string[])[]): string[][] {
   const known = new Set(files);
   const sets = new Map<string, string[]>();
   const add = (set: string[]) => sets.set(set.join('\0'), set);
-  for (const file of files) {
-    if (!/compose/i.test(file)) continue;
-    add([file]);
-    const match = COMPOSE_NAME.exec(file);
-    const override = match && `${match[1] ?? ''}${match[2]}.override.${match[3]}`;
-    if (override && known.has(override)) add([file, override]);
+  for (const file of files) if (/compose/i.test(file)) add([file]);
+  for (const dir of new Set(files.map((file) => posix.dirname(file)))) {
+    const inDir = (name: string) => (dir === '.' ? name : `${dir}/${name}`);
+    const base = DEFAULT_COMPOSE_FILES.map(inDir).find((file) => known.has(file));
+    const override = DEFAULT_OVERRIDE_FILES.map(inDir).find((file) => known.has(file));
+    if (base && override) add([base, override]);
   }
   for (const chain of chains) if (chain.every((file) => known.has(file))) add([...chain]);
   return [...sets.values()];
@@ -461,9 +526,12 @@ const loadTracked: ComposeLoader = (file) => (YAML_FILES.includes(file) ? docsOf
 
 // Compose files named by `-f` in tracked scripts and docs (this test's own fixtures excluded).
 const SELF = 'tests/unit/deploy/metabase-internal-only.test.ts';
-const CHAIN_FILES = execFileSync('git', ['grep', '-lIz', '-E', '(-f|--file)[ =]+["\']?[^ ]+\\.ya?ml', '--', '.', `:(exclude)${SELF}`], { cwd: REPO, encoding: 'utf8' })
+const CHAIN_FILES = execFileSync('git', ['grep', '-lIz', '-E', '(^|[[:space:]])(-f|--file)([[:space:]]|=)', '--', '.', `:(exclude)${SELF}`], { cwd: REPO, encoding: 'utf8' })
   .split('\0').filter(Boolean);
-const SCRIPT_CHAINS = CHAIN_FILES.flatMap((file) => composeChains(readFileSync(join(REPO, file), 'utf8')));
+const KNOWN_YAML = new Set(YAML_FILES);
+const SCRIPT_CHAIN_RESULTS = CHAIN_FILES.map((file) => ({ file, ...composeChains(readFileSync(join(REPO, file), 'utf8'), posix.dirname(file), KNOWN_YAML) }));
+const SCRIPT_CHAINS = SCRIPT_CHAIN_RESULTS.flatMap(({ chains }) => chains);
+const UNRESOLVED_CHAINS = SCRIPT_CHAIN_RESULTS.flatMap(({ file, unresolved }) => unresolved.map((command) => `${file}: ${command}`));
 const COMPOSE_SETS = composeSets(YAML_FILES, SCRIPT_CHAINS);
 
 describe('Metabase is internal-only (staff and operator tool)', () => {
@@ -495,10 +563,13 @@ describe('Metabase is internal-only (staff and operator tool)', () => {
     expect(exposure).toEqual([]);
   });
 
-  it('scans every tracked compose file alone and each -f chain or sibling override as a merged set, so the set scan cannot go vacuous', () => {
-    expect(COMPOSE_SETS).toEqual(expect.arrayContaining(COMPOSE_FILES.map((file) => [file])));
+  it('finds the shipped -f chain, so the chain extraction cannot go vacuous', () => {
     expect(SCRIPT_CHAINS).toContainEqual(['infrastructure/docker/docker-compose.yml']);
-    expect(composeExposure(parseYaml(readFileSync(join(REPO, 'infrastructure/docker/docker-compose.yml'), 'utf8')))).toEqual([]);
+  });
+
+  it('no tracked script or doc merges several compose files that this scan cannot resolve, except the reviewed generated override', () => {
+    // deploy/BUILD01-STAGING.md adds a generation override that is produced at deploy time and never tracked.
+    expect([...new Set(UNRESOLVED_CHAINS.map((entry) => entry.split(': ')[0]))]).toEqual(['deploy/BUILD01-STAGING.md']);
   });
 
   describe('detectors', () => {
@@ -911,23 +982,73 @@ describe('Metabase is internal-only (staff and operator tool)', () => {
         expect(setOf(files, 'b.yml', 'a.yml')).toEqual([]);
       });
 
+      describe('compose-go merge semantics', () => {
+        const hostNet = 'networks:\n  hostnet:\n    external: true\n    name: host\n';
+        const biNetworks = (networks: string) => `services:\n  bi:\n    image: metabase/metabase\n    networks:${networks}\n${hostNet}`;
+        const attach = (networks: string) => `services:\n  bi:\n    networks:${networks}\n`;
+        const flagged = ['bi: network hostnet is the external host network'];
+
+        it('keep the host network when one file lists networks and the other maps them, in either order', () => {
+          const files = {
+            listHost: biNetworks(' [hostnet]'),
+            mapHost: biNetworks('\n      hostnet:\n        priority: 5'),
+            mapBack: attach('\n      back: {}'),
+            listBack: attach(' [back]'),
+          };
+          expect(setOf(files, 'listHost', 'mapBack')).toEqual(flagged);
+          expect(setOf(files, 'mapHost', 'listBack')).toEqual(flagged);
+          // the override is the one that attaches it
+          expect(setOf({ ...files, base: biNetworks(' [back]') }, 'base', 'mapHost')).toEqual(flagged);
+          expect(setOf({ ...files, base: biNetworks('\n      back: {}') }, 'base', 'listHost')).toEqual(flagged);
+          // same form on both sides, and no host network on either side
+          expect(setOf(files, 'listHost', 'listBack')).toEqual(flagged);
+          expect(setOf({ ...files, base: biNetworks(' [back]') }, 'base', 'mapBack')).toEqual([]);
+          expect(setOf({ ...files, base: biNetworks('\n      back: {}') }, 'base', 'listBack')).toEqual([]);
+        });
+
+        it('keep the host network of a base service that an extending service gives a networks mapping', () => {
+          const text = `services:\n  base:\n    image: metabase/metabase\n    networks: [hostnet]\n  reports:\n    extends: base\n    networks:\n      back: {}\n${hostNet}`;
+          expect(composeExposure(parseYaml(text))).toEqual(['base: network hostnet is the external host network', 'reports: network hostnet is the external host network']);
+        });
+
+        it('keep the base service when an override names it with a null body, and the base services when an override has none', () => {
+          const exposed = 'services:\n  bi:\n    image: metabase/metabase\n    ports:\n      - "3002:3000"\n';
+          expect(setOf({ a: exposed, b: 'services:\n  bi:\n' }, 'a', 'b')).toEqual(['bi: ports 3002:3000']);
+          expect(setOf({ a: exposed, b: 'services:\n' }, 'a', 'b')).toEqual(['bi: ports 3002:3000']);
+          expect(setOf({ a: exposed, b: 'services:\n  bi:\n    ports:\n' }, 'a', 'b')).toEqual(['bi: ports 3002:3000']);
+        });
+      });
+
       it('report a set file that cannot be read instead of skipping it', () => {
         expect(setOf({ 'a.yml': base }, 'a.yml', 'missing.yml')).toEqual(['missing.yml: not a readable in-repo compose file']);
       });
 
-      it('pair each compose file with its sibling override and every -f chain that names tracked files', () => {
-        const files = ['docker-compose.yml', 'docker-compose.override.yml', 'infra/compose.yaml', 'infra/compose.override.yaml', 'deploy/b.compose.yml', 'deploy/ci.yml', 'plain.yml'];
-        const sets = composeSets(files, [['deploy/b.compose.yml', 'deploy/ci.yml'], ['docker-compose.prod.yml'], ['deploy/ci.yml', 'ghost.yml']]);
-        expect(sets).toEqual([
-          ['docker-compose.yml'],
-          ['docker-compose.yml', 'docker-compose.override.yml'],
-          ['docker-compose.override.yml'],
-          ['infra/compose.yaml'],
-          ['infra/compose.yaml', 'infra/compose.override.yaml'],
-          ['infra/compose.override.yaml'],
-          ['deploy/b.compose.yml'],
-          ['deploy/b.compose.yml', 'deploy/ci.yml'],
+      it('pair each directory\'s first default base file with its first default override, whatever their stems or extensions', () => {
+        const files = [
+          'docker-compose.yml', 'compose.override.yml', 'plain.yml',
+          'a/docker-compose.yml', 'a/docker-compose.override.yaml',
+          'b/compose.yaml', 'b/compose.yml', 'b/compose.override.yaml', 'b/docker-compose.override.yml',
+          'c/docker-compose.override.yml',
+          'd/x.compose.yml', 'd/x.compose.override.yml',
+        ];
+        const sets = composeSets(files, [['docker-compose.yml', 'plain.yml'], ['docker-compose.prod.yml'], ['plain.yml', 'ghost.yml']]);
+        // every compose-named file alone, in addition to the pairs and the chain whose files are all tracked
+        expect(sets).toEqual(expect.arrayContaining(files.filter((file) => /compose/.test(file)).map((file) => [file])));
+        expect(sets.filter((set) => set.length > 1)).toEqual([
+          ['docker-compose.yml', 'compose.override.yml'],
+          ['a/docker-compose.yml', 'a/docker-compose.override.yaml'],
+          ['b/compose.yaml', 'b/compose.override.yaml'],
+          ['docker-compose.yml', 'plain.yml'],
         ]);
+      });
+
+      it('flag a public port added by an override of another stem or extension than the base, as docker compose auto-loads it', () => {
+        const overrideBody = 'services:\n  bi:\n    ports:\n      - "3002:3000"\n';
+        for (const [baseName, overrideName] of [['docker-compose.yml', 'compose.override.yml'], ['docker-compose.yml', 'docker-compose.override.yaml']]) {
+          const files = { [baseName]: base, [overrideName]: overrideBody };
+          const exposure = composeSets(Object.keys(files), []).flatMap((set) => setOf(files, ...set));
+          expect(exposure).toEqual(['bi: ports 3002:3000']);
+        }
       });
 
       it('read the -f chains of a script or doc: continuations, quotes, --file, several commands per line, and not other tools', () => {
@@ -935,12 +1056,57 @@ describe('Metabase is internal-only (staff and operator tool)', () => {
           'docker compose -f a.yml \\',
           '  -f "b.override.yml" up -d',
           'docker-compose --file=c.yml --file d.yml ps',
-          '`docker compose -p <project> -f deploy/x.compose.yml -f <generation override> exec api`',
           'docker compose -f e.yml down && docker compose -f f.yml -f g.yml up',
           'kubectl apply -f manifest.yaml',
           'docker compose -f "$FILE" up',
+          'docker compose logs -f api',
         ].join('\n');
-        expect(composeChains(text)).toEqual([['a.yml', 'b.override.yml'], ['c.yml', 'd.yml'], ['deploy/x.compose.yml'], ['e.yml'], ['f.yml', 'g.yml']]);
+        const known = new Set(['a.yml', 'b.override.yml', 'c.yml', 'd.yml', 'e.yml', 'f.yml', 'g.yml', 'manifest.yaml']);
+        expect(composeChains(text, '.', known)).toEqual({ chains: [['a.yml', 'b.override.yml'], ['c.yml', 'd.yml'], ['e.yml'], ['f.yml', 'g.yml']], unresolved: [] });
+      });
+
+      it('report a chain with a placeholder file as unresolved instead of truncating it to its literal files', () => {
+        const known = new Set(['a.yml', 'b.yml', 'deploy/x.compose.yml']);
+        const { chains, unresolved } = composeChains('docker compose -f a.yml -f "$EXTRA" -f b.yml up\n`docker compose -f deploy/x.compose.yml -f <generation override> exec api`', '.', known);
+        expect(chains).toEqual([]);
+        expect(unresolved).toHaveLength(2);
+        // every file a placeholder: still a multi-file chain, not an empty one
+        expect(composeChains('docker compose -f "$ROOT/a.yml" -f "$ROOT/b.yml" up', '.', known).unresolved).toHaveLength(1);
+        // `logs -f` (follow) beside one file is not a second file
+        expect(composeChains('docker compose -f a.yml logs -f --tail=50 api', '.', known)).toEqual({ chains: [['a.yml']], unresolved: [] });
+      });
+
+      it('resolve a chain against the directory a preceding cd leads to, or against the directory of the script or doc', () => {
+        const known = new Set(['infra/docker/docker-compose.yml', 'infra/docker/docker-compose.bi.yml']);
+        const chain = [['infra/docker/docker-compose.yml', 'infra/docker/docker-compose.bi.yml']];
+        const afterCd = composeChains('cd infra/docker && docker compose -f docker-compose.yml -f docker-compose.bi.yml up -d', '.', known);
+        expect(afterCd).toEqual({ chains: chain, unresolved: [] });
+        const quotedCd = composeChains('cd "infra/docker"\ndocker compose -f docker-compose.yml -f docker-compose.bi.yml up -d', 'scripts', known);
+        expect(quotedCd).toEqual({ chains: chain, unresolved: [] });
+        // no cd: relative to the script's or doc's own directory
+        expect(composeChains('docker compose -f docker-compose.yml -f docker-compose.bi.yml up -d', 'infra/docker', known)).toEqual({ chains: chain, unresolved: [] });
+      });
+
+      it('report a chain of several files that no base directory resolves, or that follows a cd to an unknown directory', () => {
+        const known = new Set(['a.yml', 'b.yml']);
+        // files that are not tracked, an absolute path, and a cd into a variable directory
+        expect(composeChains('docker compose -f ghost.yml -f b.yml up', '.', known).unresolved).toHaveLength(1);
+        expect(composeChains('docker compose -f /srv/a.yml -f /srv/b.yml up', '.', known).unresolved).toHaveLength(1);
+        expect(composeChains('cd "$DEPLOY_DIR" && docker compose -f a.yml -f b.yml up', '.', known).unresolved).toHaveLength(1);
+        expect(composeChains('cd ~/stack && docker compose -f a.yml -f b.yml up', '.', known).unresolved).toHaveLength(1);
+        // a single file adds nothing to the file scanned alone
+        expect(composeChains('cd "$DEPLOY_DIR" && docker compose -f ghost.yml up', '.', known).unresolved).toEqual([]);
+      });
+
+      it('flag a public port added by the second file of a chain written after cd, which a repo-root-only reading would drop', () => {
+        const files = {
+          'infra/docker/docker-compose.yml': base,
+          'infra/docker/docker-compose.bi.yml': 'services:\n  bi:\n    ports:\n      - "3002:3000"\n',
+        };
+        const { chains, unresolved } = composeChains('cd infra/docker && docker compose -f docker-compose.yml -f docker-compose.bi.yml up -d', '.', new Set(Object.keys(files)));
+        const exposure = composeSets(Object.keys(files), chains).flatMap((set) => setOf(files, ...set));
+        expect(unresolved).toEqual([]);
+        expect(exposure).toEqual(['bi: ports 3002:3000']);
       });
 
       describe('include:', () => {

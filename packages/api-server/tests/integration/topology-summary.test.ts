@@ -28,6 +28,7 @@ jest.mock('../../src/auth/neo4j-auth.repository', () => ({
 import { JWTService } from '../../src/auth/jwt.service';
 import { getAuthMiddleware } from '../../src/auth/auth-bootstrap';
 import { analyticsRoutes } from '../../src/rest/routes/analytics.routes';
+import { readTopologySummary } from '../../src/services/topology-summary.service';
 
 const graph = getNeo4jClient();
 const sql = getPostgresClient();
@@ -220,4 +221,95 @@ it('leaves a CI with a pending or failed reconciliation operation out of nodes, 
 it('answers 401 without credentials and 403 for an identity without an organization', async () => {
   expect((await request(app).get('/api/v1/analytics/topology-summary')).status).toBe(401);
   expect((await summary('none')).status).toBe(403);
+});
+
+// Organization scope of the Cypher itself, called without the route so it spends no admission budget. Each case owns
+// two organizations and distinct ids, so no other fixture in this file can satisfy or disturb it.
+const readFor = async (organizationId: string, nodeLimit = 200) => {
+  const session = graph.getSession();
+  try {
+    return await readTopologySummary(session, organizationId,
+      { nodeLimit, edgeLimit: 200, includeInactive: false }, [], 10_000);
+  } finally { await session.close(); }
+};
+
+it('counts only same-organization neighbours toward a node\'s degree (degree subquery organization clause)', async () => {
+  const C = '10000000-0000-4000-8000-0000000000c1';
+  const D = '10000000-0000-4000-8000-0000000000d1';
+  // Same-organization degrees: y 2 (q1, q2), x 1 (p), p 1, q1 1, q2 1. x also touches two ACTIVE org D CIs, one in
+  // each direction: counted, x would have degree 3 and outrank y. Everything else is equal, so degree alone decides.
+  await cypher(`
+    CREATE (x:CI {id:'topo-scope-deg-x', name:'x', type:'server', status:'active', organization_id:$c})
+    CREATE (y:CI {id:'topo-scope-deg-y', name:'y', type:'server', status:'active', organization_id:$c})
+    CREATE (p:CI {id:'topo-scope-deg-p', name:'p', type:'server', status:'active', organization_id:$c})
+    CREATE (q1:CI {id:'topo-scope-deg-q1', name:'q1', type:'server', status:'active', organization_id:$c})
+    CREATE (q2:CI {id:'topo-scope-deg-q2', name:'q2', type:'server', status:'active', organization_id:$c})
+    CREATE (f1:CI {id:'topo-scope-deg-f1', name:'f1', type:'server', status:'active', organization_id:$d})
+    CREATE (f2:CI {id:'topo-scope-deg-f2', name:'f2', type:'server', status:'active', organization_id:$d})
+    CREATE (x)-[:CONNECTS_TO]->(p)
+    CREATE (y)-[:CONNECTS_TO]->(q1)
+    CREATE (y)-[:CONNECTS_TO]->(q2)
+    CREATE (x)-[:CONNECTS_TO]->(f1)
+    CREATE (f2)-[:CONNECTS_TO]->(x)`, { c: C, d: D });
+  try {
+    const summary = await readFor(C);
+    expect(ids(summary.nodes)).toEqual(['topo-scope-deg-y', 'topo-scope-deg-p', 'topo-scope-deg-q1',
+      'topo-scope-deg-q2', 'topo-scope-deg-x']);
+    expect(summary.edges).toEqual([
+      { source: 'topo-scope-deg-x', target: 'topo-scope-deg-p', type: 'CONNECTS_TO' },
+      { source: 'topo-scope-deg-y', target: 'topo-scope-deg-q1', type: 'CONNECTS_TO' },
+      { source: 'topo-scope-deg-y', target: 'topo-scope-deg-q2', type: 'CONNECTS_TO' },
+    ]);
+    expect(summary.totals).toEqual({ cis: 5, relationships: 3, nodes_returned: 5, edges_returned: 3, truncated: false });
+    // The top-1 sample is the highest-degree node: y (2), never x.
+    expect(ids((await readFor(C, 1)).nodes)).toEqual(['topo-scope-deg-y']);
+  } finally {
+    await cypher("MATCH (ci:CI) WHERE ci.id STARTS WITH 'topo-scope-deg-' DETACH DELETE ci");
+  }
+});
+
+// `ci_id_unique` makes a cross-organization id clash unrepresentable, and the edge query only matches ids drawn from
+// the caller's own sample, so its per-end organization clauses are reachable only when a foreign CI reuses a sampled
+// id. These cases drop the constraint for their own duration (suites run sequentially, maxWorkers 1) and restore it.
+describe('edge query organization clause, with a foreign CI reusing a sampled id', () => {
+  const E = '10000000-0000-4000-8000-0000000000e1';
+  const F = '10000000-0000-4000-8000-0000000000f1';
+  let constraintExisted = false;
+  beforeAll(async () => {
+    constraintExisted = (await cypher("SHOW CONSTRAINTS YIELD name WHERE name = 'ci_id_unique' RETURN name")).records.length > 0;
+    await cypher('DROP CONSTRAINT ci_id_unique IF EXISTS');
+  });
+  afterAll(async () => {
+    await cypher("MATCH (ci:CI) WHERE ci.id STARTS WITH 'topo-scope-edge-' DETACH DELETE ci");
+    if (constraintExisted) await cypher('CREATE CONSTRAINT ci_id_unique IF NOT EXISTS FOR (ci:CI) REQUIRE ci.id IS UNIQUE');
+  });
+
+  const control = { source: 'topo-scope-edge-1', target: 'topo-scope-edge-2', type: 'CONNECTS_TO' };
+  // Org E owns edge-1 and edge-2 joined by the control edge. Org F owns a CI that reuses the id of one of them.
+  const plant = (leak: string) => cypher(`
+    CREATE (one:CI {id:'topo-scope-edge-1', name:'one', type:'server', status:'active', organization_id:$e})
+    CREATE (two:CI {id:'topo-scope-edge-2', name:'two', type:'server', status:'active', organization_id:$e})
+    CREATE (one)-[:CONNECTS_TO]->(two)
+    ${leak}`, { e: E, f: F });
+  const wipe = () => cypher("MATCH (ci:CI) WHERE ci.id STARTS WITH 'topo-scope-edge-' DETACH DELETE ci");
+
+  it('drops an edge whose SOURCE is another organization\'s CI (source clause)', async () => {
+    await plant(`CREATE (foreign:CI {id:'topo-scope-edge-1', name:'foreign', type:'server', status:'active', organization_id:$f})
+      CREATE (foreign)-[:LEAKS_SOURCE]->(two)`);
+    try {
+      const summary = await readFor(E);
+      expect(summary.edges).toEqual([control]);
+      expect(summary.totals).toEqual({ cis: 2, relationships: 1, nodes_returned: 2, edges_returned: 1, truncated: false });
+    } finally { await wipe(); }
+  });
+
+  it('drops an edge whose TARGET is another organization\'s CI (target clause)', async () => {
+    await plant(`CREATE (foreign:CI {id:'topo-scope-edge-2', name:'foreign', type:'server', status:'active', organization_id:$f})
+      CREATE (one)-[:LEAKS_TARGET]->(foreign)`);
+    try {
+      const summary = await readFor(E);
+      expect(summary.edges).toEqual([control]);
+      expect(summary.totals).toEqual({ cis: 2, relationships: 1, nodes_returned: 2, edges_returned: 1, truncated: false });
+    } finally { await wipe(); }
+  });
 });

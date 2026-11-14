@@ -99,10 +99,16 @@ per user and refusing bucket (the client bucket, the user bucket) per window, an
 `metadata.bucket` names the refusing bucket (`client`, `user`; the login-only `account` and
 `account-global` buckets do not apply here). Each audit write takes the
 global audit-chain lock, so retries past the limit append no further rows until the window passes
-(a Redis `SET rate-limit:auth-user-refused:<userId>[:client] NX PX <window>` decides; if Redis fails the
-`429` is unchanged and no row is written). The claim is taken before the write so concurrent refusals
-write one row; when the write fails or is skipped (no organization claim) the claim is released
-(`DEL`), so the next `429` in the window retries and the window is not left without its row. Requires PostgreSQL
+(a Redis `SET rate-limit:auth-user-refused:<userId>[:client] <random token> NX PX <window>` decides; if
+Redis fails the `429` is unchanged and no row is written). The claim is taken before the write so
+concurrent refusals write one row. When the write fails or is skipped (no organization claim) the claim
+is not deleted: its TTL is cut to a **30 second backoff** (`REFUSAL_AUDIT_BACKOFF_MS` in
+`rest/auth.controller.ts`), so an audit-store fault costs at most one write attempt per user and bucket
+per 30 seconds, and the first `429` after the backoff retries and writes the row (it never lengthens the
+window: the TTL only shortens). The cut is owner-checked (a Lua compare of the stored token, then
+`PEXPIRE`): a slow write whose claim has expired and been retaken by a later request leaves the newer
+claim alone. If the backoff itself fails (Redis down) the claim keeps its window TTL and no row is
+written for the rest of that window, the same as when the claim fails. Requires PostgreSQL
 migration `049_audit_entity_user.sql`.
 
 **Platform administrators** are a dedicated flag, set only by the operator command

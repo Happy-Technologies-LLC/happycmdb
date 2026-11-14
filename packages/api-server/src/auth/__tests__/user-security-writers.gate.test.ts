@@ -33,6 +33,8 @@
  * it (SET/**\/d.x = 1, SET(d).x = 1, DETACH DELETE(d)) is caught. Known false-positive class, kept failing closed: a JS
  * `new Set(...)`, `Set(`, or `.delete(` in the same `;`/backtick statement as a decision MATCH also fires; the real tree has
  * none, and new code must keep such calls out of the statement that holds the MATCH (words like `settings` do not fire).
+ * A keyword-shaped word that is not a clause (`$set`, `{set: 1}`, `:Set`, `[:REMOVE]`, `(delete:User)`, `d.set`) neither fires
+ * nor ends the MATCH that is collecting labels, so it cannot hide a later decision label (see ROTATION_EVENT).
  * Not covered: a decision label first named after a WITH, CREATE, MERGE, RETURN, UNWIND, CALL or FOREACH keyword of that
  * statement's MATCH (MATCH (d) WITH d WHERE d:CredentialRotationDecision SET d.x = 1), and the limits above (dynamic
  * labels, runtime-built strings, a `;` inside a string value).
@@ -177,14 +179,30 @@ const KEYWORD_BEFORE_ROTATION_LABEL = new RegExp(
 
 /**
  * Per `;`/backtick statement, one pass: a `:CredentialRotationDecision` node in a MATCH or OPTIONAL MATCH clause, then any
- * later `SET|REMOVE|DELETE` followed by whitespace, in any keyword case. Aliases are not tracked (`WITH d AS k SET k...`,
+ * later whole-word `SET|REMOVE|DELETE`, in any keyword case. Aliases are not tracked (`WITH d AS k SET k...`,
  * `FOREACH (x IN [d] | SET x...)`, a second SET item and a SET on another variable all fire): the statement is forbidden
  * whatever the target, so it fails closed. A label right after `MATCH (v` is always a match (main's rule, which as a
  * backreference regex never bound `v`: its `\1` was an unset group and matched empty); a label further into the pattern
  * (`MATCH (u:User)-[:R]->(d:...)`, `MATCH (u:User), (d:...)`) counts while the clause is still the MATCH that opened it.
+ *
+ * HAP-1903 (review of #295): a keyword-shaped word before any decision matched (`$set`, `{set: 1}`, `:Set`, `[:REMOVE]`,
+ * `(delete:User)`) is not a clause, and no mutation token ever ends the MATCH: only a decision match arms the rule, and
+ * only a clause keyword (CREATE, MERGE, WITH, RETURN, UNWIND, CALL, FOREACH) closes the MATCH that is collecting labels.
+ *
+ * A keyword token is not a clause when its neighbours say so: right after `.` (property), `$` (parameter) or `:` (label,
+ * relationship type), or before `:` (map key, variable that is about to take a label). Cypher has no clause there. The
+ * text is host-language source, so quoting, braces and parentheses are NOT tracked: Cypher lives inside the string
+ * literals, and a FOREACH body is a parenthesised SET, so skipping them would open the gate. The exclusions are
+ * asymmetric on purpose: an ignored token can only keep the MATCH open (more forbidden) except where it cannot be a
+ * clause; a mutation word in a string or comment after a decision match still fires (`'SET'` may be a concatenated clause).
+ * The tightly quoted close words (`'with'`, `"return"`) are ignored: they are values, and ignoring one keeps the MATCH open.
  */
+const NOT_ACCESS = String.raw`(?<![.$:])`;
+const NOT_MAP_KEY = String.raw`(?![ \t]*:)`;
+const NOT_QUOTED_VALUE = (words: string): string => String.raw`(?!(?<=['"])${words}['"])`;
+const CLOSE_WORDS = String.raw`(?:CREATE|MERGE|WITH|RETURN|UNWIND|CALL|FOREACH)`;
 const ROTATION_EVENT = new RegExp(
-  String.raw`(?<match>MATCH\s*\(\s*\w*${ROTATION_LABEL})|(?<mutation>\b(?:SET|REMOVE|DELETE)\b)|(?<open>MATCH)|(?<close>\b(?:CREATE|MERGE|WITH|RETURN|UNWIND|CALL|FOREACH)\b)|(?<label>${ROTATION_LABEL})`,
+  String.raw`(?<match>MATCH\s*\(\s*\w*${ROTATION_LABEL})|(?<mutation>${NOT_ACCESS}\b(?:SET|REMOVE|DELETE)\b${NOT_MAP_KEY})|(?<open>MATCH)|(?<close>${NOT_ACCESS}${NOT_QUOTED_VALUE(CLOSE_WORDS)}\b${CLOSE_WORDS}\b${NOT_MAP_KEY})|(?<label>${ROTATION_LABEL})`,
   'gi',
 );
 
@@ -198,7 +216,6 @@ function matchesThenMutatesRotationDecision(text: string): boolean {
       if (match !== undefined) matched = true;
       else if (mutation !== undefined) {
         if (matched) return true;
-        inMatch = false;
       } else if (open !== undefined) inMatch = true;
       else if (close !== undefined) inMatch = false;
       else if (label !== undefined && inMatch) matched = true;
@@ -440,7 +457,7 @@ describe('inventory gate 4: user-security property writers', () => {
   });
 
   const ROTATION_DECISION = 'mutating a rotation decision';
-  it.each([
+  const ROTATION_FORBIDDEN: Array<[string, string]> = [
     ['a lowercase DETACH DELETE of a matched decision (P5)', 'match (d:CredentialRotationDecision {id: $i}) detach delete d'],
     ['a lowercase MERGE of a decision (P5)', 'merge (d:CredentialRotationDecision {id: $i})'],
     ['a SET on the matched variable', 'MATCH (d:CredentialRotationDecision {id: $i}) SET d.note = $n'],
@@ -467,12 +484,24 @@ describe('inventory gate 4: user-security property writers', () => {
     ['HAP-1903 a paren after SET', "MATCH (d:CredentialRotationDecision {eventId:$e}) SET(d).outcome = 'applied'"],
     ['HAP-1903 a paren after DETACH DELETE', 'MATCH (d:CredentialRotationDecision {eventId:$e}) DETACH DELETE(d)'],
     ['HAP-1903 a paren after REMOVE', 'MATCH (d:CredentialRotationDecision {eventId:$e}) REMOVE(d).outcome'],
-    // HAP-1903 known false-positive class, kept failing closed: JS `Set(` / `.delete(` in the SAME statement as a decision
-    // MATCH is indistinguishable from the Cypher keyword without parsing, so it is forbidden and the code must be split.
-    ['HAP-1903 a JS new Set( in the same statement as a decision MATCH', "const Q = 'MATCH (d:CredentialRotationDecision {id: $i}) RETURN d.outcome', ids = new Set(list)"],
-    ['HAP-1903 a JS .delete( in the same statement as a decision MATCH', "const Q = 'MATCH (d:CredentialRotationDecision {id: $i}) RETURN d.outcome', gone = seen.delete(id)"],
+    // HAP-1903 review of #295: a keyword-shaped word in the MATCH pattern, decision label on a later line (main forbade all five).
+    ['HAP-1903 a $set parameter in the MATCH pattern', "MATCH (u:User {id: $set}),\n      (d:CredentialRotationDecision {id: $i})\nSET d.outcome = 'applied'"],
+    ['HAP-1903 a set map key in the MATCH pattern', "MATCH (u:User {set: 1}),\n  (d:CredentialRotationDecision)\nSET d.outcome = 'applied'"],
+    ['HAP-1903 a :Set label in the MATCH pattern', 'MATCH (s:Set),\n  (d:CredentialRotationDecision)\nDETACH DELETE d'],
+    ['HAP-1903 a [:REMOVE] relationship type in the MATCH pattern', "MATCH (u:User)-[:REMOVE]->\n  (d:CredentialRotationDecision)\nSET d.outcome = 'x'"],
+    ['HAP-1903 a delete variable in the MATCH pattern', "MATCH (delete:User),\n  (d:CredentialRotationDecision)\nSET d.outcome = 'x'"],
+    ['HAP-1903 the control without a keyword-shaped word', "MATCH (u:User),\n  (d:CredentialRotationDecision)\nSET d.outcome = 'x'"],
+    // The same class for the words that end a MATCH (CREATE, MERGE, WITH, RETURN, UNWIND, CALL, FOREACH): a value, key, label or
+    // variable spelled like one must not close the MATCH before the decision label either.
+    ['HAP-1903 a return map key in the MATCH pattern', "MATCH (u:User {return: 1}),\n  (d:CredentialRotationDecision)\nSET d.outcome = 'x'"],
+    ['HAP-1903 a $with parameter in the MATCH pattern', "MATCH (u:User {id: $with}),\n  (d:CredentialRotationDecision)\nSET d.outcome = 'x'"],
+    ['HAP-1903 a :Call label in the MATCH pattern', "MATCH (c:Call),\n  (d:CredentialRotationDecision)\nSET d.outcome = 'x'"],
+    ['HAP-1903 a bare set variable in the MATCH pattern (no neighbour marks it; only the state machine saves it)', "MATCH (set)-[:R]->\n  (d:CredentialRotationDecision)\nSET d.x = 1"],
+    ['HAP-1903 a quoted with value in the MATCH pattern', "MATCH (u:User {kind: 'with'}),\n  (d:CredentialRotationDecision)\nSET d.outcome = 'x'"],
+    ['HAP-1903 a keyword-shaped word before a decision matched at once', "MATCH (u:User {id: $set}) MATCH (d:CredentialRotationDecision) SET d.outcome = 'x'"],
     ['the mutation on the next line', 'MATCH (d:CredentialRotationDecision)\n  SET d.x = 1'],
-  ])('HAP-1674 forbids %s', (_label, line) => {
+  ];
+  it.each(ROTATION_FORBIDDEN)('HAP-1674 forbids %s', (_label, line) => {
     expect(forbiddenIn(ROTATION_DECISION, line)).toHaveLength(1);
   });
 
@@ -486,8 +515,76 @@ describe('inventory gate 4: user-security property writers', () => {
       'MATCH (d:CredentialRotationDecision {id: $i}) RETURN d.settings, d.dataset, d.deleted, d.removed_at, d.set_at'],
     ['a JS Set( and delete( in a later statement than the decision read (HAP-1903)',
       "const Q = 'MATCH (d:CredentialRotationDecision {id: $i}) RETURN d.outcome'; const seen = new Set(ids); seen.delete(id);"],
+    // HAP-1903: keyword-shaped parameters, keys, labels, types and properties are not clauses, so a read stays allowed.
+    ['a read with a $set parameter, a set key and a Set label', "MATCH (u:User {id: $set, delete: 1})-[:REMOVE]->(s:Set),\n  (d:CredentialRotationDecision {id: $i})\nRETURN d.outcome, d.set, u.delete"],
+    ['a read with a delete variable and a with key', 'MATCH (delete:User {with: 1}),\n  (d:CredentialRotationDecision)\nRETURN d.outcome'],
   ])('HAP-1674 does not forbid %s', (_label, line) => {
     expect(forbiddenIn(ROTATION_DECISION, line)).toEqual([]);
+  });
+
+  // HAP-1903: main's rule, frozen at origin/main 88e06170 (before the \b tokenising). The gate may only get stricter on
+  // anything main forbade, so every fixture that main forbids must still be forbidden.
+  describe('differential against main\'s rotation-decision rule', () => {
+    const MAIN_EVENT = new RegExp(
+      String.raw`(?<match>MATCH\s*\(\s*\w*${ROTATION_LABEL})|(?<mutation>\b(?:SET|REMOVE|DELETE)\s)|(?<open>MATCH)|(?<close>\b(?:CREATE|MERGE|WITH|RETURN|UNWIND|CALL|FOREACH)\b)|(?<label>${ROTATION_LABEL})`,
+      'gi',
+    );
+    const mainMatchesThenMutates = (text: string): boolean => {
+      for (const statement of text.split(/[;\x60]/)) {
+        let inMatch = false;
+        let matched = false;
+        MAIN_EVENT.lastIndex = 0;
+        for (let event = MAIN_EVENT.exec(statement); event; event = MAIN_EVENT.exec(statement)) {
+          const { match, mutation, open, close, label } = event.groups!;
+          if (match !== undefined) matched = true;
+          else if (mutation !== undefined) {
+            if (matched) return true;
+            inMatch = false;
+          } else if (open !== undefined) inMatch = true;
+          else if (close !== undefined) inMatch = false;
+          else if (label !== undefined && inMatch) matched = true;
+        }
+      }
+      return false;
+    };
+    const mainForbids = (text: string): boolean => KEYWORD_BEFORE_ROTATION_LABEL.test(text) || mainMatchesThenMutates(text);
+    const prForbids = (text: string): boolean => forbiddenIn(ROTATION_DECISION, text).length > 0;
+
+    // Generated: one keyword-shaped word in the first MATCH pattern (every shape the review found), decision on a later line,
+    // then a real mutation of the decision in every spelling.
+    const WORDS = ['set', 'SET', 'Remove', 'delete', 'DELETE'];
+    const PATTERNS: Array<(w: string) => string> = [
+      w => `MATCH (u:User {id: $${w}}),\n  (d:CredentialRotationDecision {id: $i})\n`,
+      w => `MATCH (u:User {${w}: 1}),\n  (d:CredentialRotationDecision)\n`,
+      w => `MATCH (s:${w}),\n  (d:CredentialRotationDecision)\n`,
+      w => `MATCH (u:User)-[:${w}]->\n  (d:CredentialRotationDecision)\n`,
+      w => `MATCH (${w}:User),\n  (d:CredentialRotationDecision)\n`,
+    ];
+    const MUTATIONS = [
+      "SET d.outcome = 'x'",
+      'set d.x = 1',
+      'DETACH DELETE d',
+      'detach delete d',
+      'REMOVE d.outcome',
+      "SET/**/d.outcome = 'x'",
+      "SET(d).outcome = 'x'",
+      'DETACH DELETE(d)',
+      'REMOVE(d).outcome',
+    ];
+    const GENERATED = WORDS.flatMap(w => PATTERNS.flatMap(pattern => MUTATIONS.map(mutation => pattern(w) + mutation)));
+
+    it('forbids every generated keyword-shaped pattern word followed by a real mutation', () => {
+      expect(GENERATED.filter(statement => !prForbids(statement))).toEqual([]);
+    });
+
+    it('forbids every fixture that main forbids', () => {
+      const corpus = [...ROTATION_FORBIDDEN.map(([, line]) => line), ...GENERATED];
+      const forbiddenOnMain = corpus.filter(mainForbids);
+      // Not vacuous: main forbids the pre-HAP-1903 rows and the control, but not the bypasses this review found.
+      expect(forbiddenOnMain.length).toBeGreaterThan(25);
+      expect(forbiddenOnMain.length).toBeLessThan(corpus.length);
+      expect(forbiddenOnMain.filter(statement => !prForbids(statement))).toEqual([]);
+    });
   });
 
   // HAP-1674: hostile 50k+ char lines, one per formerly quadratic regex (the rotation-decision keyword and variable shapes,

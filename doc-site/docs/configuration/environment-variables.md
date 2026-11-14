@@ -216,10 +216,10 @@ never read.
 
 **Deployed value:** the shipped nginx (`web-ui/nginx.conf`, `infrastructure/docker/nginx.conf`) and ingress-nginx
 append the connecting address (`$remote_addr`) to `X-Forwarded-For`, so with nginx as the only proxy in front of the
-API set `TRUST_PROXY=1` (docker-compose, Kubernetes manifest and the staging/production config templates do). Add 1
+API set `TRUST_PROXY=1` (docker-compose, Kubernetes manifest and the production config template do). Add 1
 for each further L7 proxy that appends to or sets `X-Forwarded-For` before nginx: the build01 staging stack runs
 tailscale serve in front of nginx and uses `TRUST_PROXY=2` (`deploy/build01-staging.compose.yml`,
-`HAPPYCMDB_TRUST_PROXY`). Callers that reach the API port directly, bypassing nginx, can forge that hop: do not
+`HAPPYCMDB_TRUST_PROXY`; the staging config template sets 2 to match). Callers that reach the API port directly, bypassing nginx, can forge that hop: do not
 expose it.
 
 **Login limiter keys and failures:** a login is refused with `429` once any of its three buckets is spent (client,

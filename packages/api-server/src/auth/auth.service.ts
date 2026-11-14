@@ -122,8 +122,9 @@ export class CurrentPasswordIncorrectError extends Error {
   }
 }
 
-/** Audited outcome of a self-service password change attempt (HAP-1368). */
-export type PasswordChangeOutcome = 'success' | 'wrong_password';
+/** Audited outcomes of a self-service password change attempt (HAP-1368); the list is what tests enumerate. */
+export const PASSWORD_CHANGE_OUTCOMES = ['success', 'wrong_password'] as const;
+export type PasswordChangeOutcome = (typeof PASSWORD_CHANGE_OUTCOMES)[number];
 
 /**
  * HAP-1711: the client address for an audit row, only when it is a bare IPv4/IPv6 literal that Postgres `inet` stores

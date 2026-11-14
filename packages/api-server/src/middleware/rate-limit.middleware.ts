@@ -14,10 +14,12 @@
  * - Graceful degradation if Redis is unavailable (fail-closed limiters, POST /auth/login and PUT /auth/password, answer
  *   a fixed 503 with Cache-Control: no-store instead; the refresh limiter and other fail-open limiters let it through)
  * - Client identity is req.ip only: Express `trust proxy` (TRUST_PROXY) decides which forwarded hops count
+ * - Limiter keys use clientBucketAddress(req.ip): an IPv6 client is its /64, IPv4-mapped is its IPv4 (HAP-1715)
  * - A store error is logged by class and code only, never its message (HAP-1764, the HAP-1382 pattern)
  */
 
 import { createHash, timingSafeEqual } from 'crypto';
+import { isIP } from 'net';
 import { Request, Response, NextFunction } from 'express';
 import { Redis } from 'ioredis';
 import type { ConfigSchema } from '@cmdb/common';
@@ -31,6 +33,48 @@ const RATE_LIMIT_UNAVAILABLE = Object.freeze({
   _error: 'Service Unavailable',
   _message: 'Rate limiting is unavailable. Try again later',
 });
+
+const UNKNOWN_CLIENT = 'unknown';
+
+/** The 8 16-bit groups of an IPv6 address `net.isIP` already accepted (zone id removed), embedded IPv4 included. */
+function ipv6Groups(address: string): number[] {
+  let text = address;
+  const dot = text.lastIndexOf('.');
+  if (dot !== -1) {
+    const colon = text.lastIndexOf(':');
+    const [a, b, c, d] = text.slice(colon + 1).split('.').map(Number) as [number, number, number, number];
+    text = `${text.slice(0, colon + 1)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head = '', tail] = text.split('::');
+  const left = head === '' ? [] : head.split(':');
+  const right = tail === undefined || tail === '' ? [] : tail.split(':');
+  const zeros = tail === undefined ? 0 : 8 - left.length - right.length;
+  return [...left, ...Array<string>(zeros).fill('0'), ...right].map(group => parseInt(group, 16));
+}
+
+/**
+ * HAP-1715: the address a rate-limit bucket is keyed on, so a client cannot reset a bucket by changing address.
+ * An IPv4 address (and an IPv4-mapped IPv6 one, `::ffff:a.b.c.d`) keys as the IPv4 address; any other IPv6 address
+ * keys as its /64 (`<g1>:<g2>:<g3>:<g4>::/64`, lower-case hex, no leading zeros), the smallest allocation a
+ * residential or cloud client owns whole; a zone id (`%eth0`) is dropped first. A value that is not an IP address
+ * (`unknown`, garbage) keys as one shared `unknown` bucket: it fails closed to shared, never to one bucket per value.
+ */
+export function clientBucketAddress(address: string): string {
+  const bare = address.split('%', 1)[0] ?? '';
+  const family = isIP(bare);
+  if (family === 4) {
+    return bare;
+  }
+  if (family !== 6) {
+    return UNKNOWN_CLIENT;
+  }
+  const groups = ipv6Groups(bare);
+  if (groups.slice(0, 5).every(group => group === 0) && groups[5] === 0xffff) {
+    const [hi, lo] = [groups[6]!, groups[7]!];
+    return `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+  }
+  return `${groups.slice(0, 4).map(group => group.toString(16)).join(':')}::/64`;
+}
 
 export interface RateLimitConfig {
   _max: number;
@@ -300,9 +344,8 @@ export class RateLimitMiddleware {
       return `user:${req.user._userId}`;
     }
 
-    // Fall back to IP address
-    const ip = this.getClientIp(req);
-    return `ip:${ip}`;
+    // Fall back to the client's bucket address (HAP-1715: an IPv6 client is its /64, not its single address)
+    return `ip:${this.getClientKeyAddress(req)}`;
   }
 
   /**
@@ -323,7 +366,7 @@ export class RateLimitMiddleware {
     budget: RateLimitConfig,
     options: LimitOptions
   ): Promise<boolean> {
-    const identifier = options.perUser === true ? `ip:${this.getClientIp(req)}` : this.getIdentifier(req);
+    const identifier = options.perUser === true ? `ip:${this.getClientKeyAddress(req)}` : this.getIdentifier(req);
     const buckets = [{ key: `rate-limit:${endpointType}:${identifier}`, identifier, budget }];
     const account = options.account?.(req);
     const { max, windowMs } = this.config.endpoints.authAccount;
@@ -406,6 +449,11 @@ export class RateLimitMiddleware {
    */
   private getClientIp(req: Request): string {
     return req.ip ?? req.socket.remoteAddress ?? 'unknown';
+  }
+
+  /** The client part of a limiter key: getClientIp, normalized by clientBucketAddress (HAP-1715). */
+  private getClientKeyAddress(req: Request): string {
+    return clientBucketAddress(this.getClientIp(req));
   }
 
   /**

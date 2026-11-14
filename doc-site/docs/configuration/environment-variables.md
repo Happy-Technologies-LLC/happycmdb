@@ -183,7 +183,7 @@ ETL_FULL_SYNC_SCHEDULE="0 3 * * *"  # 3 AM daily
 | `API_KEY_HEADER` | No | `X-API-Key` | Header name for API key |
 | `SESSION_SECRET` | No | - | Session secret for cookie-based auth |
 | `RATE_LIMIT_REST_MAX` | No | `1000` | `POST /api/v1/auth/refresh` only (per client address, `rateLimit.endpoints.rest`); `0` mounts no limiter. Window: `RATE_LIMIT_REST_WINDOW_MS` (default `3600000`). The login and password-change variables are under [Proxy Trust & Login Rate Limiting](#proxy-trust-login-rate-limiting) |
-| `BCRYPT_ROUNDS` | No | `10` | Bcrypt hashing rounds |
+| `BCRYPT_ROUNDS` | No | `12` | Bcrypt cost, an integer 10-15 (`auth.bcrypt.rounds`); the one cost of the login dummy hash, every password create or change, and the operator scripts `rotate-user-password` and `seed-tenant-fixture` (which read only this variable, not the config file; `CMDB_ROTATE_BCRYPT_ROUNDS` is refused). A successful login rewrites a stored hash at another cost to this one, keeping sessions and API keys. Only `$2a$`/`$2b$` hashes of cost 04-30 are compared as stored; any other shape fails login at the cost of one dummy compare |
 
 **Example:**
 

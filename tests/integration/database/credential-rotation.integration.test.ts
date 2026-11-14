@@ -58,7 +58,7 @@ import { LockBusyError, openOperatorStores, type OperatorStores } from '../../..
 import { main as rotationCli } from '../../../packages/api-server/src/scripts/rotate-user-password';
 import { isPlatformAdmin, isSeededAccount } from '../../../packages/api-server/src/auth/platform-admin';
 import {
-  GUARDED_DISABLE_CYPHER, GUARDED_PASSWORD_CYPHER, MARK_DEFAULT_SUSPECT_CYPHER, Neo4jAuthRepository,
+  GUARDED_DISABLE_CYPHER, GUARDED_PASSWORD_CYPHER, GUARDED_REHASH_CYPHER, MARK_DEFAULT_SUSPECT_CYPHER, Neo4jAuthRepository,
 } from '../../../packages/api-server/src/auth/neo4j-auth.repository';
 
 const USER = 'hp1-s6-rotation-user';
@@ -351,6 +351,48 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     expect([runs, props['_passwordHash'], neo4j.integer.toNumber((props['credentialEpoch'] ?? 0) as never)]).toEqual([1, 'changed-hash', 1]);
   });
 
+  describe('HAP-1090: the login rehash writes the hash only, under the same guards as a password change', () => {
+    const rehash = async (overrides: Partial<Parameters<Neo4jAuthRepository['rehashPasswordGuarded']>[0]> = {}) =>
+      new Neo4jAuthRepository().rehashPasswordGuarded({
+        userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'rehashed', ...overrides,
+      });
+
+    it('lands at the current generation and never writes one', async () => {
+      await unmark();
+
+      expect(await rehash()).toBe(true);
+
+      const props = await userProps();
+      expect([props['_passwordHash'], props['passwordHash']]).toEqual(['rehashed', 'rehashed']);
+      expect(props['credentialEpoch']).toBeUndefined();
+    });
+
+    it('keeps an existing generation as the same Integer', async () => {
+      await unmark();
+      await graph.run('MATCH (u:User {_id: $id}) SET u.credentialEpoch = $epoch', { id: USER, epoch: neo4j.int(2) });
+
+      expect(await rehash({ credentialEpoch: 2 })).toBe(true);
+
+      const props = await userProps();
+      expect(neo4j.isInt(props['credentialEpoch'])).toBe(true);
+      expect(neo4j.integer.toNumber(props['credentialEpoch'] as never)).toBe(2);
+    });
+
+    it.each([
+      ['a changed stored hash', async () => { await graph.run('MATCH (u:User {_id: $id}) SET u._passwordHash = "newer"', { id: USER }); }, {}, 'newer'],
+      ['a moved generation', async () => { await graph.run('MATCH (u:User {_id: $id}) SET u.credentialEpoch = 1', { id: USER }); }, {}, undefined],
+      ['a marked account', async () => { await graph.run('MATCH (u:User {_id: $id}) SET u.defaultPasswordSuspect = true', { id: USER }); }, {}, undefined],
+    ] as Array<[string, () => Promise<void>, object, string | undefined]>)('writes nothing for %s', async (_label, interfere, overrides, expected) => {
+      await unmark();
+      await interfere();
+
+      expect(await rehash(overrides)).toBe(false);
+
+      // defaultHash is set in beforeAll, so "left as it was" is resolved here, not when the table is built.
+      expect((await userProps())['_passwordHash']).toBe(expected ?? defaultHash);
+    });
+  });
+
   it('the login marker setter writes only the false → true transition', async () => {
     await graph.run('MATCH (u:User {_id: $id}) REMOVE u.defaultPasswordSuspect', { id: USER });
     const params = { elementId: await elementId(), userId: USER, verifiedHash: defaultHash, verifiedEpoch: neo4j.int(0) };
@@ -429,6 +471,16 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
 
       expect(landed).toBe(0);
       expect((await userProps())['defaultPasswordSuspect']).toBe(false);
+    }, 30_000);
+
+    it('HAP-1090: the shipped login rehash lands nowhere and the rotated hash stays', async () => {
+      await unmark();
+      const { landed, rotatedHash } = await runAgainstOpenRotation(GUARDED_REHASH_CYPHER, {
+        elementId: await elementId(), userId: USER, credentialEpoch: neo4j.int(0), readHash: defaultHash, newHash: 'rehashed',
+      });
+
+      expect(landed).toBe(0);
+      expect((await userProps())['_passwordHash']).toBe(rotatedHash);
     }, 30_000);
   });
 

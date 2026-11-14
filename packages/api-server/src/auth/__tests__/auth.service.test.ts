@@ -11,10 +11,11 @@
 
 import { describe, it, expect, beforeEach } from '@jest/globals';
 import { ApiKeyNotFoundError, AUTH_TIME_TOLERANCE_SECONDS, AuthService, AuthRepository, SESSION_ABSOLUTE_CAP_SECONDS, UserProfileUpdate } from '../auth.service';
-import type { GuardedPasswordWrite, GuardedUserWrite } from '../auth.service';
+import type { GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite } from '../auth.service';
 import { AmbiguousUserIdentityError, User, ApiKey, UserNotFoundError } from '../types';
 import { PasswordService } from '../password.service';
 import { JWTService } from '../jwt.service';
+import * as jwt from 'jsonwebtoken';
 
 const authConfig = {
   jwt: {
@@ -61,6 +62,15 @@ class InMemoryAuthRepository implements AuthRepository {
   }
 
   async updatePasswordHashGuarded(write: GuardedPasswordWrite): Promise<boolean> {
+    const existing = this.users.get(write.userId);
+    if (!existing || existing._passwordHash !== write.readHash) {
+      return false;
+    }
+    this.users.set(write.userId, { ...existing, _passwordHash: write.newHash });
+    return true;
+  }
+
+  async rehashPasswordGuarded(write: GuardedPasswordRehash): Promise<boolean> {
     const existing = this.users.get(write.userId);
     if (!existing || existing._passwordHash !== write.readHash) {
       return false;
@@ -289,8 +299,19 @@ describe('AuthService profile/password/account lifecycle', () => {
     it('still expires at the 7-day cap, and refuses zero and negative values', async () => {
       await expect(refreshWith(now() - SESSION_ABSOLUTE_CAP_SECONDS - 5)).rejects.toMatchObject({ reason: 'expired' });
       await expect(refreshWith(now() - SESSION_ABSOLUTE_CAP_SECONDS + 60)).resolves.toHaveProperty('_accessToken');
-      await expect(refreshWith(0)).rejects.toMatchObject({ reason: expect.stringMatching(/^(invalid|expired)$/) });
-      await expect(refreshWith(-1)).rejects.toMatchObject({ reason: expect.stringMatching(/^(invalid|expired)$/) });
+      await expect(refreshWith(0)).rejects.toMatchObject({ reason: 'expired' });
+      await expect(refreshWith(-1)).rejects.toMatchObject({ reason: 'expired' });
+    });
+
+    it('refuses a token that carries no iat, so there is no issue time to bound _authTime by', async () => {
+      const noIat = jwt.sign(
+        { _userId: 'user-1', _username: 'alice', _role: 'operator', _type: 'refresh', _cep: 0, _authTime: now() },
+        authConfig.jwt.secret,
+        { expiresIn: '7d', issuer: authConfig.jwt.issuer, audience: authConfig.jwt.audience, noTimestamp: true },
+      );
+      expect(new JWTService(authConfig.jwt).decodeToken(noIat)).not.toHaveProperty('iat');
+
+      await expect(service.refreshToken({ refreshToken: noIat })).rejects.toMatchObject({ reason: 'invalid' });
     });
 
     it('a normal refresh keeps the original _authTime in the new refresh token', async () => {

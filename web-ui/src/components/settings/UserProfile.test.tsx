@@ -92,6 +92,36 @@ describe('UserProfile avatar persistence', () => {
   });
 });
 
+describe('UserProfile profile update when the session ends during refresh', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUser = { full_name: 'Alice Example', email: 'alice@example.com' };
+    mockUpdateProfile.mockResolvedValue({ full_name: 'Alice Example', email: 'alice@example.com' });
+  });
+
+  it('shows the fixed sign-in-again message and no success toast when refreshUser reports the session ended', async () => {
+    const user = userEvent.setup();
+    mockRefreshUser.mockResolvedValue('session-ended');
+    render(<UserProfile />);
+
+    await user.click(screen.getByRole('button', { name: /update profile/i }));
+
+    expect(await screen.findByText('Your session ended; please sign in again')).toBeTruthy();
+    expect(screen.queryByText('Profile updated successfully')).toBeNull();
+  });
+
+  it('still shows the success toast when the refresh succeeded', async () => {
+    const user = userEvent.setup();
+    mockRefreshUser.mockResolvedValue('refreshed');
+    render(<UserProfile />);
+
+    await user.click(screen.getByRole('button', { name: /update profile/i }));
+
+    expect(await screen.findByText('Profile updated successfully')).toBeTruthy();
+    expect(screen.queryByText('Your session ended; please sign in again')).toBeNull();
+  });
+});
+
 describe('UserProfile password change (HAP-1285 review)', () => {
   beforeEach(() => {
     mockUser = { full_name: 'Alice Example', email: 'alice@example.com', avatar: undefined };

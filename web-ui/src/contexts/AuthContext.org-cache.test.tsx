@@ -34,6 +34,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   servingOrg = 'org-a';
   hold = null;
+  refreshResults = [];
   vi.mocked(api.refresh).mockResolvedValue(undefined as never);
   vi.mocked(api.logout).mockResolvedValue(undefined);
   vi.mocked(apiClient.get).mockImplementation(async (path) => {
@@ -50,6 +51,9 @@ beforeEach(() => {
 const kpiRequests = () => vi.mocked(apiClient.get).mock.calls.filter(([path]) => path === '/dashboards/itsm').length;
 const openIncidents = () => screen.queryByTestId('kpi-open-incidents')?.textContent ?? null;
 
+// What each refreshUser() call reported, in order.
+let refreshResults: string[] = [];
+
 const Session: React.FC = () => {
   const { user, isAuthenticated, isLoading, login, logout, refreshUser } = useAuth();
   if (isLoading) return <p>loading</p>;
@@ -57,7 +61,7 @@ const Session: React.FC = () => {
     <>
       <button onClick={() => void logout()}>logout</button>
       <button onClick={() => void login({ email: 'b@example.test', password: 'x' })}>login</button>
-      <button onClick={() => void refreshUser()}>refresh</button>
+      <button onClick={() => void refreshUser().then((result) => refreshResults.push(result))}>refresh</button>
       {isAuthenticated && user ? <ITSMDashboard /> : <p>signed out</p>}
     </>
   );
@@ -239,6 +243,18 @@ describe('an organization change renews the session before anything is cleared o
     await screen.findByText('signed out');
     expect(client.getQueryCache().getAll()).toEqual([]);
     expect(kpiRequests()).toBe(before);
+    expect(refreshResults).toEqual(['session-ended']);
+  });
+
+  it('reports refreshed when the organization changed and the renewal succeeded', async () => {
+    const client = newClient();
+    await mount(client);
+    vi.mocked(api.getCurrentUser).mockResolvedValue(userOf('org-b'));
+    servingOrg = 'org-b';
+
+    await act(async () => screen.getByText('refresh').click());
+    await waitFor(() => expect(openIncidents()).toBe('9'));
+    expect(refreshResults).toEqual(['refreshed']);
   });
 
   it('adopts the identity /auth/me reports after the renewal when it differs from the one that triggered it', async () => {

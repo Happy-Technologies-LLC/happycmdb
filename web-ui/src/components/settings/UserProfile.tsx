@@ -46,6 +46,8 @@ const passwordSchema = z.object({
 type ProfileFormData = z.infer<typeof profileSchema>;
 type PasswordFormData = z.infer<typeof passwordSchema>;
 
+const SESSION_ENDED_MESSAGE = 'Your session ended; please sign in again';
+
 export const UserProfile: React.FC = () => {
   const { user, refreshUser, logout } = useAuth();
   const [avatar, setAvatar] = useState<string | null>(user?.avatar ?? null);
@@ -94,7 +96,10 @@ export const UserProfile: React.FC = () => {
         name: data.name,
         avatar: avatar || undefined,
       });
-      await refreshUser();
+      if ((await refreshUser()) === 'session-ended') {
+        setErrorMessage(SESSION_ENDED_MESSAGE);
+        return;
+      }
       setSuccessMessage('Profile updated successfully');
       setTimeout(() => setSuccessMessage(null), 3000);
     } catch (error: any) {

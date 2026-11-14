@@ -119,6 +119,27 @@ every request against the stored user record; tokens and verified request identi
 platform-admin claim, so revoking the flag takes effect on the next request. No route accepts platform
 administrators yet: global TBM and connector controls still refuse every caller.
 
+**Portfolio import scope** (`portfolio:import`) is the dedicated scope that `POST /api/v1/portfolio/imports`
+requires. It is an entry of the user's stored `scopes` list, set only by two reviewed operator commands
+(the same identity-window step and `CMDB_ROTATE_*` connections as `grant-platform-admin`), never through the API:
+
+```bash
+scripts/identity-window.ts grant-portfolio-import-scope  --user-id <id> --operator <name>
+scripts/identity-window.ts revoke-portfolio-import-scope --user-id <id> --operator <name>
+```
+
+Both require `--user-id` and `--operator` and print one JSON line
+`{"userId": "<id>", "outcome": "granted" | "unchanged" | "revoked"}`. Grant adds only `portfolio:import` (no
+duplicate, other scopes kept); revoke removes only that entry. A repeat is `unchanged` and writes nothing. The
+audit trail is that line plus the node properties `portfolioImportScopeGrantedBy/At` or
+`portfolioImportScopeRevokedBy/At` (operator name and time); there is no audit-table row. Both refuse
+(exit 2, `GrantRefused`) an unknown or ambiguous identity, a seeded account, a default-password account and a
+`scopes` value that is not a list of strings. Role `admin`, organization and platform administration grant
+nothing; the scope is re-read on every request, so a revoke takes effect on the next request.
+
+**Running either command on staging or production requires founder approval, named in the change record.**
+Until a user holds the scope the portfolio import is unusable: every caller gets `403`.
+
 ---
 
 ## JWT Authentication

@@ -7,7 +7,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { api } from '@services/api';
 import { abandonSession } from '../lib/session';
 import { decodeToken, getToken, removeToken, subscribeToken } from '../utils/token';
-import type { AuthState, LoginCredentials } from '../types';
+import type { AuthState, LoginCredentials, User } from '../types';
 import { logClientError } from '../utils/logger';
 import { OrganizationContext } from './OrganizationContext';
 
@@ -60,6 +60,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  // Bumped whenever the session ends or is replaced: an async refreshUser started under an earlier one must not
+  // publish a user, clear the cache or sign out on top of the newer one.
+  const sessionEpoch = useRef(0);
+  const signOutLocally = useCallback(() => {
+    sessionEpoch.current += 1;
+    queryClient.clear();
+    removeToken();
+    setState(SIGNED_OUT);
+  }, [queryClient]);
 
   // Every new access token (login, renewal, password change) reaches state.token, so useWebSocket reconnects with it.
   useEffect(() => subscribeToken((token) => setState((prev) => ({ ...prev, token }))), []);
@@ -106,13 +115,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     const timer = setTimeout(() => {
       api.refresh().catch((error) => {
         logClientError('Session renewal failed', error);
-        queryClient.clear();
-        removeToken();
-        setState(SIGNED_OUT);
+        signOutLocally();
       });
     }, delay);
     return () => clearTimeout(timer);
-  }, [state.isAuthenticated, state.token, queryClient]);
+  }, [state.isAuthenticated, state.token, signOutLocally]);
 
   // Another tab logged out: drop this tab's token too.
   useEffect(() => {
@@ -121,9 +128,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     channel.onmessage = (event) => {
       if (event.data !== LOGOUT_MESSAGE) return;
       abandonSession();
-      queryClient.clear();
-      removeToken();
-      setState(SIGNED_OUT);
+      signOutLocally();
       navigate('/login');
     };
     logoutChannel.current = channel;
@@ -131,7 +136,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       channel.close();
       logoutChannel.current = null;
     };
-  }, [navigate, queryClient]);
+  }, [navigate, signOutLocally]);
 
   const login = useCallback(async (credentials: LoginCredentials) => {
     try {
@@ -147,6 +152,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       const user = await api.getCurrentUser();
 
       // Whatever the cache holds was fetched for a previous session, possibly another organization's.
+      sessionEpoch.current += 1;
       queryClient.clear();
       setState({
         user,
@@ -157,39 +163,59 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
       navigate('/');
     } catch (error) {
-      queryClient.clear();
-      removeToken();
-      setState(SIGNED_OUT);
+      signOutLocally();
       throw error;
     }
-  }, [navigate, queryClient]);
+  }, [navigate, queryClient, signOutLocally]);
 
   const logout = useCallback(async () => {
+    // A refreshUser in flight belongs to the session being ended: it must not publish anything afterwards.
+    sessionEpoch.current += 1;
     try {
       await api.logout();
     } catch (error) {
       logClientError('Logout error:', error);
     } finally {
       logoutChannel.current?.postMessage(LOGOUT_MESSAGE);
-      queryClient.clear();
-      removeToken();
-      setState(SIGNED_OUT);
+      signOutLocally();
       navigate('/login');
     }
-  }, [navigate, queryClient]);
+  }, [navigate, signOutLocally]);
 
   const refreshUser = useCallback(async () => {
+    const epoch = sessionEpoch.current;
     try {
       const user = await api.getCurrentUser();
-      // A changed organization invalidates everything cached for the previous one.
+      if (epoch !== sessionEpoch.current) return;
       const previous = stateRef.current.user;
-      if (previous && (previous.organization_id ?? null) !== (user.organization_id ?? null)) queryClient.clear();
-      setState((prev) => ({ ...prev, user }));
+      if (!previous || (previous.organization_id ?? null) === (user.organization_id ?? null)) {
+        setState((prev) => ({ ...prev, user }));
+        return;
+      }
+
+      // The organization changed, but the access token still carries the old `_organizationId` claim until it renews.
+      // Clearing the cache first would let the new organization's key fill with old-organization data (up to staleTime),
+      // so renew first and clear only once the token is the new organization's. A renewal that fails ends the session.
+      // The renewed token is authoritative: re-read the identity it speaks for. It can differ from the read above
+      // (another change landed meanwhile); whatever it is, nothing cached before the renewal may be kept.
+      let confirmed: User;
+      try {
+        await api.refresh();
+        if (epoch !== sessionEpoch.current) return;
+        confirmed = await api.getCurrentUser();
+      } catch (error) {
+        logClientError('Session renewal after organization change failed', error);
+        if (epoch === sessionEpoch.current) signOutLocally();
+        return;
+      }
+      if (epoch !== sessionEpoch.current) return;
+      queryClient.clear();
+      setState((prev) => ({ ...prev, user: confirmed, token: getToken() ?? prev.token }));
     } catch (error) {
       logClientError('Failed to refresh user:', error);
       throw error;
     }
-  }, [queryClient]);
+  }, [queryClient, signOutLocally]);
 
   const hasRole = useCallback(
     (roles: string[]): boolean => {

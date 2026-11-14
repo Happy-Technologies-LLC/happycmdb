@@ -149,6 +149,7 @@ describe('analyticsService', () => {
         start_date: '2026-01-01T00:00:00.000Z',
         end_date: '2026-01-08T00:00:00.000Z',
       },
+      sideRead: true,
     });
     expect(result).toEqual([{ timestamp: '2026-01-05T00:00:00.000Z', status: 'detected' }]);
   });

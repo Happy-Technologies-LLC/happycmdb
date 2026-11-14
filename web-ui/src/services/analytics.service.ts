@@ -275,12 +275,13 @@ class AnalyticsService {
   }
 
   /**
-   * Get health metrics for a specific CI
+   * Get health metrics for a specific CI. A side read: the server refuses this endpoint (403) to every caller, so the
+   * page-level forbidden banner must not claim the whole analytics page is denied; the panel reports its own failure.
    */
   async getHealthMetrics(ciId: string, params?: DateRangeParams): Promise<HealthMetric[]> {
     const response = await apiClient.get<AnalyticsApiResponse<HealthMetricApiResponse[]>>(
       `/analytics/health-metrics/${ciId}`,
-      { params: toDateRangeQuery(params) }
+      { params: toDateRangeQuery(params), sideRead: true }
     );
     return response.data.data.map((row) => ({
       timestamp: row.timestamp,

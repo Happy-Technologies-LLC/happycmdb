@@ -1186,18 +1186,11 @@ export class ITILController {
         return;
       }
 
-      // TODO: Implement baseline comparison logic
-      // This would compare current CI state to baseline snapshot
-      res.json({
-        success: true,
-        data: {
-          baselineId: id,
-          comparisonDate: new Date(),
-          driftedCIs: [],
-          totalDriftCount: 0,
-          driftPercentage: 0,
-        },
-        message: 'Baseline comparison feature coming soon',
+      // Comparison is not implemented: never answer with a "no drift" shape for an unchecked baseline.
+      res.status(501).json({
+        success: false,
+        error: 'Not Implemented',
+        message: 'Baseline comparison is not implemented; no drift was evaluated for this baseline',
       });
     } catch (error) {
       logger.error('Error comparing to baseline', error);
@@ -1466,7 +1459,7 @@ export class ITILController {
     // Basic risk calculation
     // TODO: Replace with actual ChangeRiskService logic
 
-    const affectedCIIds = JSON.parse(change.affected_ci_ids || '[]');
+    const affectedCIIds = affectedCIIdList(change.affected_ci_ids);
     const ciCount = affectedCIIds.length;
 
     let riskScore = 0.5; // Default medium risk
@@ -1507,6 +1500,22 @@ export class ITILController {
       ],
     };
   }
+}
+
+/**
+ * `itil_changes.affected_ci_ids` is TEXT[], which node-postgres decodes to a JS array.
+ * Tolerate NULL and a legacy JSON-text array; anything else is no affected CIs.
+ */
+export function affectedCIIdList(value: unknown): string[] {
+  let list: unknown = value;
+  if (typeof list === 'string') {
+    try {
+      list = JSON.parse(list);
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(list) ? list.filter((id): id is string => typeof id === 'string') : [];
 }
 
 const isGraphScalar = (value: unknown): boolean => value === null || ['boolean', 'number', 'string'].includes(typeof value) ||

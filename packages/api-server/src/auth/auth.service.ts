@@ -541,7 +541,9 @@ export class AuthService {
   }
 
   /**
-   * List all API keys for a user. A key of another credential generation no longer authenticates
+   * List the user's API keys that are not revoked. A password change revokes every key below the new
+   * generation (HAP-1669), so those rows are not listed. A row of another credential generation that is
+   * still unrevoked (the best-effort revoke failed, or it predates HAP-1669) no longer authenticates
    * (verifyApiKey), so it is listed with `_enabled: false` (HAP-1285; read side only).
    */
   async listApiKeys(userId: string): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]> {
@@ -644,7 +646,7 @@ export class AuthService {
     // The generation already refuses every older key; revoking the rows keeps them dead across a rollback that
     // resets the generation. Best-effort: the change has committed, so a failure logs the error class only.
     try {
-      await this.repository.revokeApiKeysBelowEpoch(userId, nextEpoch);
+      await this.repository.revokeApiKeysBelowEpoch(user._id, nextEpoch);
     } catch (error) {
       logger.warn('Password change API key revocation failed', errorClassFields(error));
     }

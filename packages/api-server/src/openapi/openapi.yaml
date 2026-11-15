@@ -304,7 +304,7 @@ paths:
     get:
       tags: [Authentication]
       summary: List API keys
-      description: Get all API keys for the authenticated user. A key created before the user's last password change no longer authenticates and is listed with _enabled false (HAP-1285).
+      description: Get the authenticated user's API keys that are not revoked. A password change revokes every key created before it (HAP-1669), so those are not listed; an older-generation key whose revoke failed is still listed with _enabled false and never authenticates (HAP-1285).
       security:
         - BearerAuth: []
       operationId: listApiKeys
@@ -369,8 +369,8 @@ paths:
       summary: Change own password
       description: >-
         HAP-1285: ends every session AND every API key of the user. It advances the user's credential generation
-        with the new hash, so other access tokens, refresh cookies, WebSockets and all API keys return 401 (keys
-        are listed with _enabled false). This device stays signed in with a new session whose 7-day cap starts now.
+        with the new hash, so other access tokens, refresh cookies, WebSockets and all API keys return 401. The
+        keys are also revoked (HAP-1669, best-effort) and no longer listed by GET /auth/api-keys. This device stays signed in with a new session whose 7-day cap starts now.
       security:
         - BearerAuth: []
       requestBody:

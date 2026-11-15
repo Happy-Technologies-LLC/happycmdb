@@ -71,14 +71,16 @@ bytes. A password change or account deletion authorized before an operator rotat
 advances the user's credential generation together with the new hash. Every other access token,
 refresh cookie and WebSocket of the user is refused on its next use (WebSockets within the 2-minute
 re-check), and so is every API key of the user: keys are valid only at the generation they were
-created in, so they stop authenticating (`401`), are listed by `GET /api/v1/auth/api-keys` with
-`_enabled: false`, and must be recreated. The changing device stays signed in: the `200` response
+created in, so they stop authenticating (`401`) and must be recreated. The changing device stays signed in: the `200` response
 (message "Password changed. All other sessions and all your API keys have been revoked; this device
 stays signed in.") carries `data` (`_accessToken`, `_expiresIn`, `_user`, as login) and sets a new
 `__Secure-cmdb_rt` cookie, whose 7-day cap starts at the change. After the write the change also
 revokes the user's key rows below the new generation (`enabled = false`, `revoked_at` set; HAP-1669),
-so a rollback that resets the generation cannot revive them. This step is best-effort: a failure is
-logged by error class only and does not fail the request, since the generation already refuses the keys.
+so a rollback that resets the generation cannot revive them. Revoked keys are not returned by
+`GET /api/v1/auth/api-keys`: after the change the list holds only keys created since it. This step is
+best-effort: a failure is logged by error class only and does not fail the request, since the generation
+already refuses the keys. A key of an older generation whose revoke failed stays unrevoked, so the list
+still returns it with `_enabled: false` (it never authenticates) until a later change revokes it.
 
 **Password changes are rate-limited and audited** (HAP-1368). `PUT /api/v1/auth/password` shares the
 login limit per client address (`RATE_LIMIT_AUTH_MAX` per `RATE_LIMIT_AUTH_WINDOW_MS`, the same

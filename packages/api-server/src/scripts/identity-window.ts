@@ -321,9 +321,9 @@ export async function assignOrganization(
       throw new GrantRefused('not_applied', ASSIGNMENT);
     }
   }
-  // Only keys at the user's current generation can authenticate; older rows are generation-dead.
+  // Only keys at exactly the user's current generation can authenticate (verifyApiKey compares for equality); older and newer rows are generation-dead.
   const [keys] = (await sql.query(
-    'SELECT count(*) AS n FROM api_keys WHERE user_id = $1 AND enabled AND revoked_at IS NULL AND credential_epoch >= $2',
+    'SELECT count(*) AS n FROM api_keys WHERE user_id = $1 AND enabled AND revoked_at IS NULL AND credential_epoch = $2',
     [mappedId, toNumber(row['epoch'])]
   )).rows;
   return { userId: mappedId, organizationId, outcome: observed === organizationId ? 'unchanged' : 'assigned', enabledApiKeys: toNumber(keys?.['n']) };

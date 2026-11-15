@@ -108,8 +108,9 @@ class InMemoryAuthRepository implements AuthRepository {
     this.apiKeyDeleteRequests.push([userId, keyId]);
     return this.apiKeyDeleteResult;
   }
+  listedApiKeys: Array<Omit<ApiKey, '_key' | '_keyHash'>> = [];
   async listApiKeys(): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]> {
-    return [];
+    return this.listedApiKeys;
   }
   apiKeyRevokeRequests: Array<[string, number]> = [];
   async revokeApiKeysBelowEpoch(userId: string, nextEpoch: number): Promise<number> {
@@ -195,6 +196,17 @@ describe('AuthService profile/password/account lifecycle', () => {
 
         expect(repository.apiKeyRevokeRequests).toEqual([['user-1', 5]]);
         expect(new JWTService(authConfig.jwt).decodeToken(session._accessToken)).toMatchObject({ _cep: 5 });
+      });
+
+      it('lists only what the store returns, marking an unrevoked key of another generation as not enabled and hiding the generation', async () => {
+        const row = (_id: string, _credentialEpoch: number | undefined) =>
+          ({ _id, _userId: 'user-1', _name: _id, _role: 'admin', _tier: 'standard', _enabled: true, _createdAt: new Date(), _credentialEpoch }) as ApiKey;
+        repository.listedApiKeys = [row('current', 4), row('older-unrevoked', 3), row('legacy-no-epoch', undefined)];
+
+        const listed = await service.listApiKeys('user-1');
+
+        expect(listed.map(key => [key._id, key._enabled])).toEqual([['current', true], ['older-unrevoked', false], ['legacy-no-epoch', false]]);
+        expect(listed.some(key => '_credentialEpoch' in key)).toBe(false);
       });
 
       it('still returns the new session when the revoke fails, logging the error class only', async () => {

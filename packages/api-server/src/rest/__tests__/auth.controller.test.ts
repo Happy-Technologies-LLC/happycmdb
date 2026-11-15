@@ -48,6 +48,8 @@ class InMemoryAuthRepository implements AuthRepository {
   users = new Map<string, User>();
   apiKeys = new Map<string, { userId: string; revoked: boolean }>();
   issuedKeys = new Map<string, ApiKey>();
+  /** Key hashes revoked by revokeApiKeysBelowEpoch: not listed and not found, like `revoked_at IS NOT NULL`. */
+  revokedKeyHashes = new Set<string>();
   listCalls = 0;
 
   async findUserByUsername(username: string): Promise<User | null> {
@@ -122,7 +124,7 @@ class InMemoryAuthRepository implements AuthRepository {
   }
 
   async findApiKeyByKey(hash: string): Promise<ApiKey | null> {
-    return this.issuedKeys.get(hash) || null;
+    return this.revokedKeyHashes.has(hash) ? null : this.issuedKeys.get(hash) || null;
   }
 
   async createApiKey(apiKey: Omit<ApiKey, 'id' | 'createdAt'>): Promise<ApiKey> {
@@ -141,13 +143,16 @@ class InMemoryAuthRepository implements AuthRepository {
     key.revoked = true;
     return 1;
   }
-  async revokeApiKeysBelowEpoch(): Promise<number> {
-    return 0;
+  async revokeApiKeysBelowEpoch(userId: string, nextEpoch: number): Promise<number> {
+    const dead = [...this.issuedKeys.values()].filter(key =>
+      key._userId === userId && (key._credentialEpoch ?? 0) < nextEpoch && !this.revokedKeyHashes.has(key._keyHash));
+    dead.forEach(key => this.revokedKeyHashes.add(key._keyHash));
+    return dead.length;
   }
   async listApiKeys(userId: string): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]> {
     this.listCalls++;
     return [...this.issuedKeys.values()]
-      .filter(key => key._userId === userId)
+      .filter(key => key._userId === userId && !this.revokedKeyHashes.has(key._keyHash))
       .map(({ _key, _keyHash, ...key }) => key);
   }
 }
@@ -614,7 +619,10 @@ describe('AuthController profile/password/account routes', () => {
         expect(records).toContainEqual(['Authentication failed', { credentialType: 'refresh', reason: 'invalid' }]);
       });
 
-      it('a self-service password change ends every session and API key of the user; the changing device gets a new one', async () => {
+      it.each([
+        ['the revoke succeeds: the old key is gone from the listing', false],
+        ['the best-effort revoke fails: the old key stays listed as not enabled', true],
+      ])('a self-service password change ends every session and API key of the user; the changing device gets a new one (%s)', async (_label, revokeFails) => {
         const pass = `pw-${randomUUID()}`;
         const next = `pw-${randomUUID()}`;
         repository.users.get('user-1')!._passwordHash = await passwordService.hash(pass);
@@ -630,6 +638,9 @@ describe('AuthController profile/password/account routes', () => {
         at(0);
         const changing = await signIn();
         const other = await signIn();
+        if (revokeFails) {
+          jest.spyOn(repository, 'revokeApiKeysBelowEpoch').mockRejectedValue(new Error('pg down'));
+        }
         const listKeys = async (token: string) => (await request(app).get('/api/v1/auth/api-keys')
           .set('Authorization', `Bearer ${token}`)).body.data as Array<Record<string, unknown>>;
         const issued = await request(app).post('/api/v1/auth/api-key').set('Authorization', `Bearer ${other.access}`).send({ name: 'pre-change key' });
@@ -657,9 +668,16 @@ describe('AuthController profile/password/account routes', () => {
         expect((await me(other.access)).status).toBe(401);
         expect((await me(changing.access)).status).toBe(401);
         expect((await me(access)).status).toBe(200);
-        // R2: the key minted before the change no longer authenticates and is listed as not enabled (read side only).
+        // R2: the key minted before the change no longer authenticates (generation check, even if the revoke failed).
         expect((await request(app).get('/api/v1/auth/me').set('X-API-Key', key)).status).toBe(401);
-        expect((await listKeys(access)).map(k => [k._enabled, '_credentialEpoch' in k])).toEqual([[false, false]]);
+        // Listing contract (HAP-1669): a revoked pre-change key is not listed; one whose revoke failed is listed as
+        // not enabled, never as usable. No generation field leaks either way.
+        expect((await listKeys(access)).map(k => [k._enabled, '_credentialEpoch' in k]))
+          .toEqual(revokeFails ? [[false, false]] : []);
+        // A key created after the change is at the new generation and is listed as enabled.
+        const fresh = await request(app).post('/api/v1/auth/api-key').set('Authorization', `Bearer ${access}`).send({ name: 'post-change key' });
+        sensitive.push(fresh.body.data._apiKey);
+        expect((await listKeys(access)).map(k => k._enabled)).toEqual(revokeFails ? [false, true] : [true]);
 
         // The change is a fresh authentication: its cap runs from the change, not from the first login.
         at(7 * DAY + 1);

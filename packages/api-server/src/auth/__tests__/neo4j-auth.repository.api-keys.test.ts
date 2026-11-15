@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * HAP-1669: Neo4jAuthRepository.revokeApiKeysBelowEpoch against a real PostgreSQL (PGlite in a child process,
+ * HAP-1669: Neo4jAuthRepository.revokeApiKeysBelowEpoch and listApiKeys against a real PostgreSQL (PGlite in a child process,
  * api_keys from 001_complete_schema.sql plus 020's credential_epoch column), so the WHERE clause is executed,
  * not read.
  */
@@ -35,6 +35,7 @@ jest.mock('@cmdb/database', () => ({
   getPostgresClient: () => ({
     // RETURNING-less UPDATEs report no rows over the IPC hop; the row count is recovered from a wrapped CTE below.
     query: async (text: string, params: unknown[] = []) => {
+      if (/^\s*SELECT/i.test(text)) return { rows: await send('query', text, params) };
       const rows = await send('query', `WITH changed AS (${text} RETURNING 1) SELECT count(*)::int AS n FROM changed`, params);
       return { rows: [], rowCount: rows[0]!['n'] as number };
     },
@@ -87,5 +88,29 @@ describe('Neo4jAuthRepository.revokeApiKeysBelowEpoch (HAP-1669)', () => {
     await expect(new Neo4jAuthRepository().revokeApiKeysBelowEpoch('u1', 2)).resolves.toBe(0);
 
     expect(await send('query', 'SELECT revoked_at FROM api_keys')).toEqual([{ revoked_at: new Date('2026-01-01T00:00:00Z') }]);
+  });
+});
+
+describe('Neo4jAuthRepository.listApiKeys after a generation revoke (HAP-1669 listing contract)', () => {
+  const names = async (userId: string) => (await new Neo4jAuthRepository().listApiKeys(userId)).map(key => key._name).sort();
+
+  it('lists the keys of a user until they are revoked, then omits the revoked ones; unrevoked old-generation rows stay listed', async () => {
+    await addKey('old-gen', 'u1', 4);
+    await addKey('new-gen', 'u1', 5);
+    await addKey('other-user', 'u2', 4);
+    expect(await names('u1')).toEqual(['new-gen', 'old-gen']);
+
+    await new Neo4jAuthRepository().revokeApiKeysBelowEpoch('u1', 5);
+
+    expect(await names('u1')).toEqual(['new-gen']);
+    expect(await names('u2')).toEqual(['other-user']);
+  });
+
+  it('keeps an unrevoked, generation-dead row (the revoke failed) in the listing, with its epoch for the service to mark it not enabled', async () => {
+    await addKey('dead', 'u1', 4);
+
+    expect(await new Neo4jAuthRepository().listApiKeys('u1')).toEqual([
+      expect.objectContaining({ _name: 'dead', _enabled: true, _credentialEpoch: 4 }),
+    ]);
   });
 });

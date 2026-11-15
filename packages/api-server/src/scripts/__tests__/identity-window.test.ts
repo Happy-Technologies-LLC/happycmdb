@@ -310,6 +310,10 @@ describe('assign-organization (FD-5)', () => {
 
     await addKey('current', 'p', 3);
     await expect(assign(users)).resolves.toMatchObject({ enabledApiKeys: 1 });
+
+    // A key above the generation (after a generation-resetting rollback) cannot authenticate either (equality).
+    await addKey('future', 'p', 4);
+    await expect(assign(users)).resolves.toMatchObject({ enabledApiKeys: 1 });
   });
 
   it('A2: the same organization again is unchanged, with no write', async () => {

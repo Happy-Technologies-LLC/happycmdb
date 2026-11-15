@@ -141,6 +141,9 @@ class InMemoryAuthRepository implements AuthRepository {
     key.revoked = true;
     return 1;
   }
+  async revokeApiKeysBelowEpoch(): Promise<number> {
+    return 0;
+  }
   async listApiKeys(userId: string): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]> {
     this.listCalls++;
     return [...this.issuedKeys.values()]

@@ -81,7 +81,7 @@ RETURN elementId(u) AS eid, u._id AS _id, u.id AS id,
        (coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaultPasswordSuspect, false)) AS marked,
        (coalesce(u._platformAdmin, false) = true OR coalesce(u.platformAdmin, false) = true) AS platformAdmin,
        coalesce(u._organizationId, u.organizationId) AS org,
-       u.scopes AS scopes`;
+       u.scopes AS scopes, toInteger(coalesce(u.credentialEpoch, 0)) AS epoch`;
 
 export const GRANT_HOLDERS_CYPHER = `
 MATCH (v:User) WHERE v._id IN $keys OR v.id IN $keys
@@ -321,7 +321,11 @@ export async function assignOrganization(
       throw new GrantRefused('not_applied', ASSIGNMENT);
     }
   }
-  const [keys] = (await sql.query('SELECT count(*) AS n FROM api_keys WHERE user_id = $1 AND enabled AND revoked_at IS NULL', [mappedId])).rows;
+  // Only keys at the user's current generation can authenticate; older rows are generation-dead.
+  const [keys] = (await sql.query(
+    'SELECT count(*) AS n FROM api_keys WHERE user_id = $1 AND enabled AND revoked_at IS NULL AND credential_epoch >= $2',
+    [mappedId, toNumber(row['epoch'])]
+  )).rows;
   return { userId: mappedId, organizationId, outcome: observed === organizationId ? 'unchanged' : 'assigned', enabledApiKeys: toNumber(keys?.['n']) };
 }
 

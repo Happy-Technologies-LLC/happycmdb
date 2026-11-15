@@ -115,6 +115,8 @@ export interface AuthRepository {
   createApiKey(apiKey: Omit<ApiKey, 'id' | 'createdAt'>): Promise<ApiKey>;
   updateApiKeyLastUsed(keyId: string): Promise<void>;
   deleteApiKey(userId: string, keyId: string): Promise<number>;
+  /** Revokes the user's live keys issued below `nextEpoch` (generation-dead after a password change); returns the count. */
+  revokeApiKeysBelowEpoch(userId: string, nextEpoch: number): Promise<number>;
   listApiKeys(userId: string): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]>;
 }
 
@@ -639,6 +641,13 @@ export class AuthService {
     }
     // The writer advanced the generation by exactly one (in Cypher, guarded by `credentialEpoch`).
     const nextEpoch = credentialEpoch + 1;
+    // The generation already refuses every older key; revoking the rows keeps them dead across a rollback that
+    // resets the generation. Best-effort: the change has committed, so a failure logs the error class only.
+    try {
+      await this.repository.revokeApiKeysBelowEpoch(userId, nextEpoch);
+    } catch (error) {
+      logger.warn('Password change API key revocation failed', errorClassFields(error));
+    }
     // A new session for this device at the new generation; a fresh authentication, so its login time is now.
     return {
       _accessToken: this.jwtService.generateAccessToken(

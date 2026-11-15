@@ -75,7 +75,10 @@ created in, so they stop authenticating (`401`), are listed by `GET /api/v1/auth
 `_enabled: false`, and must be recreated. The changing device stays signed in: the `200` response
 (message "Password changed. All other sessions and all your API keys have been revoked; this device
 stays signed in.") carries `data` (`_accessToken`, `_expiresIn`, `_user`, as login) and sets a new
-`__Secure-cmdb_rt` cookie, whose 7-day cap starts at the change.
+`__Secure-cmdb_rt` cookie, whose 7-day cap starts at the change. After the write the change also
+revokes the user's key rows below the new generation (`enabled = false`, `revoked_at` set; HAP-1669),
+so a rollback that resets the generation cannot revive them. This step is best-effort: a failure is
+logged by error class only and does not fail the request, since the generation already refuses the keys.
 
 **Password changes are rate-limited and audited** (HAP-1368). `PUT /api/v1/auth/password` shares the
 login limit per client address (`RATE_LIMIT_AUTH_MAX` per `RATE_LIMIT_AUTH_WINDOW_MS`, the same

@@ -131,6 +131,7 @@ class FakeRepository implements AuthRepository {
   }
   async updateApiKeyLastUsed(): Promise<void> {}
   async deleteApiKey(): Promise<number> { return 0; }
+  async revokeApiKeysBelowEpoch(): Promise<number> { return 0; }
   async listApiKeys(): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]> { return []; }
 
   /** What the operator rotation does to the user node (scripts/rotate-user-password.ts). */

@@ -9,7 +9,8 @@
  * mocking @cmdb/database -- no Neo4j/Postgres involved.
  */
 
-import { describe, it, expect, beforeEach } from '@jest/globals';
+import { describe, it, expect, beforeEach, jest } from '@jest/globals';
+import { logger } from '@cmdb/common';
 import { ApiKeyNotFoundError, AUTH_TIME_TOLERANCE_SECONDS, AuthService, AuthRepository, SESSION_ABSOLUTE_CAP_SECONDS, UserProfileUpdate } from '../auth.service';
 import type { GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite } from '../auth.service';
 import { AmbiguousUserIdentityError, User, ApiKey, UserNotFoundError } from '../types';
@@ -107,8 +108,14 @@ class InMemoryAuthRepository implements AuthRepository {
     this.apiKeyDeleteRequests.push([userId, keyId]);
     return this.apiKeyDeleteResult;
   }
+  listedApiKeys: Array<Omit<ApiKey, '_key' | '_keyHash'>> = [];
   async listApiKeys(): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]> {
-    return [];
+    return this.listedApiKeys;
+  }
+  apiKeyRevokeRequests: Array<[string, number]> = [];
+  async revokeApiKeysBelowEpoch(userId: string, nextEpoch: number): Promise<number> {
+    this.apiKeyRevokeRequests.push([userId, nextEpoch]);
+    return 0;
   }
 }
 
@@ -177,6 +184,67 @@ describe('AuthService profile/password/account lifecycle', () => {
       const updatedHash = repository.users.get('user-1')?._passwordHash as string;
       expect(await passwordService.verify('new-password-123', updatedHash)).toBe(true);
       expect(await passwordService.verify('correct-horse-battery-staple', updatedHash)).toBe(false);
+    });
+
+    describe('API key revocation (HAP-1669)', () => {
+      beforeEach(() => {
+        repository.users.set('user-1', { ...repository.users.get('user-1')!, _credentialEpoch: 4 } as User);
+      });
+
+      it('revokes the keys below the new generation once, after the guarded write', async () => {
+        const session = await service.changePassword('user-1', 'correct-horse-battery-staple', 'new-password-123', 4);
+
+        expect(repository.apiKeyRevokeRequests).toEqual([['user-1', 5]]);
+        expect(new JWTService(authConfig.jwt).decodeToken(session._accessToken)).toMatchObject({ _cep: 5 });
+      });
+
+      it('lists only what the store returns, marking an unrevoked key of another generation as not enabled and hiding the generation', async () => {
+        const row = (_id: string, _credentialEpoch: number | undefined) =>
+          ({ _id, _userId: 'user-1', _name: _id, _role: 'admin', _tier: 'standard', _enabled: true, _createdAt: new Date(), _credentialEpoch }) as ApiKey;
+        repository.listedApiKeys = [row('current', 4), row('older-unrevoked', 3), row('legacy-no-epoch', undefined)];
+
+        const listed = await service.listApiKeys('user-1');
+
+        expect(listed.map(key => [key._id, key._enabled])).toEqual([['current', true], ['older-unrevoked', false], ['legacy-no-epoch', false]]);
+        expect(listed.some(key => '_credentialEpoch' in key)).toBe(false);
+      });
+
+      it('still returns the new session when the revoke fails, logging the error class only', async () => {
+        const hash = repository.users.get('user-1')!._passwordHash;
+        const leak = `boom ${hash} correct-horse-battery-staple new-password-123`;
+        jest.spyOn(repository, 'revokeApiKeysBelowEpoch').mockRejectedValue(new TypeError(leak));
+        const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+        const error = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+        try {
+          const session = await service.changePassword('user-1', 'correct-horse-battery-staple', 'new-password-123', 4);
+
+          expect(session).toMatchObject({ _accessToken: expect.any(String), _refreshToken: expect.any(String), _user: { _id: 'user-1' } });
+          expect(new JWTService(authConfig.jwt).decodeToken(session._accessToken)).toMatchObject({ _cep: 5 });
+          expect(warn.mock.calls).toEqual([['Password change API key revocation failed', { errorClass: 'TypeError' }]]);
+          expect(error).not.toHaveBeenCalled();
+          expect(JSON.stringify([...warn.mock.calls, ...error.mock.calls])).not.toMatch(/boom|correct-horse|new-password|\$2[aby]\$/);
+        } finally {
+          warn.mockRestore();
+          error.mockRestore();
+        }
+      });
+
+      it.each([
+        ['a wrong current password', 'wrong-password', 4, 'Current password is incorrect'],
+        ['a stale generation', 'correct-horse-battery-staple', 3, 'credentials'],
+      ])('never revokes on %s', async (_label, current, epoch, message) => {
+        await expect(service.changePassword('user-1', current, 'new-password-123', epoch)).rejects.toThrow(new RegExp(message, 'i'));
+
+        expect(repository.apiKeyRevokeRequests).toEqual([]);
+      });
+
+      it('never revokes when the guarded write is lost', async () => {
+        jest.spyOn(repository, 'updatePasswordHashGuarded').mockResolvedValue(false);
+
+        await expect(service.changePassword('user-1', 'correct-horse-battery-staple', 'new-password-123', 4)).rejects.toThrow(/credentials/i);
+
+        expect(repository.apiKeyRevokeRequests).toEqual([]);
+      });
     });
 
     it('throws for an unknown user id', async () => {

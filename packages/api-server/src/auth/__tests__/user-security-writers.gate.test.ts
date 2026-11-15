@@ -131,9 +131,12 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
     },
   },
   {
-    name: 'bulk API-key revocation by user (the operator rotation only)',
+    name: 'bulk API-key revocation by user (the operator rotation; the self-service change, below its new generation only)',
     pattern: /UPDATE\s+api_keys\s+SET\s+enabled\s*=\s*false/gi,
-    reviewed: { 'packages/api-server/src/scripts/rotate-user-password.ts': 1 },
+    reviewed: {
+      'packages/api-server/src/auth/neo4j-auth.repository.ts': 1, // revokeApiKeysBelowEpoch (HAP-1669): credential_epoch < the new generation
+      'packages/api-server/src/scripts/rotate-user-password.ts': 1,
+    },
   },
   {
     name: 'auth_credential_events INSERT (login marker, window scan, rotation)',

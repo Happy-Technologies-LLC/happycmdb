@@ -455,6 +455,21 @@ export class Neo4jAuthRepository implements AuthRepository {
     }
   }
 
+  /** Revokes the user's live keys below `nextEpoch`; keys at or above it (issued after the change) are untouched. */
+  async revokeApiKeysBelowEpoch(userId: string, nextEpoch: number): Promise<number> {
+    try {
+      const result = await this.postgresClient.query(
+        `UPDATE api_keys
+         SET enabled = FALSE, revoked_at = NOW()
+         WHERE user_id = $1 AND revoked_at IS NULL AND credential_epoch < $2`,
+        [userId, nextEpoch]
+      );
+      return result.rowCount ?? 0;
+    } catch (error) {
+      throw new Error(`Failed to revoke API keys: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
   async listApiKeys(userId: string): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]> {
     try {
       const result = await this.postgresClient.query(

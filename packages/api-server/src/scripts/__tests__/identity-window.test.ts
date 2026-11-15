@@ -9,9 +9,12 @@
  * Neo4j is an in-memory model of the exported statements.
  */
 
-import { describe, expect, it } from '@jest/globals';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from '@jest/globals';
 import * as bcrypt from 'bcrypt';
+import { fork } from 'child_process';
+import { readFileSync } from 'fs';
 import neo4j from 'neo4j-driver';
+import { join } from 'path';
 
 import {
   ASSIGN_ORGANIZATION_CYPHER, assignOrganization, main,
@@ -22,6 +25,40 @@ import {
 import type { RotationGraph, Row } from '../rotate-user-password';
 
 type Node = { elementId: string; props: Row };
+
+// api_keys is real PostgreSQL (PGlite in a child process), so the enabledApiKeys WHERE clause is executed.
+const host = fork(join(__dirname, '../../rest/routes/__tests__/fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
+let nextId = 0;
+const pending = new Map<number, { resolve: (rows: Row[]) => void; reject: (e: Error) => void }>();
+host.on('message', ({ id, rows, error }: { id: number; rows: Row[]; error?: string }) => {
+  const p = pending.get(id)!;
+  pending.delete(id);
+  if (error === undefined) p.resolve(rows);
+  else p.reject(new Error(error));
+});
+function send(op: 'exec' | 'query', text: string, params: unknown[] = []): Promise<Row[]> {
+  const id = nextId++;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    host.send({ id, op, sql: text, params });
+  });
+}
+const keysSql = { query: async (text: string, params: unknown[] = []) => ({ rows: await send('query', text, params) }) };
+beforeAll(async () => {
+  const migrations = join(__dirname, '../../../../database/src/postgres/migrations');
+  const schema = readFileSync(join(migrations, '001_complete_schema.sql'), 'utf8');
+  const start = schema.indexOf('CREATE TABLE IF NOT EXISTS api_keys (');
+  await send('exec', schema.slice(start, schema.indexOf(');', start) + 2));
+  await send('exec', 'ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS credential_epoch INTEGER NOT NULL DEFAULT 0');
+});
+afterAll(() => {
+  host.kill();
+});
+const addKey = (name: string, userId: string, epoch: number, state: 'live' | 'disabled' | 'revoked' = 'live') =>
+  send('query',
+    `INSERT INTO api_keys (user_id, key_hash, name, role, credential_epoch, enabled, revoked_at)
+     VALUES ($1, $2, $3, 'admin', $4, $5, ${state === 'revoked' ? 'NOW()' : 'NULL'})`,
+    [userId, `${name}-hash`.padEnd(64, '0'), name, epoch, state === 'live']);
 const norm = (cypher: string) => cypher.replace(/\s+/g, ' ').trim();
 const marked = (u: Node) => u.props['defaultPasswordSuspect'] === true || u.props['_defaultPasswordSuspect'] === true;
 const admin = (u: Node) => u.props['_platformAdmin'] === true || u.props['platformAdmin'] === true;
@@ -40,7 +77,7 @@ function fakeGraph(users: Node[]): RotationGraph {
           eid: u.elementId, _id: u.props['_id'] ?? null, id: u.props['id'] ?? null,
           username: u.props['_username'] ?? u.props['username'] ?? null, email: u.props['_email'] ?? u.props['email'] ?? null,
           seedProvenance: u.props['seedProvenance'] ?? null, marked: marked(u),
-          platformAdmin: admin(u), org: orgOf(u), scopes: u.props['scopes'] ?? null,
+          platformAdmin: admin(u), org: orgOf(u), scopes: u.props['scopes'] ?? null, epoch: neo4j.int(epochOf(u)),
         }));
       }
       if (q === norm(GRANT_HOLDERS_CYPHER)) {
@@ -244,8 +281,16 @@ describe('portfolio-import scope grant and revoke (HAP-1632)', () => {
 describe('assign-organization (FD-5)', () => {
   const [ORG, ORG_X] = ['33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444'];
   const user = (props: Row): Node[] => [{ elementId: '4:p', props: { _id: 'p', _username: 'pat', ...props } }];
-  const keys = { query: async (_text: string, params?: unknown[]) => ({ rows: [{ n: params?.[0] === 'p' ? '2' : '0' }] }) };
-  const assign = (users: Node[], graph = fakeGraph(users)) => assignOrganization(graph, keys, 'p', ORG, 'nick');
+  beforeEach(async () => {
+    await send('exec', 'DELETE FROM api_keys');
+    // Counted: two live keys at the user's generation (0). Never counted: disabled, revoked, another user's.
+    await addKey('live-a', 'p', 0);
+    await addKey('live-b', 'p', 0);
+    await addKey('off', 'p', 0, 'disabled');
+    await addKey('gone', 'p', 0, 'revoked');
+    await addKey('theirs', 'q', 0);
+  });
+  const assign = (users: Node[], graph = fakeGraph(users)) => assignOrganization(graph, keysSql, 'p', ORG, 'nick');
   const refused = (reason: string) => new Error(`organization assignment refused: ${reason}`);
 
   it.each([
@@ -255,6 +300,20 @@ describe('assign-organization (FD-5)', () => {
     const users = user(props);
     await expect(assign(users)).resolves.toEqual({ userId: 'p', organizationId: ORG, outcome: 'assigned', enabledApiKeys: 2 });
     expect(users[0]!.props).toMatchObject({ _organizationId: ORG, organizationAssignedBy: 'nick', organizationAssignedAt: expect.any(Date) });
+  });
+
+  it('A7 (HAP-1669): a key below the user\'s current generation is not counted; a current-generation key is', async () => {
+    await send('exec', 'DELETE FROM api_keys');
+    const users = user({ credentialEpoch: neo4j.int(3) });
+    await addKey('dead', 'p', 2);
+    await expect(assign(users)).resolves.toMatchObject({ enabledApiKeys: 0 });
+
+    await addKey('current', 'p', 3);
+    await expect(assign(users)).resolves.toMatchObject({ enabledApiKeys: 1 });
+
+    // A key above the generation (after a generation-resetting rollback) cannot authenticate either (equality).
+    await addKey('future', 'p', 4);
+    await expect(assign(users)).resolves.toMatchObject({ enabledApiKeys: 1 });
   });
 
   it('A2: the same organization again is unchanged, with no write', async () => {

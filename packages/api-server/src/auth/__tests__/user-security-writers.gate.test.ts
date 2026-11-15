@@ -155,9 +155,11 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
     },
   },
   {
-    name: 'scopes (no writer; the HAP-1632 operator grant only)',
+    name: 'scopes (the HAP-1632 operator grant and revoke only)',
     pattern: new RegExp(String.raw`\.\s*_?scopes\s*=(?!=)|${removes('_?scopes')}`, 'gi'),
     reviewed: {
+      // Reviewed (HAP-1632): GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER and REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER, one `SET u.scopes = $scopes` each.
+      'packages/api-server/src/scripts/identity-window.ts': 2,
       // Reviewed (HAP-1615): `auth.scopes = raw.scopes` maps a connector descriptor's OAuth scopes; not a :User write.
       'packages/integration-framework/src/descriptor-mapper.ts': 1,
     },
@@ -362,6 +364,8 @@ describe('inventory gate 4: user-security property writers', () => {
     ['an organization removal in the repository', REPOSITORY, "const R = 'MATCH (u:User) WHERE u._id = $id REMOVE u._organizationId';"],
     ['a scopes writer in the repository (HAP-1615)', REPOSITORY,
       "const GRANT = 'MATCH (u:User) WHERE u._id = $id SET u.scopes = $s';"],
+    ['a third scopes writer in the identity window (HAP-1632 reviews exactly the grant and the revoke)', IDENTITY_WINDOW,
+      "const AGAIN = 'MATCH (u:User) WHERE elementId(u) = $e SET u.scopes = $s';"],
   ])('fails on %s', (_label, file, addition) => {
     expect(violations(new Map([[file, sources.get(file)!]]))).toEqual([]);
     expect(violations(new Map([[file, `${sources.get(file)}\n${addition}\n`]]))).not.toEqual([]);
@@ -427,7 +431,7 @@ describe('inventory gate 4: user-security property writers', () => {
     seedProvenance: 'seedProvenance (seed writers and the window stamp; never cleared)',
     defaultPasswordSuspect: 'defaultPasswordSuspect cleared (the operator rotation only)',
     credentialEpoch: 'credentialEpoch (the operator rotation and the guarded self-service password change)',
-    scopes: 'scopes (no writer; the HAP-1632 operator grant only)',
+    scopes: 'scopes (the HAP-1632 operator grant and revoke only)',
     organizationId: 'organizationId (seed writers and the FD-5 operator assignment only)',
   };
   it.each(REMOVE_KEYS.flatMap(key => REMOVE_SHAPES.map(([shape, line]): [string, string, string] => [key, shape, line(key)])))(

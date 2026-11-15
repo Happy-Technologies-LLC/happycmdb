@@ -16,6 +16,9 @@
  *   default_marker_set_scan row per transition; reports non-bcrypt ids.
  * - `grant-platform-admin`: sets the dedicated platform-admin flag (P-6) on
  *   exactly one unambiguous, non-seeded, unmarked user.
+ * - `grant-portfolio-import-scope` / `revoke-portfolio-import-scope` (HAP-1632): adds or removes only the
+ *   `portfolio:import` entry of one such user's stored `scopes` list; the other entries and every other
+ *   property stay. The grantedBy/At or revokedBy/At node properties plus the printed result are the audit.
  * - `assign-organization`: sets the first organization (FD-5) of one such user
  *   that is not a platform admin and has none or a non-UUID one; never reassigns.
  *
@@ -27,6 +30,7 @@ import neo4j from 'neo4j-driver';
 
 import { DEFAULT_PLAINTEXTS } from '../auth/default-credentials';
 import { isSeededAccount } from '../auth/platform-admin';
+import { PORTFOLIO_IMPORT_SCOPE } from '../auth/scopes';
 import { LOCK_USER } from '../auth/user-lock';
 import { BCRYPT_HASH } from '../auth/password.service';
 
@@ -76,7 +80,8 @@ RETURN elementId(u) AS eid, u._id AS _id, u.id AS id,
        u.seedProvenance AS seedProvenance,
        (coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaultPasswordSuspect, false)) AS marked,
        (coalesce(u._platformAdmin, false) = true OR coalesce(u.platformAdmin, false) = true) AS platformAdmin,
-       coalesce(u._organizationId, u.organizationId) AS org`;
+       coalesce(u._organizationId, u.organizationId) AS org,
+       u.scopes AS scopes`;
 
 export const GRANT_HOLDERS_CYPHER = `
 MATCH (v:User) WHERE v._id IN $keys OR v.id IN $keys
@@ -113,6 +118,12 @@ const toNumber = (value: unknown): number => (neo4j.isInt(value) ? neo4j.integer
 /** The API's organization-claim shape (auth.middleware.ts organizationClaim). */
 const ORGANIZATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ASSIGNMENT = 'organization assignment';
+const GRANT_ACTION = 'portfolio-import scope grant';
+const REVOKE_ACTION = 'portfolio-import scope revoke';
+const COMMANDS = ['inventory', 'stamp', 'scan', 'grant-platform-admin', 'grant-portfolio-import-scope', 'revoke-portfolio-import-scope', 'assign-organization'];
+const SCOPE_COMMANDS = ['grant-portfolio-import-scope', 'revoke-portfolio-import-scope'];
+const OPERATOR_COMMANDS = ['scan', 'grant-platform-admin', ...SCOPE_COMMANDS, 'assign-organization'];
+const USAGE = 'usage: identity-window inventory | stamp [--except <id>]... | scan --operator <name> | grant-platform-admin --user-id <id> --operator <name> | grant-portfolio-import-scope --user-id <id> --operator <name> | revoke-portfolio-import-scope --user-id <id> --operator <name> | assign-organization --user-id <id> --organization-id <uuid> --operator <name>';
 
 export interface SeedCandidate {
   eid: string;
@@ -186,20 +197,20 @@ export class GrantRefused extends Error {
 }
 
 /** The identity row and mapped id of exactly one unambiguous, non-seeded, unmarked user. */
-async function resolveIdentity(graph: RotationGraph, userId: string): Promise<{ row: Row; mappedId: string }> {
+async function resolveIdentity(graph: RotationGraph, userId: string, action?: string): Promise<{ row: Row; mappedId: string }> {
   const matches = await graph.read(GRANT_IDENTITY_CYPHER, { id: userId });
   if (matches.length === 0) {
-throw new GrantRefused('unknown_identity');
-}
+    throw new GrantRefused('unknown_identity', action);
+  }
   if (matches.length > 1) {
-throw new GrantRefused('ambiguous_identity');
-}
+    throw new GrantRefused('ambiguous_identity', action);
+  }
   const row: Row = matches[0]!;
   const keys = [row['_id'], row['id']].filter((value): value is string => typeof value === 'string');
   const [holders] = await graph.read(GRANT_HOLDERS_CYPHER, { keys });
   if (toNumber(holders?.['holders']) !== 1) {
-throw new GrantRefused('identity_collision');
-}
+    throw new GrantRefused('identity_collision', action);
+  }
   const mappedId = typeof row['_id'] === 'string' && row['_id'] !== '' ? row['_id'] : String(row['id']);
   if (isSeededAccount({
     _id: mappedId,
@@ -208,7 +219,7 @@ throw new GrantRefused('identity_collision');
     _seedProvenance: row['seedProvenance'] === null || row['seedProvenance'] === undefined ? undefined : String(row['seedProvenance']),
     _defaultPasswordSuspect: row['marked'] === true,
   })) {
-    throw new GrantRefused('seeded_account');
+    throw new GrantRefused('seeded_account', action);
   }
   return { row, mappedId };
 }
@@ -221,6 +232,70 @@ export async function grantPlatformAdmin(graph: RotationGraph, userId: string, o
 throw new GrantRefused('not_applied');
 }
   return { userId: mappedId };
+}
+
+/** Compare-and-set under the node's write lock: writes only while the grant refusals still pass and the node
+ * still holds the scope list the resolution observed. Touches `scopes` and the audit properties, nothing else. */
+export const GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER = `
+MATCH (u:User) WHERE elementId(u) = $eid
+${LOCK_USER}
+WITH u
+WHERE (u._id = $id OR u.id = $id)
+  AND u.seedProvenance IS NULL
+  AND NOT (coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaultPasswordSuspect, false))
+  AND coalesce(u.scopes, []) = $observed
+SET u.scopes = $scopes, u.portfolioImportScopeGrantedBy = $operator, u.portfolioImportScopeGrantedAt = datetime()
+RETURN count(u) AS n`;
+
+export const REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER = `
+MATCH (u:User) WHERE elementId(u) = $eid
+${LOCK_USER}
+WITH u
+WHERE (u._id = $id OR u.id = $id)
+  AND u.seedProvenance IS NULL
+  AND NOT (coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaultPasswordSuspect, false))
+  AND coalesce(u.scopes, []) = $observed
+SET u.scopes = $scopes, u.portfolioImportScopeRevokedBy = $operator, u.portfolioImportScopeRevokedAt = datetime()
+RETURN count(u) AS n`;
+
+/** The stored scope list as the guarded write must see it: absent is empty; anything but a list of strings is refused. */
+function observedScopes(row: Row, action: string): string[] {
+  const stored: unknown = row['scopes'] ?? [];
+  if (!Array.isArray(stored) || !stored.every((entry): entry is string => typeof entry === 'string')) {
+    throw new GrantRefused('unsupported_value', action);
+  }
+  return stored;
+}
+
+export type ScopeChange = { userId: string; outcome: 'granted' | 'unchanged' | 'revoked' };
+
+async function changePortfolioImportScope(
+  graph: RotationGraph, userId: string, operator: string, action: string, grant: boolean
+): Promise<ScopeChange> {
+  const { row, mappedId } = await resolveIdentity(graph, userId, action);
+  const observed = observedScopes(row, action);
+  if (observed.includes(PORTFOLIO_IMPORT_SCOPE) === grant) {
+    return { userId: mappedId, outcome: 'unchanged' };
+  }
+  const scopes = grant ? [...observed, PORTFOLIO_IMPORT_SCOPE] : observed.filter(scope => scope !== PORTFOLIO_IMPORT_SCOPE);
+  const [result] = await graph.write(
+    grant ? GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER : REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER,
+    { eid: row['eid'], id: userId, observed, scopes, operator }
+  );
+  if (toNumber(result?.['n']) !== 1) {
+    throw new GrantRefused('not_applied', action);
+  }
+  return { userId: mappedId, outcome: grant ? 'granted' : 'revoked' };
+}
+
+/** HAP-1632: adds `portfolio:import` to one eligible user's scopes, keeping every other entry; already held is `unchanged`. */
+export function grantPortfolioImportScope(graph: RotationGraph, userId: string, operator: string): Promise<ScopeChange> {
+  return changePortfolioImportScope(graph, userId, operator, GRANT_ACTION, true);
+}
+
+/** HAP-1632: removes only `portfolio:import` from one eligible user's scopes; not held is `unchanged`. */
+export function revokePortfolioImportScope(graph: RotationGraph, userId: string, operator: string): Promise<ScopeChange> {
+  return changePortfolioImportScope(graph, userId, operator, REVOKE_ACTION, false);
 }
 
 /** FD-5: assigns a user's first organization; the same one again is `unchanged` with no write. */
@@ -280,6 +355,8 @@ values.push(argv[++i]!);
 /**
  * CLI entry: `inventory` | `stamp [--except <id>]...` | `scan --operator <name>` |
  * `grant-platform-admin --user-id <id> --operator <name>` |
+ * `grant-portfolio-import-scope --user-id <id> --operator <name>` |
+ * `revoke-portfolio-import-scope --user-id <id> --operator <name>` |
  * `assign-organization --user-id <id> --organization-id <uuid> --operator <name>`. Connections come
  * only from CMDB_ROTATE_* variables. Prints ids and counts as JSON.
  */
@@ -291,9 +368,15 @@ export async function main(
   let stores: OperatorStores | undefined;
   try {
     const [command] = argv;
+    if (!COMMANDS.includes(command ?? '')) {
+      throw new Error(USAGE);
+    }
     const operator = flagValues(argv, '--operator')[0];
-    if (['scan', 'grant-platform-admin', 'assign-organization'].includes(command ?? '') && (operator === undefined || operator.trim() === '')) {
+    if (OPERATOR_COMMANDS.includes(command ?? '') && (operator === undefined || operator.trim() === '')) {
       throw new Error('--operator <name> is required');
+    }
+    if (SCOPE_COMMANDS.includes(command ?? '') && flagValues(argv, '--user-id')[0] === undefined) {
+      throw new Error('--user-id <id> is required');
     }
     const assignment = command === 'assign-organization' ? assignmentArgs(argv) : undefined;
     stores = openOperatorStores(env);
@@ -309,10 +392,14 @@ export async function main(
 throw new Error('--user-id <id> is required');
 }
       io.stdout(JSON.stringify(await grantPlatformAdmin(stores.graph, userId, operator!)));
+    } else if (command === 'grant-portfolio-import-scope') {
+      io.stdout(JSON.stringify(await grantPortfolioImportScope(stores.graph, flagValues(argv, '--user-id')[0]!, operator!)));
+    } else if (command === 'revoke-portfolio-import-scope') {
+      io.stdout(JSON.stringify(await revokePortfolioImportScope(stores.graph, flagValues(argv, '--user-id')[0]!, operator!)));
     } else if (assignment !== undefined) {
       io.stdout(JSON.stringify(await assignOrganization(stores.graph, stores.sql, assignment.userId, assignment.organizationId, operator!)));
     } else {
-      throw new Error('usage: identity-window inventory | stamp [--except <id>]... | scan --operator <name> | grant-platform-admin --user-id <id> --operator <name> | assign-organization --user-id <id> --organization-id <uuid> --operator <name>');
+      throw new Error(USAGE);
     }
     return 0;
   } catch (error) {

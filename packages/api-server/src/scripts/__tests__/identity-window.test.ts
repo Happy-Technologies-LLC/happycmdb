@@ -15,8 +15,9 @@ import neo4j from 'neo4j-driver';
 
 import {
   ASSIGN_ORGANIZATION_CYPHER, assignOrganization, main,
-  GRANT_HOLDERS_CYPHER, GRANT_IDENTITY_CYPHER, GRANT_PLATFORM_ADMIN_CYPHER, GrantRefused, SCAN_MARK_CYPHER,
-  SCAN_USERS_CYPHER, grantPlatformAdmin, scanDefaultPasswords,
+  GRANT_HOLDERS_CYPHER, GRANT_IDENTITY_CYPHER, GRANT_PLATFORM_ADMIN_CYPHER, GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER, GrantRefused,
+  REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER, SCAN_MARK_CYPHER,
+  SCAN_USERS_CYPHER, grantPlatformAdmin, grantPortfolioImportScope, revokePortfolioImportScope, scanDefaultPasswords,
 } from '../identity-window';
 import type { RotationGraph, Row } from '../rotate-user-password';
 
@@ -39,7 +40,7 @@ function fakeGraph(users: Node[]): RotationGraph {
           eid: u.elementId, _id: u.props['_id'] ?? null, id: u.props['id'] ?? null,
           username: u.props['_username'] ?? u.props['username'] ?? null, email: u.props['_email'] ?? u.props['email'] ?? null,
           seedProvenance: u.props['seedProvenance'] ?? null, marked: marked(u),
-          platformAdmin: admin(u), org: orgOf(u),
+          platformAdmin: admin(u), org: orgOf(u), scopes: u.props['scopes'] ?? null,
         }));
       }
       if (q === norm(GRANT_HOLDERS_CYPHER)) {
@@ -80,6 +81,17 @@ function fakeGraph(users: Node[]): RotationGraph {
           [key!, value!.startsWith('$') ? params[value!.slice(1)] : value === 'datetime()' ? new Date() : value])));
         return [{ n: neo4j.int(ok ? 1 : 0) }];
       }
+      if (q === norm(GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER) || q === norm(REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER)) {
+        // Each guard and each SET is read from the statement, so a dropped guard or an extra property write shows.
+        const ok = u !== undefined && (u.props['_id'] === params['id'] || u.props['id'] === params['id'])
+          && (!q.includes('u.seedProvenance IS NULL') || u.props['seedProvenance'] === undefined)
+          && (!q.includes('AND NOT (coalesce(u.defaultPasswordSuspect') || !marked(u))
+          && (!q.includes('= $observed') || JSON.stringify(u.props['scopes'] ?? []) === JSON.stringify(params['observed']));
+        const sets = /.*SET (.+) RETURN/.exec(q)![1]!.split(', ').map(s => /^u\.(\w+) = (.+)$/.exec(s)!);
+        if (ok) Object.assign(u!.props, Object.fromEntries(sets.map(([, key, value]) =>
+          [key!, value!.startsWith('$') ? params[value!.slice(1)] : value === 'datetime()' ? new Date() : value])));
+        return [{ n: neo4j.int(ok ? 1 : 0) }];
+      }
       throw new Error(`unexpected write ${q}`);
     },
   };
@@ -114,6 +126,118 @@ describe('grant-platform-admin (P-6)', () => {
     await expect(grantPlatformAdmin(fakeGraph(twin), 'x', 'nick')).rejects.toBeInstanceOf(GrantRefused);
     await expect(grantPlatformAdmin(fakeGraph(collide), 'y', 'nick')).rejects.toMatchObject({ reason: 'identity_collision' });
     expect([...twin, ...collide].some(u => u.props['platformAdmin'] !== undefined)).toBe(false);
+  });
+});
+
+describe('portfolio-import scope grant and revoke (HAP-1632)', () => {
+  const SCOPE = 'portfolio:import';
+  const user = (props: Row = {}): Node => ({ elementId: '4:p', props: { _id: 'p', _username: 'pat', _email: 'pat@example.com', ...props } });
+
+  it('adds the scope to a user with none, recording the operator, and touches nothing else', async () => {
+    const users = [user({ _role: 'operator', platformAdmin: false })];
+
+    await expect(grantPortfolioImportScope(fakeGraph(users), 'p', 'nick')).resolves.toEqual({ userId: 'p', outcome: 'granted' });
+    expect(users[0]!.props).toMatchObject({ scopes: [SCOPE], portfolioImportScopeGrantedBy: 'nick', _role: 'operator', platformAdmin: false });
+    expect(Object.keys(users[0]!.props).sort()).toEqual(
+      ['_email', '_id', '_role', '_username', 'platformAdmin', 'portfolioImportScopeGrantedAt', 'portfolioImportScopeGrantedBy', 'scopes']);
+  });
+
+  it('keeps the other scopes, is idempotent without a second write, and never duplicates the scope', async () => {
+    const users = [user({ scopes: ['credentials:manage'] })];
+    const graph = fakeGraph(users);
+
+    await expect(grantPortfolioImportScope(graph, 'p', 'nick')).resolves.toMatchObject({ outcome: 'granted' });
+    expect(users[0]!.props['scopes']).toEqual(['credentials:manage', SCOPE]);
+    await expect(grantPortfolioImportScope(graph, 'p', 'other')).resolves.toEqual({ userId: 'p', outcome: 'unchanged' });
+    expect(users[0]!.props).toMatchObject({ scopes: ['credentials:manage', SCOPE], portfolioImportScopeGrantedBy: 'nick' });
+  });
+
+  it('revokes only the portfolio scope, records the operator, and is idempotent', async () => {
+    const users = [user({ scopes: ['credentials:manage', SCOPE, 'reports:read'] })];
+    const graph = fakeGraph(users);
+
+    await expect(revokePortfolioImportScope(graph, 'p', 'nick')).resolves.toEqual({ userId: 'p', outcome: 'revoked' });
+    expect(users[0]!.props).toMatchObject({ scopes: ['credentials:manage', 'reports:read'], portfolioImportScopeRevokedBy: 'nick' });
+    await expect(revokePortfolioImportScope(graph, 'p', 'other')).resolves.toEqual({ userId: 'p', outcome: 'unchanged' });
+    expect(users[0]!.props).toMatchObject({ scopes: ['credentials:manage', 'reports:read'], portfolioImportScopeRevokedBy: 'nick' });
+    const none = [user()];
+    await expect(revokePortfolioImportScope(fakeGraph(none), 'p', 'nick')).resolves.toMatchObject({ outcome: 'unchanged' });
+    expect(none[0]!.props['scopes']).toBeUndefined();
+  });
+
+  it.each([
+    ['seed provenance', { seedProvenance: 'pre-cutover-inventory' }],
+    ['the default-password marker', { defaultPasswordSuspect: true }],
+  ])('refuses an account with %s on grant and revoke with GrantRefused, writing nothing', async (_label, props) => {
+    for (const change of [grantPortfolioImportScope, revokePortfolioImportScope]) {
+      const users = [user({ ...props, scopes: [SCOPE] })];
+      const before = structuredClone(users[0]!.props);
+
+      await expect(change(fakeGraph(users), 'p', 'nick')).rejects.toMatchObject({ name: 'GrantRefused', reason: 'seeded_account' });
+      expect(users[0]!.props).toEqual(before);
+    }
+  });
+
+  it('refuses unknown, ambiguous and non-list scopes values with GrantRefused, writing nothing', async () => {
+    const twin = [{ elementId: '4:a', props: { _id: 'x' } }, { elementId: '4:b', props: { id: 'x' } }];
+    const text = [user({ scopes: SCOPE })];
+    const mixed = [user({ scopes: [SCOPE, 7] })];
+
+    await expect(grantPortfolioImportScope(fakeGraph([]), 'p', 'nick')).rejects.toMatchObject({ reason: 'unknown_identity' });
+    await expect(revokePortfolioImportScope(fakeGraph(twin), 'x', 'nick')).rejects.toMatchObject({ reason: 'ambiguous_identity' });
+    await expect(grantPortfolioImportScope(fakeGraph(text), 'p', 'nick')).rejects.toMatchObject({ reason: 'unsupported_value' });
+    await expect(revokePortfolioImportScope(fakeGraph(mixed), 'p', 'nick')).rejects.toMatchObject({ reason: 'unsupported_value' });
+    expect([text[0]!.props['scopes'], mixed[0]!.props['scopes']]).toEqual([SCOPE, [SCOPE, 7]]);
+  });
+
+  it.each([
+    ['the scope list changed', { scopes: ['a', 'b'] }],
+    ['the account was stamped as seed', { seedProvenance: 'pre-cutover-inventory' }],
+    ['the account was marked as default-password', { defaultPasswordSuspect: true }],
+  ])('writes nothing on grant or revoke when %s after the resolution (compare-and-set under the lock)', async (_label, change) => {
+    for (const act of [grantPortfolioImportScope, revokePortfolioImportScope]) {
+      const users = [user({ scopes: act === grantPortfolioImportScope ? ['a'] : ['a', SCOPE] })];
+      const graph = fakeGraph(users);
+      let raced = '';
+      const racing: RotationGraph = {
+        read: async (cypher, params) => {
+          const rows = await graph.read(cypher, params);
+          if (norm(cypher) === norm(GRANT_IDENTITY_CYPHER)) {
+            Object.assign(users[0]!.props, change);
+            raced = JSON.stringify(users[0]!.props);
+          }
+          return rows;
+        },
+        write: graph.write,
+      };
+
+      await expect(act(racing, 'p', 'nick')).rejects.toMatchObject({ name: 'GrantRefused', reason: 'not_applied' });
+      expect(JSON.stringify(users[0]!.props)).toBe(raced);
+    }
+  });
+
+  const quiet = { stdout: () => undefined, stderr: () => undefined };
+  it.each([
+    ['grant-portfolio-import-scope'], ['revoke-portfolio-import-scope'],
+  ])('%s exits 1 before any store opens without --operator or --user-id', async command => {
+    for (const [args, message] of [
+      [['--user-id', 'p'], '--operator <name> is required'],
+      [['--user-id', 'p', '--operator', ' '], '--operator <name> is required'],
+      [['--operator', 'nick'], '--user-id <id> is required'],
+    ] as const) {
+      const lines: string[] = [];
+      const code = await main([command, ...args], {}, { ...quiet, stderr: line => lines.push(line) });
+      expect([code, lines]).toEqual([1, [`identity-window: ${message}`]]);
+    }
+  });
+
+  it('lists both commands in the usage an unknown command prints', async () => {
+    const lines: string[] = [];
+    const code = await main(['bogus'], {}, { ...quiet, stderr: line => lines.push(line) });
+
+    expect(code).toBe(1);
+    expect(lines.join('\n')).toEqual(expect.stringContaining('grant-portfolio-import-scope --user-id <id> --operator <name>'));
+    expect(lines.join('\n')).toEqual(expect.stringContaining('revoke-portfolio-import-scope --user-id <id> --operator <name>'));
   });
 });
 

@@ -630,8 +630,8 @@ describe('AuthService profile/password/account lifecycle', () => {
       const refused = { message: 'Authentication failed', reason: 'ambiguous_identity' };
 
       await expect(service.login({ username: 'alice', password: 'correct-horse-battery-staple' })).rejects.toMatchObject(refused);
-      await expect(service.verifyToken(jwtService.generateAccessToken('user-1', 'alice', 'admin'))).rejects.toMatchObject(refused);
-      await expect(service.refreshToken({ refreshToken: jwtService.generateRefreshToken('user-1', 'alice', 'admin') }))
+      await expect(service.verifyToken(jwtService.generateAccessToken('user-1', 'alice', 'admin', undefined, 0, Math.floor(Date.now() / 1000)))).rejects.toMatchObject(refused);
+      await expect(service.refreshToken({ refreshToken: jwtService.generateRefreshToken('user-1', 'alice', 'admin', 0, Math.floor(Date.now() / 1000)) }))
         .rejects.toMatchObject(refused);
       await expect(service.verifyApiKey('opaque')).rejects.toMatchObject(refused);
     });

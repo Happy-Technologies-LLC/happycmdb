@@ -86,7 +86,7 @@ describe('GET /metrics scrape token', () => {
   it('wrong, missing or misplaced credentials: 401 Bearer challenge, no registry, token not logged', async () => {
     const app = appWith(TOKEN);
     const adminJwt = new JWTService(loadConfig().auth.jwt)
-      .generateAccessToken('admin-1', 'root', 'admin', '00000000-0000-0000-0000-000000000000');
+      .generateAccessToken('admin-1', 'root', 'admin', '00000000-0000-0000-0000-000000000000', 0, Math.floor(Date.now() / 1000));
     const attempts: Array<[string, Record<string, string>]> = [
       ['/metrics', {}],
       ['/metrics', { Authorization: `Bearer ${randomBytes(32).toString('hex')}` }],

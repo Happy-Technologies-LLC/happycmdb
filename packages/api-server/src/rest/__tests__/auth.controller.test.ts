@@ -242,8 +242,8 @@ describe('AuthController profile/password/account routes', () => {
       _updatedAt: new Date('2024-01-01'),
     } as User);
 
-    victimToken = jwtService.generateAccessToken('user-1', 'alice', 'operator');
-    otherUserToken = jwtService.generateAccessToken('user-2', 'bob', 'viewer');
+    victimToken = jwtService.generateAccessToken('user-1', 'alice', 'operator', undefined, 0, Math.floor(Date.now() / 1000));
+    otherUserToken = jwtService.generateAccessToken('user-2', 'bob', 'viewer', undefined, 0, Math.floor(Date.now() / 1000));
 
     repository.apiKeys.set('alice-key', { userId: 'user-1', revoked: false });
     repository.apiKeys.set('bob-key', { userId: 'user-2', revoked: false });
@@ -309,8 +309,8 @@ describe('AuthController profile/password/account routes', () => {
           _role: 'admin', _enabled: true, _createdAt: new Date('2024-01-01'), _updatedAt: new Date('2024-01-01'),
         } as User);
         // The seeded admin's credentials, issued before this deploy (as on main: no generation claim, key generation 0).
-        const preAccess = jwtService.generateAccessToken('user-admin-001', 'admin', 'admin');
-        const preRefresh = jwtService.generateRefreshToken('user-admin-001', 'admin', 'admin');
+        const preAccess = jwtService.generateAccessToken('user-admin-001', 'admin', 'admin', undefined, 0, Math.floor(Date.now() / 1000));
+        const preRefresh = jwtService.generateRefreshToken('user-admin-001', 'admin', 'admin', 0, Math.floor(Date.now() / 1000));
         const preKey = 'seeded-admin-pre-issued-key';
         const { createHash } = await import('crypto');
         repository.issuedKeys.set(createHash('sha256').update(preKey).digest('hex'), {
@@ -394,7 +394,7 @@ describe('AuthController profile/password/account routes', () => {
   it('returns one fixed refresh failure for invalid, expired, wrong-type, revoked, disabled, and store failures', async () => {
     const warnings = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
     const failed = { success: false, error: 'Authentication failed' };
-    const valid = jwtService.generateRefreshToken('user-1', 'alice', 'operator');
+    const valid = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 0, Math.floor(Date.now() / 1000));
     const expired = jwt.sign(
       { _userId: 'user-1', _username: 'alice', _role: 'operator', _type: 'refresh' },
       authConfig.jwt.secret, { expiresIn: -1, issuer: authConfig.jwt.issuer, audience: authConfig.jwt.audience }
@@ -404,7 +404,7 @@ describe('AuthController profile/password/account routes', () => {
         ['invalid.token.payload', 'invalid'],
         [expired, 'expired'],
         [victimToken, 'wrong_type'],
-        [jwtService.generateRefreshToken('deleted-user', 'deleted', 'viewer'), 'revoked'],
+        [jwtService.generateRefreshToken('deleted-user', 'deleted', 'viewer', 0, Math.floor(Date.now() / 1000)), 'revoked'],
       ]) {
         const response = await refresh(token);
         expect([response.status, response.body]).toEqual([401, failed]);
@@ -515,7 +515,7 @@ describe('AuthController profile/password/account routes', () => {
     });
 
     it('refresh answers a fixed 403 without exactly X-CMDB-Auth: 1, before any token or store work', async () => {
-      const issued = jwtService.generateRefreshToken('user-1', 'alice', 'operator');
+      const issued = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 0, Math.floor(Date.now() / 1000));
       sensitive.push(issued);
       const lookups = jest.spyOn(repository, 'findUserById');
       const verify = jest.spyOn(JWTService.prototype, 'verifyToken');
@@ -531,7 +531,7 @@ describe('AuthController profile/password/account routes', () => {
       // Pin the clock inside one second: the token below carries _authTime = floor(now), and the renewed cookie's
       // Max-Age is min(TTL, authTime + cap - iat of the renewal), so a wall-clock tick between the two reads yields 604799.
       spies.push(jest.spyOn(Date, 'now').mockReturnValue(Math.floor(Date.now() / 1000) * 1000));
-      const issued = jwtService.generateRefreshToken('user-1', 'alice', 'operator');
+      const issued = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 0, Math.floor(Date.now() / 1000));
       const malformed = `bad-${randomUUID()}`;
       sensitive.push(issued, malformed);
       const lookups = jest.spyOn(repository, 'findUserById');
@@ -583,8 +583,8 @@ describe('AuthController profile/password/account routes', () => {
 
     it('HP1-S6: a cmdb_rt of an older credential generation is 401 (revoked); the current one refreshes', async () => {
       repository.users.get('user-1')!._credentialEpoch = 2;
-      const stale = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 1);
-      const current = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 2);
+      const stale = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 1, Math.floor(Date.now() / 1000));
+      const current = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 2, Math.floor(Date.now() / 1000));
       sensitive.push(stale, current);
       const refused = await refresh(stale);
       expect([refused.status, refused.headers['set-cookie']]).toEqual([401, undefined]);
@@ -1104,7 +1104,7 @@ describe('AuthController profile/password/account routes', () => {
 
     it('a token claim of another organization does not change the response (verifyToken replaces it with the stored one)', async () => {
       store({ _organizationId: 'org-acme' });
-      const claimed = jwtService.generateAccessToken('user-1', 'alice', 'operator', 'org-other');
+      const claimed = jwtService.generateAccessToken('user-1', 'alice', 'operator', 'org-other', 0, Math.floor(Date.now() / 1000));
       const res = await request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${claimed}`);
       expect(res.status).toBe(200);
       expect(res.body.data).toMatchObject({ platformAdmin: false, organizationId: 'org-acme' });
@@ -1112,7 +1112,7 @@ describe('AuthController profile/password/account routes', () => {
 
     it('discloses nothing beyond the caller\'s own profile: no hash, credential epoch, seed marker, scopes or element id', async () => {
       store({ _avatar: 'data:image/png;base64,AAAA', lastLoginAt: new Date('2024-02-02'), _credentialEpoch: 7, _seedProvenance: undefined, _elementId: '4:abc:1', _scopes: ['credentials:manage'] } as Partial<User>);
-      const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', undefined, 7);
+      const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', undefined, 7, Math.floor(Date.now() / 1000));
       const auth = { Authorization: `Bearer ${token}` };
       const bodies = [
         (await request(app).get('/api/v1/auth/me').set(auth)).body,
@@ -1251,7 +1251,7 @@ describe('AuthController profile/password/account routes', () => {
         .put('/api/v1/auth/password').set('Authorization', `Bearer ${token}`).send({ currentPassword, newPassword });
 
       it('a wrong current password writes one audit row (user, org, client address, outcome) with no secret', async () => {
-        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000));
         const guess = randomUUID();
         const next = randomUUID();
 
@@ -1270,7 +1270,7 @@ describe('AuthController profile/password/account routes', () => {
       });
 
       it('a successful change writes one audit row with outcome success', async () => {
-        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000));
 
         expect((await change(token, 'correct-horse-battery-staple', randomUUID())).status).toBe(200);
 
@@ -1280,7 +1280,7 @@ describe('AuthController profile/password/account routes', () => {
 
       it('with the audit chain not ready, refuses with 503 before any check and leaves the password unchanged', async () => {
         repository.chainReady = false;
-        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000));
 
         expect((await change(token, 'correct-horse-battery-staple', randomUUID())).status).toBe(503);
 
@@ -1291,7 +1291,7 @@ describe('AuthController profile/password/account routes', () => {
 
       it('once the change is committed, a failed audit write still answers 200 with the new password in place', async () => {
         repository.auditStoreDown = true;
-        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000));
         const next = randomUUID();
 
         expect((await change(token, 'correct-horse-battery-staple', next)).status).toBe(200);
@@ -1342,7 +1342,7 @@ describe('AuthController profile/password/account routes', () => {
             store({ _organizationId: undefined });
             const before = repository.users.get('user-1')!;
 
-            const res = await change(jwtService.generateAccessToken('user-1', 'alice', 'operator'), current, randomUUID());
+            const res = await change(jwtService.generateAccessToken('user-1', 'alice', 'operator', undefined, 0, Math.floor(Date.now() / 1000)), current, randomUUID());
 
             await expectRefusedUntouched(res, before);
             expect(changePassword).not.toHaveBeenCalled();
@@ -1355,7 +1355,7 @@ describe('AuthController profile/password/account routes', () => {
           store({ _organizationId: 'org-acme' });
           const before = repository.users.get('user-1')!;
 
-          await expectRefusedUntouched(await change(jwtService.generateAccessToken('user-1', 'alice', 'operator'),
+          await expectRefusedUntouched(await change(jwtService.generateAccessToken('user-1', 'alice', 'operator', undefined, 0, Math.floor(Date.now() / 1000)),
             'correct-horse-battery-staple', randomUUID()), before);
           expect(changePassword).not.toHaveBeenCalled();
         });
@@ -1364,7 +1364,7 @@ describe('AuthController profile/password/account routes', () => {
           const before = repository.users.get('user-1')!;
           changesAfterAuthentication({ _organizationId: undefined });
 
-          await expectRefusedUntouched(await change(jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG),
+          await expectRefusedUntouched(await change(jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000)),
             'totally-wrong', randomUUID()), before);
         });
 
@@ -1372,12 +1372,12 @@ describe('AuthController profile/password/account routes', () => {
           const before = repository.users.get('user-1')!;
           changesAfterAuthentication({ _organizationId: OTHER_ORG });
 
-          await expectRefusedUntouched(await change(jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG),
+          await expectRefusedUntouched(await change(jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000)),
             'correct-horse-battery-staple', randomUUID()), before);
         });
 
         it('control: a user with an organization still gets 200 and exactly one success audit row', async () => {
-          const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+          const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000));
 
           const res = await change(token, 'correct-horse-battery-staple', randomUUID());
 
@@ -1391,7 +1391,7 @@ describe('AuthController profile/password/account routes', () => {
   describe('POST /sessions/revoke-others (HAP-1716)', () => {
     const PASSWORD = 'correct-horse-battery-staple';
     const OTHER_ORG = '9d1f2c3b-7a40-4e55-8b6d-1c2e3f4a5b6c';
-    const token = () => jwtService.generateAccessToken('user-1', 'alice', 'operator', SEED_ORGANIZATION);
+    const token = () => jwtService.generateAccessToken('user-1', 'alice', 'operator', SEED_ORGANIZATION, 0, Math.floor(Date.now() / 1000));
     const revoke = (bearer: string, body: object = { currentPassword: PASSWORD }) =>
       request(app).post('/api/v1/auth/sessions/revoke-others').set('Authorization', `Bearer ${bearer}`).send(body);
     const stored = () => repository.users.get('user-1')!;
@@ -1470,7 +1470,7 @@ describe('AuthController profile/password/account routes', () => {
 
     it('401: a session of an older generation never reaches the step-up (authentication refuses it)', async () => {
       store({ _credentialEpoch: 3 });
-      const stale = jwtService.generateAccessToken('user-1', 'alice', 'operator', SEED_ORGANIZATION, 2);
+      const stale = jwtService.generateAccessToken('user-1', 'alice', 'operator', SEED_ORGANIZATION, 2, Math.floor(Date.now() / 1000));
 
       const res = await revoke(stale);
 
@@ -1484,7 +1484,7 @@ describe('AuthController profile/password/account routes', () => {
       ['a stored user that lost its organization after the request authenticated', { _organizationId: undefined }, true],
       ['a request claim that is not the stored organization', { _organizationId: OTHER_ORG }, true],
     ])('403: %s is refused with a fixed body, nothing written, nothing audited, no cookie', async (_label, patch, afterAuthentication) => {
-      const bearer = afterAuthentication ? token() : jwtService.generateAccessToken('user-1', 'alice', 'operator');
+      const bearer = afterAuthentication ? token() : jwtService.generateAccessToken('user-1', 'alice', 'operator', undefined, 0, Math.floor(Date.now() / 1000));
       if (afterAuthentication) changesAfterAuthentication(patch); else store(patch);
       const before = stored();
       const bump = jest.spyOn(repository, 'bumpCredentialEpochGuarded');

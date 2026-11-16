@@ -53,7 +53,7 @@ app.use('/api/v1/architecture', architectureRoutes);
 app.use('/api/v1/tbm', tbmRoutes);
 app.use('/api/v1/dashboards', dashboardRoutes);
 let gql: { server: { stop(): Promise<void> } };
-const bearer = (id: keyof typeof users) => `Bearer ${jwt.generateAccessToken(id, users[id]._username, 'operator', A)}`;
+const bearer = (id: keyof typeof users) => `Bearer ${jwt.generateAccessToken(id, users[id]._username, 'operator', A, 0, Math.floor(Date.now() / 1000))}`;
 const auth = (id: keyof typeof users) => ({ authorization: bearer(id) });
 // Architecture admission is principal-scoped; tenant graph tests use distinct
 // authorized principals so a long suite does not exhaust one user's window.

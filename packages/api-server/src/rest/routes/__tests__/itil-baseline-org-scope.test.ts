@@ -106,7 +106,7 @@ import { itilRoutes } from '../itil.routes';
 const jwt = new JWTService(loadConfig().auth.jwt);
 function authorization(id: string) {
   const user = USERS[id]!;
-  return { Authorization: `Bearer ${jwt.generateAccessToken(id, user._username, user._role, user._organizationId)}` };
+  return { Authorization: `Bearer ${jwt.generateAccessToken(id, user._username, user._role, user._organizationId, 0, Math.floor(Date.now() / 1000))}` };
 }
 const app = express();
 app.use(express.json());

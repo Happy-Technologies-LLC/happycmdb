@@ -123,7 +123,7 @@ app.use('/api/v1/cis', ciRoutes);
 const jwt = new JWTService(loadConfig().auth.jwt);
 // Every request also carries a forged actor header; only the verified token subject may be recorded.
 const headers = (user: string) => ({ 'x-actor': 'forged-admin', authorization: `Bearer ${jwt.generateAccessToken(
-  users[user]!._id, users[user]!._username, users[user]!._role, users[user]!._organizationId)}` });
+  users[user]!._id, users[user]!._username, users[user]!._role, users[user]!._organizationId, 0, Math.floor(Date.now() / 1000))}` });
 const post = (user: string, body: object) => request(app).post('/api/v1/cis').set(headers(user)).send(body);
 const put = (user: string, id: string, body: object) => request(app).put(`/api/v1/cis/${id}`).set(headers(user)).send(body);
 const del = (user: string, id: string) => request(app).delete(`/api/v1/cis/${id}`).set(headers(user));

@@ -37,7 +37,7 @@ import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { unifiedCredentialRoutes } from '../unified-credential.routes';
 
 const app = express().use(express.json()).use('/api/v1', getAuthMiddleware().authenticate(), unifiedCredentialRoutes);
-const auth = { Authorization: `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken('a', 'alice', 'operator', A)}` };
+const auth = { Authorization: `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken('a', 'alice', 'operator', A, 0, Math.floor(Date.now() / 1000))}` };
 const stored = async (table: 'credentials' | 'credential_sets', id: string) => (await sql(`SELECT description FROM ${table} WHERE id = $1`, [id]))[0].description;
 const credential = (extra: object) => ({ name: rnd(), protocol: 'api_key', scope: 'api', credentials: { key: rnd() }, ...extra });
 

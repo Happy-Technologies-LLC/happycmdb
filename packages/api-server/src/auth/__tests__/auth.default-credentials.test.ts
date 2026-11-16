@@ -300,8 +300,8 @@ describe('N-21 (b) a marked account cannot log in or use any credential until op
 
   it('refuses access tokens, refresh tokens and API keys of a marked user', async () => {
     repository.users.set('m', user('m', { _defaultPasswordSuspect: true }));
-    const access = jwt.generateAccessToken('m', 'm', 'admin', ORG_A);
-    const refresh = jwt.generateRefreshToken('m', 'm', 'admin');
+    const access = jwt.generateAccessToken('m', 'm', 'admin', ORG_A, 0, Math.floor(Date.now() / 1000));
+    const refresh = jwt.generateRefreshToken('m', 'm', 'admin', 0, Math.floor(Date.now() / 1000));
     const key = await addKey('m', 0);
 
     await expect(service.verifyToken(access)).rejects.toThrow();
@@ -339,7 +339,7 @@ describe('N-21 (c)/(d) the credential generation kills every pre-rotation creden
 
   it('a key created in flight by a pre-rotation credential is born dead', async () => {
     repository.users.set('u', user('u', { _passwordHash: operatorHash }));
-    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A));
+    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A, 0, Math.floor(Date.now() / 1000)));
     repository.rotate('u', operatorHash);
 
     const created = await service.generateApiKey('u', { name: 'late' }, authorizing._cep!);
@@ -351,7 +351,7 @@ describe('N-21 (c)/(d) the credential generation kills every pre-rotation creden
     repository.users.set('u', user('u', { _passwordHash: operatorHash, _credentialEpoch: Number.NaN }));
 
     await expect(service.login({ username: 'u', password: OPERATOR_PASSWORD })).rejects.toMatchObject(INVALID);
-    await expect(service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A))).rejects.toThrow();
+    await expect(service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A, 0, Math.floor(Date.now() / 1000)))).rejects.toThrow();
   });
 });
 
@@ -386,7 +386,7 @@ describe('N-21 (i) login race: a rotation committing during login yields no usab
 describe('N-21 (h5) in-flight self-service writes across a live rotation (SEC16-01)', () => {
   it('a password change authorized before the rotation cannot overwrite the operator hash', async () => {
     repository.users.set('u', user('u', { _passwordHash: operatorHash }));
-    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A));
+    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A, 0, Math.floor(Date.now() / 1000)));
     const rotated = await bcrypt.hash('rotated-by-operator', 4);
     repository.beforeWrite = () => {
       repository.beforeWrite = undefined;
@@ -401,7 +401,7 @@ describe('N-21 (h5) in-flight self-service writes across a live rotation (SEC16-
 
   it('an account delete authorized before the rotation is refused and the account survives', async () => {
     repository.users.set('u', user('u', { _passwordHash: operatorHash }));
-    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A));
+    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A, 0, Math.floor(Date.now() / 1000)));
     repository.beforeWrite = () => {
       repository.beforeWrite = undefined;
       repository.rotate('u', operatorHash);
@@ -414,7 +414,7 @@ describe('N-21 (h5) in-flight self-service writes across a live rotation (SEC16-
 
   it('an unraced password change still works', async () => {
     repository.users.set('u', user('u', { _passwordHash: operatorHash }));
-    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A));
+    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A, 0, Math.floor(Date.now() / 1000)));
 
     await service.changePassword('u', OPERATOR_PASSWORD, 'a-new-long-password', authorizing._cep!, ORG_A);
 
@@ -439,8 +439,8 @@ describe('N-21 SEC12-02: per-request paths never run bcrypt; a non-bcrypt hash i
     const users = Array.from({ length: 5000 }, (_, i) => `scale-${i}`);
     for (const id of users) repository.users.set(id, user(id, { _passwordHash: operatorHash }));
     const credentials = await Promise.all(users.map(async id => ({
-      access: jwt.generateAccessToken(id, id, 'admin', ORG_A, 0),
-      refresh: jwt.generateRefreshToken(id, id, 'admin', 0),
+      access: jwt.generateAccessToken(id, id, 'admin', ORG_A, 0, Math.floor(Date.now() / 1000)),
+      refresh: jwt.generateRefreshToken(id, id, 'admin', 0, Math.floor(Date.now() / 1000)),
       key: await addKey(id, 0),
     })));
     const compare = jest.spyOn(PasswordService.prototype, 'verify');
@@ -466,7 +466,7 @@ describe('N-21 SEC12-02: per-request paths never run bcrypt; a non-bcrypt hash i
   it.each([['missing', undefined], ['plaintext', 'Admin123!'], ['garbage', '$2b$xx']])(
     'a %s stored hash: login gives the same 401 without throwing; an existing token keeps working until expiry', async (_label, stored) => {
       repository.users.set('n', user('n', { _passwordHash: stored as string }));
-      const existing = jwt.generateAccessToken('n', 'n', 'admin', ORG_A);
+      const existing = jwt.generateAccessToken('n', 'n', 'admin', ORG_A, 0, Math.floor(Date.now() / 1000));
 
       await expect(service.login({ username: 'n', password: 'some-other-password' })).rejects.toMatchObject(INVALID);
       await expect(service.verifyToken(existing)).resolves.toMatchObject({ _userId: 'n', _cep: 0 });
@@ -530,7 +530,7 @@ describe('HAP-552 every login attempt costs exactly one bcrypt compare, whatever
 });
 
 describe('N-21 P-6 dedicated platform-admin flag with seeded-account exclusion', () => {
-  const access = (id: string) => jwt.generateAccessToken(id, id, 'admin', ORG_A);
+  const access = (id: string) => jwt.generateAccessToken(id, id, 'admin', ORG_A, 0, Math.floor(Date.now() / 1000));
   type Outcome = { status: number; body: unknown; nextCalled: boolean };
   const response = () => ({ statusCode: 200, body: undefined as unknown,
     status(code: number) { this.statusCode = code; return this; }, json(body: unknown) { this.body = body; return this; } });

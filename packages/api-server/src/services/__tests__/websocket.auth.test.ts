@@ -99,7 +99,7 @@ import { WebSocketService } from '../websocket.service';
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const tokenFor = (userId: string) =>
-  jwt.generateAccessToken(userId, USERS[userId]!._username, 'operator', USERS[userId]!._organizationId);
+  jwt.generateAccessToken(userId, USERS[userId]!._username, 'operator', USERS[userId]!._organizationId, 0, Math.floor(Date.now() / 1000));
 
 type Inbox = {
   status: 101;

@@ -112,7 +112,7 @@ app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/search', searchRoutes);
 app.use('/api/v1/cis', ciRoutes);
-const auth = (user: 'a' | 'b') => ({ Authorization: `Bearer ${jwt.generateAccessToken(user, users[user]._username, 'viewer', users[user]._organizationId)}` });
+const auth = (user: 'a' | 'b') => ({ Authorization: `Bearer ${jwt.generateAccessToken(user, users[user]._username, 'viewer', users[user]._organizationId, 0, Math.floor(Date.now() / 1000))}` });
 
 it('omits pending CIs and foreign CIs from every mounted search list and count for two signed organizations', async () => {
   for (const user of ['a', 'b'] as const) {

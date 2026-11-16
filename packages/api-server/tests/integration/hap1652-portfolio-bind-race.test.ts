@@ -29,7 +29,7 @@ import { portfolioImportRoutes } from '../../src/rest/routes/portfolio-import.ro
 
 const sql = getPostgresClient();
 const app = express().use('/api/v1', getAuthMiddleware().authenticate()).use('/api/v1/portfolio/imports', portfolioImportRoutes);
-const bearer = `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken(user._id, user._username, user._role, A)}`;
+const bearer = `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken(user._id, user._username, user._role, A, 0, Math.floor(Date.now() / 1000))}`;
 const SERVICE = `bs-hap1652-${A.slice(0, 8)}`;
 const NAME = `HAP-1652 Billing ${A.slice(0, 8)}`;
 /** A tenant-A HappyHive export of services named NAME, one per source id (none: only the Unassigned legacy service). */

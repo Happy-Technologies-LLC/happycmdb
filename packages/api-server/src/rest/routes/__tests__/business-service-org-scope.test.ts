@@ -252,7 +252,7 @@ INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, tbm_attributes, is_
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (userId: string, organizationId?: string) => ({
-  Authorization: `Bearer ${jwt.generateAccessToken(userId, USERS[userId]!._username, 'operator', organizationId)}`,
+  Authorization: `Bearer ${jwt.generateAccessToken(userId, USERS[userId]!._username, 'operator', organizationId, 0, Math.floor(Date.now() / 1000))}`,
 });
 const AS_A = bearer('user-a', INTERNAL_ORG);
 const AS_B = bearer('user-b', ORG_B);
@@ -883,7 +883,7 @@ describe('the tenant is re-read from the user record on every request', () => {
   });
 
   it('rejects a refresh token presented as a bearer token', async () => {
-    const refresh = jwt.generateRefreshToken('user-a', 'alice', 'operator');
+    const refresh = jwt.generateRefreshToken('user-a', 'alice', 'operator', 0, Math.floor(Date.now() / 1000));
     const res = await request(app).get('/api/v1/business-services/bs-a-app').set({ Authorization: `Bearer ${refresh}` });
     expect(res.status).toBe(401);
     expect(queryCount).toBe(0);

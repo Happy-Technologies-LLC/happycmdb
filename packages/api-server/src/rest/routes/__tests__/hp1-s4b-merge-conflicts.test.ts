@@ -125,7 +125,7 @@ app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/reconciliation', reconciliationRoutes);
 let server: ApolloServer;
 const jwt = new JWTService(loadConfig().auth.jwt);
-const bearer = (user: string) => `Bearer ${jwt.generateAccessToken(users[user]!._id, users[user]!._username, users[user]!._role, users[user]!._organizationId)}`;
+const bearer = (user: string) => `Bearer ${jwt.generateAccessToken(users[user]!._id, users[user]!._username, users[user]!._role, users[user]!._organizationId, 0, Math.floor(Date.now() / 1000))}`;
 const api = (user: string) => ({
   get: (path: string) => request(app).get(`/api/v1/reconciliation/${path}`).set('authorization', bearer(user)),
   post: (path: string, body: object) => request(app).post(`/api/v1/reconciliation/${path}`).set('authorization', bearer(user)).send(body),

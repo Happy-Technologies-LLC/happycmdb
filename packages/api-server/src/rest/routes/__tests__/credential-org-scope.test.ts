@@ -73,7 +73,7 @@ app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1', unifiedCredentialRoutes);
 const jwt = new JWTService(loadConfig().auth.jwt);
-const as = (id: string) => ({ Authorization: `Bearer ${jwt.generateAccessToken(id, identities[id]._username, identities[id]._role, identities[id]._organizationId)}` });
+const as = (id: string) => ({ Authorization: `Bearer ${jwt.generateAccessToken(id, identities[id]._username, identities[id]._role, identities[id]._organizationId, 0, Math.floor(Date.now() / 1000))}` });
 const credential = (name: string) => ({ name, protocol: 'api_key', scope: 'api', credentials: { key: `only-${name}` } });
 const missing = '99999999-9999-4999-8999-999999999999';
 const legacyId = '88888888-8888-4888-8888-888888888888';

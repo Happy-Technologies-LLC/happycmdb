@@ -53,7 +53,7 @@ app.use('/api/v1/cis', ciRoutes);
 app.use('/api/v1/itil', itilRoutes);
 app.use('/api/v1/tbm', tbmRoutes);
 const auth = (user: User) => ({ authorization: `Bearer ${jwt.generateAccessToken(users[user]._id,
-  users[user]._username, users[user]._role, users[user]._organizationId)}` });
+  users[user]._username, users[user]._role, users[user]._organizationId, 0, Math.floor(Date.now() / 1000))}` });
 const cypher = async (query: string, params: Record<string, unknown> = {}) => {
   const session = graph.getSession();
   try { return (await session.run(query, params)).records.map(record => record.toObject()); } finally { await session.close(); }

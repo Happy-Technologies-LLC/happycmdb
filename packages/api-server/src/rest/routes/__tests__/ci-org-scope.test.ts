@@ -426,7 +426,7 @@ afterAll(() => { host.kill(); });
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (userId: string, organizationId?: string) => ({
-  Authorization: `Bearer ${jwt.generateAccessToken(userId, USERS[userId]!._username, 'operator', organizationId)}`,
+  Authorization: `Bearer ${jwt.generateAccessToken(userId, USERS[userId]!._username, 'operator', organizationId, 0, Math.floor(Date.now() / 1000))}`,
 });
 const AS_A = bearer('user-a', ORG_A);
 const AS_B = bearer('user-b', ORG_B);

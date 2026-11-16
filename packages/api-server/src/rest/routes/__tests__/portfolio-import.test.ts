@@ -164,7 +164,7 @@ app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/portfolio/imports', portfolioImportRoutes);
 const jwt = new JWTService(loadConfig().auth.jwt);
 const token = (user: string) => `Bearer ${jwt.generateAccessToken(users[user]!._id, users[user]!._username,
-  users[user]!._role as 'admin', users[user]!._organizationId)}`;
+  users[user]!._role as 'admin', users[user]!._organizationId, 0, Math.floor(Date.now() / 1000))}`;
 const FILE = readFileSync(join(__dirname, 'fixtures/happyhive-portfolio-export.jsonl'), 'utf8');
 const forTenant = (file: string, org: string) => file.replace(A, org);
 const post = (user: string, query: string, body: string) => request(app).post(`/api/v1/portfolio/imports${query}`)

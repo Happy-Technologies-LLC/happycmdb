@@ -40,7 +40,7 @@ app.use('/api/v1/analytics', analyticsRoutes);
 let nextA = 0;
 const auth = (key: keyof typeof users) => {
   const user = key === 'a' ? aUsers[nextA++ % aUsers.length]! : users[key];
-  return { authorization: `Bearer ${jwt.generateAccessToken(user._id, user._username, user._role, '_organizationId' in user ? user._organizationId : undefined)}` };
+  return { authorization: `Bearer ${jwt.generateAccessToken(user._id, user._username, user._role, '_organizationId' in user ? user._organizationId : undefined, 0, Math.floor(Date.now() / 1000))}` };
 };
 const summary = (user: keyof typeof users, query = '') =>
   request(app).get(`/api/v1/analytics/topology-summary${query}`).set(auth(user));

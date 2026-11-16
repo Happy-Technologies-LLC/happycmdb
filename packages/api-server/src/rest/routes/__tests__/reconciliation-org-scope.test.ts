@@ -83,7 +83,7 @@ const jwt = new JWTService(loadConfig().auth.jwt);
 // The unverified principal even carries a stale org-A claim; #49 must ignore it.
 const bearer = (organization: string) => {
   const id = organization === 'a' ? 'user-a' : organization === 'b' ? 'user-b' : 'user-none';
-  return `Bearer ${jwt.generateAccessToken(id, users[id]._username, 'operator', A)}`;
+  return `Bearer ${jwt.generateAccessToken(id, users[id]._username, 'operator', A, 0, Math.floor(Date.now() / 1000))}`;
 };
 const api = (organization: string, path: string) => request(app).get(`/api/v1/reconciliation/${path}`).set('authorization', bearer(organization));
 const post = (organization: string, id: string) => request(app).post(`/api/v1/reconciliation/conflicts/${id}/resolve`).set('authorization', bearer(organization)).send({ resolution: 'accept_source' });

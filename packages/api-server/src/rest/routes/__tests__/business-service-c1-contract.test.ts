@@ -259,7 +259,7 @@ const T2_STRINGS = [TENANT_T2, 'bs-b-ledger', 'T2 Secret', 'T2 Finance', 'ci-b-p
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const asUser = (userId: string) => ({
-  Authorization: `Bearer ${jwt.generateAccessToken(userId, USERS[userId]!._username, USERS[userId]!._role, USERS[userId]!._organizationId)}`,
+  Authorization: `Bearer ${jwt.generateAccessToken(userId, USERS[userId]!._username, USERS[userId]!._role, USERS[userId]!._organizationId, 0, Math.floor(Date.now() / 1000))}`,
 });
 const AS_T = asUser('user-t');
 

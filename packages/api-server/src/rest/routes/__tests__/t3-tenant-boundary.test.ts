@@ -248,7 +248,7 @@ app.use('/api/v1/impact', impactRoutes);
 app.use('/api/v1/analytics', analyticsRoutes);
 const auth = (id: string) => {
   const user = USERS[id]!;
-  return { Authorization: `Bearer ${jwt.generateAccessToken(id, user._username, user._role, user._organizationId)}` };
+  return { Authorization: `Bearer ${jwt.generateAccessToken(id, user._username, user._role, user._organizationId, 0, Math.floor(Date.now() / 1000))}` };
 };
 const migrations = join(__dirname, '../../../../../database/src/postgres/migrations');
 const ddl = readFileSync(join(migrations, '001_complete_schema.sql'), 'utf8');

@@ -143,8 +143,9 @@ token issued before this claim existed is refused `401 Session must be renewed` 
 spent or password checked (the web client then renews from its refresh cookie); it never falls back to
 per-address limits only. A limiter store error answers `503`. Residual risk: an attacker behind the owner's own client
 address shares the address bucket, and one holding the same login's token shares its session bucket, so
-either can hold that device out of the step-up for a window (the owner signs in again for a fresh
-session budget); a stolen session can still spend the session budget every window until its 7-day
+either can hold that device out of the step-up for a window (the owner signing in again starts a
+fresh session bucket only: the client-address and user-and-client-address buckets stay held until their
+window ends); a stolen session can still spend the session budget every window until its 7-day
 cap. A first `429` per user and bucket per window is audited with `metadata.bucket` `client`,
 `user-client` or `session`, claimed at `rate-limit:auth-session-revoke-refused:<userId>:<bucket>`.
 

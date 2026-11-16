@@ -65,7 +65,7 @@ const label = ({ method, path }: Route) => `${method.toUpperCase()} ${path}`;
 
 // An admin token whose organization claim is the user's own unless a (stale) claim is given.
 const token = (user: string, claim = users[user]._organizationId) =>
-  jwt.generateAccessToken(user, users[user]._username, 'admin', claim);
+  jwt.generateAccessToken(user, users[user]._username, 'admin', claim, 0, Math.floor(Date.now() / 1000));
 function send(bearer: string, { method, path, body }: Route) {
   const call = request(app)[method](`/api/v1/reconciliation${path.replace(/:\w+/g, PARAM)}`).set('authorization', `Bearer ${bearer}`);
   return body ? call.send(body) : call;

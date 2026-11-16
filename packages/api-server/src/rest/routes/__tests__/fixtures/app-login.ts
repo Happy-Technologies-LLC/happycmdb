@@ -137,6 +137,20 @@ $grants$;`;
  */
 export const journalReadAclSql = () => `BEGIN;\n${migrationSql('044_business_service_journal_read_acl.sql')}\nCOMMIT;`;
 
+/**
+ * PGlite: ci_source_lineage as 001 creates it plus 028's organization column, the table the HAP-2028 impact envelope
+ * reads on every traversal. Run it as the owner, before lineageReadAclSql.
+ */
+export const lineageTableSql = () => {
+  const table = migrationSql('001_complete_schema.sql').match(/CREATE TABLE IF NOT EXISTS ci_source_lineage \([\s\S]*?\n\);/);
+  const provenance = migrationSql('028_change_history_reconciliation_org_provenance.sql').match(/ALTER TABLE ci_source_lineage\s+ADD COLUMN[\s\S]*?;/);
+  if (!table || !provenance) throw new Error('ci_source_lineage DDL not found');
+  return `${table[0]}\n${provenance[0]}`;
+};
+
+/** PGlite: 053 verbatim, the column grant that lets the non-owner app login read the lineage the impact envelope filters on. */
+export const lineageReadAclSql = () => `BEGIN;\n${migrationSql('053_business_service_lineage_read_acl.sql')}\nCOMMIT;`;
+
 /** PGlite: every later statement, from the routes or the test, runs as the app login. */
 export const ENTER_APP_LOGIN_SQL = `RESET ROLE; SET SESSION AUTHORIZATION ${APP_LOGIN};`;
 /** PGlite's bootstrap superuser, its authenticated backend user (RESET SESSION AUTHORIZATION does not return to it). */

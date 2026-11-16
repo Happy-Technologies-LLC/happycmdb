@@ -22,6 +22,7 @@ import {
 } from '../../services/business-service-reference';
 import { decodeListCursor, encodeListCursor } from '../../services/c1-list-cursor';
 import { sendTraversalFailure } from './traversal-failure';
+import { impactEnvelope } from '../impact-envelope';
 import {
   appendPortfolioAudit, ifMatchVersion, sendWriteFailure, WRITE_UNAVAILABLE, type WriteRefusal,
 } from './portfolio-write';
@@ -885,8 +886,12 @@ export class BusinessServiceController {
         for (const edge of graph.edges) addEdge(edge);
       }
 
+      const envelope = await impactEnvelope(
+        organizationId, [...nodes.values()].filter(node => node.kind === 'ci').map(node => node.id));
+
       res.json({
         success: true,
+        ...envelope,
         data: {
           service_id: root.service_id,
           tenant_id: root.organization_id,

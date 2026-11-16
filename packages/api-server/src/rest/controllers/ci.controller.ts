@@ -17,6 +17,7 @@ import {
 } from '../../read-admission';
 import { withNormalizedCIFields } from '../../services/ci-normalized-fields';
 import { sendTraversalFailure } from './traversal-failure';
+import { impactEnvelope } from '../impact-envelope';
 
 /**
  * The one 404 for a CI that is missing or belongs to another organization:
@@ -423,12 +424,17 @@ export class CIController {
       }
 
       const dependencies = await this.neo4jClient.getDependencies(id, organizationId, depthNum);
+      // Every node of every returned path is the root or the end of a segment.
+      const envelope = await impactEnvelope(organizationId, [
+        id, ...dependencies.flatMap((path: any) => (path.segments || []).map((segment: any) => segment.end?.properties?.id)),
+      ].filter((ciId): ciId is string => typeof ciId === 'string'));
 
       res.json({
         success: true,
         data: dependencies,
         count: dependencies.length,
-        depth: depthNum
+        depth: depthNum,
+        ...envelope
       });
     } catch (error) {
       if (sendTraversalFailure(res, error)) return;
@@ -520,11 +526,16 @@ export class CIController {
         affected_environments
       };
 
+      const envelope = await impactEnvelope(organizationId, [
+        id, ...downstreamCIs.map((ci: any) => ci.id), ...upstreamCIs.map((ci: any) => ci.id),
+      ]);
+
       res.json({
         success: true,
         data: impactAnalysis,
         totalImpacted: totalImpacted,
-        depth: depthNum
+        depth: depthNum,
+        ...envelope
       });
     } catch (error) {
       if (sendTraversalFailure(res, error)) return;

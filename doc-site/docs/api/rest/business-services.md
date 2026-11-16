@@ -8,6 +8,8 @@ HappyCMDB owns the business service record and publishes it to the other product
 
 Status (2026-11-05): reads implemented for CO-1 S2 (HAP-1408); the stored record and audited writes for PoR S2 (HAP-1423, migration `043_business_service_record_c1.sql`); service offerings for PoR S3 (HAP-1424, migration `046_service_offerings.sql`). HAP-1422: migration `044_business_service_journal_read_acl.sql` grants `cmdb_user` SELECT on `ci_reconciliation_operations`, which `GET /{service_id}/cis`, `POST /{service_id}/cis` and `GET /{service_id}/context` read; without it a non-owner app login gets 500 on those routes. Deployment and activation are not covered here.
 
+HAP-2028: `GET /{service_id}/context` now also reads `ci_source_lineage` (the coverage envelope below). Migration `053_business_service_lineage_read_acl.sql` grants `cmdb_user` `SELECT (organization_id, ci_id)` on it, for the same reason as 044; `cmdb_app` already has it through 045. Manual rollback: `rollback/053_business_service_lineage_read_acl.down.sql`.
+
 ## Rules
 
 - **Identifier.** `service_id` is `bs-` followed by a lowercase UUID v4 (Suite Contracts v2 F1). Consumers store it as opaque text. Ids created before C1 are not reformatted.
@@ -115,6 +117,8 @@ Unlike `GET /api/v1/cis/{id}/impact`, depth here is a refusing bound. Every walk
 | `statement_timeout_ms` | 5000 per statement: the service walk statement, the ownership check of the mapped CIs, and each graph statement |
 
 A subgraph over a bound is refused with `503 {"success":false,"error":"CI traversal resource limit exceeded"}`. A statement timeout returns `504 {"success":false,"error":"CI traversal timed out"}`. The read never returns a truncated graph. A `200` reports the bounds it ran under in `bounds`.
+
+The `200` also carries `basis` (`"declared_graph_reachability"`), `runtime_blast_radius` (`"not_established"`) and `coverage` beside `data` (HAP-2028). `coverage.unreported_ci_ids` lists the CI nodes of the subgraph that no source has reported (no `ci_source_lineage` row in the caller's organization; another organization's lineage does not count), `coverage.ci_nodes_in_scope` counts those CI nodes (services are not counted), `coverage.runtime_observed_receipts_in_scope` is `false`, and `coverage.note` states that a missing edge is not evidence of no dependency. The same envelope is returned by `GET /api/v1/cis/{id}/impact`, `GET /api/v1/cis/{id}/dependencies` and `GET /api/v1/impact/graph/{rootCiId}`.
 
 ```json
 {

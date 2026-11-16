@@ -26,7 +26,7 @@ import express from 'express';
 import request from 'supertest';
 import neo4j from 'neo4j-driver';
 import {
-  Neo4jClient, CITraversalLimitError, createCITraversalWork,
+  Neo4jClient, CITraversalLimitError, createCITraversalWork, MAX_CI_TRAVERSAL_NODES,
 } from '../../../../../database/src/neo4j/client';
 import * as journalModule from '../../../../../database/src/journal/journal';
 import type { JournaledWrite } from '../../../../../database/src/journal/journal';
@@ -333,6 +333,7 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 
 // Imported after mocks are registered (jest hoists jest.mock).
 import { loadConfig } from '@cmdb/common';
+import { getImpactPredictionEngine } from '@cmdb/ai-ml-engine';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { ciRoutes } from '../ci.routes';
@@ -359,6 +360,11 @@ beforeAll(async () => {
   const historyColumns = provenanceDdl.match(/ALTER TABLE ci_change_history\s+ADD COLUMN[\s\S]*?;/);
   if (!historyColumns) throw new Error('Missing S1 history provenance columns');
   await sql(historyColumns[0]);
+  const lineageTable = ddl.match(/CREATE TABLE IF NOT EXISTS ci_source_lineage \([\s\S]*?\n\);/);
+  const lineageColumns = provenanceDdl.match(/ALTER TABLE ci_source_lineage\s+ADD COLUMN[\s\S]*?;/);
+  if (!lineageTable || !lineageColumns) throw new Error('Missing ci_source_lineage DDL');
+  await sql(lineageTable[0]);
+  await sql(lineageColumns[0]);
   for (const table of ['ci_reconciliation_operations', 'ci_reconciliation_epochs']) {
     const definition = provenanceDdl.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
     if (!definition) throw new Error(`Missing S1 journal table ${table}`);
@@ -761,6 +767,95 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(res.body.data.downstream.map((ci: { id: string }) => ci.id)).toEqual(['ci-a-app']);
     expect(res.body.data.upstream).toEqual([]);
     expect(res.body.totalImpacted).toBe(1);
+  });
+
+  // HAP-2028: every impact read states its basis (declared-graph reachability) and what it does not know.
+  describe('impact envelope (HAP-2028)', () => {
+    const lineage = (ciId: string, org: string | null) => sql(
+      `INSERT INTO ci_source_lineage (ci_id, source_name, source_id, organization_id) VALUES ($1, 'disc', $1, $2)`, [ciId, org]);
+    afterEach(async () => { await sql('DELETE FROM ci_source_lineage'); });
+    const LITERALS = { basis: 'declared_graph_reachability', runtime_blast_radius: 'not_established' };
+    const engineGraph = (...ids: string[]) => jest.spyOn(getImpactPredictionEngine(), 'buildDependencyGraph').mockResolvedValue({
+      nodes: ids.map(id => ({ id, ci_id: id, ci_name: id, ci_type: 'server', criticality: 0, dependencies_count: 0, dependents_count: 0 })),
+      edges: [], metadata: { total_nodes: ids.length, total_edges: 0, max_depth: 3, generated_at: new Date() },
+    });
+
+    it('GET /cis/:id/impact lists the in-scope CIs this organization has no lineage for, never a foreign CI', async () => {
+      seedCI('ci-a-far', ORG_A);
+      dependsOn('ci-b-app', 'ci-a-db'); // B depends on A's db: foreign, outside the traversal
+      dependsOn('ci-a-db', 'ci-b-db');
+      dependsOn('ci-b-db', 'ci-a-far');
+      // In scope: ci-a-db (root) and ci-a-app. Only B reports ci-a-db (same ci_id, other organization): no report to A.
+      await lineage('ci-a-app', ORG_A);
+      await lineage('ci-a-db', ORG_B);
+      await lineage('ci-b-app', ORG_B);
+
+      const res = await request(app).get('/api/v1/cis/ci-a-db/impact').set(AS_A);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        ...LITERALS,
+        coverage: { ci_nodes_in_scope: 2, unreported_ci_ids: ['ci-a-db'], runtime_observed_receipts_in_scope: false },
+      });
+      expect(res.body.coverage.note).toMatch(/missing edge is not evidence of no dependency/i);
+      expect(JSON.stringify(res.body.coverage)).not.toMatch(/ci-b-|ci-a-far/);
+      // Additive: the existing fields are unchanged.
+      expect(res.body.data.downstream.map((ci: { id: string }) => ci.id)).toEqual(['ci-a-app']);
+      expect(res.body.totalImpacted).toBe(1);
+    });
+
+    it('GET /cis/:id/impact counts a legacy NULL-organization lineage row as no report, and the root alone is in scope', async () => {
+      seedCI('ci-a-alone', ORG_A);
+      await lineage('ci-a-alone', null);
+      const res = await request(app).get('/api/v1/cis/ci-a-alone/impact').set(AS_A);
+      expect(res.status).toBe(200);
+      expect(res.body.coverage).toMatchObject({ ci_nodes_in_scope: 1, unreported_ci_ids: ['ci-a-alone'] });
+    });
+
+    it('GET /cis/:id/dependencies carries the same envelope over the CIs its paths reach', async () => {
+      seedCI('ci-a-far', ORG_A);
+      dependsOn('ci-a-app', 'ci-b-db'); // a path through B's CI is never walked
+      dependsOn('ci-b-db', 'ci-a-far');
+      await lineage('ci-a-db', ORG_A);
+
+      const res = await request(app).get('/api/v1/cis/ci-a-app/dependencies').set(AS_A);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        ...LITERALS,
+        coverage: { ci_nodes_in_scope: 2, unreported_ci_ids: ['ci-a-app'], runtime_observed_receipts_in_scope: false },
+      });
+      expect(JSON.stringify(res.body.coverage)).not.toMatch(/ci-b-|ci-a-far/);
+      expect(res.body.count).toBe(res.body.data.length);
+    });
+
+    it('GET /impact/graph/:rootCiId carries the same envelope over the graph nodes', async () => {
+      const engine = engineGraph('ci-a-db', 'ci-a-app');
+      try {
+        await lineage('ci-a-db', ORG_A);
+        await lineage('ci-a-app', ORG_B);
+
+        const res = await request(app).get('/api/v1/impact/graph/ci-a-db').set(AS_A);
+
+        expect(res.status).toBe(200);
+        expect(res.body).toMatchObject({
+          ...LITERALS,
+          coverage: { ci_nodes_in_scope: 2, unreported_ci_ids: ['ci-a-app'], runtime_observed_receipts_in_scope: false },
+        });
+        expect(res.body.data.nodes.map((n: { ci_id: string }) => n.ci_id)).toEqual(['ci-a-db', 'ci-a-app']);
+      } finally {
+        engine.mockRestore();
+      }
+    });
+
+    it('keeps the fixed 503 and adds no envelope when the traversal budget is exhausted', async () => {
+      for (let i = 0; i <= MAX_CI_TRAVERSAL_NODES; i++) {
+        seedCI(`ci-a-dep-${i}`, ORG_A);
+        dependsOn(`ci-a-dep-${i}`, 'ci-a-db');
+      }
+      const res = await request(app).get('/api/v1/cis/ci-a-db/impact').set(AS_A);
+      expect([res.status, res.body]).toEqual([503, { success: false, error: 'CI traversal resource limit exceeded' }]);
+    });
   });
 
   // HAP-2033: impact_score is min(totalImpacted / 10, 1) on a 0-1 scale, and openapi.yaml

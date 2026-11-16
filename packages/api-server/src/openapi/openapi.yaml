@@ -98,6 +98,8 @@ servers:
 tags:
   - name: Authentication
     description: User authentication and API key management
+  - name: Impact
+    description: Change impact prediction and dependency graphs
   - name: Configuration Items
     description: CRUD operations for Configuration Items (CIs)
   - name: Relationships
@@ -788,6 +790,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [basis, runtime_blast_radius, coverage]
                 properties:
                   ci:
                     $ref: '#/components/schemas/CI'
@@ -804,6 +807,12 @@ paths:
                           type: array
                           items:
                             type: string
+                  basis:
+                    $ref: '#/components/schemas/ImpactBasis'
+                  runtime_blast_radius:
+                    $ref: '#/components/schemas/ImpactRuntimeBlastRadius'
+                  coverage:
+                    $ref: '#/components/schemas/ImpactCoverage'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -833,7 +842,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [success, data, totalImpacted, depth]
+                required: [success, data, totalImpacted, depth, basis, runtime_blast_radius, coverage]
                 properties:
                   success:
                     type: boolean
@@ -873,12 +882,131 @@ paths:
                   depth:
                     type: integer
                     description: Traversal depth that was applied
+                  basis:
+                    $ref: '#/components/schemas/ImpactBasis'
+                  runtime_blast_radius:
+                    $ref: '#/components/schemas/ImpactRuntimeBlastRadius'
+                  coverage:
+                    $ref: '#/components/schemas/ImpactCoverage'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/CIForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /impact/graph/{rootCiId}:
+    get:
+      tags: [Impact]
+      summary: Get a bounded dependency graph rooted at a CI
+      description: >-
+        Bounded graph of declared dependency edges around a CI of the caller's
+        organization, with per-node criticality. The graph rests on declared
+        edges only (`basis`), says its runtime blast radius is not established,
+        and lists in-scope CIs no source has reported under `coverage`. A
+        graph over the traversal budget is refused with 503, never truncated.
+      operationId: getImpactDependencyGraph
+      parameters:
+        - name: rootCiId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: max_depth
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+            default: 3
+      responses:
+        '200':
+          description: Dependency graph
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, basis, runtime_blast_radius, coverage]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    type: object
+                    required: [nodes, edges, metadata]
+                    properties:
+                      nodes:
+                        type: array
+                        items:
+                          type: object
+                          required: [id, ci_id, ci_name, ci_type, criticality, dependencies_count, dependents_count]
+                          properties:
+                            id:
+                              type: string
+                            ci_id:
+                              type: string
+                            ci_name:
+                              type: string
+                            ci_type:
+                              type: string
+                            criticality:
+                              type: number
+                              minimum: 0
+                              maximum: 100
+                            dependencies_count:
+                              type: integer
+                            dependents_count:
+                              type: integer
+                      edges:
+                        type: array
+                        items:
+                          type: object
+                          required: [source_id, target_id, relationship_type, weight, is_critical]
+                          properties:
+                            source_id:
+                              type: string
+                            target_id:
+                              type: string
+                            relationship_type:
+                              type: string
+                            weight:
+                              type: number
+                            is_critical:
+                              type: boolean
+                      metadata:
+                        type: object
+                        properties:
+                          total_nodes:
+                            type: integer
+                          total_edges:
+                            type: integer
+                          max_depth:
+                            type: integer
+                          generated_at:
+                            type: string
+                            format: date-time
+                  basis:
+                    $ref: '#/components/schemas/ImpactBasis'
+                  runtime_blast_radius:
+                    $ref: '#/components/schemas/ImpactRuntimeBlastRadius'
+                  coverage:
+                    $ref: '#/components/schemas/ImpactCoverage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          description: The graph exceeds a traversal budget
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /cis/{id}/audit:
     get:
@@ -4127,11 +4255,17 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [success, data]
+                required: [success, basis, runtime_blast_radius, coverage, data]
                 properties:
                   success:
                     type: boolean
                     enum: [true]
+                  basis:
+                    $ref: '#/components/schemas/ImpactBasis'
+                  runtime_blast_radius:
+                    $ref: '#/components/schemas/ImpactRuntimeBlastRadius'
+                  coverage:
+                    $ref: '#/components/schemas/ImpactCoverage'
                   data:
                     $ref: '#/components/schemas/BusinessServiceContext'
         '401':
@@ -6327,6 +6461,52 @@ components:
           $ref: '#/components/schemas/C1Lifecycle'
         service_level:
           $ref: '#/components/schemas/ServiceOfferingLevel'
+
+    ImpactBasis:
+      type: string
+      enum: [declared_graph_reachability]
+      description: >-
+        What an impact read rests on: reachability over declared graph edges
+        (DEPENDS_ON and the like), as recorded. It is not observed runtime
+        behavior.
+
+    ImpactRuntimeBlastRadius:
+      type: string
+      enum: [not_established]
+      description: >-
+        Always `not_established` today: no runtime-observed evidence (receipts)
+        backs the traversal, so the real blast radius is unknown, not zero.
+
+    ImpactCoverage:
+      type: object
+      description: >-
+        What the traversal cannot see. Lists in-scope CIs that no source has
+        reported (no `ci_source_lineage` row in the caller's organization), the
+        CIs whose declared edges are therefore least trustworthy.
+      required: [ci_nodes_in_scope, unreported_ci_ids, runtime_observed_receipts_in_scope, note]
+      properties:
+        ci_nodes_in_scope:
+          type: integer
+          minimum: 0
+          description: >-
+            CIs the read covers: the root plus every CI it returned, or for a
+            business service every CI node of its context subgraph. Business
+            service nodes are not counted.
+        unreported_ci_ids:
+          type: array
+          description: >-
+            Sorted ids of in-scope CIs with no lineage row in the caller's
+            organization. Another organization's lineage, or a row with no
+            organization, is not a report.
+          items:
+            type: string
+        runtime_observed_receipts_in_scope:
+          type: boolean
+          enum: [false]
+          description: No runtime-observed receipts exist for the scope yet.
+        note:
+          type: string
+          description: Fixed text. A missing edge is not evidence of no dependency.
 
     BusinessServiceContext:
       type: object

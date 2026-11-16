@@ -46,6 +46,15 @@ import { readFileSync } from 'fs';
 import neo4j, { Driver, Session } from 'neo4j-driver';
 import { join } from 'path';
 import { Pool } from 'pg';
+import express from 'express';
+import request from 'supertest';
+
+import { AuthService } from '../../../packages/api-server/src/auth/auth.service';
+import { JWTService } from '../../../packages/api-server/src/auth/jwt.service';
+import { AuthMiddleware } from '../../../packages/api-server/src/middleware/auth.middleware';
+import type { RateLimitMiddleware } from '../../../packages/api-server/src/middleware/rate-limit.middleware';
+import { AuthController } from '../../../packages/api-server/src/rest/auth.controller';
+import { ValidationMiddleware } from '../../../packages/api-server/src/rest/middleware/validation.middleware';
 
 import {
   APPLY_CYPHER, DECISION_CONSTRAINT_CYPHER, applyRotation, prepareDecisionConstraint, prepareRotation, reconcileRotations,
@@ -296,7 +305,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     const rotatedHash = (await userProps())['_passwordHash'];
 
     const write = await graph.run(GUARDED_PASSWORD_CYPHER, {
-      elementId: eid, userId: USER, credentialEpoch: neo4j.int(0), readHash, newHash: 'attacker-hash',
+      elementId: eid, userId: USER, credentialEpoch: neo4j.int(0), readHash, newHash: 'attacker-hash', organizationId: SELF_SERVICE_ORGANIZATION,
     });
     const disable = await graph.run(GUARDED_DISABLE_CYPHER, { elementId: eid, userId: USER, credentialEpoch: neo4j.int(0) });
 
@@ -310,7 +319,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     await unmark();
     const repository = new Neo4jAuthRepository();
     const written = await repository.updatePasswordHashGuarded({
-      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash',
+      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash', organizationId: SELF_SERVICE_ORGANIZATION,
     });
 
     expect(written).toBe(true);
@@ -327,7 +336,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     await graph.run('MATCH (u:User {_id: $id}) REMOVE u._organizationId', { id: USER });
     const repository = new Neo4jAuthRepository();
     const write = async () => repository.updatePasswordHashGuarded({
-      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash',
+      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash', organizationId: SELF_SERVICE_ORGANIZATION,
     });
 
     expect(await write()).toBe(false);
@@ -344,7 +353,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     await graph.run('MATCH (u:User {_id: $id}) SET u.credentialEpoch = 4', { id: USER });
     const repository = new Neo4jAuthRepository();
     const write = async (credentialEpoch: number, newHash: string) =>
-      repository.updatePasswordHashGuarded({ userId: USER, elementId: await elementId(), credentialEpoch, readHash: (await userProps())['_passwordHash'] as string, newHash });
+      repository.updatePasswordHashGuarded({ userId: USER, elementId: await elementId(), credentialEpoch, readHash: (await userProps())['_passwordHash'] as string, newHash, organizationId: SELF_SERVICE_ORGANIZATION });
     const epoch = async () => neo4j.integer.toNumber((await userProps())['credentialEpoch'] as never);
 
     expect(await write(3, 'stale-lower')).toBe(false);
@@ -360,7 +369,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
   describe('HAP-1716: the session revoke advances the generation by exactly one and never writes the hash', () => {
     const bump = async (over: { credentialEpoch?: number; readHash?: string } = {}) =>
       new Neo4jAuthRepository().bumpCredentialEpochGuarded({
-        userId: USER, elementId: await elementId(), credentialEpoch: over.credentialEpoch ?? 0, readHash: over.readHash ?? defaultHash,
+        userId: USER, elementId: await elementId(), credentialEpoch: over.credentialEpoch ?? 0, readHash: over.readHash ?? defaultHash, organizationId: SELF_SERVICE_ORGANIZATION,
       });
     const state = async () => {
       const props = await userProps();
@@ -409,8 +418,130 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
       await rotateUserPassword({ userId: USER, operator: 'ci', password: NEW_PASSWORD }, operator());
       const rotated = await state();
 
-      expect(await new Neo4jAuthRepository().bumpCredentialEpochGuarded({ userId: USER, elementId: eid, credentialEpoch: 0, readHash: defaultHash })).toBe(false);
+      expect(await new Neo4jAuthRepository().bumpCredentialEpochGuarded({ userId: USER, elementId: eid, credentialEpoch: 0, readHash: defaultHash, organizationId: SELF_SERVICE_ORGANIZATION })).toBe(false);
       expect(await state()).toEqual(rotated);
+    });
+  });
+
+  describe('HAP-2061 (cm#354 F1): the stored organization must still be the request\'s when the guarded write lands', () => {
+    const OTHER_ORGANIZATION = '44444444-4444-4444-8444-444444444444';
+    const CURRENT_PASSWORD = 'hap2061-current-password';
+    const AUTH_CONFIG = {
+      jwt: {
+        secret: 'integration-secret-at-least-32-characters', accessTokenExpiresIn: '15m', refreshTokenExpiresIn: '7d',
+        issuer: 'happycmdb-test', audience: 'happycmdb-test',
+      },
+      bcrypt: { rounds: 4 },
+      apiKeys: { enabled: true, headerName: 'X-API-Key' },
+    };
+    type AuditEntry = Parameters<Neo4jAuthRepository['recordAudit']>[0];
+
+    /**
+     * The real repository over the real stores, except that the audit row is captured instead of chained and, when
+     * `moveOrganization` is set, the user's organization changes right before the guarded write: after the service's
+     * read and before the write, the window the Cypher predicate closes.
+     */
+    class CapturingRepository extends Neo4jAuthRepository {
+      moveOrganization = false;
+      audits: Array<{ metadata: AuditEntry['metadata']; organizationId: string }> = [];
+      override auditChainReady(): boolean { return true; }
+      override async recordAudit(entry: AuditEntry, organizationId: string): Promise<void> {
+        this.audits.push({ metadata: entry.metadata, organizationId });
+      }
+      private async raceOrganization(): Promise<void> {
+        if (this.moveOrganization) {
+          await graph.run('MATCH (u:User {_id: $id}) SET u._organizationId = $organization', { id: USER, organization: OTHER_ORGANIZATION });
+        }
+      }
+      override async updatePasswordHashGuarded(write: Parameters<Neo4jAuthRepository['updatePasswordHashGuarded']>[0]): Promise<boolean> {
+        await this.raceOrganization();
+        return super.updatePasswordHashGuarded(write);
+      }
+      override async bumpCredentialEpochGuarded(write: Parameters<Neo4jAuthRepository['bumpCredentialEpochGuarded']>[0]): Promise<boolean> {
+        await this.raceOrganization();
+        return super.bumpCredentialEpochGuarded(write);
+      }
+    }
+
+    let currentHash: string;
+    beforeEach(async () => {
+      await unmark();
+      currentHash = await bcrypt.hash(CURRENT_PASSWORD, 4);
+      await graph.run(
+        "MATCH (u:User {_id: $id}) SET u._passwordHash = $hash, u._role = 'operator'", { id: USER, hash: currentHash }
+      );
+    });
+
+    const call = (operation: 'password_change' | 'revoke_other_sessions', repository: CapturingRepository) => {
+      const service = new AuthService(AUTH_CONFIG as never, repository);
+      const pass = () => (_req: unknown, _res: unknown, next: () => void) => next();
+      const limiter = { limit: pass, custom: pass, endpointBudget: () => ({ _max: 1, _windowMs: 1 }) } as unknown as RateLimitMiddleware;
+      const controller = new AuthController(service, new ValidationMiddleware(), new AuthMiddleware(service, AUTH_CONFIG as never), limiter);
+      const app = express();
+      app.use(express.json());
+      app.use('/api/v1/auth', controller.getRouter());
+      const bearer = `Bearer ${new JWTService(AUTH_CONFIG.jwt as never).generateAccessToken(USER, USER, 'operator', SELF_SERVICE_ORGANIZATION)}`;
+      return operation === 'password_change'
+        ? request(app).put('/api/v1/auth/password').set('Authorization', bearer)
+          .send({ currentPassword: CURRENT_PASSWORD, newPassword: 'hap2061-new-password-1' })
+        : request(app).post('/api/v1/auth/sessions/revoke-others').set('Authorization', bearer)
+          .send({ currentPassword: CURRENT_PASSWORD });
+    };
+    const generation = async () => {
+      const stored = (await userProps())['credentialEpoch'];
+      return stored === undefined ? undefined : neo4j.integer.toNumber(stored as never);
+    };
+
+    it.each(['password_change', 'revoke_other_sessions'] as const)(
+      '%s: an organization change after the service read writes nothing, answers 401 and records no audit row or key revoke',
+      async operation => {
+        const repository = new CapturingRepository();
+        repository.moveOrganization = true;
+
+        const res = await call(operation, repository);
+
+        expect([res.status, res.body]).toEqual([401, { success: false, error: 'Unauthorized', message: 'Credentials changed' }]);
+        expect(res.headers['set-cookie']).toBeUndefined();
+        const props = await userProps();
+        expect([props['_passwordHash'], await generation(), props['_organizationId']]).toEqual([currentHash, undefined, OTHER_ORGANIZATION]);
+        expect(repository.audits).toEqual([]);
+        expect(await keyEnabled('hp1-s6-pre')).toBe(true);
+      }
+    );
+
+    it.each(['password_change', 'revoke_other_sessions'] as const)(
+      'control, %s: without the race the write lands, the generation advances and the success row counts the revoked key',
+      async operation => {
+        const repository = new CapturingRepository();
+
+        const res = await call(operation, repository);
+
+        expect(res.status).toBe(200);
+        expect(await generation()).toBe(1);
+        expect(repository.audits).toEqual([{
+          organizationId: SELF_SERVICE_ORGANIZATION,
+          metadata: { operation, outcome: 'success', revoked_api_keys: 1 },
+        }]);
+        expect(await keyEnabled('hp1-s6-pre')).toBe(false);
+      }
+    );
+
+    const writers = [
+      ['GUARDED_PASSWORD_CYPHER', (eid: string, organizationId: string) => new Neo4jAuthRepository().updatePasswordHashGuarded({
+        userId: USER, elementId: eid, credentialEpoch: 0, readHash: currentHash, newHash: 'changed-hash', organizationId,
+      })],
+      ['GUARDED_BUMP_EPOCH_CYPHER', (eid: string, organizationId: string) => new Neo4jAuthRepository().bumpCredentialEpochGuarded({
+        userId: USER, elementId: eid, credentialEpoch: 0, readHash: currentHash, organizationId,
+      })],
+    ] as const;
+    it.each(writers)('%s: a different organization lands nowhere, the stored one lands', async (_name, write) => {
+      const eid = await elementId();
+
+      expect(await write(eid, OTHER_ORGANIZATION)).toBe(false);
+      expect([(await userProps())['_passwordHash'], await generation()]).toEqual([currentHash, undefined]);
+
+      expect(await write(eid, SELF_SERVICE_ORGANIZATION)).toBe(true);
+      expect(await generation()).toBe(1);
     });
   });
 
@@ -426,7 +557,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
       return session;
     });
     await new Neo4jAuthRepository().updatePasswordHashGuarded({
-      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash',
+      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash', organizationId: SELF_SERVICE_ORGANIZATION,
     }).catch(() => false);
     const props = await userProps();
     // runs === 1 also proves the injection engaged (the write went through the spied client).
@@ -516,7 +647,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
       return { landed, rotatedHash: rotation.rotatedHash };
     }
     const passwordParams = async () => ({
-      elementId: await elementId(), userId: USER, credentialEpoch: neo4j.int(0), readHash: defaultHash, newHash: 'attacker-hash',
+      elementId: await elementId(), userId: USER, credentialEpoch: neo4j.int(0), readHash: defaultHash, newHash: 'attacker-hash', organizationId: SELF_SERVICE_ORGANIZATION,
     });
 
     it('contrast: the pre-fix password statement does overwrite the rotation (the race is real)', async () => {

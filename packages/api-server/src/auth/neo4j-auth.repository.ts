@@ -52,7 +52,7 @@ const MARKED = '(coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaul
 
 // The node write lock is taken before every guard below (see user-lock.ts).
 
-/** HP1-S6 changePassword write: lands only on the node read, at the authorizing generation, unmarked, still holding the verified hash and still holding an organization (HAP-1714: an org-less change cannot be audited); advances the generation by exactly one with the hash, computed here from the guarded value so no caller can set it (HAP-1285, HAP-1669). */
+/** HP1-S6 changePassword write: lands only on the node read, at the authorizing generation, unmarked, still holding the verified hash and still holding the request's organization (HAP-1714: an org-less change cannot be audited; HAP-2061: neither can one whose organization changed since the read); advances the generation by exactly one with the hash, computed here from the guarded value so no caller can set it (HAP-1285, HAP-1669). */
 export const GUARDED_PASSWORD_CYPHER = `
 MATCH (u:User) WHERE elementId(u) = $elementId
 ${LOCK_USER}
@@ -61,6 +61,7 @@ WHERE (u._id = $userId OR u.id = $userId)
   AND coalesce(u.credentialEpoch, 0) = $credentialEpoch
   AND NOT ${MARKED}
   AND coalesce(u._organizationId, u.organizationId) IS NOT NULL
+  AND coalesce(u._organizationId, u.organizationId) = $organizationId
   AND coalesce(u._passwordHash, u.passwordHash) = $readHash
 SET u._passwordHash = $newHash, u.passwordHash = $newHash, u.credentialEpoch = $credentialEpoch + 1,
     u._updatedAt = datetime(), u.updatedAt = datetime()
@@ -68,7 +69,7 @@ RETURN count(u) AS n`;
 
 /**
  * HAP-1716 revoke-other-sessions write: the same guards as GUARDED_PASSWORD_CYPHER (node read, authorizing generation,
- * unmarked, verified hash still stored, organization held), but the hash stays as it is: it only advances the
+ * unmarked, verified hash still stored, request's organization still stored), but the hash stays as it is: it only advances the
  * generation by exactly one (computed here from the guarded value), which ends every other session and API key
  * (HAP-1285). It writes neither a hash nor the marker.
  */
@@ -80,6 +81,7 @@ WHERE (u._id = $userId OR u.id = $userId)
   AND coalesce(u.credentialEpoch, 0) = $credentialEpoch
   AND NOT ${MARKED}
   AND coalesce(u._organizationId, u.organizationId) IS NOT NULL
+  AND coalesce(u._organizationId, u.organizationId) = $organizationId
   AND coalesce(u._passwordHash, u.passwordHash) = $readHash
 SET u.credentialEpoch = $credentialEpoch + 1,
     u._updatedAt = datetime(), u.updatedAt = datetime()
@@ -282,14 +284,14 @@ export class Neo4jAuthRepository implements AuthRepository {
   async updatePasswordHashGuarded(write: GuardedPasswordWrite): Promise<boolean> {
     return this.guardedWrite(GUARDED_PASSWORD_CYPHER, {
       elementId: write.elementId ?? null, userId: write.userId, credentialEpoch: neo4j.int(write.credentialEpoch),
-      readHash: write.readHash, newHash: write.newHash,
+      readHash: write.readHash, newHash: write.newHash, organizationId: write.organizationId,
     });
   }
 
   async bumpCredentialEpochGuarded(write: GuardedEpochBump): Promise<boolean> {
     return this.guardedWrite(GUARDED_BUMP_EPOCH_CYPHER, {
       elementId: write.elementId ?? null, userId: write.userId, credentialEpoch: neo4j.int(write.credentialEpoch),
-      readHash: write.readHash,
+      readHash: write.readHash, organizationId: write.organizationId,
     });
   }
 

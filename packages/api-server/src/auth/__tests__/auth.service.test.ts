@@ -66,7 +66,7 @@ class InMemoryAuthRepository implements AuthRepository {
 
   async updatePasswordHashGuarded(write: GuardedPasswordWrite): Promise<boolean> {
     const existing = this.users.get(write.userId);
-    if (!existing || existing._passwordHash !== write.readHash) {
+    if (!existing || existing._passwordHash !== write.readHash || existing._organizationId !== write.organizationId) {
       return false;
     }
     this.users.set(write.userId, { ...existing, _passwordHash: write.newHash });
@@ -87,7 +87,7 @@ class InMemoryAuthRepository implements AuthRepository {
     const existing = this.users.get(write.userId);
     if (
       !existing || existing._passwordHash !== write.readHash || (existing._credentialEpoch ?? 0) !== write.credentialEpoch ||
-      existing._defaultPasswordSuspect === true || !existing._organizationId
+      existing._defaultPasswordSuspect === true || !existing._organizationId || existing._organizationId !== write.organizationId
     ) {
       return false;
     }
@@ -128,9 +128,11 @@ class InMemoryAuthRepository implements AuthRepository {
     return this.listedApiKeys;
   }
   apiKeyRevokeRequests: Array<[string, number]> = [];
+  /** How many key rows the revoke reports (HAP-2061: the audit row records it). */
+  apiKeysRevoked = 0;
   async revokeApiKeysBelowEpoch(userId: string, nextEpoch: number): Promise<number> {
     this.apiKeyRevokeRequests.push([userId, nextEpoch]);
-    return 0;
+    return this.apiKeysRevoked;
   }
 }
 

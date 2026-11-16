@@ -80,12 +80,12 @@ class FakeRepository implements AuthRepository {
     return updated;
   }
   async updatePasswordHashGuarded(args: {
-    userId: string; elementId?: string; credentialEpoch: number; readHash: string; newHash: string;
+    userId: string; elementId?: string; credentialEpoch: number; readHash: string; newHash: string; organizationId: string;
   }): Promise<boolean> {
     await this.beforeWrite?.();
     const user = this.users.get(args.userId);
     if (!user || (user._credentialEpoch ?? 0) !== args.credentialEpoch || user._defaultPasswordSuspect === true
-      || user._passwordHash !== args.readHash) return false;
+      || user._passwordHash !== args.readHash || user._organizationId !== args.organizationId) return false;
     this.users.set(args.userId, { ...user, _passwordHash: args.newHash });
     return true;
   }
@@ -105,7 +105,7 @@ class FakeRepository implements AuthRepository {
     await this.beforeWrite?.();
     const user = this.users.get(args.userId);
     if (!user || (user._credentialEpoch ?? 0) !== args.credentialEpoch || user._defaultPasswordSuspect === true
-      || user._passwordHash !== args.readHash || !user._organizationId) return false;
+      || user._passwordHash !== args.readHash || !user._organizationId || user._organizationId !== args.organizationId) return false;
     this.users.set(args.userId, { ...user, _credentialEpoch: args.credentialEpoch + 1 });
     return true;
   }

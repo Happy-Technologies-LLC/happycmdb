@@ -77,6 +77,8 @@ class Repository {
     return epoch === undefined ? user : { ...user, _credentialEpoch: epoch };
   }
   async updatePasswordHashGuarded() { return this.written; }
+  /** The API-key rows a successful change revoked (HAP-2061: the success row records the count). */
+  async revokeApiKeysBelowEpoch() { return 3; }
   async recordCredentialEvent() {}
   auditChainReady() { return this.chainReady; }
   async recordAudit(entry: Omit<AuditLogEntry, 'id' | 'timestamp'>, organizationId: string) {
@@ -274,7 +276,7 @@ const direct = { currentPassword: () => CURRENT, newPassword: () => randomUUID()
  * PASSWORD_CHANGE_OUTCOMES, so an outcome added to the code has no scenario and fails here.
  */
 const outcomes: Record<PasswordChangeOutcome, Scenario> = {
-  success: { ...direct, status: 200, setup: async () => { repository.written = true; } },
+  success: { ...direct, status: 200, setup: async () => { repository.written = true; }, metadata: { revoked_api_keys: 3 } },
   wrong_password: {
     ...direct, status: 400, currentPassword: () => randomUUID(),
     body: { success: false, error: 'Password Change Failed', message: 'Current password is incorrect' },

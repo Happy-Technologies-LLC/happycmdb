@@ -80,7 +80,7 @@ function fakeGraph(users: Node[]): RotationGraph {
           eid: u.elementId, _id: u.props['_id'] ?? null, id: u.props['id'] ?? null,
           username: u.props['_username'] ?? u.props['username'] ?? null, email: u.props['_email'] ?? u.props['email'] ?? null,
           seedProvenance: u.props['seedProvenance'] ?? null, marked: marked(u),
-          platformAdmin: admin(u), org: orgOf(u), scopes: u.props['scopes'] ?? null, epoch: neo4j.int(epochOf(u)),
+          platformAdmin: admin(u), org: orgOf(u), scopes: u.props['scopes'] ?? null, epoch: u.props['credentialEpoch'] ?? neo4j.int(0),
         }));
       }
       if (q === norm(GRANT_HOLDERS_CYPHER)) {
@@ -363,6 +363,17 @@ describe('assign-organization (FD-5)', () => {
     // A key above the generation (after a generation-resetting rollback) cannot authenticate either (equality).
     await addKey('future', 'p', 4);
     await expect(assign(users)).resolves.toMatchObject({ enabledApiKeys: 1 });
+  });
+
+  it.each([
+    ['a Float', 1.5],
+    ['a whole-number Float', 0],
+    ['a string', 'abc'],
+    ['an Integer beyond the safe range', neo4j.int('9223372036854775807')],
+  ])('A8 (HAP-2061 INFO-1): a stored generation that is %s authenticates no key, so none is counted', async (_label, credentialEpoch) => {
+    // Live keys at the generations a lossy conversion would have mapped it to: 0, 1 and the unsafe value's neighbour.
+    await addKey('at-one', 'p', 1);
+    await expect(assign(user({ credentialEpoch }))).resolves.toMatchObject({ outcome: 'assigned', enabledApiKeys: 0 });
   });
 
   it('A2: the same organization again is unchanged, with no write', async () => {

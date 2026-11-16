@@ -80,7 +80,7 @@ class InMemoryAuthRepository implements AuthRepository {
   /** Like GUARDED_PASSWORD_CYPHER: the hash and the next generation land together. */
   async updatePasswordHashGuarded(write: GuardedPasswordWrite): Promise<boolean> {
     const existing = this.users.get(write.userId);
-    if (!existing || existing._passwordHash !== write.readHash) {
+    if (!existing || existing._passwordHash !== write.readHash || existing._organizationId !== write.organizationId) {
       return false;
     }
     this.users.set(write.userId, { ...existing, _passwordHash: write.newHash, _credentialEpoch: (existing._credentialEpoch ?? 0) + 1 });
@@ -102,7 +102,7 @@ class InMemoryAuthRepository implements AuthRepository {
     const existing = this.users.get(write.userId);
     if (
       !existing || existing._passwordHash !== write.readHash || (existing._credentialEpoch ?? 0) !== write.credentialEpoch ||
-      existing._defaultPasswordSuspect === true || !existing._organizationId
+      existing._defaultPasswordSuspect === true || !existing._organizationId || existing._organizationId !== write.organizationId
     ) {
       return false;
     }
@@ -194,6 +194,16 @@ const cookieAttributes = (maxAge: number, ...extra: string[]) =>
 
 /** HAP-1714: a self-service password change needs a stored organization, so the seeded users have one. */
 const SEED_ORGANIZATION = '0c2d6d1e-6f3a-4a51-8e0b-9d4c7f1a2b35';
+
+/** Live API-key rows of `userId` at generation 0, with secrets the audit row must never carry. */
+function seedIssuedKeys(repository: InMemoryAuthRepository, userId: string, count: number): void {
+  for (let i = 0; i < count; i++) {
+    repository.issuedKeys.set(`hash-${userId}-${i}`, {
+      _id: `key-id-${i}`, _key: `secret-key-${i}`, _keyHash: `hash-${userId}-${i}`, _name: `key ${i}`, _userId: userId,
+      _role: 'operator', _tier: 'standard', _enabled: true, _createdAt: new Date(), _credentialEpoch: 0,
+    } as ApiKey);
+  }
+}
 
 describe('AuthController profile/password/account routes', () => {
   let app: express.Express;
@@ -1269,6 +1279,61 @@ describe('AuthController profile/password/account routes', () => {
         }
       });
 
+      describe('HAP-2061 the success row records what the API-key revoke did', () => {
+        const bearer = () => jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+        const noSecrets = () => {
+          const row = JSON.stringify(repository.audits);
+          for (const secret of ['key-id-', 'secret-key-', 'hash-user-1', bearer()]) expect(row).not.toContain(secret);
+        };
+
+        it.each([[0], [2]])('revoked_api_keys is the number of keys the repository revoked (%i)', async count => {
+          seedIssuedKeys(repository, 'user-1', count);
+          const revoke = jest.spyOn(repository, 'revokeApiKeysBelowEpoch');
+
+          expect((await change(bearer(), 'correct-horse-battery-staple', randomUUID())).status).toBe(200);
+
+          expect(await revoke.mock.results[0]!.value).toBe(count);
+          expect(repository.audits).toHaveLength(1);
+          expect(repository.audits[0]!.entry.metadata).toEqual({ operation: 'password_change', outcome: 'success', revoked_api_keys: count });
+          noSecrets();
+        });
+
+        it('a failed revoke still returns the new session; the row says api_key_revoke_failed and carries no count', async () => {
+          seedIssuedKeys(repository, 'user-1', 2);
+          jest.spyOn(repository, 'revokeApiKeysBelowEpoch').mockRejectedValue(new Error('pg down'));
+          const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+          try {
+            const res = await change(bearer(), 'correct-horse-battery-staple', randomUUID());
+
+            expect(res.status).toBe(200);
+            expect(Object.keys(res.body.data).sort()).toEqual(['_accessToken', '_expiresIn', '_user']);
+            expect(repository.audits).toHaveLength(1);
+            expect(repository.audits[0]!.entry.metadata).toEqual({ operation: 'password_change', outcome: 'success', api_key_revoke_failed: true });
+            noSecrets();
+          } finally {
+            warn.mockRestore();
+          }
+        });
+      });
+
+      it('HAP-2061: an organization change between the service read and the guarded write writes nothing and the caller gets 401 with no row', async () => {
+        const before = repository.users.get('user-1')!;
+        const write = repository.updatePasswordHashGuarded.bind(repository);
+        const revoke = jest.spyOn(repository, 'revokeApiKeysBelowEpoch');
+        jest.spyOn(repository, 'updatePasswordHashGuarded').mockImplementation(async attempt => {
+          repository.users.set('user-1', { ...repository.users.get('user-1')!, _organizationId: '9d1f2c3b-7a40-4e55-8b6d-1c2e3f4a5b6c' });
+          return write(attempt);
+        });
+
+        const res = await change(jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG), 'correct-horse-battery-staple', randomUUID());
+
+        expect([res.status, res.body]).toEqual([401, { success: false, error: 'Unauthorized', message: 'Credentials changed' }]);
+        expect(res.headers['set-cookie']).toBeUndefined();
+        expect(repository.users.get('user-1')).toEqual({ ...before, _organizationId: '9d1f2c3b-7a40-4e55-8b6d-1c2e3f4a5b6c' });
+        expect(revoke).not.toHaveBeenCalled();
+        expect(repository.audits).toEqual([]);
+      });
+
       it('a successful change writes one audit row with outcome success', async () => {
         const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
 
@@ -1434,6 +1499,53 @@ describe('AuthController profile/password/account routes', () => {
         entry: { entity_type: 'USER', entity_id: 'user-1', actor: 'user-1', actor_type: 'user',
           ip_address: expect.stringMatching(/127\.0\.0\.1$/), metadata: { operation: 'revoke_other_sessions', outcome: 'success' } },
       });
+    });
+
+    describe('HAP-2061 the success row records what the API-key revoke did', () => {
+      it.each([[0], [2]])('revoked_api_keys is the number of keys the repository revoked (%i)', async count => {
+        seedIssuedKeys(repository, 'user-1', count);
+        const revokeKeys = jest.spyOn(repository, 'revokeApiKeysBelowEpoch');
+
+        expect((await revoke(token())).status).toBe(200);
+
+        expect(await revokeKeys.mock.results[0]!.value).toBe(count);
+        expect(repository.audits).toHaveLength(1);
+        expect(repository.audits[0]!.entry.metadata).toEqual({ operation: 'revoke_other_sessions', outcome: 'success', revoked_api_keys: count });
+        const row = JSON.stringify(repository.audits);
+        for (const secret of ['key-id-', 'secret-key-', 'hash-user-1', token()]) expect(row).not.toContain(secret);
+      });
+
+      it('a failed revoke still returns the new session; the row says api_key_revoke_failed and carries no count', async () => {
+        seedIssuedKeys(repository, 'user-1', 2);
+        jest.spyOn(repository, 'revokeApiKeysBelowEpoch').mockRejectedValue(new Error('pg down'));
+        jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+
+        const res = await revoke(token());
+
+        expect(res.status).toBe(200);
+        expect(Object.keys(res.body.data).sort()).toEqual(['_accessToken', '_expiresIn', '_user']);
+        expect(stored()._credentialEpoch).toBe(1);
+        expect(repository.audits).toHaveLength(1);
+        expect(repository.audits[0]!.entry.metadata).toEqual({ operation: 'revoke_other_sessions', outcome: 'success', api_key_revoke_failed: true });
+      });
+    });
+
+    it('HAP-2061: an organization change between the service read and the guarded write writes nothing and the caller gets 401 with no row', async () => {
+      const before = stored();
+      const bump = repository.bumpCredentialEpochGuarded.bind(repository);
+      const revokeKeys = jest.spyOn(repository, 'revokeApiKeysBelowEpoch');
+      jest.spyOn(repository, 'bumpCredentialEpochGuarded').mockImplementation(async attempt => {
+        store({ _organizationId: OTHER_ORG });
+        return bump(attempt);
+      });
+
+      const res = await revoke(token());
+
+      expect([res.status, res.body]).toEqual([401, { success: false, error: 'Unauthorized', message: 'Credentials changed' }]);
+      expect(res.headers['set-cookie']).toBeUndefined();
+      expect(stored()).toEqual({ ...before, _organizationId: OTHER_ORG });
+      expect(revokeKeys).not.toHaveBeenCalled();
+      expect(repository.audits).toEqual([]);
     });
 
     it('400: a wrong current password changes nothing, sets no cookie and audits wrong_password with no secret in the row', async () => {

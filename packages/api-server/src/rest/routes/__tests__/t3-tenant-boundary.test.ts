@@ -197,6 +197,9 @@ const pg = {
         : pg.query(sql, params),
     release: () => undefined,
   }),
+  // The impact envelope's lineage read runs in a short transaction; BEGIN/COMMIT and set_config are no-ops here.
+  transaction: async <T>(callback: (client: Awaited<ReturnType<typeof pg.getClient>>) => Promise<T>): Promise<T> =>
+    callback(await pg.getClient()),
   get connect() { return pg.getClient; },
 };
 jest.mock('@cmdb/database', () => ({

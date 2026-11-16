@@ -120,6 +120,8 @@ A subgraph over a bound is refused with `503 {"success":false,"error":"CI traver
 
 The `200` also carries `basis` (`"declared_graph_reachability"`), `runtime_blast_radius` (`"not_established"`) and `coverage` beside `data` (HAP-2028). `coverage.unreported_ci_ids` lists the CI nodes of the subgraph that no source has reported (no `ci_source_lineage` row in the caller's organization; another organization's lineage does not count), `coverage.ci_nodes_in_scope` counts those CI nodes (services are not counted), `coverage.runtime_observed_receipts_in_scope` is `false`, and `coverage.note` states that a missing edge is not evidence of no dependency. The same envelope is returned by `GET /api/v1/cis/{id}/impact`, `GET /api/v1/cis/{id}/dependencies` and `GET /api/v1/impact/graph/{rootCiId}`.
 
+The `coverage` read of `ci_source_lineage` runs in its own short transaction under a PostgreSQL `statement_timeout` (HAP-2071): 3000 ms by default, set by `IMPACT_LINEAGE_TIMEOUT_MS` (a positive integer in milliseconds; any other value falls back to the default). When it fires, the endpoint answers its `504` timeout response and sends no `basis`, `runtime_blast_radius` or `coverage`, so a response never claims coverage it did not compute. The connection is released.
+
 ```json
 {
   "success": true,

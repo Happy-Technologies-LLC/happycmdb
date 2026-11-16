@@ -909,10 +909,6 @@ export class BusinessServiceController {
       });
     } catch (error) {
       if (sendTraversalFailure(res, error)) return;
-      if (errorLogFields(error).code === '57014') { // the service walk statement's statement_timeout
-        res.status(504).json({ success: false, error: 'CI traversal timed out' });
-        return;
-      }
       logger.error('Error getting business service context', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
         success: false,

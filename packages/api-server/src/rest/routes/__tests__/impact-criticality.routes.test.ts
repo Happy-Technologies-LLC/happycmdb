@@ -31,6 +31,7 @@ jest.mock('@cmdb/database', () => {
     getPostgresClient: () => ({
       query: (sql: string, params?: unknown[]) => mockAdmission(sql) ? Promise.resolve({ rows: [] }) : query(sql, params),
       getClient: async () => client,
+      transaction: async <T>(callback: (tx: typeof client) => Promise<T>) => callback(client),
       pool: { connect: async () => client },
     }),
   };

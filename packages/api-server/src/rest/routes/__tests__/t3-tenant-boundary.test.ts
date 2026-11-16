@@ -274,6 +274,9 @@ beforeAll(async () => {
   const historyColumns = provenance.match(/ALTER TABLE ci_change_history\s+ADD COLUMN[\s\S]*?;/);
   if (!historyColumns) throw new Error('Missing S1 history org columns');
   await db.exec(historyColumns[0]);
+  const lineageColumns = provenance.match(/ALTER TABLE ci_source_lineage\s+ADD COLUMN[\s\S]*?;/);
+  if (!lineageColumns) throw new Error('Missing S1 lineage org columns');
+  await db.exec(`${table('ci_source_lineage')} ${lineageColumns[0]}`);
   for (const name of ['ci_reconciliation_operations', 'ci_reconciliation_epochs']) {
     const definition = provenance.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${name} \\([\\s\\S]*?\\n\\);`));
     if (!definition) throw new Error(`Missing S1 journal table ${name}`);

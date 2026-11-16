@@ -116,6 +116,8 @@ Unlike `GET /api/v1/cis/{id}/impact`, depth here is a refusing bound. Every walk
 
 A subgraph over a bound is refused with `503 {"success":false,"error":"CI traversal resource limit exceeded"}`. A statement timeout returns `504 {"success":false,"error":"CI traversal timed out"}`. The read never returns a truncated graph. A `200` reports the bounds it ran under in `bounds`.
 
+The `200` also carries `basis` (`"declared_graph_reachability"`), `runtime_blast_radius` (`"not_established"`) and `coverage` beside `data` (HAP-2028). `coverage.unreported_ci_ids` lists the CI nodes of the subgraph that no source has reported (no `ci_source_lineage` row in the caller's organization; another organization's lineage does not count), `coverage.ci_nodes_in_scope` counts those CI nodes (services are not counted), `coverage.runtime_observed_receipts_in_scope` is `false`, and `coverage.note` states that a missing edge is not evidence of no dependency. The same envelope is returned by `GET /api/v1/cis/{id}/impact`, `GET /api/v1/cis/{id}/dependencies` and `GET /api/v1/impact/graph/{rootCiId}`.
+
 ```json
 {
   "success": true,

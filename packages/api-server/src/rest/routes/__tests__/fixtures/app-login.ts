@@ -113,6 +113,7 @@ BEGIN
     ('public.fact_business_service_incidents', 'SELECT, INSERT'),
     ('public.fact_business_service_changes', 'SELECT, INSERT'),
     ('public.audit_log', 'SELECT, INSERT'),
+    ('public.ci_source_lineage', 'SELECT, INSERT'),
     ('public.discovery_agents', 'SELECT, INSERT, UPDATE, DELETE'),
     ('public.active_discovery_agents', 'SELECT'),
     ('public.agent_network_coverage', 'SELECT'),
@@ -136,6 +137,17 @@ $grants$;`;
  * the guard above still loads on a base without 044 (the CI fail-before run).
  */
 export const journalReadAclSql = () => `BEGIN;\n${migrationSql('044_business_service_journal_read_acl.sql')}\nCOMMIT;`;
+
+/**
+ * PGlite: ci_source_lineage as 001 creates it plus 028's organization column, the table the HAP-2028 impact envelope
+ * reads on every traversal. Run it as the owner, before APP_GRANTS_SQL (which grants the app login SELECT on it).
+ */
+export const lineageTableSql = () => {
+  const table = migrationSql('001_complete_schema.sql').match(/CREATE TABLE IF NOT EXISTS ci_source_lineage \([\s\S]*?\n\);/);
+  const provenance = migrationSql('028_change_history_reconciliation_org_provenance.sql').match(/ALTER TABLE ci_source_lineage\s+ADD COLUMN[\s\S]*?;/);
+  if (!table || !provenance) throw new Error('ci_source_lineage DDL not found');
+  return `${table[0]}\n${provenance[0]}`;
+};
 
 /** PGlite: every later statement, from the routes or the test, runs as the app login. */
 export const ENTER_APP_LOGIN_SQL = `RESET ROLE; SET SESSION AUTHORIZATION ${APP_LOGIN};`;

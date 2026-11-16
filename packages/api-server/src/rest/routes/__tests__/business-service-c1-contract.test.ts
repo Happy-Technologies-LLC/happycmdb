@@ -195,7 +195,7 @@ import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { businessServiceRoutes } from '../business-service.routes';
 import {
   APP_GRANTS_SQL, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql, ENTER_APP_LOGIN_SQL,
-  journalReadAclSql,
+  journalReadAclSql, lineageTableSql,
 } from './fixtures/app-login';
 
 const MIGRATIONS = join(__dirname, '../../../../../database/src/postgres/migrations');
@@ -285,6 +285,7 @@ beforeAll(async () => {
   }
   await send('exec', tableDdl(migration('028_change_history_reconciliation_org_provenance.sql'),
     ['ci_reconciliation_operations', 'ci_reconciliation_epochs']));
+  await send('exec', lineageTableSql());
   await send('exec', `BEGIN;\n${migration('042_co1_access_request_fulfilment_seed.sql')}\nCOMMIT;`);
   await send('exec', TEST_SEED);
   for (const name of ['043_business_service_record_c1.sql', '046_service_offerings.sql']) {
@@ -386,6 +387,56 @@ describe('C1 S1 happy path: the seeded service in tenant T', () => {
     expect(walkStatementTimeouts).toEqual(['5s']);
     const [after] = await send('query', `SELECT current_setting('statement_timeout') AS value`) as Array<{ value: string }>;
     expect(after!.value).toBe('0');
+  });
+
+  describe('HAP-2028 impact envelope', () => {
+    const lineage = (ciId: string, org: string | null) =>
+      `INSERT INTO ci_source_lineage (ci_id, source_name, source_id, organization_id) VALUES ('${ciId}', 'disc', '${ciId}', ${org ? `'${org}'` : 'NULL'});`;
+    const withLineage = async (rows: string[], run: () => Promise<void>) => {
+      await asTableOwner(statement => send('exec', statement), () => send('exec', rows.join('\n')));
+      try { await run(); } finally {
+        await asTableOwner(statement => send('exec', statement), () => send('exec', 'DELETE FROM ci_source_lineage'));
+      }
+    };
+
+    it('declares declared-graph reachability and lists exactly the in-scope CIs this organization has no lineage for', async () => {
+      // T reports workflow and forms. Directory is reported only by T2 (same ci_id, other organization) and the
+      // portal web tier only by a legacy NULL-organization row: neither is a report to T.
+      await withLineage([
+        lineage('ci-t-workflow', TENANT_T), lineage('ci-t-forms', TENANT_T),
+        lineage('ci-t-directory', TENANT_T2), lineage('ci-t-portal-web', null),
+      ], async () => {
+        const res = await readContext(SEEDED_S);
+
+        expect(res.status).toBe(200);
+        expect(res.body).toMatchObject({
+          success: true,
+          basis: 'declared_graph_reachability',
+          runtime_blast_radius: 'not_established',
+          coverage: {
+            ci_nodes_in_scope: 4,
+            unreported_ci_ids: ['ci-t-directory', 'ci-t-portal-web'],
+            runtime_observed_receipts_in_scope: false,
+          },
+        });
+        expect(res.body.coverage.note).toMatch(/missing edge is not evidence of no dependency/i);
+        for (const foreign of T2_STRINGS) expect(JSON.stringify(res.body.coverage)).not.toContain(foreign);
+        // Additive: the subgraph itself is unchanged.
+        expect(res.body.data.nodes.filter((n: { kind: string }) => n.kind === 'ci')).toHaveLength(4);
+      });
+    });
+
+    it('lists no CI when every in-scope CI has lineage, and the envelope stays on a service with no CIs', async () => {
+      await withLineage(['ci-t-workflow', 'ci-t-forms', 'ci-t-directory', 'ci-t-portal-web'].map(id => lineage(id, TENANT_T)), async () => {
+        expect((await readContext(SEEDED_S)).body.coverage).toMatchObject({ ci_nodes_in_scope: 4, unreported_ci_ids: [] });
+      });
+      const bare = await readContext('bs-t-portal');
+      expect(bare.status).toBe(200);
+      expect(bare.body).toMatchObject({
+        basis: 'declared_graph_reachability', runtime_blast_radius: 'not_established',
+        coverage: { ci_nodes_in_scope: 0, unreported_ci_ids: [], runtime_observed_receipts_in_scope: false },
+      });
+    });
   });
 
   it('reads lifecycle from the stored record, not from operational_status (HAP-1423)', async () => {

@@ -207,6 +207,8 @@ One capability, **evidence-qualified relationships**, covering the four sub-asks
 | 4 | Evidence drawer and unknown-coverage markers in impact views | happycmdb (`web-ui`) | M | P3 | 3 |
 | 5 | Impact-assessment error and review-effort measurement protocol | happycmdb (docs and fixture) | S | P3 | 3 |
 
+**Story 1 status (HAP-2028, implemented in the PR that cites it).** `GET /cis/{id}/impact`, `GET /cis/{id}/dependencies`, `GET /impact/graph/{rootCiId}` and `GET /business-services/{service_id}/context` return, beside their existing fields, `basis: "declared_graph_reachability"`, `runtime_blast_radius: "not_established"` and a `coverage` object: `ci_nodes_in_scope`, `unreported_ci_ids` (in-scope CIs with no `ci_source_lineage` row in the caller's organization, sorted), `runtime_observed_receipts_in_scope: false` and a fixed `note` that a missing edge is not evidence of no dependency. Fields are additive, organization scoping and the fixed 503 on an exhausted traversal budget are unchanged, and business-service nodes are not counted in coverage. No new table. The reads now `SELECT` from `ci_source_lineage`: the owner login and `cmdb_app` (migration 045) already hold that, and migration `053_business_service_lineage_read_acl.sql` grants the non-owner `cmdb_user` login `SELECT (organization_id, ci_id)` (grant only, as 044 did for the journal).
+
 ### Later (Proposed)
 
 * **Runtime observation producer.** Trigger: stories 2 and 3 merged, and a named runtime source (an existing connector, or an agent-side flow collector) chosen with an owner. An agent-side collector widens the discovery agent's scope beyond NMAP/SSH/SNMP/AD and needs a founder decision first. Until then the UI states "no runtime source connected" rather than implying coverage.

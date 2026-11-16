@@ -25,6 +25,7 @@ import {
 import { AuthenticatedRequest, requestOrganizationId } from '../../middleware/auth.middleware';
 import { assertNoCIGap, writeReferencedCIs } from '../../read-admission';
 import { sendJournalError } from '../../journal-http';
+import { impactEnvelope } from '../impact-envelope';
 
 type SnapshotType = 'configuration' | 'performance' | 'relationships';
 
@@ -377,8 +378,11 @@ export class DriftImpactController {
       } };
     }
     architectureRemainingMs();
-    const graph = await this.impactEngine.buildDependencyGraph(rootCiId, maxDepth, requestOrganizationId(req));
-    return { status: 200, body: { success: true, data: graph } };
+    const organizationId = requestOrganizationId(req);
+    const graph = await this.impactEngine.buildDependencyGraph(rootCiId, maxDepth, organizationId);
+    architectureRemainingMs();
+    const envelope = await impactEnvelope(organizationId, graph.nodes.map(graphNode => graphNode.ci_id));
+    return { status: 200, body: { success: true, data: graph, ...envelope } };
   }
 
   async getDependencyGraph(req: AuthenticatedRequest, res: Response): Promise<void> {

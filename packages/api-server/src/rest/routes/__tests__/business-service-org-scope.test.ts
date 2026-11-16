@@ -180,7 +180,8 @@ import { businessServiceRoutes } from '../business-service.routes';
 import { architectureRoutes } from '../architecture.routes';
 import { discoveryAgentRoutes } from '../discovery-agent.routes';
 import {
-  APP_GRANTS_SQL, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql, journalReadAclSql,
+  APP_GRANTS_SQL, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql, journalReadAclSql, lineageReadAclSql,
+  lineageTableSql,
 } from './fixtures/app-login';
 
 const MIGRATIONS = join(__dirname, '../../../../../database/src/postgres/migrations');
@@ -320,7 +321,7 @@ beforeAll(async () => {
   for (const name of ['043_business_service_record_c1.sql', '046_service_offerings.sql']) {
     await db.exec(`BEGIN;\n${readFileSync(join(MIGRATIONS, name), 'utf8')}\nCOMMIT;`);
   }
-  await db.exec(APP_GRANTS_SQL + journalReadAclSql());
+  await db.exec(lineageTableSql() + APP_GRANTS_SQL + journalReadAclSql() + lineageReadAclSql());
 });
 
 afterAll(() => {

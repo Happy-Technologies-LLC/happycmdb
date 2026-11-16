@@ -31,6 +31,10 @@ import {
 import * as journalModule from '../../../../../database/src/journal/journal';
 import type { JournaledWrite } from '../../../../../database/src/journal/journal';
 import { dec } from '../../../../../database/src/journal/encoding';
+import {
+  APP_GRANTS_SQL, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql, journalReadAclSql,
+  lineageReadAclSql, lineageTableSql,
+} from './fixtures/app-login';
 
 // Placeholder config so loadConfig() validates; no Neo4j/Redis/PostgreSQL server is contacted.
 // The signing secret is generated per run in memory; no literal credential.
@@ -263,37 +267,68 @@ driverSeam.driver = fakeDriver;
 const host = fork(join(__dirname, 'fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let sqlId = 0;
 const pending = new Map<number, { resolve: (rows: unknown[]) => void; reject: (error: Error) => void }>();
-host.on('message', ({ id, rows, error }: { id: number; rows: unknown[]; error?: string }) => {
+host.on('message', ({ id, rows, error, code }: { id: number; rows: unknown[]; error?: string; code?: string }) => {
   const reply = pending.get(id)!;
   pending.delete(id);
-  if (error) reply.reject(new Error(error));
+  // Keep the SQLSTATE so handlers see the same `code` the pg driver sets.
+  if (error) reply.reject(Object.assign(new Error(error), { code }));
   else reply.resolve(rows);
 });
-function sql(statement: string, params: unknown[] = []): Promise<unknown[]> {
+function send(op: 'exec' | 'query', statement: string, params: unknown[] = []): Promise<unknown[]> {
   const id = sqlId++;
   const { promise, resolve, reject } = Promise.withResolvers<unknown[]>();
   pending.set(id, { resolve, reject });
-  host.send({ id, op: 'query', sql: statement, params });
+  host.send({ id, op, sql: statement, params });
   return promise;
+}
+// HAP-2071: fixture and setup SQL runs as the NOSUPERUSER table owner; every statement a route sends (`pg` below)
+// runs as the app login `cmdb_user`, so a missing column grant (053) or a missing predicate shows as it would in a
+// deployment that does not run as the owner. PGlite's authenticated backend is a superuser: assertAppStatement
+// refuses a route statement that changes the role.
+function sql(statement: string, params: unknown[] = []): Promise<unknown[]> {
+  return asTableOwner(text => send('exec', text), () => send(params.length ? 'query' : 'exec', statement, params));
+}
+
+// PGlite does not enforce statement_timeout, so the harness does what the server does for the one statement a test
+// makes slow: a statement on ci_source_lineage that outlasts the transaction's statement_timeout fails with 57014
+// after that timeout; with no timeout set it runs to completion.
+let lineageStallMs = 0;
+let statementTimeoutMs = 0;
+let openTransactions = 0;
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+async function appSql(statement: string, params: unknown[] = []): Promise<unknown[]> {
+  assertAppStatement(statement);
+  if (statement.startsWith(`SELECT set_config('statement_timeout'`)) statementTimeoutMs = Number(params[0]);
+  if (lineageStallMs > 0 && statement.includes('ci_source_lineage')) {
+    if (statementTimeoutMs > 0 && statementTimeoutMs < lineageStallMs) {
+      await sleep(statementTimeoutMs);
+      throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    }
+    await sleep(lineageStallMs);
+  }
+  return send('query', statement, params);
 }
 const pg = {
   query: async (statement: string | { text: string; values?: unknown[]; query_timeout?: number },
-    params: unknown[] = []) => ({ rows: await sql(typeof statement === 'string' ? statement : statement.text,
+    params: unknown[] = []) => ({ rows: await appSql(typeof statement === 'string' ? statement : statement.text,
     typeof statement === 'string' ? params : statement.values) }),
   getClient: async () => ({
-    query: (statement: string, params: unknown[] = []) =>
-      statement.startsWith('SELECT set_config(') ? Promise.resolve({ rows: [] }) : pg.query(statement, params),
+    query: (statement: string, params: unknown[] = []) => pg.query(statement, params),
     release: () => undefined,
   }),
   transaction: async <T>(callback: (client: { query: typeof pg.query }) => Promise<T>): Promise<T> => {
-    await sql('BEGIN');
+    await appSql('BEGIN');
+    openTransactions++;
     try {
       const result = await callback(pg);
-      await sql('COMMIT');
+      await appSql('COMMIT');
       return result;
     } catch (error) {
-      await sql('ROLLBACK');
+      await appSql('ROLLBACK');
       throw error;
+    } finally {
+      openTransactions--;
+      statementTimeoutMs = 0; // SET LOCAL ends with the transaction
     }
   },
 };
@@ -337,6 +372,7 @@ import { getImpactPredictionEngine } from '@cmdb/ai-ml-engine';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { ciRoutes } from '../ci.routes';
+import { IMPACT_LINEAGE_TIMEOUT_MS, impactLineageTimeoutMs } from '../../impact-envelope';
 import { itilRoutes } from '../itil.routes';
 import { driftRoutes, impactRoutes } from '../drift-impact.routes';
 import { analyticsRoutes } from '../analytics.routes';
@@ -351,8 +387,11 @@ const derivedTables = [
 const provenanceDdl = readFileSync(
   join(__dirname, '../../../../../database/src/postgres/migrations/028_change_history_reconciliation_org_provenance.sql'), 'utf8');
 beforeAll(async () => {
+  const [{ db: database }] = await send('query', 'SELECT current_database() AS db') as Array<{ db: string }>;
+  await send('exec', createLoginRolesSql(database));
+  await sql('CREATE SCHEMA IF NOT EXISTS cmdb');
   const ddl = readFileSync(join(__dirname, '../../../../../database/src/postgres/migrations/001_complete_schema.sql'), 'utf8');
-  for (const table of derivedTables) {
+  for (const table of [...derivedTables, 'dim_business_services']) {
     const definition = ddl.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
     if (!definition) throw new Error(`Missing production table ${table}`);
     await sql(definition[0]);
@@ -360,11 +399,6 @@ beforeAll(async () => {
   const historyColumns = provenanceDdl.match(/ALTER TABLE ci_change_history\s+ADD COLUMN[\s\S]*?;/);
   if (!historyColumns) throw new Error('Missing S1 history provenance columns');
   await sql(historyColumns[0]);
-  const lineageTable = ddl.match(/CREATE TABLE IF NOT EXISTS ci_source_lineage \([\s\S]*?\n\);/);
-  const lineageColumns = provenanceDdl.match(/ALTER TABLE ci_source_lineage\s+ADD COLUMN[\s\S]*?;/);
-  if (!lineageTable || !lineageColumns) throw new Error('Missing ci_source_lineage DDL');
-  await sql(lineageTable[0]);
-  await sql(lineageColumns[0]);
   for (const table of ['ci_reconciliation_operations', 'ci_reconciliation_epochs']) {
     const definition = provenanceDdl.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
     if (!definition) throw new Error(`Missing S1 journal table ${table}`);
@@ -377,6 +411,16 @@ beforeAll(async () => {
   for (const statement of readFileSync(
     join(__dirname, '../../../../../database/src/postgres/migrations/026_anomaly_provenance.sql'), 'utf8'
   ).match(/^ALTER TABLE anomalies ADD COLUMN .+;$/gm) ?? []) await sql(statement);
+  // ci_source_lineage as 001 and 028 create it, then the app login's grants: the shared ones and migrations 044
+  // and 053 verbatim (053 is the column grant the impact envelope's lineage read depends on).
+  // The derived tables and journal tables the routes also touch get table grants here; this suite does not
+  // prove their privilege sets.
+  await sql(`${lineageTableSql()}\n${APP_GRANTS_SQL}\n${journalReadAclSql()}\n${lineageReadAclSql()}\n`
+    + `GRANT SELECT, INSERT, UPDATE, DELETE ON ${[...derivedTables, 'ci_reconciliation_operations', 'ci_reconciliation_epochs'].join(', ')} TO cmdb_user;`);
+});
+
+beforeEach(async () => {
+  await assertAppLogin(rows => send('query', rows));
 });
 afterAll(() => { host.kill(); });
 
@@ -855,6 +899,65 @@ describe('/api/v1/cis tenant scoping', () => {
       }
       const res = await request(app).get('/api/v1/cis/ci-a-db/impact').set(AS_A);
       expect([res.status, res.body]).toEqual([503, { success: false, error: 'CI traversal resource limit exceeded' }]);
+    });
+
+    // HAP-2071: the lineage read runs under its own statement_timeout; a timeout is the 504 path, never an envelope.
+    describe('lineage statement timeout (HAP-2071)', () => {
+      const TIMEOUT_ENV = 'IMPACT_LINEAGE_TIMEOUT_MS';
+      const priorTimeout = process.env[TIMEOUT_ENV];
+      afterEach(() => {
+        lineageStallMs = 0;
+        if (priorTimeout === undefined) delete process.env[TIMEOUT_ENV];
+        else process.env[TIMEOUT_ENV] = priorTimeout;
+      });
+      const slowLineage = (timeoutMs: number, stallMs: number) => {
+        process.env[TIMEOUT_ENV] = String(timeoutMs);
+        lineageStallMs = stallMs;
+      };
+      const NO_ENVELOPE = ['basis', 'runtime_blast_radius', 'coverage'];
+
+      it.each([
+        ['GET /cis/:id/impact', '/api/v1/cis/ci-a-db/impact'],
+        ['GET /cis/:id/dependencies', '/api/v1/cis/ci-a-app/dependencies'],
+        ['GET /impact/graph/:rootCiId', '/api/v1/impact/graph/ci-a-db'],
+      ])('%s answers 504 with no coverage envelope when the lineage read outlasts its timeout, and frees the connection', async (_name, path) => {
+        const engine = engineGraph('ci-a-db', 'ci-a-app');
+        try {
+          await lineage('ci-a-app', ORG_A);
+          slowLineage(50, 2000);
+
+          const started = Date.now();
+          const res = await request(app).get(path).set(AS_A);
+
+          expect(res.status).toBe(504);
+          expect(res.body.success).toBe(false);
+          for (const key of NO_ENVELOPE) expect(res.body).not.toHaveProperty(key);
+          expect(JSON.stringify(res.body)).not.toMatch(/ci-a-/);
+          expect(Date.now() - started).toBeLessThan(1500); // bounded by the timeout, not by the slow query
+          expect(openTransactions).toBe(0);
+        } finally {
+          engine.mockRestore();
+        }
+      });
+
+      it('keeps a slow lineage read under its timeout unchanged: the envelope, with the exact unreported ids', async () => {
+        await lineage('ci-a-app', ORG_A);
+        slowLineage(2000, 100);
+
+        const res = await request(app).get('/api/v1/cis/ci-a-db/impact').set(AS_A);
+
+        expect(res.status).toBe(200);
+        expect(res.body.coverage).toMatchObject({ ci_nodes_in_scope: 2, unreported_ci_ids: ['ci-a-db'] });
+        expect(openTransactions).toBe(0);
+      });
+
+      it('reads its timeout from IMPACT_LINEAGE_TIMEOUT_MS and falls back to the 3 s default for anything but a positive integer', () => {
+        expect(impactLineageTimeoutMs({ IMPACT_LINEAGE_TIMEOUT_MS: '750' })).toBe(750);
+        for (const bad of [undefined, '', '0', '-5', '1.5', 'abc', '1e3x', 'Infinity']) {
+          expect(impactLineageTimeoutMs({ IMPACT_LINEAGE_TIMEOUT_MS: bad })).toBe(IMPACT_LINEAGE_TIMEOUT_MS);
+        }
+        expect(IMPACT_LINEAGE_TIMEOUT_MS).toBe(3000);
+      });
     });
   });
 

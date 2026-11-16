@@ -5,7 +5,10 @@ import { join } from 'path';
 import * as YAML from 'yamljs';
 
 jest.mock('@cmdb/database', () => ({
-  getPostgresClient: () => ({ query: async () => ({ rows: [] }) }),
+  getPostgresClient: () => {
+    const client = { query: async () => ({ rows: [] }) };
+    return { ...client, transaction: async (callback: (tx: typeof client) => Promise<unknown>) => callback(client) };
+  },
 }));
 
 import { COVERAGE_NOTE, IMPACT_BASIS, RUNTIME_BLAST_RADIUS, impactEnvelope } from '../../rest/impact-envelope';

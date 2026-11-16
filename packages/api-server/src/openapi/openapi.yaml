@@ -409,7 +409,10 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: JWT user session required; API keys are refused before validation
+          description: >-
+            JWT user session required (API keys are refused before validation), or HAP-1714: the user has no
+            organization (or the request's organization claim is not the stored one), so the change could not be audited;
+            body `{success: false, error: Forbidden, message: Organization required to change password}`, nothing changed
         '429':
           description: >-
             HAP-1368: the client address used up login's shared per-IP budget, or the user used up the per-user budget

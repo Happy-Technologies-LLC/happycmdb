@@ -282,6 +282,11 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
   async function unmark(): Promise<void> {
     await graph.run('MATCH (u:User {_id: $id}) SET u.defaultPasswordSuspect = false', { id: USER });
   }
+  // HAP-1714: GUARDED_PASSWORD_CYPHER only lands on a user that holds an organization, so these users hold one.
+  const SELF_SERVICE_ORGANIZATION = '33333333-3333-4333-8333-333333333333';
+  beforeEach(async () => {
+    await graph.run('MATCH (u:User {_id: $id}) SET u._organizationId = $organization', { id: USER, organization: SELF_SERVICE_ORGANIZATION });
+  });
 
   it('a password write or disable authorized at the old generation lands nowhere after a rotation', async () => {
     await unmark();
@@ -315,6 +320,23 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     expect(neo4j.integer.toNumber(props['credentialEpoch'] as never)).toBe(1);
     // The key list carries each key's generation, so AuthService.listApiKeys can mark the pre-change key.
     expect((await repository.listApiKeys(USER)).map(k => k._credentialEpoch)).toEqual([0]);
+  });
+
+  it('HAP-1714: a user without an organization is not written, one holding it under either property spelling is', async () => {
+    await unmark();
+    await graph.run('MATCH (u:User {_id: $id}) REMOVE u._organizationId', { id: USER });
+    const repository = new Neo4jAuthRepository();
+    const write = async () => repository.updatePasswordHashGuarded({
+      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash',
+    });
+
+    expect(await write()).toBe(false);
+    const untouched = await userProps();
+    expect([untouched['_passwordHash'], untouched['credentialEpoch']]).toEqual([defaultHash, undefined]);
+
+    await graph.run('MATCH (u:User {_id: $id}) SET u.organizationId = $organization', { id: USER, organization: SELF_SERVICE_ORGANIZATION });
+    expect(await write()).toBe(true);
+    expect((await userProps())['_passwordHash']).toBe('changed-hash');
   });
 
   it('HAP-1669: the generation moves by exactly +1 from the guarded value; a stale or replayed write changes nothing', async () => {

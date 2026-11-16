@@ -179,17 +179,21 @@ function refreshCookieOf(response: request.Response): { value: string; attribute
 const cookieAttributes = (maxAge: number, ...extra: string[]) =>
   [`Max-Age=${maxAge}`, 'Path=/api/v1/auth', 'HttpOnly', 'Secure', 'SameSite=Strict', ...extra].sort();
 
+/** HAP-1714: a self-service password change needs a stored organization, so the seeded users have one. */
+const SEED_ORGANIZATION = '0c2d6d1e-6f3a-4a51-8e0b-9d4c7f1a2b35';
+
 describe('AuthController profile/password/account routes', () => {
   let app: express.Express;
   let repository: InMemoryAuthRepository;
   let jwtService: JWTService;
+  let authService: AuthService;
   let passwordService: PasswordService;
   let victimToken: string;
   let otherUserToken: string;
 
   beforeEach(async () => {
     repository = new InMemoryAuthRepository();
-    const authService = new AuthService(authConfig as any, repository);
+    authService = new AuthService(authConfig as any, repository);
     const validator = new ValidationMiddleware();
     const authMiddleware = new AuthMiddleware(authService, authConfig as any);
     const controller = new AuthController(authService, validator, authMiddleware, fakeRateLimiter());
@@ -207,6 +211,7 @@ describe('AuthController profile/password/account routes', () => {
       _email: 'alice@example.com',
       _passwordHash: await passwordService.hash('correct-horse-battery-staple'),
       _role: 'operator',
+      _organizationId: SEED_ORGANIZATION,
       _enabled: true,
       _createdAt: new Date('2024-01-01'),
       _updatedAt: new Date('2024-01-01'),
@@ -218,6 +223,7 @@ describe('AuthController profile/password/account routes', () => {
       _email: 'bob@example.com',
       _passwordHash: await passwordService.hash('bobs-password'),
       _role: 'viewer',
+      _organizationId: SEED_ORGANIZATION,
       _enabled: true,
       _createdAt: new Date('2024-01-01'),
       _updatedAt: new Date('2024-01-01'),
@@ -974,6 +980,7 @@ describe('AuthController profile/password/account routes', () => {
     });
 
     it('a user without an organization gets organizationId null, still present on the wire', async () => {
+      store({ _organizationId: undefined });
       const res = await me();
       expect(res.body.data).toHaveProperty('organizationId', null);
       expect(res.body.data.platformAdmin).toBe(false);
@@ -1218,13 +1225,91 @@ describe('AuthController profile/password/account routes', () => {
         expect(await passwordService.verify(next, repository.users.get('user-1')?._passwordHash as string)).toBe(true);
       });
 
-      it('an actor without an organization claim changes the password and writes no audit row', async () => {
-        repository.users.set('user-1', { ...repository.users.get('user-1')!, _organizationId: undefined });
-        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator');
+      describe('HAP-1714 organization required', () => {
+        const OTHER_ORG = '9d1f2c3b-7a40-4e55-8b6d-1c2e3f4a5b6c';
+        const REFUSED = { success: false, error: 'Forbidden', message: 'Organization required to change password' };
+        const store = (patch: Partial<User>) => repository.users.set('user-1', { ...repository.users.get('user-1')!, ...patch });
+        /** The request authenticates against the stored user as it is now; the service then reads it as `patch` has it. */
+        const changesAfterAuthentication = (patch: Partial<User>) => {
+          const read = repository.findUserById.bind(repository);
+          let reads = 0;
+          jest.spyOn(repository, 'findUserById').mockImplementation(async id => {
+            const user = await read(id);
+            return reads++ === 0 || !user ? user : { ...user, ...patch };
+          });
+        };
+        const expectRefusedUntouched = async (res: request.Response, before: User) => {
+          expect([res.status, res.body]).toEqual([403, REFUSED]);
+          expect(res.headers['set-cookie']).toBeUndefined();
+          expect(JSON.stringify(res.body)).not.toMatch(/_accessToken|_refreshToken/);
+          expect(repository.audits).toEqual([]);
+          expect(guardedWrite).not.toHaveBeenCalled();
+          expect(hash).not.toHaveBeenCalled();
+          expect(repository.users.get('user-1')).toEqual(before);
+        };
+        let guardedWrite: jest.SpiedFunction<AuthRepository['updatePasswordHashGuarded']>;
+        let hash: jest.SpiedFunction<PasswordService['hash']>;
+        let warn: jest.SpiedFunction<typeof logger.warn>;
+        let changePassword: jest.SpiedFunction<AuthService['changePassword']>;
+        beforeEach(() => {
+          guardedWrite = jest.spyOn(repository, 'updatePasswordHashGuarded');
+          hash = jest.spyOn(PasswordService.prototype, 'hash');
+          warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+          changePassword = jest.spyOn(authService, 'changePassword');
+        });
+        afterEach(() => {
+          hash.mockRestore();
+          warn.mockRestore();
+        });
 
-        expect((await change(token, 'correct-horse-battery-staple', randomUUID())).status).toBe(200);
+        it.each([['the right', 'correct-horse-battery-staple'], ['a wrong', 'totally-wrong']])(
+          'a stored user with no organization is refused with 403 whatever %s current password is sent: nothing written, nothing audited, no cookie',
+          async (_label, current) => {
+            store({ _organizationId: undefined });
+            const before = repository.users.get('user-1')!;
 
-        expect(repository.audits).toEqual([]);
+            const res = await change(jwtService.generateAccessToken('user-1', 'alice', 'operator'), current, randomUUID());
+
+            await expectRefusedUntouched(res, before);
+            expect(changePassword).not.toHaveBeenCalled();
+            expect(warn).toHaveBeenCalledWith('Password change refused: the user has no usable organization', { userId: 'user-1' });
+            expect(JSON.stringify(warn.mock.calls)).not.toContain(current);
+          }
+        );
+
+        it('a stored organization that is not a well-formed claim (no claim on the request) is refused before the service is called', async () => {
+          store({ _organizationId: 'org-acme' });
+          const before = repository.users.get('user-1')!;
+
+          await expectRefusedUntouched(await change(jwtService.generateAccessToken('user-1', 'alice', 'operator'),
+            'correct-horse-battery-staple', randomUUID()), before);
+          expect(changePassword).not.toHaveBeenCalled();
+        });
+
+        it('a stored user that lost its organization after the request authenticated is refused by the service with the same 403', async () => {
+          const before = repository.users.get('user-1')!;
+          changesAfterAuthentication({ _organizationId: undefined });
+
+          await expectRefusedUntouched(await change(jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG),
+            'totally-wrong', randomUUID()), before);
+        });
+
+        it('a request claim that is not the stored organization is refused with the same 403, with no row in either tenant', async () => {
+          const before = repository.users.get('user-1')!;
+          changesAfterAuthentication({ _organizationId: OTHER_ORG });
+
+          await expectRefusedUntouched(await change(jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG),
+            'correct-horse-battery-staple', randomUUID()), before);
+        });
+
+        it('control: a user with an organization still gets 200 and exactly one success audit row', async () => {
+          const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+
+          const res = await change(token, 'correct-horse-battery-staple', randomUUID());
+
+          expect(res.status).toBe(200);
+          expect(repository.audits.map(({ entry, organizationId }) => [organizationId, entry.metadata?.['outcome']])).toEqual([[ORG, 'success']]);
+        });
       });
     });
   });

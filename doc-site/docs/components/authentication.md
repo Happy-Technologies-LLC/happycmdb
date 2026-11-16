@@ -206,7 +206,8 @@ Refresh tokens are accepted only by the refresh endpoint; as a bearer token they
   `SELECT relname, relacl FROM pg_class WHERE relname IN ('v_business_service_health', 'v_tbm_tower_summary');`
 
 **Assigning a user's organization (FD-5).** A user without one gets the 403 above until an
-operator assigns it, one user at a time (connections from the `CMDB_ROTATE_*` variables only):
+operator assigns it, and cannot change their own password (`PUT /api/v1/auth/password` answers `403
+Organization required to change password`, HAP-1714; until then only the operator rotation changes it). Assign one user at a time (connections from the `CMDB_ROTATE_*` variables only):
 
 ```bash
 packages/api-server/src/scripts/identity-window.ts assign-organization --user-id <id> --organization-id <lowercase-uuid> --operator <name>

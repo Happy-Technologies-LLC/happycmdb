@@ -10,7 +10,7 @@ import { NextFunction, Request, Response, Router } from 'express';
 import { logger, errorClassFields } from '@cmdb/common';
 import {
   ApiKeyNotFoundError, AuthFailureError, AuthService, CredentialsChangedError, CurrentPasswordIncorrectError,
-  PasswordNotAllowedError, type PasswordChangeOutcome, type UserProfile,
+  OrganizationRequiredError, PasswordNotAllowedError, type PasswordChangeOutcome, type UserProfile,
 } from '../auth/auth.service';
 import { UserNotFoundError } from '../auth/types';
 import { ValidationMiddleware } from './middleware/validation.middleware';
@@ -22,6 +22,18 @@ import { RateLimitMiddleware, type Refusal, type RefusalBucket } from '../middle
 const AUTHENTICATION_FAILURE = { success: false, error: 'Authentication failed' };
 /** HAP-1368: a password change that could not be audited is refused before anything changes. */
 const PASSWORD_CHANGE_UNAVAILABLE = { success: false, error: 'Service Unavailable', message: 'Password change temporarily unavailable' };
+
+/**
+ * HAP-1714: a password change by a user with no organization (or whose token claim is not the stored organization) is
+ * refused with 403, nothing written, nothing audited (there is no tenant to audit into), no cookie or token set. The
+ * state is the caller's own, so the refusal reveals nothing before the password is checked. One fixed warn line,
+ * user id only.
+ */
+function refuseOrganizationRequired(res: Response, userId: string): void {
+  logger.warn('Password change refused: the user has no usable organization', { userId });
+  res.status(403).json({ success: false, error: 'Forbidden', message: 'Organization required to change password' });
+}
+
 /**
  * After a refusal-audit write fails (or is skipped), the claim for that user and bucket is cut to this many
  * milliseconds: at most one further attempt per user and bucket per backoff window. Documented in api/authentication.md.
@@ -529,6 +541,12 @@ export class AuthController {
     }
 
     const userId = req.user._userId;
+    // HAP-1714: no organization claim means the change could not be audited; refused before the service is called.
+    const organizationClaim = optionalRequestOrganizationId(req);
+    if (organizationClaim === null) {
+      refuseOrganizationRequired(res, userId);
+      return;
+    }
     const audit = (outcome: PasswordChangeOutcome) => this.auditPasswordChange(req, outcome);
     try {
       const { currentPassword, newPassword } = req.body as {
@@ -537,7 +555,7 @@ export class AuthController {
       };
       // HAP-1285: the change ended every session of the user; this device gets a new one.
       const { _refreshToken, ...data } = await this.authService.changePassword(
-        userId, currentPassword, newPassword, authorizingEpoch(req)
+        userId, currentPassword, newPassword, authorizingEpoch(req), organizationClaim
       );
       setRefreshCookie(res, _refreshToken);
       await audit('success');
@@ -548,6 +566,10 @@ export class AuthController {
         message: 'Password changed. All other sessions and all your API keys have been revoked; this device stays signed in.',
       });
     } catch (error: any) {
+      if (error instanceof OrganizationRequiredError) {
+        refuseOrganizationRequired(res, userId);
+        return;
+      }
       if (error instanceof CurrentPasswordIncorrectError) {
         await audit('wrong_password');
         res.status(400).json({ success: false, error: 'Password Change Failed', message: 'Current password is incorrect' });

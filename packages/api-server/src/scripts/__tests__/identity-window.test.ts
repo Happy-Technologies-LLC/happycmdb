@@ -16,12 +16,15 @@ import { readFileSync } from 'fs';
 import neo4j from 'neo4j-driver';
 import { join } from 'path';
 
+import { holdsScope } from '../../auth/scopes';
+import type { User } from '../../auth/types';
 import {
   ASSIGN_ORGANIZATION_CYPHER, assignOrganization, main,
   GRANT_HOLDERS_CYPHER, GRANT_IDENTITY_CYPHER, GRANT_PLATFORM_ADMIN_CYPHER, GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER, GrantRefused,
   REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER, SCAN_MARK_CYPHER,
   SCAN_USERS_CYPHER, grantPlatformAdmin, grantPortfolioImportScope, revokePortfolioImportScope, scanDefaultPasswords,
 } from '../identity-window';
+import { APPLY_CYPHER } from '../rotate-user-password';
 import type { RotationGraph, Row } from '../rotate-user-password';
 
 type Node = { elementId: string; props: Row };
@@ -96,6 +99,20 @@ function fakeGraph(users: Node[]): RotationGraph {
         const ok = u !== undefined && (u.props['_id'] === params['id'] || u.props['id'] === params['id'])
           && u.props['seedProvenance'] === undefined && !marked(u);
         if (ok) Object.assign(u!.props, { platformAdmin: true, platformAdminGrantedBy: params['operator'] });
+        return [{ n: neo4j.int(ok ? 1 : 0) }];
+      }
+      if (q === norm(APPLY_CYPHER)) {
+        // The rotation's own statement: guards from its WHERE, assignments from its SET, REMOVE applied as written.
+        const ok = u !== undefined && (u.props['_id'] === params['id'] || u.props['id'] === params['id'])
+          && epochOf(u) === num(params['e0']);
+        if (ok) {
+          const [, setClause, removed] = /holders = 1 SET (.+?) REMOVE (\S+) CREATE/.exec(q)!;
+          for (const assignment of setClause!.split(', ')) {
+            const [, key, value] = /^u\.(\w+) = (.+)$/.exec(assignment)!;
+            u!.props[key!] = value!.startsWith('$') ? params[value!.slice(1)] : value === 'datetime()' ? new Date() : value === 'false' ? false : value;
+          }
+          delete u!.props[removed!.replace('u.', '')];
+        }
         return [{ n: neo4j.int(ok ? 1 : 0) }];
       }
       if (q === norm(SCAN_MARK_CYPHER)) {
@@ -275,6 +292,38 @@ describe('portfolio-import scope grant and revoke (HAP-1632)', () => {
     expect(code).toBe(1);
     expect(lines.join('\n')).toEqual(expect.stringContaining('grant-portfolio-import-scope --user-id <id> --operator <name>'));
     expect(lines.join('\n')).toEqual(expect.stringContaining('revoke-portfolio-import-scope --user-id <id> --operator <name>'));
+  });
+
+  // HAP-2039 L2: holdsScope refuses a flagged account whatever it stores, but the stored list survives the reset
+  // that clears the flag, so revoke (refused while flagged) must follow the reset.
+  it('a flagged account holding the grant keeps no scope once its password is reset and the grant revoked', async () => {
+    const users = [user({ _passwordHash: await bcrypt.hash('Admin123!', 4), scopes: ['credentials:manage', SCOPE] })];
+    const graph = fakeGraph(users);
+    const sql = { query: async () => ({ rows: [] }) };
+    const loaded = (): User => ({
+      _id: 'p', _username: 'pat', _email: 'pat@example.com', _scopes: users[0]!.props['scopes'] as string[],
+      _defaultPasswordSuspect: marked(users[0]!),
+    } as unknown as User);
+
+    expect(holdsScope(loaded(), SCOPE)).toBe(true);
+    await scanDefaultPasswords(graph, sql, (p, h) => bcrypt.compare(p, h), 'nick');
+    expect(marked(users[0]!)).toBe(true);
+    expect(holdsScope(loaded(), SCOPE)).toBe(false);
+    await expect(revokePortfolioImportScope(graph, 'p', 'nick')).rejects.toMatchObject({ reason: 'seeded_account' });
+    expect(users[0]!.props['scopes']).toEqual(['credentials:manage', SCOPE]);
+
+    // The operator password reset clears the flag; the stored grant is live again until it is revoked.
+    const [applied] = await graph.write(APPLY_CYPHER, {
+      eid: '4:p', id: 'p', keys: ['p'], key: 'p', eventId: 'e1', newHash: await bcrypt.hash('a-long-new-passphrase', 4),
+      e0: neo4j.int(0), targetEpoch: neo4j.int(1),
+    });
+    expect(num(applied!['n'])).toBe(1);
+    expect(marked(users[0]!)).toBe(false);
+    expect(holdsScope(loaded(), SCOPE)).toBe(true);
+
+    await expect(revokePortfolioImportScope(graph, 'p', 'nick')).resolves.toEqual({ userId: 'p', outcome: 'revoked' });
+    expect(users[0]!.props['scopes']).toEqual(['credentials:manage']);
+    expect(holdsScope(loaded(), SCOPE)).toBe(false);
   });
 });
 

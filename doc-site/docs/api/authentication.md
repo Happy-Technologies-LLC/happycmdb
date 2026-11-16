@@ -173,6 +173,16 @@ strings, and a write that lost the compare-and-set race (`not_applied`: the user
 between the read and the write; re-run). Role `admin`, organization and platform administration grant
 nothing; the scope is re-read on every request, so a revoke takes effect on the next request.
 
+**Revoking from an account flagged as having a default password: reset first, then revoke.** A flagged account
+never holds the scope (the request-time check refuses it), but its stored `scopes` list is untouched, and the
+operator password reset clears the flag, so the stored grant is live again from that moment. Revoke is refused
+(`seeded_account`) while the flag is set, so the order is:
+
+1. Rotate the account's password with `scripts/rotate-user-password.ts` (the only path that clears the flag).
+2. Run `revoke-portfolio-import-scope --user-id <id> --operator <name>` straight after; expect `"outcome": "revoked"`.
+
+Do not leave a flagged account that holds the grant waiting after step 1: until step 2 it holds the scope.
+
 **Running either command on staging or production requires founder approval, named in the change record.**
 Until a user holds the scope the portfolio import is unusable: every caller gets `403`.
 

@@ -8,6 +8,8 @@ HappyCMDB owns the business service record and publishes it to the other product
 
 Status (2026-11-05): reads implemented for CO-1 S2 (HAP-1408); the stored record and audited writes for PoR S2 (HAP-1423, migration `043_business_service_record_c1.sql`); service offerings for PoR S3 (HAP-1424, migration `046_service_offerings.sql`). HAP-1422: migration `044_business_service_journal_read_acl.sql` grants `cmdb_user` SELECT on `ci_reconciliation_operations`, which `GET /{service_id}/cis`, `POST /{service_id}/cis` and `GET /{service_id}/context` read; without it a non-owner app login gets 500 on those routes. Deployment and activation are not covered here.
 
+HAP-2028: `GET /{service_id}/context` now also reads `ci_source_lineage` (the coverage envelope below). Migration `053_business_service_lineage_read_acl.sql` grants `cmdb_user` `SELECT (organization_id, ci_id)` on it, for the same reason as 044; `cmdb_app` already has it through 045. Manual rollback: `rollback/053_business_service_lineage_read_acl.down.sql`.
+
 ## Rules
 
 - **Identifier.** `service_id` is `bs-` followed by a lowercase UUID v4 (Suite Contracts v2 F1). Consumers store it as opaque text. Ids created before C1 are not reformatted.

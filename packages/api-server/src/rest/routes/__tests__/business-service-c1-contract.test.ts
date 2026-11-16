@@ -195,7 +195,7 @@ import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { businessServiceRoutes } from '../business-service.routes';
 import {
   APP_GRANTS_SQL, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql, ENTER_APP_LOGIN_SQL,
-  journalReadAclSql, lineageTableSql,
+  journalReadAclSql, lineageReadAclSql, lineageTableSql,
 } from './fixtures/app-login';
 
 const MIGRATIONS = join(__dirname, '../../../../../database/src/postgres/migrations');
@@ -291,7 +291,7 @@ beforeAll(async () => {
   for (const name of ['043_business_service_record_c1.sql', '046_service_offerings.sql']) {
     await send('exec', `BEGIN;\n${migration(name)}\nCOMMIT;`);
   }
-  await send('exec', APP_GRANTS_SQL + journalReadAclSql() + ENTER_APP_LOGIN_SQL);
+  await send('exec', APP_GRANTS_SQL + journalReadAclSql() + lineageReadAclSql() + ENTER_APP_LOGIN_SQL);
   // Every request below runs in this session; refuse to test anything as a superuser or the table owner.
   await assertAppLogin(sql => send('query', sql));
 });

@@ -103,7 +103,7 @@ import { businessServiceRoutes } from '../business-service.routes';
 import { serviceOfferingRoutes } from '../service-offering.routes';
 import {
   APP_GRANTS_SQL, APP_LOGIN, AppLoginRefused, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql,
-  ENTER_APP_LOGIN_SQL, journalReadAclSql, lineageTableSql, migrationSql, PGLITE_SUPERUSER, TABLE_OWNER,
+  ENTER_APP_LOGIN_SQL, journalReadAclSql, lineageReadAclSql, lineageTableSql, migrationSql, PGLITE_SUPERUSER, TABLE_OWNER,
 } from './fixtures/app-login';
 import {
   A1_API_KEYS, A1_SEED_SQL, A1_SEEDED_TABLES, A1_TRUNCATE_SQL, A1_USERS, a1GraphClient, defineA1RouteSuite, T, T2,
@@ -137,7 +137,7 @@ beforeAll(async () => {
   for (const file of ['043_business_service_record_c1.sql', '046_service_offerings.sql']) {
     await db.exec(`BEGIN;\n${migrationSql(file)}\nCOMMIT;`);
   }
-  await db.exec(lineageTableSql() + APP_GRANTS_SQL + journalReadAclSql() + ENTER_APP_LOGIN_SQL);
+  await db.exec(lineageTableSql() + APP_GRANTS_SQL + journalReadAclSql() + lineageReadAclSql() + ENTER_APP_LOGIN_SQL);
 }, 60000);
 afterAll(() => { host.kill(); });
 

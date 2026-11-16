@@ -19,7 +19,8 @@ import { appendAuditEntry, auditChainReady, getNeo4jClient, getPostgresClient } 
 import type { AuditLogEntry } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
 import type {
-  AuthRepository, CredentialEventInput, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite, UserProfileUpdate,
+  AuthRepository, CredentialEventInput, GuardedEpochBump, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite,
+  UserProfileUpdate,
 } from './auth.service';
 import { AmbiguousUserIdentityError, UserNotFoundError, type ApiKey, type User } from './types';
 import { LOCK_USER } from './user-lock';
@@ -62,6 +63,25 @@ WHERE (u._id = $userId OR u.id = $userId)
   AND coalesce(u._organizationId, u.organizationId) IS NOT NULL
   AND coalesce(u._passwordHash, u.passwordHash) = $readHash
 SET u._passwordHash = $newHash, u.passwordHash = $newHash, u.credentialEpoch = $credentialEpoch + 1,
+    u._updatedAt = datetime(), u.updatedAt = datetime()
+RETURN count(u) AS n`;
+
+/**
+ * HAP-1716 revoke-other-sessions write: the same guards as GUARDED_PASSWORD_CYPHER (node read, authorizing generation,
+ * unmarked, verified hash still stored, organization held), but the hash stays as it is: it only advances the
+ * generation by exactly one (computed here from the guarded value), which ends every other session and API key
+ * (HAP-1285). It writes neither a hash nor the marker.
+ */
+export const GUARDED_BUMP_EPOCH_CYPHER = `
+MATCH (u:User) WHERE elementId(u) = $elementId
+${LOCK_USER}
+WITH u
+WHERE (u._id = $userId OR u.id = $userId)
+  AND coalesce(u.credentialEpoch, 0) = $credentialEpoch
+  AND NOT ${MARKED}
+  AND coalesce(u._organizationId, u.organizationId) IS NOT NULL
+  AND coalesce(u._passwordHash, u.passwordHash) = $readHash
+SET u.credentialEpoch = $credentialEpoch + 1,
     u._updatedAt = datetime(), u.updatedAt = datetime()
 RETURN count(u) AS n`;
 
@@ -263,6 +283,13 @@ export class Neo4jAuthRepository implements AuthRepository {
     return this.guardedWrite(GUARDED_PASSWORD_CYPHER, {
       elementId: write.elementId ?? null, userId: write.userId, credentialEpoch: neo4j.int(write.credentialEpoch),
       readHash: write.readHash, newHash: write.newHash,
+    });
+  }
+
+  async bumpCredentialEpochGuarded(write: GuardedEpochBump): Promise<boolean> {
+    return this.guardedWrite(GUARDED_BUMP_EPOCH_CYPHER, {
+      elementId: write.elementId ?? null, userId: write.userId, credentialEpoch: neo4j.int(write.credentialEpoch),
+      readHash: write.readHash,
     });
   }
 

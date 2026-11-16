@@ -16,6 +16,7 @@ import { describe, it, expect, jest } from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 import { randomUUID } from 'crypto';
+import { sign } from 'jsonwebtoken';
 import { inspect } from 'util';
 import type { ConfigSchema } from '@cmdb/common';
 import { getLogger, logger } from '@cmdb/common';
@@ -46,6 +47,16 @@ class FakeRedis {
   failSet = false;
   private sets = new Map<string, number[]>();
   private claims = new Map<string, number>();
+
+  /** The sliding-window keys created so far (sorted). */
+  bucketKeys(): string[] {
+    return [...this.sets.keys()].sort();
+  }
+
+  /** The refusal-audit claim keys taken so far (sorted). */
+  claimKeys(): string[] {
+    return [...this.claims.keys()].sort();
+  }
 
   /** SET key value PX ttl NX: 'OK' for the first caller until the ttl passes, then null. */
   async set(key: string, _value: string, _px: 'PX', ttl: number, _nx: 'NX') {
@@ -348,19 +359,7 @@ function passwordApp(redis: FakeRedis) {
       throw new CurrentPasswordIncorrectError();
     },
   } as unknown as AuthService;
-  const pass = () => (_req: unknown, _res: unknown, next: () => void) => next();
-  // The verified subject comes from the test's X-Test-User header (stands in for the JWT); none = unauthenticated.
-  // The organization claim a password change needs (HAP-1714) is fixed.
-  const authenticate = () => (req: express.Request, res: express.Response, next: () => void) => {
-    const user = req.header('X-Test-User');
-    if (!user) {
-      res.status(401).json({ success: false, error: 'Unauthorized' });
-      return;
-    }
-    (req as express.Request & { user?: unknown }).user = { _userId: user, _organizationId: '5f0c7a52-3d1e-4b8a-9c61-2f4e8d7b1a03' };
-    next();
-  };
-  const authMiddleware = new Proxy({}, { get: (_target, name) => (name === 'authenticate' ? authenticate : pass) });
+  const authMiddleware = testAuthMiddleware();
   const limiter = new RateLimitMiddleware(redis as never, rateLimitConfig());
   const app = express();
   app.set('trust proxy', 1);
@@ -369,6 +368,25 @@ function passwordApp(redis: FakeRedis) {
     authMiddleware as unknown as AuthMiddleware, limiter).getRouter());
   return { app, reached, chain };
 }
+
+/**
+ * The verified subject comes from the test's X-Test-User header (stands in for the JWT); none = unauthenticated.
+ * The organization claim a password change needs (HAP-1714) is fixed.
+ */
+function testAuthMiddleware(): AuthMiddleware {
+  const pass = () => (_req: unknown, _res: unknown, next: () => void) => next();
+  const authenticate = () => (req: express.Request, res: express.Response, next: () => void) => {
+    const user = req.header('X-Test-User');
+    if (!user) {
+      res.status(401).json({ success: false, error: 'Unauthorized' });
+      return;
+    }
+    (req as express.Request & { user?: unknown }).user = { _userId: user, _organizationId: REVOKE_ORGANIZATION };
+    next();
+  };
+  return new Proxy({}, { get: (_target, name) => (name === 'authenticate' ? authenticate : pass) }) as unknown as AuthMiddleware;
+}
+
 
 const changePassword = (app: express.Express, userId: string, clientAddress: string) =>
   request(app).put('/api/v1/auth/password').set({ 'X-Test-User': userId, 'X-Forwarded-For': clientAddress })
@@ -469,6 +487,181 @@ describe('PUT /auth/password rate limiting (HAP-1368)', () => {
         .send({ currentPassword: randomUUID(), newPassword: randomUUID() })).status);
     }
     expect(statuses).toEqual([401, 401]);
+  });
+});
+
+/** HAP-1716: the owner's real password; every other password is wrong. */
+const OWNER_PASSWORD = 'owner-password-for-the-step-up';
+const REVOKE_ORGANIZATION = '5f0c7a52-3d1e-4b8a-9c61-2f4e8d7b1a03';
+
+/**
+ * POST /auth/sessions/revoke-others through the real controller and limiter. A wrong password reaches the service as
+ * 400, the owner's password as 200. `audits` are the arguments of every audit row the controller asked for.
+ */
+function revokeApp(redis: FakeRedis) {
+  const reached: string[] = [];
+  const audits: unknown[][] = [];
+  const chain = { ready: true };
+  const authService = {
+    auditChainReady: () => chain.ready,
+    auditPasswordChange: async (...args: unknown[]) => {
+      audits.push(args);
+      return true;
+    },
+    revokeOtherSessions: async (userId: string, currentPassword: string) => {
+      reached.push(userId);
+      if (currentPassword !== OWNER_PASSWORD) throw new CurrentPasswordIncorrectError();
+      // setRefreshCookie reads exp, iat and _authTime from the refresh token, so it must be a real JWT.
+      const refresh = sign({ _authTime: Math.floor(Date.now() / 1000) }, 'step-up-test-secret', { expiresIn: '7d' });
+      return { _accessToken: 'new-access', _refreshToken: refresh, _expiresIn: 900, _user: { _id: userId } };
+    },
+  } as unknown as AuthService;
+  const limiter = new RateLimitMiddleware(redis as never, rateLimitConfig());
+  const app = express();
+  app.set('trust proxy', 1);
+  app.use(express.json());
+  app.use('/api/v1/auth', new AuthController(authService, new ValidationMiddleware(),
+    testAuthMiddleware(), limiter).getRouter());
+  return { app, reached, audits, chain };
+}
+
+const revokeOthers = (app: express.Express, userId: string, clientAddress: string, currentPassword = randomUUID()) =>
+  request(app).post('/api/v1/auth/sessions/revoke-others').set({ 'X-Test-User': userId, 'X-Forwarded-For': clientAddress })
+    .send({ currentPassword });
+
+describe('POST /auth/sessions/revoke-others rate limiting (HAP-1716)', () => {
+  const ATTACKER = '198.51.100.66';
+  const OWNER = '203.0.113.7';
+
+  it('a session holder at another address cannot hold the owner out: the owner at her own address still reaches the step-up', async () => {
+    const redis = new FakeRedis();
+    const { app, reached } = revokeApp(redis);
+    const attacker: number[] = [];
+    // Both of the attacker's buckets run dry: user+client after ACCOUNT_MAX, then the client bucket after CLIENT_MAX.
+    for (let i = 0; i <= CLIENT_MAX + 1; i++) attacker.push((await revokeOthers(app, 'user-a', ATTACKER)).status);
+    expect(attacker).toEqual([...Array(ACCOUNT_MAX).fill(400), ...Array(CLIENT_MAX + 2 - ACCOUNT_MAX).fill(429)]);
+    expect(reached).toHaveLength(ACCOUNT_MAX);
+
+    const owner = await revokeOthers(app, 'user-a', OWNER, OWNER_PASSWORD);
+    expect([owner.status, owner.body.success]).toEqual([200, true]);
+    expect(reached).toHaveLength(ACCOUNT_MAX + 1);
+  });
+
+  it('control: on the password change the shared per-user bucket does hold the owner out from every address (HAP-1368, unchanged)', async () => {
+    const { app } = passwordApp(new FakeRedis());
+    for (let i = 0; i < ACCOUNT_MAX; i++) expect((await changePassword(app, 'user-a', `198.51.100.${i}`)).status).toBe(400);
+
+    expect((await changePassword(app, 'user-a', OWNER)).status).toBe(429);
+  });
+
+  it('the same address does share the user+client bucket: the owner behind the attacker\'s address is held out (accepted residual risk)', async () => {
+    const { app } = revokeApp(new FakeRedis());
+    for (let i = 0; i < ACCOUNT_MAX; i++) expect((await revokeOthers(app, 'user-a', ATTACKER)).status).toBe(400);
+
+    expect((await revokeOthers(app, 'user-a', ATTACKER, OWNER_PASSWORD)).status).toBe(429);
+  });
+
+  it('another user at the attacker\'s address keeps its own user+client budget', async () => {
+    const { app } = revokeApp(new FakeRedis());
+    for (let i = 0; i < ACCOUNT_MAX; i++) expect((await revokeOthers(app, 'user-a', ATTACKER)).status).toBe(400);
+
+    expect((await revokeOthers(app, 'user-b', ATTACKER, OWNER_PASSWORD)).status).toBe(200);
+  });
+
+  it('spends exactly the client bucket and the user+client bucket: never the shared user bucket nor an account bucket', async () => {
+    const redis = new FakeRedis();
+    const { app } = revokeApp(redis);
+
+    await revokeOthers(app, 'user-a', ATTACKER);
+    await revokeOthers(app, 'user-a', OWNER);
+
+    expect(redis.bucketKeys()).toEqual([
+      `rate-limit:auth-user-client:user-a:${OWNER}`,
+      `rate-limit:auth-user-client:user-a:${ATTACKER}`,
+      `rate-limit:auth:ip:${ATTACKER}`,
+      `rate-limit:auth:ip:${OWNER}`,
+    ].sort());
+  });
+
+  it('a user+client 429 is identical to a per-client 429 (HAP-1795): only the client bucket\'s numbers are visible', async () => {
+    const perClient = await atFixedTime(async () => {
+      const { app } = revokeApp(new FakeRedis());
+      for (let i = 0; i < CLIENT_MAX; i++) expect((await revokeOthers(app, `user-${i}`, ATTACKER)).status).toBe(400);
+      return visible(await revokeOthers(app, 'user-a', ATTACKER));
+    });
+    const perUserClient = await atFixedTime(async () => {
+      const { app } = revokeApp(new FakeRedis());
+      for (let i = 0; i < ACCOUNT_MAX; i++) expect((await revokeOthers(app, 'user-a', ATTACKER)).status).toBe(400);
+      return visible(await revokeOthers(app, 'user-a', ATTACKER));
+    });
+
+    expect(perClient.status).toBe(429);
+    expect(perClient.headers['x-ratelimit-limit']).toBe(String(CLIENT_MAX));
+    expect(perClient.headers['x-ratelimit-remaining']).toBe('0');
+    expect(perUserClient).toEqual(perClient);
+  });
+
+  it('audits the first refusal per user and bucket per window under its own claim keys, never the password change\'s', async () => {
+    const redis = new FakeRedis();
+    const { app, audits } = revokeApp(redis);
+
+    // 400, 400, then 429 by the user+client bucket (twice), then 429 by the client bucket (twice).
+    for (let i = 0; i < CLIENT_MAX + 2; i++) await revokeOthers(app, 'user-a', ATTACKER);
+
+    expect(audits.map(([userId, , , outcome, bucket, operation]) => [userId, outcome, bucket, operation])).toEqual([
+      ['user-a', 'wrong_password', undefined, 'revoke_other_sessions'],
+      ['user-a', 'wrong_password', undefined, 'revoke_other_sessions'],
+      ['user-a', 'rate_limited', 'user-client', 'revoke_other_sessions'],
+      ['user-a', 'rate_limited', 'client', 'revoke_other_sessions'],
+    ]);
+    expect(redis.claimKeys()).toEqual([
+      'rate-limit:auth-session-revoke-refused:user-a:client',
+      'rate-limit:auth-session-revoke-refused:user-a:user-client',
+    ]);
+  });
+
+  it('a limiter store error, on either bucket, fails closed with a no-store 503 and no X-RateLimit headers, never reaching the check', async () => {
+    for (const failing of ['rate-limit:auth:ip:', 'rate-limit:auth-user-client:']) {
+      const redis = new FakeRedis();
+      redis.failKey = key => key.startsWith(failing);
+      const { app, reached } = revokeApp(redis);
+      const { result: res, text } = await capturingLogs(() => revokeOthers(app, 'user-a', ATTACKER));
+      expect([res.status, res.headers['cache-control'], Object.keys(res.headers).filter(name => name.startsWith('x-ratelimit'))])
+        .toEqual([503, 'no-store', []]);
+      expect(reached).toEqual([]);
+      expect(text).not.toContain(STORE_NEEDLE);
+    }
+  });
+
+  it('with the audit chain not ready, the 503 comes before the limiter: no bucket is spent', async () => {
+    const redis = new FakeRedis();
+    const { app, reached, chain } = revokeApp(redis);
+    chain.ready = false;
+    for (let i = 0; i < CLIENT_MAX + 1; i++) {
+      const res = await revokeOthers(app, 'user-a', ATTACKER);
+      expect([res.status, res.headers['cache-control'], res.body])
+        .toEqual([503, 'no-store', { success: false, error: 'Service Unavailable', message: 'Session revoke temporarily unavailable' }]);
+    }
+    expect(redis.bucketKeys()).toEqual([]);
+    expect(reached).toEqual([]);
+
+    chain.ready = true;
+    expect((await revokeOthers(app, 'user-a', ATTACKER, OWNER_PASSWORD)).status).toBe(200);
+  });
+
+  it('an unauthenticated request is 401 and spends nothing', async () => {
+    const redis = new FakeRedis();
+    const { app } = revokeApp(redis);
+
+    expect((await request(app).post('/api/v1/auth/sessions/revoke-others').send({ currentPassword: 'x' })).status).toBe(401);
+    expect(redis.bucketKeys()).toEqual([]);
+  });
+
+  it('the per-user+client option cannot be combined with the shared per-user or an account bucket', () => {
+    const limiter = new RateLimitMiddleware(new FakeRedis() as never, rateLimitConfig());
+
+    expect(() => limiter.limit('auth', { perUserClient: true, perUser: true })).toThrow();
+    expect(() => limiter.limit('auth', { perUserClient: true, account: () => 'alice' })).toThrow();
   });
 });
 

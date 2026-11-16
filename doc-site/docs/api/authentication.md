@@ -117,6 +117,27 @@ claim alone. If the backoff itself fails (Redis down) the claim keeps its window
 written for the rest of that window, the same as when the claim fails. Requires PostgreSQL
 migration `049_audit_entity_user.sql`.
 
+**Revoke other sessions (step-up)** (HAP-1716). `POST /api/v1/auth/sessions/revoke-others` with
+`{"currentPassword": "..."}` ends every other session, refresh token and API key of the user without
+changing the password. It advances the credential generation by exactly one (the password hash is
+never written) and answers like a password change: `200` with a new `_accessToken`, a new refresh
+cookie (its 7-day cap starts now) and no refresh token in the body; this device stays signed in. It
+needs a JWT session (an API key gets `403`), the current password (`400` when wrong), a user with an
+organization (`403 Organization required to revoke sessions`, nothing changed), and a credential
+generation that has not moved since the session was issued (`401 Credentials changed`). API keys are
+also revoked best-effort, as for a password change. It is audited like a password change with
+`metadata.operation = "revoke_other_sessions"` (outcomes `success`, `wrong_password`,
+`rotation_lost`, `user_not_found`, `rate_limited`); without `AUDIT_CHAIN_KEY` it answers `503` before
+any check. Rate limit: login's per-client-address bucket plus a per-user-**and**-client-address
+bucket (`RATE_LIMIT_AUTH_ACCOUNT_*`). Unlike `PUT /password` there is no per-user bucket across
+addresses, so a stolen session guessing from another address can exhaust only its own address's
+budget and the owner, at hers, still reaches this step-up (the way to end the thief's session when
+the password-change bucket is held). Residual risk: an attacker behind the owner's own client address
+shares that bucket, and a session holder's password guesses are bounded only per address (login's
+account + client bucket has the same property). A first `429` per user and bucket per window is
+audited with `metadata.bucket` `client` or `user-client`, claimed at
+`rate-limit:auth-session-revoke-refused:<userId>:<bucket>`.
+
 **A user with no organization cannot change their password through this endpoint** (HAP-1714).
 `PUT /api/v1/auth/password` answers `403 {"success":false,"error":"Forbidden","message":"Organization
 required to change password"}` and changes nothing: no hash, no generation advance, no API-key
@@ -524,7 +545,7 @@ Permissions follow the format: `resource:action`
 
 ## Rate Limiting
 
-Only three authentication endpoints carry a rate limiter: `POST /api/v1/auth/login`, `PUT /api/v1/auth/password` and `POST /api/v1/auth/refresh`. The other `/api/v1/auth/*` routes (`logout`, `me`, `profile`, `account`, and the API key routes `POST /api/v1/auth/api-key`, `GET /api/v1/auth/api-keys`, `DELETE /api/v1/auth/api-key/:keyId`) have no dedicated limiter. The API key routes are session-only: they need a JWT session (`authenticate` then `requireJwtSession`), and an API key cannot call them. No generic REST limiter is mounted on the other `/api/v1/*` routes.
+Only four authentication endpoints carry a rate limiter: `POST /api/v1/auth/login`, `PUT /api/v1/auth/password`, `POST /api/v1/auth/sessions/revoke-others` and `POST /api/v1/auth/refresh`. The other `/api/v1/auth/*` routes (`logout`, `me`, `profile`, `account`, and the API key routes `POST /api/v1/auth/api-key`, `GET /api/v1/auth/api-keys`, `DELETE /api/v1/auth/api-key/:keyId`) have no dedicated limiter. The API key routes are session-only: they need a JWT session (`authenticate` then `requireJwtSession`), and an API key cannot call them. No generic REST limiter is mounted on the other `/api/v1/*` routes.
 
 ### Rate Limits
 
@@ -532,6 +553,7 @@ Only three authentication endpoints carry a rate limiter: `POST /api/v1/auth/log
 |----------|-------|--------|
 | `POST /api/v1/auth/login` | 20 per IP (`RATE_LIMIT_AUTH_*`), 5 per account + IP (`RATE_LIMIT_AUTH_ACCOUNT_*`) and 20 per account across all IPs (`RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_*`); the account is the trimmed, lowercased username | 1 hour per IP; 15 minutes per account + IP and per account |
 | `PUT /api/v1/auth/password` | Login's 20 per IP (shared bucket) and 5 per user across all IPs (`RATE_LIMIT_AUTH_ACCOUNT_*`) | 1 hour per IP; 15 minutes per user |
+| `POST /api/v1/auth/sessions/revoke-others` | Login's 20 per IP (shared bucket) and 5 per user **and IP** (`RATE_LIMIT_AUTH_ACCOUNT_*`); no bucket spans IPs (HAP-1716) | 1 hour per IP; 15 minutes per user + IP |
 | `POST /api/v1/auth/refresh` | The REST budget (`RATE_LIMIT_REST_MAX`, default 1000; `0` = unlimited) under its own key, so renewals never use up the login limit (HAP-1211 H2) | `RATE_LIMIT_REST_WINDOW_MS` (default 1 hour) per IP |
 | Other `/api/v1/auth/*` endpoints, including `POST /api/v1/auth/api-key` | No dedicated limiter | n/a |
 

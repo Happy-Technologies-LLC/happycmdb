@@ -19,7 +19,7 @@ info:
     All API endpoints (except `/api/v1/auth/login`) require authentication via:
     - **JWT Token**: Include `Authorization: Bearer <token>` header
     - **API Key**: Include `X-API-Key: <key>` header
-    Account operations (`PUT /auth/profile`, `PUT /auth/password`,
+    Account operations (`PUT /auth/profile`, `PUT /auth/password`, `POST /auth/sessions/revoke-others`,
     `DELETE /auth/account`, `GET /auth/api-keys`, `DELETE /auth/api-key/{keyId}`)
     and API-key creation require a verified JWT user session. An authenticated
     API key receives HTTP 403 with `_error: Forbidden` and
@@ -29,7 +29,7 @@ info:
     ## Rate Limiting
 
     The API mounts no global rate limiter (`ApiServer.setupMiddleware`), so there is
-    no per-token or per-API-key hourly or burst budget. Limiters sit on three auth
+    no per-token or per-API-key hourly or burst budget. Limiters sit on four auth
     routes registered in `AuthController`:
     - `POST /auth/login`: `RateLimitMiddleware.limit('auth', …)` with
       `rateLimit.endpoints.auth` (default 20 per hour per client address),
@@ -38,6 +38,9 @@ info:
     - `PUT /auth/password`: `RateLimitMiddleware.limit('auth', { perUser: true })`
       with `endpoints.auth` per client address and `endpoints.authAccount` per
       verified user.
+    - `POST /auth/sessions/revoke-others`: `RateLimitMiddleware.limit('auth', { perUserClient: true })`
+      with `endpoints.auth` per client address and `endpoints.authAccount` per
+      verified user AND client address (no bucket spans client addresses).
     - `POST /auth/refresh`: its own `auth-refresh` bucket,
       `RateLimitMiddleware.custom(endpointBudget('rest'), 'auth-refresh')`, on
       `endpoints.rest` (default 1000 per hour per client address); not mounted when
@@ -52,8 +55,8 @@ info:
     `graphql_limit` (50r/s, `burst=20`, `location /graphql`). The full rules are in
     https://github.com/Happy-Technologies-LLC/happycmdb/blob/main/packages/api-server/docs/API_DOCUMENTATION.md#rate-limiting
 
-    Rate limit headers are sent only by `POST /auth/login`, `PUT /auth/password`
-    and `POST /auth/refresh`, on allowed and on 429 responses, and not when
+    Rate limit headers are sent only by `POST /auth/login`, `PUT /auth/password`,
+    `POST /auth/sessions/revoke-others` and `POST /auth/refresh`, on allowed and on 429 responses, and not when
     `rateLimit.enabled` is false, on a bypass-header match, when the endpoint's
     `max` is 0 or on a limiter store error. No other route sends them:
     - `X-RateLimit-Limit`: Maximum requests per window
@@ -420,6 +423,65 @@ paths:
         '503':
           description: >-
             HAP-1368: the rate-limit store is unreachable, or the audit chain is not ready; nothing was changed
+
+  /auth/sessions/revoke-others:
+    post:
+      tags: [Authentication]
+      summary: Revoke every other session and API key (step-up)
+      description: >-
+        HAP-1716: a password-confirmed step-up. It advances the user's credential generation by one with the password
+        hash unchanged, so every other access token, refresh cookie, WebSocket and API key of the user returns 401; the
+        keys are also revoked (best-effort) and no longer listed. This device stays signed in with a new session whose
+        7-day cap starts now. The limiter is `limit('auth', { perUserClient: true })`: the per-client-address `auth`
+        budget plus a per-user-AND-client-address `authAccount` budget, so a stolen session at another address cannot
+        exhaust the owner's budget. Unlike PUT /auth/password there is no per-user bucket spanning client addresses.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword]
+              properties:
+                currentPassword:
+                  type: string
+                  format: password
+      responses:
+        '200':
+          description: Other sessions and API keys revoked; data holds a new _accessToken, _expiresIn and _user (as login) and Set-Cookie sets a new __Secure-cmdb_rt. The password is unchanged
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, message]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    type: object
+                    required: [_accessToken, _expiresIn, _user]
+                    properties:
+                      _accessToken: { type: string }
+                      _expiresIn: { type: integer, description: Access-token lifetime in seconds }
+                      _user: { type: object }
+                  message: { type: string }
+        '400':
+          description: >-
+            The current password is incorrect (message Current password is incorrect), or the body is invalid; nothing changed
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: >-
+            JWT user session required (API keys are refused before validation), or the user has no organization (or the
+            request's organization claim is not the stored one), so the step-up could not be audited; body
+            `{success: false, error: Forbidden, message: Organization required to revoke sessions}`, nothing changed
+        '404':
+          description: The user no longer exists
+        '429':
+          description: The client address used up the `auth` budget, or this user at this client address used up the per-user-and-client budget
+        '503':
+          description: The rate-limit store is unreachable, or the audit chain is not ready; nothing was changed
 
   /auth/account:
     delete:

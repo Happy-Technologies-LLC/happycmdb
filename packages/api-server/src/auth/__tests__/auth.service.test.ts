@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { logger } from '@cmdb/common';
 import { ApiKeyNotFoundError, AUTH_TIME_TOLERANCE_SECONDS, AuthService, AuthRepository, OrganizationRequiredError, SESSION_ABSOLUTE_CAP_SECONDS, UserProfileUpdate } from '../auth.service';
-import type { GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite } from '../auth.service';
+import type { GuardedEpochBump, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite } from '../auth.service';
 import { AmbiguousUserIdentityError, User, ApiKey, UserNotFoundError } from '../types';
 import { PasswordService } from '../password.service';
 import { JWTService } from '../jwt.service';
@@ -79,6 +79,19 @@ class InMemoryAuthRepository implements AuthRepository {
       return false;
     }
     this.users.set(write.userId, { ...existing, _passwordHash: write.newHash });
+    return true;
+  }
+
+  /** Like GUARDED_BUMP_EPOCH_CYPHER: only an unmarked node with an organization, at the authorizing generation, still holding the verified hash; the hash is never written. */
+  async bumpCredentialEpochGuarded(write: GuardedEpochBump): Promise<boolean> {
+    const existing = this.users.get(write.userId);
+    if (
+      !existing || existing._passwordHash !== write.readHash || (existing._credentialEpoch ?? 0) !== write.credentialEpoch ||
+      existing._defaultPasswordSuspect === true || !existing._organizationId
+    ) {
+      return false;
+    }
+    this.users.set(write.userId, { ...existing, _credentialEpoch: write.credentialEpoch + 1 });
     return true;
   }
 
@@ -301,6 +314,89 @@ describe('AuthService profile/password/account lifecycle', () => {
         expect(session._user._id).toBe('user-1');
         expect(await passwordService.verify('new-password-123', repository.users.get('user-1')!._passwordHash)).toBe(true);
       });
+    });
+  });
+
+  describe('revokeOtherSessions (HAP-1716)', () => {
+    const PASSWORD = 'correct-horse-battery-staple';
+    const jwtDecode = (token: string) => new JWTService(authConfig.jwt).decodeToken(token);
+    const store = (patch: Partial<User>) => repository.users.set('user-1', { ...repository.users.get('user-1')!, ...patch } as User);
+    beforeEach(() => store({ _credentialEpoch: 4 }));
+
+    it('advances the generation by exactly one, keeps the hash, and returns a new session at the new generation', async () => {
+      const hashBefore = repository.users.get('user-1')!._passwordHash;
+      const hash = jest.spyOn(PasswordService.prototype, 'hash');
+      try {
+        const session = await service.revokeOtherSessions('user-1', PASSWORD, 4, ORG);
+
+        expect(repository.users.get('user-1')).toMatchObject({ _credentialEpoch: 5, _passwordHash: hashBefore });
+        expect(hash).not.toHaveBeenCalled();
+        expect(jwtDecode(session._accessToken)).toMatchObject({ _cep: 5 });
+        expect(jwtDecode(session._refreshToken)).toMatchObject({ _cep: 5 });
+        expect(session._user).toEqual({ _id: 'user-1', _username: 'alice', _role: 'operator' });
+        expect(repository.apiKeyRevokeRequests).toEqual([['user-1', 5]]);
+      } finally {
+        hash.mockRestore();
+      }
+    });
+
+    it('the new session starts a fresh authentication: its cap runs from now, not from the first login', async () => {
+      const session = await service.revokeOtherSessions('user-1', PASSWORD, 4, ORG);
+      const now = Math.floor(Date.now() / 1000);
+
+      expect(Math.abs((jwtDecode(session._refreshToken) as unknown as { _authTime: number })._authTime - now)).toBeLessThanOrEqual(5);
+    });
+
+    it('still returns the new session when the API-key revoke fails, logging the error class only', async () => {
+      const hash = repository.users.get('user-1')!._passwordHash;
+      jest.spyOn(repository, 'revokeApiKeysBelowEpoch').mockRejectedValue(new TypeError(`boom ${hash} ${PASSWORD}`));
+      const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+      const error = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+      try {
+        const session = await service.revokeOtherSessions('user-1', PASSWORD, 4, ORG);
+
+        expect(jwtDecode(session._accessToken)).toMatchObject({ _cep: 5 });
+        expect(repository.users.get('user-1')!._credentialEpoch).toBe(5);
+        expect(warn.mock.calls).toEqual([['Session revoke API key revocation failed', { errorClass: 'TypeError' }]]);
+        expect(error).not.toHaveBeenCalled();
+        expect(JSON.stringify([...warn.mock.calls, ...error.mock.calls])).not.toMatch(/boom|correct-horse|\$2[aby]\$/);
+      } finally {
+        warn.mockRestore();
+        error.mockRestore();
+      }
+    });
+
+    it.each([
+      ['a wrong current password', 'wrong-password', 4, ORG, {}, /incorrect/i],
+      ['a stale authorizing generation', PASSWORD, 3, ORG, {}, /credentials changed/i],
+      ['a marked (default-password-suspect) user', PASSWORD, 4, ORG, { _defaultPasswordSuspect: true }, /credentials changed/i],
+      ['a user with no organization', PASSWORD, 4, ORG, { _organizationId: undefined }, /organization required/i],
+      ['a request claim that is not the stored organization', PASSWORD, 4, 'a1b2c3d4-0000-4000-8000-00000000000a', {}, /organization required/i],
+    ])('%s: nothing is written and no key is revoked', async (_label, password, epoch, claim, patch, message) => {
+      store(patch as Partial<User>);
+      const before = repository.users.get('user-1');
+
+      await expect(service.revokeOtherSessions('user-1', password, epoch, claim)).rejects.toThrow(message);
+
+      expect(repository.users.get('user-1')).toEqual(before);
+      expect(repository.apiKeyRevokeRequests).toEqual([]);
+    });
+
+    it('loses to a concurrent change: the guarded write refuses, so the caller is told credentials changed and no key is revoked', async () => {
+      const raced = repository.bumpCredentialEpochGuarded.bind(repository);
+      repository.bumpCredentialEpochGuarded = async write => {
+        store({ _passwordHash: 'rotated-by-operator', _credentialEpoch: 5 });
+        return raced(write);
+      };
+
+      await expect(service.revokeOtherSessions('user-1', PASSWORD, 4, ORG)).rejects.toThrow(/credentials changed/i);
+
+      expect(repository.users.get('user-1')).toMatchObject({ _passwordHash: 'rotated-by-operator', _credentialEpoch: 5 });
+      expect(repository.apiKeyRevokeRequests).toEqual([]);
+    });
+
+    it('throws for an unknown user id', async () => {
+      await expect(service.revokeOtherSessions('ghost', PASSWORD, 0, ORG)).rejects.toBeInstanceOf(UserNotFoundError);
     });
   });
 

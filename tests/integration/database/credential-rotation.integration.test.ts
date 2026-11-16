@@ -357,6 +357,63 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     expect([await epoch(), (await userProps())['_passwordHash']]).toEqual([5, 'first']);
   });
 
+  describe('HAP-1716: the session revoke advances the generation by exactly one and never writes the hash', () => {
+    const bump = async (over: { credentialEpoch?: number; readHash?: string } = {}) =>
+      new Neo4jAuthRepository().bumpCredentialEpochGuarded({
+        userId: USER, elementId: await elementId(), credentialEpoch: over.credentialEpoch ?? 0, readHash: over.readHash ?? defaultHash,
+      });
+    const state = async () => {
+      const props = await userProps();
+      return [props['_passwordHash'], props['credentialEpoch'] === undefined ? undefined : neo4j.integer.toNumber(props['credentialEpoch'] as never)];
+    };
+
+    it('lands on a clean user: +1 as an Integer, hash untouched, a replay at the old generation changes nothing', async () => {
+      await unmark();
+
+      expect(await bump()).toBe(true);
+      expect(neo4j.isInt((await userProps())['credentialEpoch'])).toBe(true);
+      expect(await state()).toEqual([defaultHash, 1]);
+      expect(await bump()).toBe(false);
+      expect(await state()).toEqual([defaultHash, 1]);
+    });
+
+    it.each([
+      ['a stale generation', async () => bump({ credentialEpoch: 3 })],
+      ['a hash that is not the stored one', async () => bump({ readHash: 'not-the-stored-hash' })],
+    ])('%s lands nowhere', async (_label, run) => {
+      await unmark();
+      await graph.run('MATCH (u:User {_id: $id}) SET u.credentialEpoch = 4', { id: USER });
+
+      expect(await run()).toBe(false);
+      expect(await state()).toEqual([defaultHash, 4]);
+    });
+
+    it('a user still marked default-password-suspect is not written', async () => {
+      await graph.run('MATCH (u:User {_id: $id}) SET u.defaultPasswordSuspect = true', { id: USER });
+
+      expect(await bump()).toBe(false);
+      expect(await state()).toEqual([defaultHash, undefined]);
+    });
+
+    it('a user without an organization is not written', async () => {
+      await unmark();
+      await graph.run('MATCH (u:User {_id: $id}) REMOVE u._organizationId', { id: USER });
+
+      expect(await bump()).toBe(false);
+      expect(await state()).toEqual([defaultHash, undefined]);
+    });
+
+    it('after an operator rotation the pre-rotation read lands nowhere: the rotated hash and generation stay', async () => {
+      await unmark();
+      const eid = await elementId();
+      await rotateUserPassword({ userId: USER, operator: 'ci', password: NEW_PASSWORD }, operator());
+      const rotated = await state();
+
+      expect(await new Neo4jAuthRepository().bumpCredentialEpochGuarded({ userId: USER, elementId: eid, credentialEpoch: 0, readHash: defaultHash })).toBe(false);
+      expect(await state()).toEqual(rotated);
+    });
+  });
+
   it('HAP-1285 (MC): the hash and the generation land in ONE guarded statement; a failure after it cannot split them', async () => {
     await unmark();
     const client = getNeo4jClient();

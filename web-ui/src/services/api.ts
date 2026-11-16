@@ -108,6 +108,17 @@ class ApiService {
     setToken(response.data.data?._accessToken);
   }
 
+  /**
+   * HAP-1716: ends every other session and API key of the user without changing the password; the server re-issues
+   * this one (new access token, new refresh cookie). Needs the current password; limited per address, never per user
+   * across addresses, so it stays reachable while a password-change lock-out is held from another address.
+   */
+  async revokeOtherSessions(currentPassword: string): Promise<void> {
+    const response = await apiClient.post<{ success: boolean; data?: { _accessToken?: unknown } }>(
+      '/auth/sessions/revoke-others', { currentPassword });
+    setToken(response.data.data?._accessToken);
+  }
+
   async deleteAccount(): Promise<void> {
     await apiClient.delete('/auth/account');
   }

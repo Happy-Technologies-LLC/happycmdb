@@ -10,7 +10,7 @@ import { NextFunction, Request, Response, Router } from 'express';
 import { logger, errorClassFields } from '@cmdb/common';
 import {
   ApiKeyNotFoundError, AuthFailureError, AuthService, CredentialsChangedError, CurrentPasswordIncorrectError,
-  OrganizationRequiredError, PasswordNotAllowedError, type PasswordChangeOutcome, type UserProfile,
+  OrganizationRequiredError, PasswordNotAllowedError, type CredentialAuditOperation, type PasswordChangeOutcome, type UserProfile,
 } from '../auth/auth.service';
 import { UserNotFoundError } from '../auth/types';
 import { ValidationMiddleware } from './middleware/validation.middleware';
@@ -22,6 +22,8 @@ import { RateLimitMiddleware, type Refusal, type RefusalBucket } from '../middle
 const AUTHENTICATION_FAILURE = { success: false, error: 'Authentication failed' };
 /** HAP-1368: a password change that could not be audited is refused before anything changes. */
 const PASSWORD_CHANGE_UNAVAILABLE = { success: false, error: 'Service Unavailable', message: 'Password change temporarily unavailable' };
+/** HAP-1716: the same refusal for the revoke-other-sessions step-up. */
+const SESSION_REVOKE_UNAVAILABLE = { success: false, error: 'Service Unavailable', message: 'Session revoke temporarily unavailable' };
 
 /**
  * HAP-1714: a password change by a user with no organization (or whose token claim is not the stored organization) is
@@ -29,9 +31,13 @@ const PASSWORD_CHANGE_UNAVAILABLE = { success: false, error: 'Service Unavailabl
  * state is the caller's own, so the refusal reveals nothing before the password is checked. One fixed warn line,
  * user id only.
  */
-function refuseOrganizationRequired(res: Response, userId: string): void {
-  logger.warn('Password change refused: the user has no usable organization', { userId });
-  res.status(403).json({ success: false, error: 'Forbidden', message: 'Organization required to change password' });
+function refuseOrganizationRequired(res: Response, userId: string, operation: CredentialAuditOperation = 'password_change'): void {
+  const action = operation === 'password_change' ? 'Password change' : 'Session revoke';
+  logger.warn(`${action} refused: the user has no usable organization`, { userId });
+  res.status(403).json({
+    success: false, error: 'Forbidden',
+    message: operation === 'password_change' ? 'Organization required to change password' : 'Organization required to revoke sessions',
+  });
 }
 
 /**
@@ -203,14 +209,35 @@ export class AuthController {
       '/password',
       this.authMiddleware.authenticate(),
       this.authMiddleware.requireJwtSession(),
-      this.requireAuditChain.bind(this),
+      this.requireAuditChain(PASSWORD_CHANGE_UNAVAILABLE),
       this.rateLimiter.limit('auth', {
         perUser: true,
         failClosed: true,
-        onRefused: (req, refusal) => this.auditFirstRefusal(req, refusal),
+        onRefused: (req, refusal) => this.auditFirstRefusal(req, refusal, 'password_change'),
       }),
       this.validator.validate(authSchemas._changePassword),
       this.changePassword.bind(this)
+    );
+
+    /**
+     * POST /api/auth/sessions/revoke-others
+     * Revoke every other session and API key of the user, behind a re-entered current password (HAP-1716). Same
+     * chain as /password (JWT session only, audit-chain 503 before the limiter), but the limiter is the client bucket
+     * plus a bucket keyed by user AND client address: never the shared per-user bucket nor the account-global one,
+     * both of which a stolen session could spend from another address to hold the owner out of this action.
+     */
+    this.router.post(
+      '/sessions/revoke-others',
+      this.authMiddleware.authenticate(),
+      this.authMiddleware.requireJwtSession(),
+      this.requireAuditChain(SESSION_REVOKE_UNAVAILABLE),
+      this.rateLimiter.limit('auth', {
+        perUserClient: true,
+        failClosed: true,
+        onRefused: (req, refusal) => this.auditFirstRefusal(req, refusal, 'revoke_other_sessions'),
+      }),
+      this.validator.validate(authSchemas._revokeOtherSessions),
+      this.revokeOtherSessions.bind(this)
     );
 
     /**
@@ -481,11 +508,15 @@ export class AuthController {
   }
 
   /**
-   * One audit row for a password change attempt by the verified user; best-effort and never throws (see
+   * One audit row for a self-service credential attempt by the verified user; best-effort and never throws (see
    * AuthService.auditPasswordChange). Resolves true only when the row was written.
    */
-  private auditPasswordChange(req: AuthenticatedRequest, outcome: PasswordChangeOutcome, refusedBy?: RefusalBucket): Promise<boolean> {
-    return this.authService.auditPasswordChange(req.user!._userId, optionalRequestOrganizationId(req), req.ip, outcome, refusedBy);
+  private auditCredentialAttempt(
+    req: AuthenticatedRequest, outcome: PasswordChangeOutcome, operation: CredentialAuditOperation, refusedBy?: RefusalBucket
+  ): Promise<boolean> {
+    return this.authService.auditPasswordChange(
+      req.user!._userId, optionalRequestOrganizationId(req), req.ip, outcome, refusedBy, operation
+    );
   }
 
   /**
@@ -498,28 +529,36 @@ export class AuthController {
    * bucket per backoff window and the row is still written by the first refusal after it. A slow writer whose claim
    * has since expired and been retaken leaves the newer claim alone. If the backoff itself fails (Redis), the claim
    * keeps its window TTL: no row for the rest of that window, as when the claim itself fails.
+   * HAP-1716: the revoke route has its own claim keys, so its refusals neither use up nor wait on the password change's.
    */
-  private async auditFirstRefusal(req: AuthenticatedRequest, refusal: Refusal): Promise<void> {
+  private async auditFirstRefusal(req: AuthenticatedRequest, refusal: Refusal, operation: CredentialAuditOperation): Promise<void> {
     const userId = req.user!._userId;
     const suffix = refusal.bucket === 'user' ? '' : `:${refusal.bucket}`;
-    const claim = `rate-limit:auth-user-refused:${userId}${suffix}`;
+    const claim = operation === 'password_change'
+      ? `rate-limit:auth-user-refused:${userId}${suffix}`
+      : `rate-limit:auth-session-revoke-refused:${userId}:${refusal.bucket}`;
     const token = await refusal.claim(claim);
     if (token === null) return;
     let audited = false;
     try {
-      audited = await this.auditPasswordChange(req, 'rate_limited', refusal.bucket);
+      audited = await this.auditCredentialAttempt(req, 'rate_limited', operation, refusal.bucket);
     } finally {
       if (!audited) await refusal.backoff(claim, token, REFUSAL_AUDIT_BACKOFF_MS);
     }
   }
 
-  /** HAP-1368/HAP-1712: a password change is refused (503; the router sets no-store) before the limiter and before anything changes while it cannot be audited. */
-  private requireAuditChain(_req: Request, res: Response, next: NextFunction): void {
-    if (this.authService.auditChainReady()) {
-      next();
-      return;
-    }
-    res.status(503).json(PASSWORD_CHANGE_UNAVAILABLE);
+  /**
+   * HAP-1368/HAP-1712: the request is refused (503; the router sets no-store) before the limiter and before anything
+   * changes while it cannot be audited. `unavailable` is the route's fixed body.
+   */
+  private requireAuditChain(unavailable: typeof PASSWORD_CHANGE_UNAVAILABLE) {
+    return (_req: Request, res: Response, next: NextFunction): void => {
+      if (this.authService.auditChainReady()) {
+        next();
+        return;
+      }
+      res.status(503).json(unavailable);
+    };
   }
 
   /**
@@ -547,7 +586,7 @@ export class AuthController {
       refuseOrganizationRequired(res, userId);
       return;
     }
-    const audit = (outcome: PasswordChangeOutcome) => this.auditPasswordChange(req, outcome);
+    const audit = (outcome: PasswordChangeOutcome) => this.auditCredentialAttempt(req, outcome, 'password_change');
     try {
       const { currentPassword, newPassword } = req.body as {
         currentPassword: string;
@@ -586,6 +625,63 @@ export class AuthController {
       }
       logger.error('Error changing password', { ...errorClassFields(error), userId });
       res.status(500).json({ success: false, error: 'Password Change Failed', message: 'Internal error' });
+    }
+  }
+
+  /**
+   * Revoke other sessions endpoint (HAP-1716): a step-up (the current password), not a password change. Ends every
+   * other session and API key of the user by advancing the credential generation; this device gets a new session.
+   * Each attempt appends one audit row (`metadata.operation` revoke_other_sessions): success, wrong current password,
+   * lost rotation, unknown user, and rate limited (the limiter's onRefused). The audit-chain readiness refusal is the
+   * requireAuditChain step before the limiter and is not audited: the chain cannot be written then.
+   */
+  private async revokeOtherSessions(req: AuthenticatedRequest, res: Response): Promise<void> {
+    if (!req.user?._userId) {
+      res.status(401).json({ success: false, error: 'Unauthorized', message: 'User not authenticated' });
+      return;
+    }
+
+    const userId = req.user._userId;
+    const organizationClaim = optionalRequestOrganizationId(req);
+    if (organizationClaim === null) {
+      refuseOrganizationRequired(res, userId, 'revoke_other_sessions');
+      return;
+    }
+    const audit = (outcome: PasswordChangeOutcome) => this.auditCredentialAttempt(req, outcome, 'revoke_other_sessions');
+    try {
+      const { currentPassword } = req.body as { currentPassword: string };
+      const { _refreshToken, ...data } = await this.authService.revokeOtherSessions(
+        userId, currentPassword, authorizingEpoch(req), organizationClaim
+      );
+      setRefreshCookie(res, _refreshToken);
+      await audit('success');
+
+      res.json({
+        success: true,
+        data,
+        message: 'All other sessions and all your API keys have been revoked (both end with the credential generation); this device stays signed in. Your password is unchanged.',
+      });
+    } catch (error: any) {
+      if (error instanceof OrganizationRequiredError) {
+        refuseOrganizationRequired(res, userId, 'revoke_other_sessions');
+        return;
+      }
+      if (error instanceof CurrentPasswordIncorrectError) {
+        await audit('wrong_password');
+        res.status(400).json({ success: false, error: 'Session Revoke Failed', message: 'Current password is incorrect' });
+        return;
+      }
+      if (error instanceof CredentialsChangedError) {
+        await audit('rotation_lost');
+      }
+      if (credentialRefusal(res, error)) return;
+      if (error instanceof UserNotFoundError) {
+        await audit('user_not_found');
+        res.status(404).json({ success: false, error: 'Session Revoke Failed', message: 'User not found' });
+        return;
+      }
+      logger.error('Error revoking other sessions', { ...errorClassFields(error), userId });
+      res.status(500).json({ success: false, error: 'Session Revoke Failed', message: 'Internal error' });
     }
   }
 

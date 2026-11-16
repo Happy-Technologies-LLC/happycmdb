@@ -98,10 +98,11 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
     reviewed: { 'packages/api-server/src/scripts/rotate-user-password.ts': 1 },
   },
   {
-    name: 'credentialEpoch (the operator rotation and the guarded self-service password change)',
+    name: 'credentialEpoch (the operator rotation and the guarded self-service password change and session revoke)',
     pattern: new RegExp(String.raw`\.\s*_?credentialEpoch\s*=(?!=)|${removes('_?credentialEpoch')}`, 'gi'),
     reviewed: {
-      'packages/api-server/src/auth/neo4j-auth.repository.ts': 1, // GUARDED_PASSWORD_CYPHER (HAP-1285)
+      // GUARDED_PASSWORD_CYPHER (HAP-1285) and GUARDED_BUMP_EPOCH_CYPHER (HAP-1716: the generation only, never a hash)
+      'packages/api-server/src/auth/neo4j-auth.repository.ts': 2,
       'packages/api-server/src/scripts/rotate-user-password.ts': 1,
     },
   },
@@ -358,7 +359,10 @@ describe('inventory gate 4: user-security property writers', () => {
       "const AGAIN = 'MATCH (u:User) WHERE u._id = $id SET u.defaultPasswordSuspect = true';"],
     ['an underscore-spelling marker setter in the repository', REPOSITORY,
       "const U = 'MATCH (u:User) WHERE elementId(u) = $e SET u._defaultPasswordSuspect = true';"],
-    ['a generation writer in the repository', REPOSITORY, "const E = 'SET u.credentialEpoch = $epoch';"],
+    ['a third generation writer in the repository (HAP-1716 reviews exactly the password change and the session revoke)', REPOSITORY,
+      "const E = 'SET u.credentialEpoch = $epoch';"],
+    ['a hash write next to the epoch-only session revoke in the repository (HAP-1716)', REPOSITORY,
+      "const REVOKE_HASH = 'MATCH (u:User) WHERE elementId(u) = $e SET u._passwordHash = $h';"],
     ['a login rehash that also advances the generation in the repository (HAP-1090)', REPOSITORY,
       "const REHASH_BUMP = 'MATCH (u:User) WHERE elementId(u) = $e SET u._passwordHash = $h, u.passwordHash = $h, u.credentialEpoch = $n';"],
     ['an API-key generation update in the repository', REPOSITORY,
@@ -440,7 +444,7 @@ describe('inventory gate 4: user-security property writers', () => {
     platformAdmin: 'platformAdmin (set only by the reviewed operator grant)',
     seedProvenance: 'seedProvenance (seed writers and the window stamp; never cleared)',
     defaultPasswordSuspect: 'defaultPasswordSuspect cleared (the operator rotation only)',
-    credentialEpoch: 'credentialEpoch (the operator rotation and the guarded self-service password change)',
+    credentialEpoch: 'credentialEpoch (the operator rotation and the guarded self-service password change and session revoke)',
     scopes: 'scopes (the HAP-1632 operator grant and revoke only)',
     organizationId: 'organizationId (seed writers and the FD-5 operator assignment only)',
   };

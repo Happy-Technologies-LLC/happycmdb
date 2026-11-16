@@ -54,6 +54,7 @@ export const UserProfile: React.FC = () => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [revokeOthersPassword, setRevokeOthersPassword] = useState('');
 
   // Keep the avatar preview in sync with the authenticated user's persisted
   // value - covers the initial mount (user may load after this component
@@ -117,7 +118,21 @@ export const UserProfile: React.FC = () => {
       passwordForm.reset();
       setSuccessMessage('Password changed. All other sessions and all your API keys have been revoked; this device stays signed in.');
     } catch (error: any) {
-      setErrorMessage(error.response?.data?.message || 'Failed to change password');
+      setErrorMessage(error.response?.status === 429
+        ? 'Too many password attempts. You can still sign out other sessions below with your current password.'
+        : error.response?.data?.message || 'Failed to change password');
+      setTimeout(() => setErrorMessage(null), 3000);
+    }
+  };
+
+  const onRevokeOthersSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    try {
+      await api.revokeOtherSessions(revokeOthersPassword);
+      setRevokeOthersPassword('');
+      setSuccessMessage('All other sessions and all your API keys have been revoked; this device stays signed in. Your password is unchanged.');
+    } catch (error: any) {
+      setErrorMessage(error.response?.data?.message || 'Failed to sign out other sessions');
       setTimeout(() => setErrorMessage(null), 3000);
     }
   };
@@ -313,6 +328,28 @@ export const UserProfile: React.FC = () => {
             Change Password
           </Button>
         </div>
+      </form>
+
+      <Separator />
+
+      {/* HAP-1716: sign out other sessions */}
+      <form onSubmit={onRevokeOthersSubmit} className="space-y-4 max-w-2xl">
+        <h3 className="text-lg font-medium">Sign out other sessions</h3>
+        <p className="text-sm text-muted-foreground">
+          Ends every other session and all your API keys. Your password stays the same and this device stays signed in.
+        </p>
+        <div className="space-y-2">
+          <Label htmlFor="revoke-others-password">Current password to confirm</Label>
+          <SecretInput
+            id="revoke-others-password"
+            autoComplete="current-password"
+            value={revokeOthersPassword}
+            onChange={(event) => setRevokeOthersPassword(event.target.value)}
+          />
+        </div>
+        <Button type="submit" variant="outline" disabled={revokeOthersPassword === ''}>
+          Sign out other sessions
+        </Button>
       </form>
 
       <Separator />

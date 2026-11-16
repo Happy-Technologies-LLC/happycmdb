@@ -370,12 +370,13 @@ curl -H "X-API-Key: YOUR_API_KEY" \
 
 ## Rate Limiting
 
-The API mounts no global rate limiter (`ApiServer.setupMiddleware`), so there is no per-token or per-API-key hourly or burst budget. Limiters sit on three auth routes registered in `AuthController`:
+The API mounts no global rate limiter (`ApiServer.setupMiddleware`), so there is no per-token or per-API-key hourly or burst budget. Limiters sit on four auth routes registered in `AuthController`:
 
 | Route | Limiter | Budget (`rateLimit.endpoints`) |
 |-------|---------|--------------------------------|
 | `POST /api/v1/auth/login` | `RateLimitMiddleware.limit('auth', …)` | `auth` (default 20 per hour per client address), `authAccount` (5 per 15 minutes per account and client address), `authAccountGlobal` (20 per 15 minutes per account) |
 | `PUT /api/v1/auth/password` | `RateLimitMiddleware.limit('auth', { perUser: true })` | `auth` per client address, `authAccount` per verified user |
+| `POST /api/v1/auth/sessions/revoke-others` | `RateLimitMiddleware.limit('auth', { perUserClient: true })` | `auth` per client address, `authAccount` per verified user AND client address (no bucket spans client addresses; HAP-1716) |
 | `POST /api/v1/auth/refresh` | `RateLimitMiddleware.custom(endpointBudget('rest'), 'auth-refresh')` | `rest` (default 1000 per hour per client address); not mounted when `rest.max` is `0` |
 
 Analysis requests (`executeBoundedAnalysis`) and GraphQL requests (`admitGraphQLRequest`) have in-process admission gates that answer `429` without the headers below. The shipped `infrastructure/docker/nginx.conf` adds per-client-address zones, each answering `limit_req_status 429`: `api_limit` (100r/s, `burst=50`, `location /api/`), `auth_limit` (5r/m, `burst=2`, login and password change only), `auth_session_limit` (2r/s, `burst=20`, the other `/api/v1/auth/` paths) and `graphql_limit` (50r/s, `burst=20`, `location /graphql`). The full rules are in [API_DOCUMENTATION.md](../../docs/API_DOCUMENTATION.md#rate-limiting).

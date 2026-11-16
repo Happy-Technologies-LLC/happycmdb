@@ -209,7 +209,10 @@ never holds the scope (the request-time check refuses it), but its stored `scope
 operator password reset clears the flag, so the stored grant is live again from that moment. Revoke is refused
 (`seeded_account`) while the flag is set, so the order is:
 
-1. Rotate the account's password with `scripts/rotate-user-password.ts` (the only path that clears the flag).
+1. Rotate the account's password with `scripts/rotate-user-password.ts` (the only path that clears the flag). If the
+   rotation reports `PENDING` (the run could not see its outcome because Neo4j was unreachable), run
+   `rotate-user-password.ts --reconcile` and wait for `APPLIED` before step 2: a `PENDING` rotation may or may not
+   have cleared the flag, and the revoke is refused (`seeded_account`) while it is still set.
 2. Run `revoke-portfolio-import-scope --user-id <id> --operator <name>` straight after; expect `"outcome": "revoked"`.
 
 Do not leave a flagged account that holds the grant waiting after step 1: until step 2 it holds the scope.

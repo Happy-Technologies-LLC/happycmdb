@@ -20,6 +20,7 @@ import { createHash, randomBytes } from 'crypto';
 import type { Response } from 'express';
 import { logger } from '@cmdb/common';
 import { AuthService, AuthRepository, UserProfileUpdate } from '../auth.service';
+import type { GuardedEpochBump } from '../auth.service';
 import { JWTService } from '../jwt.service';
 import { bcryptKey, isDefaultEquivalent } from '../default-credentials';
 import { PasswordService } from '../password.service';
@@ -97,6 +98,15 @@ class FakeRepository implements AuthRepository {
     if (!user || (user._credentialEpoch ?? 0) !== args.credentialEpoch || user._defaultPasswordSuspect === true
       || user._passwordHash !== args.readHash) return false;
     this.users.set(args.userId, { ...user, _passwordHash: args.newHash });
+    return true;
+  }
+  /** Like GUARDED_BUMP_EPOCH_CYPHER: the same guards as the password change, but only the generation moves (by one); the hash never changes. */
+  async bumpCredentialEpochGuarded(args: GuardedEpochBump): Promise<boolean> {
+    await this.beforeWrite?.();
+    const user = this.users.get(args.userId);
+    if (!user || (user._credentialEpoch ?? 0) !== args.credentialEpoch || user._defaultPasswordSuspect === true
+      || user._passwordHash !== args.readHash || !user._organizationId) return false;
+    this.users.set(args.userId, { ...user, _credentialEpoch: args.credentialEpoch + 1 });
     return true;
   }
   async disableUserGuarded(args: { userId: string; elementId?: string; credentialEpoch: number }): Promise<boolean> {

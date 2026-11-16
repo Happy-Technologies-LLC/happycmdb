@@ -325,11 +325,14 @@ export class AuthService {
 
       await this.repository.updateUserLastLogin(user._id);
       await this.rehashStoredPassword(user, password, credentialEpoch);
-      // Tenant claim comes from the user record, never the request.
+      // Tenant claim comes from the user record, never the request. One login time for both tokens (HAP-1716).
+      const authTime = Math.floor(Date.now() / 1000);
       const accessToken = this.jwtService.generateAccessToken(
-        user._id, user._username, user._role, user._organizationId, credentialEpoch
+        user._id, user._username, user._role, user._organizationId, credentialEpoch, authTime
       );
-      const refreshToken = this.jwtService.generateRefreshToken(user._id, user._username, user._role, credentialEpoch);
+      const refreshToken = this.jwtService.generateRefreshToken(
+        user._id, user._username, user._role, credentialEpoch, authTime
+      );
       return {
         _accessToken: accessToken,
         _refreshToken: refreshToken,
@@ -378,9 +381,10 @@ export class AuthService {
         throw new AuthFailureError('revoked');
       }
 
-      // New tokens from the current user record (org re-read, not copied from the old token); the login time is kept.
+      // New tokens from the current user record (org re-read, not copied from the old token); the login time is kept,
+      // in the access token too (HAP-1716: it is the session-family id, so it must never restart on refresh).
       const accessToken = this.jwtService.generateAccessToken(
-        user._id, user._username, user._role, user._organizationId, credentialEpoch
+        user._id, user._username, user._role, user._organizationId, credentialEpoch, authTime
       );
       const newRefreshToken = this.jwtService.generateRefreshToken(
         user._id, user._username, user._role, credentialEpoch, authTime
@@ -435,6 +439,7 @@ export class AuthService {
         _tier: payload._tier,
         _organizationId: user._organizationId,
         _cep: credentialEpoch,
+        _authTime: payload._authTime,
         iat: payload.iat,
         exp: payload.exp,
         iss: payload.iss,
@@ -687,11 +692,12 @@ export class AuthService {
       logger.warn('Password change API key revocation failed', errorClassFields(error));
     }
     // A new session for this device at the new generation; a fresh authentication, so its login time is now.
+    const authTime = Math.floor(Date.now() / 1000);
     return {
       _accessToken: this.jwtService.generateAccessToken(
-        user._id, user._username, user._role, user._organizationId, nextEpoch
+        user._id, user._username, user._role, user._organizationId, nextEpoch, authTime
       ),
-      _refreshToken: this.jwtService.generateRefreshToken(user._id, user._username, user._role, nextEpoch),
+      _refreshToken: this.jwtService.generateRefreshToken(user._id, user._username, user._role, nextEpoch, authTime),
       _expiresIn: this.jwtService.getTokenExpiresIn('access'),
       _user: { _id: user._id, _username: user._username, _role: user._role },
     };
@@ -745,11 +751,14 @@ export class AuthService {
     } catch (error) {
       logger.warn('Session revoke API key revocation failed', errorClassFields(error));
     }
+    // Only a correct password reaches here, so this restart of the session family (a new login time, a fresh
+    // revoke-other-sessions budget) is intended: a wrong guess returns above and never yields a new login time.
+    const authTime = Math.floor(Date.now() / 1000);
     return {
       _accessToken: this.jwtService.generateAccessToken(
-        user._id, user._username, user._role, user._organizationId, nextEpoch
+        user._id, user._username, user._role, user._organizationId, nextEpoch, authTime
       ),
-      _refreshToken: this.jwtService.generateRefreshToken(user._id, user._username, user._role, nextEpoch),
+      _refreshToken: this.jwtService.generateRefreshToken(user._id, user._username, user._role, nextEpoch, authTime),
       _expiresIn: this.jwtService.getTokenExpiresIn('access'),
       _user: { _id: user._id, _username: user._username, _role: user._role },
     };

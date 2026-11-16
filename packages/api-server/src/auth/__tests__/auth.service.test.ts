@@ -539,6 +539,84 @@ describe('AuthService profile/password/account lifecycle', () => {
     });
   });
 
+  describe('session-family id in the access token (HAP-1716 F1)', () => {
+    const PASSWORD = 'correct-horse-battery-staple';
+    const jwtService = () => new JWTService(authConfig.jwt);
+    const claim = (token: string) => (jwtService().decodeToken(token) as unknown as { _authTime?: number })._authTime;
+    const nowSeconds = () => Math.floor(Date.now() / 1000);
+    const at = async <T>(seconds: number, run: () => Promise<T>): Promise<T> => {
+      const spy = jest.spyOn(Date, 'now').mockReturnValue(seconds * 1000);
+      try {
+        return await run();
+      } finally {
+        spy.mockRestore();
+      }
+    };
+
+    it('login mints one login time into both tokens, and verifyToken hands it on', async () => {
+      const session = await service.login({ username: 'alice', password: PASSWORD });
+
+      expect(claim(session._accessToken)).toBe(claim(session._refreshToken));
+      expect(Math.abs(claim(session._accessToken)! - nowSeconds())).toBeLessThanOrEqual(5);
+      expect(await service.verifyToken(session._accessToken)).toMatchObject({ _authTime: claim(session._refreshToken) });
+    });
+
+    it('every refresh keeps the original login time in the new access token, so refreshed tokens share the parent\'s session bucket', async () => {
+      const t0 = nowSeconds();
+      const login = await at(t0, () => service.login({ username: 'alice', password: PASSWORD }));
+      const first = await at(t0 + 2 * 24 * 3600, () => service.refreshToken({ refreshToken: login._refreshToken }));
+      const second = await at(t0 + 4 * 24 * 3600, () => service.refreshToken({ refreshToken: first._refreshToken }));
+
+      for (const session of [login, first, second]) {
+        expect(claim(session._accessToken)).toBe(t0);
+        expect(claim(session._refreshToken)).toBe(t0);
+      }
+      const verified = await at(t0 + 4 * 24 * 3600, () => service.verifyToken(second._accessToken));
+      expect(verified).toMatchObject({ _authTime: t0 });
+    });
+
+    it('a later login of the same user gets a different login time', async () => {
+      const t0 = nowSeconds();
+      const stolen = await at(t0, () => service.login({ username: 'alice', password: PASSWORD }));
+      const owner = await at(t0 + 3600, () => service.login({ username: 'alice', password: PASSWORD }));
+
+      expect(claim(owner._accessToken)).toBe(t0 + 3600);
+      expect(claim(owner._accessToken)).not.toBe(claim(stolen._accessToken));
+    });
+
+    it('an access token minted before the claim existed verifies without one (the route refuses it)', async () => {
+      const old = jwt.sign(
+        { _userId: 'user-1', _username: 'alice', _role: 'operator', _type: 'access', _cep: 0 },
+        authConfig.jwt.secret,
+        { expiresIn: '15m', issuer: authConfig.jwt.issuer, audience: authConfig.jwt.audience },
+      );
+
+      expect((await service.verifyToken(old))._authTime).toBeUndefined();
+    });
+
+    it('a successful revoke-others restarts the family: both new tokens carry a new login time; a wrong password returns none', async () => {
+      const t0 = nowSeconds();
+      const login = await at(t0, () => service.login({ username: 'alice', password: PASSWORD }));
+
+      await at(t0 + 600, async () => {
+        await expect(service.revokeOtherSessions('user-1', 'wrong-password', 0, ORG)).rejects.toThrow(/incorrect/i);
+      });
+      const session = await at(t0 + 1200, () => service.revokeOtherSessions('user-1', PASSWORD, 0, ORG));
+
+      expect(claim(login._accessToken)).toBe(t0);
+      expect(claim(session._accessToken)).toBe(t0 + 1200);
+      expect(claim(session._refreshToken)).toBe(t0 + 1200);
+    });
+
+    it('a password change likewise mints one new login time into both tokens', async () => {
+      const t0 = nowSeconds();
+      const session = await at(t0 + 60, () => service.changePassword('user-1', PASSWORD, 'new-password-123', 0, ORG));
+
+      expect(claim(session._accessToken)).toBe(t0 + 60);
+      expect(claim(session._refreshToken)).toBe(t0 + 60);
+    });
+  });
+
   describe('ambiguous identity (more than one :User node for an identifier)', () => {
     it('refuses login, bearer, refresh and API key with the uniform failure, reason ambiguous_identity', async () => {
       const jwtService = new JWTService(authConfig.jwt);

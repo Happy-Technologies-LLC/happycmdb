@@ -128,15 +128,25 @@ generation that has not moved since the session was issued (`401 Credentials cha
 also revoked best-effort, as for a password change. It is audited like a password change with
 `metadata.operation = "revoke_other_sessions"` (outcomes `success`, `wrong_password`,
 `rotation_lost`, `user_not_found`, `rate_limited`); without `AUDIT_CHAIN_KEY` it answers `503` before
-any check. Rate limit: login's per-client-address bucket plus a per-user-**and**-client-address
-bucket (`RATE_LIMIT_AUTH_ACCOUNT_*`). Unlike `PUT /password` there is no per-user bucket across
-addresses, so a stolen session guessing from another address can exhaust only its own address's
-budget and the owner, at hers, still reaches this step-up (the way to end the thief's session when
-the password-change bucket is held). Residual risk: an attacker behind the owner's own client address
-shares that bucket, and a session holder's password guesses are bounded only per address (login's
-account + client bucket has the same property). A first `429` per user and bucket per window is
-audited with `metadata.bucket` `client` or `user-client`, claimed at
-`rate-limit:auth-session-revoke-refused:<userId>:<bucket>`.
+any check. Rate limit: login's per-client-address bucket, a per-user-**and**-client-address bucket and a
+per-user-**and**-session bucket (the last two at `RATE_LIMIT_AUTH_ACCOUNT_*`, default 5 per 15 minutes,
+the budget of `PUT /password`). The session is the login: the `_authTime` claim of the access token,
+copied from the refresh token on every refresh, so every token refreshed from one login shares the
+bucket whatever address it comes from, and only a fresh authentication (login, password change, a
+successful step-up, all of which need the password) starts a new one. A session holder therefore gets
+at most that budget of password guesses per window from all addresses together, the same bound as
+`PUT /password`. A wrong guess never returns a token or a new login time; the new session of a successful
+step-up deliberately starts a new login time (its 7-day cap restarts too). The owner's own login is
+another session with its own bucket, so a thief draining the stolen session's bucket cannot hold the
+owner out; there is no per-user bucket across sessions or the account-wide cap login has. An access
+token issued before this claim existed is refused `401 Session must be renewed` before any bucket is
+spent or password checked (the web client then renews from its refresh cookie); it never falls back to
+per-address limits only. A limiter store error answers `503`. Residual risk: an attacker behind the owner's own client
+address shares the address bucket, and one holding the same login's token shares its session bucket, so
+either can hold that device out of the step-up for a window (the owner signs in again for a fresh
+session budget); a stolen session can still spend the session budget every window until its 7-day
+cap. A first `429` per user and bucket per window is audited with `metadata.bucket` `client`,
+`user-client` or `session`, claimed at `rate-limit:auth-session-revoke-refused:<userId>:<bucket>`.
 
 **A user with no organization cannot change their password through this endpoint** (HAP-1714).
 `PUT /api/v1/auth/password` answers `403 {"success":false,"error":"Forbidden","message":"Organization
@@ -563,7 +573,7 @@ Only four authentication endpoints carry a rate limiter: `POST /api/v1/auth/logi
 |----------|-------|--------|
 | `POST /api/v1/auth/login` | 20 per IP (`RATE_LIMIT_AUTH_*`), 5 per account + IP (`RATE_LIMIT_AUTH_ACCOUNT_*`) and 20 per account across all IPs (`RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_*`); the account is the trimmed, lowercased username | 1 hour per IP; 15 minutes per account + IP and per account |
 | `PUT /api/v1/auth/password` | Login's 20 per IP (shared bucket) and 5 per user across all IPs (`RATE_LIMIT_AUTH_ACCOUNT_*`) | 1 hour per IP; 15 minutes per user |
-| `POST /api/v1/auth/sessions/revoke-others` | Login's 20 per IP (shared bucket) and 5 per user **and IP** (`RATE_LIMIT_AUTH_ACCOUNT_*`); no bucket spans IPs (HAP-1716) | 1 hour per IP; 15 minutes per user + IP |
+| `POST /api/v1/auth/sessions/revoke-others` | Login's 20 per IP (shared bucket), 5 per user **and IP**, and 5 per user **and session** across all IPs (`RATE_LIMIT_AUTH_ACCOUNT_*`); the session is the login (`_authTime`, kept across refresh), so another login of the same user has its own bucket (HAP-1716) | 1 hour per IP; 15 minutes per user + IP and per user + session |
 | `POST /api/v1/auth/refresh` | The REST budget (`RATE_LIMIT_REST_MAX`, default 1000; `0` = unlimited) under its own key, so renewals never use up the login limit (HAP-1211 H2) | `RATE_LIMIT_REST_WINDOW_MS` (default 1 hour) per IP |
 | Other `/api/v1/auth/*` endpoints, including `POST /api/v1/auth/api-key` | No dedicated limiter | n/a |
 
@@ -602,7 +612,8 @@ X-RateLimit-Reset: 1699642800000
 On login and password change, the headers and every `429` report only the per-IP bucket (HAP-1795). The
 per-account, per-account + IP and per-user buckets still refuse with `429`, but their counts, limits and
 windows never appear: a refusal by one of them carries the same headers (`X-RateLimit-Remaining: 0`) and body
-as a per-IP refusal, and `_retryAfter` is the per-IP window.
+as a per-IP refusal, and `_retryAfter` is the per-IP window. The same holds for the per-user-and-client and
+per-user-and-session buckets of `POST /auth/sessions/revoke-others`.
 
 ---
 

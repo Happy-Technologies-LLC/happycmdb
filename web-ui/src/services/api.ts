@@ -110,8 +110,10 @@ class ApiService {
 
   /**
    * HAP-1716: ends every other session and API key of the user without changing the password; the server re-issues
-   * this one (new access token, new refresh cookie). Needs the current password; limited per address, never per user
-   * across addresses, so it stays reachable while a password-change lock-out is held from another address.
+   * this one (new access token, new refresh cookie). Needs the current password. Login has an account-wide cap across
+   * addresses; this route has a session-bound one: the guesses a single login (all tokens refreshed from it) can make
+   * are capped across all addresses. The owner's own, later login has a separate budget, so it stays reachable while
+   * a stolen session is held out: signing in again gives a fresh session budget.
    */
   async revokeOtherSessions(currentPassword: string): Promise<void> {
     const response = await apiClient.post<{ success: boolean; data?: { _accessToken?: unknown } }>(

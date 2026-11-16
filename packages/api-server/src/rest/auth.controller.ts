@@ -223,16 +223,22 @@ export class AuthController {
      * POST /api/auth/sessions/revoke-others
      * Revoke every other session and API key of the user, behind a re-entered current password (HAP-1716). Same
      * chain as /password (JWT session only, audit-chain 503 before the limiter), but the limiter is the client bucket
-     * plus a bucket keyed by user AND client address: never the shared per-user bucket nor the account-global one,
-     * both of which a stolen session could spend from another address to hold the owner out of this action.
+     * plus a bucket keyed by user AND client address, plus (F1) a bucket keyed by user AND the session's login time
+     * (`_authTime`), at /password's budget. The per-address buckets alone let a session holder guess from every
+     * address they control; the session bucket caps that across all addresses, yet another login of the user (the
+     * owner's) has its own bucket. Never the shared per-user bucket nor the account-global one, both of which a stolen
+     * session could spend from another address to hold the owner out of this action. An access token without the
+     * claim (minted before it existed) is refused 401 before the limiter, so the client refreshes.
      */
     this.router.post(
       '/sessions/revoke-others',
       this.authMiddleware.authenticate(),
       this.authMiddleware.requireJwtSession(),
       this.requireAuditChain(SESSION_REVOKE_UNAVAILABLE),
+      this.requireSessionFamily(),
       this.rateLimiter.limit('auth', {
         perUserClient: true,
+        perSession: true,
         failClosed: true,
         onRefused: (req, refusal) => this.auditFirstRefusal(req, refusal, 'revoke_other_sessions'),
       }),
@@ -558,6 +564,23 @@ export class AuthController {
         return;
       }
       res.status(503).json(unavailable);
+    };
+  }
+
+  /**
+   * HAP-1716 F1: the session-family id (`_authTime`) must be on the verified access token: it keys the session bucket.
+   * A token minted before it existed lacks it and is refused 401 (the web client then renews from its refresh cookie,
+   * whose renewal carries the claim) before any bucket is spent or password checked. Never a fall back to the
+   * per-address buckets alone. Mounted after authentication.
+   */
+  private requireSessionFamily() {
+    return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+      const authTime = req.user?._authTime;
+      if (typeof authTime === 'number' && Number.isSafeInteger(authTime)) {
+        next();
+        return;
+      }
+      res.status(401).json({ success: false, error: 'Unauthorized', message: 'Session must be renewed' });
     };
   }
 

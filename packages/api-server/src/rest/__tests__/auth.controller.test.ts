@@ -1666,3 +1666,111 @@ describe('HAP-1211 H2 ruling A: refresh has its own rate-limit bucket at the RES
     expect(await refreshes(app, 4)).toEqual([401, 401, 401, 429]);
   });
 });
+
+describe('HAP-1716 F1: the revoke-others cap is bound to the login, through real tokens, refresh, limiter and service', () => {
+  const PASSWORD = 'correct-horse-battery-staple';
+  const SESSION_BUDGET = 2;
+  let app: express.Express;
+  let repository: InMemoryAuthRepository;
+
+  beforeEach(async () => {
+    repository = new InMemoryAuthRepository();
+    repository.users.set('user-1', {
+      _id: 'user-1', _username: 'alice', _email: 'alice@example.com',
+      _passwordHash: await new PasswordService(authConfig.bcrypt as any).hash(PASSWORD),
+      _role: 'operator', _organizationId: SEED_ORGANIZATION, _enabled: true,
+      _createdAt: new Date('2024-01-01'), _updatedAt: new Date('2024-01-01'),
+    } as User);
+    const window = { windowMs: 60_000 };
+    const rateLimit = {
+      enabled: true,
+      bypassHeader: 'X-RateLimit-Bypass',
+      tierMultipliers: { standard: 1, premium: 1, enterprise: 1 },
+      // Per-address buckets are wide, so only the session bucket (the authAccount budget) can refuse across addresses.
+      endpoints: {
+        auth: { max: 50, ...window }, authAccount: { max: SESSION_BUDGET, ...window },
+        authAccountGlobal: { max: 50, ...window }, rest: { max: 50, ...window },
+      },
+      monitoring: { enabled: false, logRateLimitHits: false },
+    } as unknown as ConfigSchema['rateLimit'];
+    const authService = new AuthService(authConfig as any, repository);
+    app = express();
+    app.set('trust proxy', 1);
+    app.use(express.json());
+    app.use('/api/v1/auth', new AuthController(authService, new ValidationMiddleware(),
+      new AuthMiddleware(authService, authConfig as any), new RateLimitMiddleware(memoryRedis(), rateLimit)).getRouter());
+  });
+
+  /** A login `offsetSeconds` from now: the clock is moved only while the login is minted, so each login has its own `_authTime`. */
+  const loginAt = async (offsetSeconds: number) => {
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + offsetSeconds * 1000);
+    try {
+      const res = await request(app).post('/api/v1/auth/login').set(AUTH_HEADER, AUTH_HEADER_VALUE)
+        .send({ username: 'alice', password: PASSWORD });
+      expect(res.status).toBe(200);
+      return { access: res.body.data._accessToken as string, cookie: refreshCookieOf(res).value };
+    } finally {
+      clock.mockRestore();
+    }
+  };
+  const renew = async (cookie: string) => {
+    const res = await request(app).post('/api/v1/auth/refresh').set(AUTH_HEADER, AUTH_HEADER_VALUE)
+      .set('Cookie', `${REFRESH_COOKIE}=${cookie}`);
+    expect(res.status).toBe(200);
+    return { access: res.body.data._accessToken as string, cookie: refreshCookieOf(res).value };
+  };
+  const revoke = (access: string, address: string, currentPassword: string) =>
+    request(app).post('/api/v1/auth/sessions/revoke-others')
+      .set({ Authorization: `Bearer ${access}`, 'X-Forwarded-For': address }).send({ currentPassword });
+
+  it('a stolen session and its refreshed tokens share one budget across addresses; the owner\'s own login is untouched and the right password gets 200', async () => {
+    const stolen = await loginAt(0);
+    const refreshed = await renew(stolen.cookie);
+    const refreshedAgain = await renew(refreshed.cookie);
+    expect(jwt.decode(refreshedAgain.access)).toMatchObject({ _authTime: (jwt.decode(stolen.access) as { _authTime: number })._authTime });
+    const owner = await loginAt(3600);
+
+    // Fresh address each time; the three tokens are one login, whichever of them the guess comes with.
+    const guesses = [stolen.access, refreshed.access, refreshedAgain.access, stolen.access];
+    const statuses: number[] = [];
+    for (const [i, access] of guesses.entries()) statuses.push((await revoke(access, `198.51.100.${i}`, 'not-the-password')).status);
+    expect(statuses).toEqual([400, 400, 429, 429]);
+
+    // Not even the right password passes on the stolen login's bucket.
+    expect((await revoke(refreshedAgain.access, '198.51.100.99', PASSWORD)).status).toBe(429);
+    expect(repository.users.get('user-1')!._credentialEpoch ?? 0).toBe(0);
+
+    const ownerStepUp = await revoke(owner.access, '203.0.113.7', PASSWORD);
+    expect([ownerStepUp.status, ownerStepUp.body.success]).toEqual([200, true]);
+    expect(repository.users.get('user-1')!._credentialEpoch).toBe(1);
+    // The step-up restarts the family (intended: only the right password gets here): both new tokens carry the
+    // step-up's own login time, from now and never copied from the request's token; the thief's tokens are dead.
+    const issued = jwt.decode(ownerStepUp.body.data._accessToken) as { _authTime: number };
+    expect(Math.abs(issued._authTime - Math.floor(Date.now() / 1000))).toBeLessThanOrEqual(5);
+    expect(jwt.decode(refreshCookieOf(ownerStepUp).value)).toMatchObject({ _authTime: issued._authTime });
+    expect((await revoke(stolen.access, '198.51.100.200', 'x')).status).toBe(401);
+  });
+
+  it('a wrong guess never yields a new login time or any token, and a pre-claim access token is told to renew (401) without spending a bucket', async () => {
+    const session = await loginAt(0);
+    const wrong = await revoke(session.access, '198.51.100.1', 'not-the-password');
+    expect(wrong.status).toBe(400);
+    expect(JSON.stringify(wrong.body)).not.toMatch(/_accessToken|_refreshToken/);
+    expect(wrong.headers['set-cookie']).toBeUndefined();
+
+    const preClaim = jwt.sign(
+      { _userId: 'user-1', _username: 'alice', _role: 'operator', _type: 'access', _organizationId: SEED_ORGANIZATION, _cep: 0 },
+      authConfig.jwt.secret,
+      { expiresIn: '15m', issuer: authConfig.jwt.issuer, audience: authConfig.jwt.audience },
+    );
+    for (let i = 0; i < SESSION_BUDGET + 2; i++) {
+      const res = await revoke(preClaim, `198.51.100.${10 + i}`, PASSWORD);
+      expect([res.status, res.body.message]).toEqual([401, 'Session must be renewed']);
+    }
+    expect(repository.users.get('user-1')!._credentialEpoch ?? 0).toBe(0);
+    // The renewed token (refresh carries the claim) works, with the one budget unit the wrong guess already spent.
+    const renewed = await renew(session.cookie);
+    expect((await revoke(renewed.access, '198.51.100.30', 'not-the-password')).status).toBe(400);
+    expect((await revoke(renewed.access, '198.51.100.31', PASSWORD)).status).toBe(429);
+  });
+});

@@ -384,10 +384,10 @@ export class AuthService {
       // New tokens from the current user record (org re-read, not copied from the old token); the login time is kept,
       // in the access token too (HAP-1716: it is the session-family id, so it must never restart on refresh).
       const accessToken = this.jwtService.generateAccessToken(
-        user._id, user._username, user._role, user._organizationId, credentialEpoch, authTime
+        user._id, user._username, user._role, user._organizationId, credentialEpoch, authTime!
       );
       const newRefreshToken = this.jwtService.generateRefreshToken(
-        user._id, user._username, user._role, credentialEpoch, authTime
+        user._id, user._username, user._role, credentialEpoch, authTime!
       );
       return {
         _accessToken: accessToken,

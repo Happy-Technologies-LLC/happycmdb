@@ -70,6 +70,21 @@ const hashOf = (u: Node) => u.props['_passwordHash'] ?? u.props['passwordHash'] 
 const num = (value: unknown) => (neo4j.isInt(value) ? neo4j.integer.toNumber(value) : Number(value));
 const epochOf = (u: Node) => num(u.props['credentialEpoch'] ?? 0);
 
+// Evaluates the statement's own final SET clause on the node: `$param`, `datetime()` and the `true`/`false` literals.
+// The greedy prefix skips LOCK_USER's `SET u._hp1WriteLock = true REMOVE u._hp1WriteLock`, which nets to no change.
+// Any other right-hand side throws, so a new expression form cannot silently be stored as text.
+function applySet(u: Node, q: string, params: Row): void {
+  const clause = /.*\bSET (.+?)(?: REMOVE | RETURN )/.exec(q)![1]!;
+  for (const assignment of clause.split(', ')) {
+    const [, key, rhs] = /^u\.(\w+) = (.+)$/.exec(assignment)!;
+    if (rhs!.startsWith('$')) u.props[key!] = params[rhs!.slice(1)];
+    else if (rhs === 'datetime()') u.props[key!] = new Date();
+    else if (rhs === 'true') u.props[key!] = true;
+    else if (rhs === 'false') u.props[key!] = false;
+    else throw new Error(`fakeGraph cannot evaluate SET ${assignment}`);
+  }
+}
+
 function fakeGraph(users: Node[]): RotationGraph {
   const match = (id: unknown) => users.filter(u => u.props['_id'] === id || u.props['id'] === id);
   return {
@@ -98,7 +113,7 @@ function fakeGraph(users: Node[]): RotationGraph {
       if (q === norm(GRANT_PLATFORM_ADMIN_CYPHER)) {
         const ok = u !== undefined && (u.props['_id'] === params['id'] || u.props['id'] === params['id'])
           && u.props['seedProvenance'] === undefined && !marked(u);
-        if (ok) Object.assign(u!.props, { platformAdmin: true, platformAdminGrantedBy: params['operator'] });
+        if (ok) applySet(u!, q, params);
         return [{ n: neo4j.int(ok ? 1 : 0) }];
       }
       if (q === norm(APPLY_CYPHER)) {
@@ -106,11 +121,8 @@ function fakeGraph(users: Node[]): RotationGraph {
         const ok = u !== undefined && (u.props['_id'] === params['id'] || u.props['id'] === params['id'])
           && epochOf(u) === num(params['e0']);
         if (ok) {
-          const [, setClause, removed] = /holders = 1 SET (.+?) REMOVE (\S+) CREATE/.exec(q)!;
-          for (const assignment of setClause!.split(', ')) {
-            const [, key, value] = /^u\.(\w+) = (.+)$/.exec(assignment)!;
-            u!.props[key!] = value!.startsWith('$') ? params[value!.slice(1)] : value === 'datetime()' ? new Date() : value === 'false' ? false : value;
-          }
+          applySet(u!, q, params);
+          const [, removed] = /REMOVE (\S+) CREATE/.exec(q)!;
           delete u!.props[removed!.replace('u.', '')];
         }
         return [{ n: neo4j.int(ok ? 1 : 0) }];
@@ -119,7 +131,7 @@ function fakeGraph(users: Node[]): RotationGraph {
         // Guards evaluated on the current node, as after the statement's lock.
         const ok = u !== undefined && !marked(u)
           && hashOf(u) === params['verifiedHash'] && epochOf(u) === num(params['verifiedEpoch']);
-        if (ok) u!.props['defaultPasswordSuspect'] = true;
+        if (ok) applySet(u!, q, params);
         return [{ n: neo4j.int(ok ? 1 : 0) }];
       }
       if (q === norm(ASSIGN_ORGANIZATION_CYPHER)) {
@@ -129,10 +141,7 @@ function fakeGraph(users: Node[]): RotationGraph {
           && (!q.includes('AND NOT (coalesce(u.defaultPasswordSuspect') || !marked(u))
           && (!q.includes('AND NOT (coalesce(u._platformAdmin') || !admin(u))
           && (!q.includes('observed = $observed') || orgOf(u) === params['observed']);
-        // Every SET assignment is applied as written ($param, datetime(), or literal text), so a dropped or changed stamp shows.
-        const sets = /.*SET (.+) RETURN/.exec(q)![1]!.split(', ').map(s => /^u\.(\w+) = (.+)$/.exec(s)!);
-        if (ok) Object.assign(u!.props, Object.fromEntries(sets.map(([, key, value]) =>
-          [key!, value!.startsWith('$') ? params[value!.slice(1)] : value === 'datetime()' ? new Date() : value])));
+        if (ok) applySet(u!, q, params);
         return [{ n: neo4j.int(ok ? 1 : 0) }];
       }
       if (q === norm(GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER) || q === norm(REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER)) {
@@ -141,9 +150,7 @@ function fakeGraph(users: Node[]): RotationGraph {
           && (!q.includes('u.seedProvenance IS NULL') || u.props['seedProvenance'] === undefined)
           && (!q.includes('AND NOT (coalesce(u.defaultPasswordSuspect') || !marked(u))
           && (!q.includes('= $observed') || JSON.stringify(u.props['scopes'] ?? []) === JSON.stringify(params['observed']));
-        const sets = /.*SET (.+) RETURN/.exec(q)![1]!.split(', ').map(s => /^u\.(\w+) = (.+)$/.exec(s)!);
-        if (ok) Object.assign(u!.props, Object.fromEntries(sets.map(([, key, value]) =>
-          [key!, value!.startsWith('$') ? params[value!.slice(1)] : value === 'datetime()' ? new Date() : value])));
+        if (ok) applySet(u!, q, params);
         return [{ n: neo4j.int(ok ? 1 : 0) }];
       }
       throw new Error(`unexpected write ${q}`);
@@ -319,6 +326,7 @@ describe('portfolio-import scope grant and revoke (HAP-1632)', () => {
     });
     expect(num(applied!['n'])).toBe(1);
     expect(marked(users[0]!)).toBe(false);
+    expect(users[0]!.props['defaultPasswordSuspect']).toBe(false);
     expect(holdsScope(loaded(), SCOPE)).toBe(true);
 
     await expect(revokePortfolioImportScope(graph, 'p', 'nick')).resolves.toEqual({ userId: 'p', outcome: 'revoked' });
@@ -431,6 +439,7 @@ describe('default-password scan', () => {
     expect(result).toEqual({ marked: ['a'], alreadyMarkedOrRaced: ['b'], nonBcrypt: ['d'] });
     expect(rows).toEqual([['a', 'window-script:nick']]);
     expect(users[2]!.props['defaultPasswordSuspect']).toBeUndefined();
+    expect(users[0]!.props['defaultPasswordSuspect']).toBe(true);
   });
 
   it('never marks an account rotated between the scan read and its mark (review 6061922930 MEDIUM 1)', async () => {
@@ -447,5 +456,17 @@ describe('default-password scan', () => {
     expect(result).toEqual({ marked: [], alreadyMarkedOrRaced: ['a'], nonBcrypt: [] });
     expect(users[0]!.props['defaultPasswordSuspect']).toBe(false);
     expect(rows).toEqual([]);
+  });
+});
+
+describe('fakeGraph SET evaluation', () => {
+  it('stores true and false literals as booleans, parameters and datetime() as values, and rejects other expressions', () => {
+    const node: Node = { elementId: '4:p', props: {} };
+
+    applySet(node, 'MATCH (u:User) SET u.a = true, u.b = false, u.c = $c, u.d = datetime() RETURN count(u) AS n', { c: 'x' });
+    expect(node.props).toMatchObject({ a: true, b: false, c: 'x' });
+    expect(node.props['d']).toBeInstanceOf(Date);
+
+    expect(() => applySet(node, 'MATCH (u:User) SET u.e = TRUE RETURN count(u) AS n', {})).toThrow(/cannot evaluate/);
   });
 });

@@ -11,6 +11,12 @@ permissions:
   checks: write
   pull-requests: write
 
+# Only pull_request runs of one PR share a group and cancel each other. Non-PR runs get a
+# unique group (run_id): a shared ref group would let GitHub drop a queued push-to-main run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   unit-tests:
     name: Unit Tests

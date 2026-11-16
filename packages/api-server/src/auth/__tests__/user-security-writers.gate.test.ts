@@ -50,6 +50,7 @@ import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, relative } from 'path';
+import { GUARDED_PASSWORD_CYPHER } from '../neo4j-auth.repository';
 
 const ROOT = join(__dirname, '../../../../..');
 
@@ -338,6 +339,12 @@ describe('inventory gate 4: user-security property writers', () => {
 
   it('only the reviewed sites write platformAdmin, seedProvenance, the marker, the generation, hashes, decisions and the audit', () => {
     expect(violations(sources)).toEqual([]);
+  });
+
+  it('HAP-1714: the reviewed password writer only lands on a node that still holds an organization (either spelling), in its WHERE, before the SET', () => {
+    const where = GUARDED_PASSWORD_CYPHER.slice(GUARDED_PASSWORD_CYPHER.indexOf('WHERE (u._id'), GUARDED_PASSWORD_CYPHER.indexOf('SET u._passwordHash'));
+
+    expect(where).toMatch(/\bAND\s+coalesce\(u\._organizationId,\s*u\.organizationId\)\s+IS NOT NULL\b/);
   });
 
   const REPOSITORY = 'packages/api-server/src/auth/neo4j-auth.repository.ts';

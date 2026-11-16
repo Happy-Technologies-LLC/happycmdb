@@ -383,7 +383,7 @@ describe('N-21 (h5) in-flight self-service writes across a live rotation (SEC16-
       repository.rotate('u', rotated);
     };
 
-    await expect(service.changePassword('u', OPERATOR_PASSWORD, 'attacker-chosen-pass', authorizing._cep!))
+    await expect(service.changePassword('u', OPERATOR_PASSWORD, 'attacker-chosen-pass', authorizing._cep!, ORG_A))
       .rejects.toThrow('Credentials changed');
 
     expect(repository.users.get('u')!._passwordHash).toBe(rotated);
@@ -406,7 +406,7 @@ describe('N-21 (h5) in-flight self-service writes across a live rotation (SEC16-
     repository.users.set('u', user('u', { _passwordHash: operatorHash }));
     const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A));
 
-    await service.changePassword('u', OPERATOR_PASSWORD, 'a-new-long-password', authorizing._cep!);
+    await service.changePassword('u', OPERATOR_PASSWORD, 'a-new-long-password', authorizing._cep!, ORG_A);
 
     await expect(service.login({ username: 'u', password: 'a-new-long-password' })).resolves.toBeDefined();
   });
@@ -418,7 +418,7 @@ describe('N-21 new-password rules (every environment)', () => {
     repository.users.set('u', user('u', { _passwordHash: operatorHash }));
 
     for (const newPassword of [DEFAULT, CYCLE.slice(0, 72), 'long-enough\u0000x', 'é'.repeat(37)]) {
-      await expect(service.changePassword('u', OPERATOR_PASSWORD, newPassword, 0)).rejects.toThrow('Password not allowed');
+      await expect(service.changePassword('u', OPERATOR_PASSWORD, newPassword, 0, ORG_A)).rejects.toThrow('Password not allowed');
     }
     expect(repository.users.get('u')!._passwordHash).toBe(operatorHash);
   });
@@ -702,7 +702,7 @@ describe('HAP-1090 a successful login converges the stored hash to the configure
 
       await expect(single.login({ username: 'ghost', password: OPERATOR_PASSWORD })).rejects.toMatchObject(INVALID);
       const dummy = verify.mock.calls[0]![1];
-      await single.changePassword('u', OPERATOR_PASSWORD, NEXT, 0);
+      await single.changePassword('u', OPERATOR_PASSWORD, NEXT, 0, ORG_A);
       const changed = stored();
       repository.users.set('u', user('u', { _passwordHash: operatorHash }));
       await single.login({ username: 'u', password: OPERATOR_PASSWORD });

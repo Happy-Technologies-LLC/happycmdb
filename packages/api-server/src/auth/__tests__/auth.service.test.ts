@@ -11,7 +11,7 @@
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { logger } from '@cmdb/common';
-import { ApiKeyNotFoundError, AUTH_TIME_TOLERANCE_SECONDS, AuthService, AuthRepository, SESSION_ABSOLUTE_CAP_SECONDS, UserProfileUpdate } from '../auth.service';
+import { ApiKeyNotFoundError, AUTH_TIME_TOLERANCE_SECONDS, AuthService, AuthRepository, OrganizationRequiredError, SESSION_ABSOLUTE_CAP_SECONDS, UserProfileUpdate } from '../auth.service';
 import type { GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite } from '../auth.service';
 import { AmbiguousUserIdentityError, User, ApiKey, UserNotFoundError } from '../types';
 import { PasswordService } from '../password.service';
@@ -29,6 +29,8 @@ const authConfig = {
   bcrypt: { rounds: 4 },
   apiKeys: { enabled: true, headerName: 'X-API-Key' },
 };
+
+const ORG = '5f0c7a52-3d1e-4b8a-9c61-2f4e8d7b1a03';
 
 class InMemoryAuthRepository implements AuthRepository {
   users = new Map<string, User>();
@@ -134,6 +136,7 @@ describe('AuthService profile/password/account lifecycle', () => {
       _username: 'alice',
       _email: 'alice@example.com',
       _passwordHash: await passwordService.hash('correct-horse-battery-staple'),
+      _organizationId: ORG,
       _role: 'operator',
       _enabled: true,
       _createdAt: new Date('2024-01-01'),
@@ -172,14 +175,14 @@ describe('AuthService profile/password/account lifecycle', () => {
       const before = repository.users.get('user-1')?._passwordHash;
 
       await expect(
-        service.changePassword('user-1', 'wrong-password', 'new-password-123', 0)
+        service.changePassword('user-1', 'wrong-password', 'new-password-123', 0, ORG)
       ).rejects.toThrow('Current password is incorrect');
 
       expect(repository.users.get('user-1')?._passwordHash).toBe(before);
     });
 
     it('accepts the correct current password and the new password verifies afterwards', async () => {
-      await service.changePassword('user-1', 'correct-horse-battery-staple', 'new-password-123', 0);
+      await service.changePassword('user-1', 'correct-horse-battery-staple', 'new-password-123', 0, ORG);
 
       const updatedHash = repository.users.get('user-1')?._passwordHash as string;
       expect(await passwordService.verify('new-password-123', updatedHash)).toBe(true);
@@ -192,7 +195,7 @@ describe('AuthService profile/password/account lifecycle', () => {
       });
 
       it('revokes the keys below the new generation once, after the guarded write', async () => {
-        const session = await service.changePassword('user-1', 'correct-horse-battery-staple', 'new-password-123', 4);
+        const session = await service.changePassword('user-1', 'correct-horse-battery-staple', 'new-password-123', 4, ORG);
 
         expect(repository.apiKeyRevokeRequests).toEqual([['user-1', 5]]);
         expect(new JWTService(authConfig.jwt).decodeToken(session._accessToken)).toMatchObject({ _cep: 5 });
@@ -216,7 +219,7 @@ describe('AuthService profile/password/account lifecycle', () => {
         const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
         const error = jest.spyOn(logger, 'error').mockImplementation(() => logger);
         try {
-          const session = await service.changePassword('user-1', 'correct-horse-battery-staple', 'new-password-123', 4);
+          const session = await service.changePassword('user-1', 'correct-horse-battery-staple', 'new-password-123', 4, ORG);
 
           expect(session).toMatchObject({ _accessToken: expect.any(String), _refreshToken: expect.any(String), _user: { _id: 'user-1' } });
           expect(new JWTService(authConfig.jwt).decodeToken(session._accessToken)).toMatchObject({ _cep: 5 });
@@ -233,7 +236,7 @@ describe('AuthService profile/password/account lifecycle', () => {
         ['a wrong current password', 'wrong-password', 4, 'Current password is incorrect'],
         ['a stale generation', 'correct-horse-battery-staple', 3, 'credentials'],
       ])('never revokes on %s', async (_label, current, epoch, message) => {
-        await expect(service.changePassword('user-1', current, 'new-password-123', epoch)).rejects.toThrow(new RegExp(message, 'i'));
+        await expect(service.changePassword('user-1', current, 'new-password-123', epoch, ORG)).rejects.toThrow(new RegExp(message, 'i'));
 
         expect(repository.apiKeyRevokeRequests).toEqual([]);
       });
@@ -241,14 +244,63 @@ describe('AuthService profile/password/account lifecycle', () => {
       it('never revokes when the guarded write is lost', async () => {
         jest.spyOn(repository, 'updatePasswordHashGuarded').mockResolvedValue(false);
 
-        await expect(service.changePassword('user-1', 'correct-horse-battery-staple', 'new-password-123', 4)).rejects.toThrow(/credentials/i);
+        await expect(service.changePassword('user-1', 'correct-horse-battery-staple', 'new-password-123', 4, ORG)).rejects.toThrow(/credentials/i);
 
         expect(repository.apiKeyRevokeRequests).toEqual([]);
       });
     });
 
     it('throws for an unknown user id', async () => {
-      await expect(service.changePassword('ghost', 'a-new-password', 'b-new-password', 0)).rejects.toBeInstanceOf(UserNotFoundError);
+      await expect(service.changePassword('ghost', 'a-new-password', 'b-new-password', 0, ORG)).rejects.toBeInstanceOf(UserNotFoundError);
+    });
+
+    describe('organization required (HAP-1714)', () => {
+      const OTHER_ORG = 'a1b2c3d4-0000-4000-8000-00000000000a';
+      const refuse = (current: string, claim: string, epoch = 0) =>
+        expect(service.changePassword('user-1', current, 'new-password-123', epoch, claim)).rejects.toBeInstanceOf(OrganizationRequiredError);
+
+      it.each([
+        ['no organization', undefined],
+        ['an empty organization', ''],
+      ])('refuses a stored user with %s before any check, hash or write', async (_label, stored) => {
+        const before = { ...repository.users.get('user-1')!, _organizationId: stored } as User;
+        repository.users.set('user-1', before);
+        const hash = jest.spyOn(PasswordService.prototype, 'hash');
+        const verify = jest.spyOn(PasswordService.prototype, 'verify');
+        const write = jest.spyOn(repository, 'updatePasswordHashGuarded');
+        try {
+          // Right password, wrong password and a stale generation all get the same refusal: it comes first.
+          await refuse('correct-horse-battery-staple', ORG);
+          await refuse('wrong-password', ORG);
+          await refuse('correct-horse-battery-staple', ORG, 99);
+
+          expect(hash).not.toHaveBeenCalled();
+          expect(verify).not.toHaveBeenCalled();
+          expect(write).not.toHaveBeenCalled();
+          expect(repository.users.get('user-1')).toEqual(before);
+          expect(repository.apiKeyRevokeRequests).toEqual([]);
+        } finally {
+          hash.mockRestore();
+          verify.mockRestore();
+        }
+      });
+
+      it('refuses a request claim that is not the stored organization, writing nothing', async () => {
+        const before = repository.users.get('user-1');
+        const write = jest.spyOn(repository, 'updatePasswordHashGuarded');
+
+        await refuse('correct-horse-battery-staple', OTHER_ORG);
+
+        expect(write).not.toHaveBeenCalled();
+        expect(repository.users.get('user-1')).toEqual(before);
+      });
+
+      it('control: a user with an organization and the matching claim still changes the password', async () => {
+        const session = await service.changePassword('user-1', 'correct-horse-battery-staple', 'new-password-123', 0, ORG);
+
+        expect(session._user._id).toBe('user-1');
+        expect(await passwordService.verify('new-password-123', repository.users.get('user-1')!._passwordHash)).toBe(true);
+      });
     });
   });
 

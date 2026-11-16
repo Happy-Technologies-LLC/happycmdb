@@ -98,8 +98,9 @@ valid session but has not shown the current password, so a row records a refused
 session, not a verified one (`rotation_lost` is also written when the guarded write loses a race after
 the proof; the row does not say which). The `503` for an audit chain that is not
 ready (`AUDIT_CHAIN_KEY` unset) is refused before the current password is checked and is not audited:
-the chain cannot be written then. Request-validation `400`s (malformed body) are not audited. A user
-without an organization claim is not audited (an error is logged). `rate_limited` is the first `429`
+the chain cannot be written then. Request-validation `400`s (malformed body) are not audited. A change
+by a user without an organization never reaches a decision: it is refused with `403` (below), so no
+row is written and no change is made. For the same user a `429` writes no row either (an error is logged). `rate_limited` is the first `429`
 per user and refusing bucket (the client bucket, the user bucket) per window, and its row's
 `metadata.bucket` names the refusing bucket (`client`, `user`; the login-only `account` and
 `account-global` buckets do not apply here). Each audit write takes the
@@ -115,6 +116,34 @@ window: the TTL only shortens). The cut is owner-checked (a Lua compare of the s
 claim alone. If the backoff itself fails (Redis down) the claim keeps its window TTL and no row is
 written for the rest of that window, the same as when the claim fails. Requires PostgreSQL
 migration `049_audit_entity_user.sql`.
+
+**A user with no organization cannot change their password through this endpoint** (HAP-1714).
+`PUT /api/v1/auth/password` answers `403 {"success":false,"error":"Forbidden","message":"Organization
+required to change password"}` and changes nothing: no hash, no generation advance, no API-key
+revocation, no `audit_log` row, no cookie or token. The refusal comes before the current password is
+checked, so a wrong password for such a user is also `403`, not `400`. It applies when the stored
+user has no organization (or a value that is not a UUID), and also when the request's organization
+claim is absent or is not the stored organization (a race with `assign-organization`; the token
+takes its claim from the stored user on every request, so a retry after the assignment works). The
+status is `403`, not `409` or `401`: the caller is authenticated and the request is well formed, but
+their account state forbids the operation by policy, and only an operator action can change that. A
+write that loses the organization between the read and the write lands nothing and answers
+`401 Credentials changed`.
+
+Which path applies to such a user:
+
+- An operator gives the user an organization with
+  `packages/api-server/src/scripts/identity-window.ts assign-organization --user-id <id> --organization-id <uuid> --operator <name>`
+  (see "Assigning a user's organization (FD-5)" in [Authentication](/components/authentication.md)),
+  and the user then changes their password themselves.
+- Otherwise the operator rotation, `packages/api-server/src/scripts/rotate-user-password.ts`, is the
+  supported way to change their password. It does not depend on an organization and records
+  `auth_credential_events`, not `audit_log`.
+
+No supported creation path produces such a user today: the init and `seed-data` accounts are in the
+internal organization and no API route creates users. They remain possible for accounts that predate
+organization scoping, for the `--target` fixture of `scripts/seed-tenant-fixture.ts` (one viewer
+without an organization, on purpose) and for direct database writes; the guard stays for them.
 
 **Platform administrators** are a dedicated flag, set only by the operator command
 `scripts/identity-window.ts grant-platform-admin`. Role `admin` and organization grant nothing. A

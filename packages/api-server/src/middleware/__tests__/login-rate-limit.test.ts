@@ -350,13 +350,14 @@ function passwordApp(redis: FakeRedis) {
   } as unknown as AuthService;
   const pass = () => (_req: unknown, _res: unknown, next: () => void) => next();
   // The verified subject comes from the test's X-Test-User header (stands in for the JWT); none = unauthenticated.
+  // The organization claim a password change needs (HAP-1714) is fixed.
   const authenticate = () => (req: express.Request, res: express.Response, next: () => void) => {
     const user = req.header('X-Test-User');
     if (!user) {
       res.status(401).json({ success: false, error: 'Unauthorized' });
       return;
     }
-    (req as express.Request & { user?: unknown }).user = { _userId: user };
+    (req as express.Request & { user?: unknown }).user = { _userId: user, _organizationId: '5f0c7a52-3d1e-4b8a-9c61-2f4e8d7b1a03' };
     next();
   };
   const authMiddleware = new Proxy({}, { get: (_target, name) => (name === 'authenticate' ? authenticate : pass) });

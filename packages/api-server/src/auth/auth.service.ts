@@ -144,6 +144,14 @@ export class CurrentPasswordIncorrectError extends Error {
   }
 }
 
+/** The user has no organization, or the request's organization claim is not the stored one: a self-service password change cannot be audited, so it is refused (HAP-1714; → 403). */
+export class OrganizationRequiredError extends Error {
+  constructor() {
+    super('Organization required');
+    this.name = 'OrganizationRequiredError';
+  }
+}
+
 /**
  * Audited outcomes of a self-service password change attempt (HAP-1368; refusals: cmdb#321). Fixed codes, never
  * free text. Not listed: the audit-chain-not-ready 503, which is refused before anything runs because the chain
@@ -603,7 +611,11 @@ export class AuthService {
    * Change the authenticated user's password, verifying the current
    * password against the stored hash before replacing it. The new password
    * must not be default-equivalent, contain U+0000 or exceed 72 bytes (every
-   * environment). The write is a compare-and-set against the authorizing
+   * environment). A STORED user without an organization, or whose stored
+   * organization is not the request's claim, is refused with
+   * OrganizationRequiredError before the generation or the password is
+   * checked and before any hash is computed: the change could not be audited
+   * (HAP-1714). The write is a compare-and-set against the authorizing
    * credential generation, the hash just verified and an unmarked account,
    * so a request authorized before an operator rotation cannot overwrite it.
    * It advances the generation with the hash, ending every session and API
@@ -615,7 +627,8 @@ export class AuthService {
     userId: string,
     currentPassword: string,
     newPassword: string,
-    authorizingEpoch: number
+    authorizingEpoch: number,
+    organizationClaim: string
   ): Promise<LoginResponse> {
     if (!newPasswordAllowed(newPassword)) {
       throw new PasswordNotAllowedError();
@@ -624,6 +637,10 @@ export class AuthService {
     const user = await this.repository.findUserById(userId);
     if (!user) {
       throw new UserNotFoundError();
+    }
+    const storedOrganization = user._organizationId;
+    if (typeof storedOrganization !== 'string' || storedOrganization === '' || storedOrganization !== organizationClaim) {
+      throw new OrganizationRequiredError();
     }
     const credentialEpoch = credentialEpochOf(user);
     if (!sameGeneration(authorizingEpoch, credentialEpoch)) {

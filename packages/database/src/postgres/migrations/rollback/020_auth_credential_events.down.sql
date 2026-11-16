@@ -15,8 +15,9 @@
 -- Credential generations live in Neo4j. Since HAP-1285 a self-service password
 -- change (PUT /auth/password) also advances :User.credentialEpoch, and it
 -- writes no auth_credential_events row; its audit_log row (HAP-1368) is
--- best-effort and absent before HAP-1368 or for an actor without an
--- organization claim. A pre-HP1-S6 API build ignores the credential
+-- best-effort (absent before HAP-1368, or when the write failed after the
+-- change committed). Since HAP-1714 a user without an organization cannot make
+-- the change at all (403), so every other change has its row. A pre-HP1-S6 API build ignores the credential
 -- generation, so after any advance it would accept the user's revoked API
 -- keys (stored at an older generation) and pre-change tokens again. Reverting
 -- the image is therefore the step that can do harm, so the checks come first.

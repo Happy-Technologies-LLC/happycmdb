@@ -10,7 +10,8 @@ import { NextFunction, Request, Response, Router } from 'express';
 import { logger, errorClassFields } from '@cmdb/common';
 import {
   ApiKeyNotFoundError, AuthFailureError, AuthService, CredentialsChangedError, CurrentPasswordIncorrectError,
-  OrganizationRequiredError, PasswordNotAllowedError, type CredentialAuditOperation, type PasswordChangeOutcome, type UserProfile,
+  OrganizationChangedError, OrganizationRequiredError, PasswordNotAllowedError, type ApiKeyRevocation,
+  type CredentialAuditOperation, type PasswordChangeOutcome, type UserProfile,
 } from '../auth/auth.service';
 import { UserNotFoundError } from '../auth/types';
 import { ValidationMiddleware } from './middleware/validation.middleware';
@@ -518,10 +519,11 @@ export class AuthController {
    * AuthService.auditPasswordChange). Resolves true only when the row was written.
    */
   private auditCredentialAttempt(
-    req: AuthenticatedRequest, outcome: PasswordChangeOutcome, operation: CredentialAuditOperation, refusedBy?: RefusalBucket
+    req: AuthenticatedRequest, outcome: PasswordChangeOutcome, operation: CredentialAuditOperation, refusedBy?: RefusalBucket,
+    apiKeyRevocation?: ApiKeyRevocation
   ): Promise<boolean> {
     return this.authService.auditPasswordChange(
-      req.user!._userId, optionalRequestOrganizationId(req), req.ip, outcome, refusedBy, operation
+      req.user!._userId, optionalRequestOrganizationId(req), req.ip, outcome, refusedBy, operation, apiKeyRevocation
     );
   }
 
@@ -609,18 +611,19 @@ export class AuthController {
       refuseOrganizationRequired(res, userId);
       return;
     }
-    const audit = (outcome: PasswordChangeOutcome) => this.auditCredentialAttempt(req, outcome, 'password_change');
+    const audit = (outcome: PasswordChangeOutcome, apiKeyRevocation?: ApiKeyRevocation) =>
+      this.auditCredentialAttempt(req, outcome, 'password_change', undefined, apiKeyRevocation);
     try {
       const { currentPassword, newPassword } = req.body as {
         currentPassword: string;
         newPassword: string;
       };
       // HAP-1285: the change ended every session of the user; this device gets a new one.
-      const { _refreshToken, ...data } = await this.authService.changePassword(
+      const { _refreshToken, apiKeyRevocation, ...data } = await this.authService.changePassword(
         userId, currentPassword, newPassword, authorizingEpoch(req), organizationClaim
       );
       setRefreshCookie(res, _refreshToken);
-      await audit('success');
+      await audit('success', apiKeyRevocation);
 
       res.json({
         success: true,
@@ -637,7 +640,9 @@ export class AuthController {
         res.status(400).json({ success: false, error: 'Password Change Failed', message: 'Current password is incorrect' });
         return;
       }
-      if (error instanceof PasswordNotAllowedError || error instanceof CredentialsChangedError) {
+      // OrganizationChangedError (HAP-2061) is not audited: the claim's organization is not the user's any more.
+      const orgChanged = error instanceof OrganizationChangedError;
+      if (error instanceof PasswordNotAllowedError || (error instanceof CredentialsChangedError && !orgChanged)) {
         await audit(error instanceof PasswordNotAllowedError ? 'policy_failure' : 'rotation_lost');
       }
       if (credentialRefusal(res, error)) return;
@@ -670,14 +675,15 @@ export class AuthController {
       refuseOrganizationRequired(res, userId, 'revoke_other_sessions');
       return;
     }
-    const audit = (outcome: PasswordChangeOutcome) => this.auditCredentialAttempt(req, outcome, 'revoke_other_sessions');
+    const audit = (outcome: PasswordChangeOutcome, apiKeyRevocation?: ApiKeyRevocation) =>
+      this.auditCredentialAttempt(req, outcome, 'revoke_other_sessions', undefined, apiKeyRevocation);
     try {
       const { currentPassword } = req.body as { currentPassword: string };
-      const { _refreshToken, ...data } = await this.authService.revokeOtherSessions(
+      const { _refreshToken, apiKeyRevocation, ...data } = await this.authService.revokeOtherSessions(
         userId, currentPassword, authorizingEpoch(req), organizationClaim
       );
       setRefreshCookie(res, _refreshToken);
-      await audit('success');
+      await audit('success', apiKeyRevocation);
 
       res.json({
         success: true,
@@ -694,7 +700,8 @@ export class AuthController {
         res.status(400).json({ success: false, error: 'Session Revoke Failed', message: 'Current password is incorrect' });
         return;
       }
-      if (error instanceof CredentialsChangedError) {
+      // OrganizationChangedError (HAP-2061) is not audited: the claim's organization is not the user's any more.
+      if (error instanceof CredentialsChangedError && !(error instanceof OrganizationChangedError)) {
         await audit('rotation_lost');
       }
       if (credentialRefusal(res, error)) return;

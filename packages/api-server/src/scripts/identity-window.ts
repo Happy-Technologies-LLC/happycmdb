@@ -81,7 +81,7 @@ RETURN elementId(u) AS eid, u._id AS _id, u.id AS id,
        (coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaultPasswordSuspect, false)) AS marked,
        (coalesce(u._platformAdmin, false) = true OR coalesce(u.platformAdmin, false) = true) AS platformAdmin,
        coalesce(u._organizationId, u.organizationId) AS org,
-       u.scopes AS scopes, toInteger(coalesce(u.credentialEpoch, 0)) AS epoch`;
+       u.scopes AS scopes, coalesce(u.credentialEpoch, 0) AS epoch`;
 
 export const GRANT_HOLDERS_CYPHER = `
 MATCH (v:User) WHERE v._id IN $keys OR v.id IN $keys
@@ -322,11 +322,14 @@ export async function assignOrganization(
     }
   }
   // Only keys at exactly the user's current generation can authenticate (verifyApiKey compares for equality); older and newer rows are generation-dead.
-  const [keys] = (await sql.query(
+  // A stored generation that is not a safe Neo4j Integer (a Float, a string) refuses every key (mapCredentialEpoch yields NaN): none is counted.
+  const epoch = row['epoch'];
+  const generation = neo4j.isInt(epoch) && neo4j.integer.inSafeRange(epoch) ? neo4j.integer.toNumber(epoch) : null;
+  const [keys] = generation === null ? [undefined] : (await sql.query(
     'SELECT count(*) AS n FROM api_keys WHERE user_id = $1 AND enabled AND revoked_at IS NULL AND credential_epoch = $2',
-    [mappedId, toNumber(row['epoch'])]
+    [mappedId, generation]
   )).rows;
-  return { userId: mappedId, organizationId, outcome: observed === organizationId ? 'unchanged' : 'assigned', enabledApiKeys: toNumber(keys?.['n']) };
+  return { userId: mappedId, organizationId, outcome: observed === organizationId ? 'unchanged' : 'assigned', enabledApiKeys: generation === null ? 0 : toNumber(keys?.['n']) };
 }
 
 /** Validated before any store opens; the messages never echo a value. */

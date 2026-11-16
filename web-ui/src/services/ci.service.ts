@@ -104,6 +104,7 @@ export interface ImpactAnalysis {
   ci: CI;
   upstream: CI[];
   downstream: CI[];
+  /** GET /cis/:id/impact: min(upstream + downstream count / 10, 1), a 0-1 ratio. Multiply by 100 to show a percentage. */
   impact_score: number;
   affected_environments: Environment[];
 }

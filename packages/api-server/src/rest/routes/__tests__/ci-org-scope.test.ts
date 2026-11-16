@@ -21,6 +21,7 @@ import { randomBytes, randomUUID } from 'crypto';
 import { fork } from 'child_process';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import * as YAML from 'yamljs';
 import express from 'express';
 import request from 'supertest';
 import neo4j from 'neo4j-driver';
@@ -760,6 +761,57 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(res.body.data.downstream.map((ci: { id: string }) => ci.id)).toEqual(['ci-a-app']);
     expect(res.body.data.upstream).toEqual([]);
     expect(res.body.totalImpacted).toBe(1);
+  });
+
+  // HAP-2033: impact_score is min(totalImpacted / 10, 1) on a 0-1 scale, and openapi.yaml
+  // must declare that same range for the response the controller sends.
+  describe('GET /cis/:id/impact impact_score contract (HAP-2033)', () => {
+    const spec = YAML.load(join(__dirname, '../../../openapi/openapi.yaml'));
+    const score = spec.paths['/cis/{id}/impact'].get.responses['200'].content['application/json']
+      .schema.properties.data.properties.impact_score;
+    const impactScore = async (id: string) => {
+      const res = await request(app).get(`/api/v1/cis/${id}/impact`).set(AS_A);
+      expect(res.status).toBe(200);
+      return { score: res.body.data.impact_score as number, totalImpacted: res.body.totalImpacted as number };
+    };
+    const addDependents = (target: string, count: number) => {
+      for (let i = 0; i < count; i++) {
+        seedCI(`ci-a-dep-${i}`, ORG_A);
+        dependsOn(`ci-a-dep-${i}`, target);
+      }
+    };
+
+    it('is 0 with no impacted CIs', async () => {
+      seedCI('ci-a-alone', ORG_A);
+      expect(await impactScore('ci-a-alone')).toEqual({ score: 0, totalImpacted: 0 });
+    });
+
+    it('is the impacted count over 10 for a few impacted CIs, upstream and downstream both counted', async () => {
+      // ci-a-db: upstream none, downstream ci-a-app + 3 more.
+      addDependents('ci-a-db', 3);
+      expect(await impactScore('ci-a-db')).toEqual({ score: 0.4, totalImpacted: 4 });
+      // ci-a-app: upstream ci-a-db only.
+      expect(await impactScore('ci-a-app')).toEqual({ score: 0.1, totalImpacted: 1 });
+    });
+
+    it('reaches exactly 1 at 10 impacted CIs and stays at 1 beyond', async () => {
+      addDependents('ci-a-db', 9); // + ci-a-app = 10
+      expect(await impactScore('ci-a-db')).toEqual({ score: 1, totalImpacted: 10 });
+      addDependents('ci-a-db', 12); // 13 impacted
+      expect(await impactScore('ci-a-db')).toEqual({ score: 1, totalImpacted: 13 });
+    });
+
+    it('openapi.yaml declares the range the controller emits', async () => {
+      expect(score).toMatchObject({ type: 'number', minimum: 0, maximum: 1 });
+      seedCI('ci-a-alone', ORG_A);
+      addDependents('ci-a-db', 12);
+      for (const id of ['ci-a-alone', 'ci-a-app', 'ci-a-db']) {
+        const { score: value } = await impactScore(id);
+        expect(typeof value).toBe('number');
+        expect(value).toBeGreaterThanOrEqual(score.minimum);
+        expect(value).toBeLessThanOrEqual(score.maximum);
+      }
+    });
   });
 
   it('GET /cis/:id/dependencies and /relationships never hop through another org', async () => {

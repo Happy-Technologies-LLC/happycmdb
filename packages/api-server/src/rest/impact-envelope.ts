@@ -5,13 +5,22 @@ import { getPostgresClient } from '@cmdb/database';
 
 /**
  * HAP-2071: statement_timeout of the lineage anti-join, in milliseconds. A policy knob: `IMPACT_LINEAGE_TIMEOUT_MS`
- * (a positive integer) overrides the default; anything else falls back to it.
+ * (a positive integer no greater than `MAX_IMPACT_LINEAGE_TIMEOUT_MS`) overrides the default; anything else falls
+ * back to it.
  */
 export const IMPACT_LINEAGE_TIMEOUT_MS = 3000;
 
+/**
+ * HAP-2080: PostgreSQL stores statement_timeout as int4 milliseconds and rejects a larger value, which would fail
+ * every impact read with a 500. Above this bound the default applies instead.
+ */
+export const MAX_IMPACT_LINEAGE_TIMEOUT_MS = 2147483647;
+
 export function impactLineageTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   const configured = Number(env['IMPACT_LINEAGE_TIMEOUT_MS']);
-  return Number.isSafeInteger(configured) && configured > 0 ? configured : IMPACT_LINEAGE_TIMEOUT_MS;
+  return Number.isSafeInteger(configured) && configured > 0 && configured <= MAX_IMPACT_LINEAGE_TIMEOUT_MS
+    ? configured
+    : IMPACT_LINEAGE_TIMEOUT_MS;
 }
 
 /**

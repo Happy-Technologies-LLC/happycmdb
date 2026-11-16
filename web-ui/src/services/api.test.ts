@@ -73,6 +73,34 @@ describe('ApiService changePassword (HAP-1285, HAP-1211 H2)', () => {
   });
 });
 
+describe('ApiService revokeOtherSessions (HAP-1716)', () => {
+  const before = `before-${crypto.randomUUID()}`;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setToken(before);
+  });
+
+  it('posts only the current password and keeps this device signed in with the re-issued access token', async () => {
+    const reissued = `reissued-${crypto.randomUUID()}`;
+    const currentPassword = crypto.randomUUID();
+    request.post.mockResolvedValue({ data: { success: true, data: { _accessToken: reissued, _expiresIn: 900 } } });
+
+    await api.revokeOtherSessions(currentPassword);
+
+    expect(request.post).toHaveBeenCalledWith('/auth/sessions/revoke-others', { currentPassword });
+    expect(getToken()).toBe(reissued);
+    expect(localStorage.getItem('auth_token')).toBeNull();
+  });
+
+  it('a refusal rejects and keeps the current token', async () => {
+    request.post.mockRejectedValue(Object.assign(new Error('refused'), { response: { status: 400 } }));
+
+    await expect(api.revokeOtherSessions('wrong')).rejects.toThrow('refused');
+
+    expect(getToken()).toBe(before);
+  });
+});
+
 describe('ApiService user mapping (HAP-1911)', () => {
   beforeEach(() => vi.clearAllMocks());
   const base = { userId: 'u-1', username: 'alice', email: 'alice@example.com', role: 'operator' };

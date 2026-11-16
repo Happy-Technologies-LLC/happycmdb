@@ -40,10 +40,14 @@ export class JWTService {
    * tenant claim (omitted => no claim). AuthService.verifyToken replaces it
    * with the user's current organization on every request. `credentialEpoch`
    * becomes the `_cep` claim: the token is only accepted while it equals the
-   * user's current credential generation (HP1-S6).
+   * user's current credential generation (HP1-S6). `authTime` becomes the
+   * `_authTime` claim (HAP-1716): the login time of the session this token
+   * belongs to, now unless the caller passes the refresh token's own. It is the
+   * session-family id that bounds password guesses at revoke-other-sessions.
    */
   generateAccessToken(
-    userId: string, username: string, role: UserRole, organizationId?: string, credentialEpoch = 0
+    userId: string, username: string, role: UserRole, organizationId?: string, credentialEpoch = 0,
+    authTime = Math.floor(Date.now() / 1000)
   ): string {
     const payload: Omit<TokenPayload, 'iat' | 'exp' | 'iss' | 'aud'> = {
       _userId: userId,
@@ -52,6 +56,7 @@ export class JWTService {
       _type: 'access',
       _organizationId: organizationId,
       _cep: credentialEpoch,
+      _authTime: authTime,
     };
 
     return jwt.sign(payload, this.secret, {

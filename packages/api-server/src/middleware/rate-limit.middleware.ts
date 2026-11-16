@@ -102,6 +102,24 @@ export interface LimitOptions {
    */
   perUser?: boolean;
   /**
+   * HAP-1716 (step-up re-authentication that must stay reachable for the account's owner): the client bucket keys on
+   * req.ip as for perUser, plus a bucket keyed by the verified user AND the client address at endpoints.authAccount.
+   * Neither the shared per-user bucket nor the account-global one is used: both are spent from any address by whoever
+   * holds a session, which would lock the owner out of the very action meant to end that session. Exclusive with
+   * perUser and account.
+   */
+  perUserClient?: boolean;
+  /**
+   * HAP-1716 F1 (session-bound cap): also a bucket keyed by the verified user AND the session's login time (the
+   * `_authTime` claim, the session-family id: constant across refresh, new only after a fresh authentication), at
+   * endpoints.authAccount, i.e. the budget of PUT /password. It caps the password guesses one session can make from
+   * ALL addresses together, which the per-address buckets cannot. Another login of the same user has another
+   * `_authTime` and so another bucket: a thief spending this one cannot lock the owner's own session out. A token
+   * without the claim throws (failClosed answers 503); the route must refuse it with 401 before the limiter. Exclusive
+   * with perUser and account.
+   */
+  perSession?: boolean;
+  /**
    * Awaited just before the 429 is sent (cmdb#321: an audit row for a refused password change). It never changes the
    * response: a rejection is logged by class only and the same 429 follows.
    */
@@ -109,7 +127,7 @@ export interface LimitOptions {
 }
 
 /** The buckets a refusal can come from. */
-export type RefusalBucket = 'client' | 'account' | 'account-global' | 'user';
+export type RefusalBucket = 'client' | 'account' | 'account-global' | 'user' | 'user-client' | 'session';
 
 /**
  * Compare-and-shorten for a refusal claim: only while the key still holds the caller's token is its TTL cut to the
@@ -162,6 +180,12 @@ export class RateLimitMiddleware {
    * Create rate limiter for specific endpoint
    */
   limit(endpointType: keyof ConfigSchema['rateLimit']['endpoints'], options: LimitOptions = {}) {
+    if (options.perUserClient === true && (options.perUser === true || options.account !== undefined)) {
+      throw new Error('perUserClient is exclusive with perUser and account');
+    }
+    if (options.perSession === true && (options.perUser === true || options.account !== undefined)) {
+      throw new Error('perSession is exclusive with perUser and account');
+    }
     return async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
       if (!this.config.enabled) {
         return next();
@@ -184,7 +208,8 @@ export class RateLimitMiddleware {
       }
 
       // Calculate effective rate limit based on user tier; a per-user credential check keeps login's base budget
-      const tierMultiplier = options.perUser === true ? 1 : this.getTierMultiplier(req);
+      const tierMultiplier = options.perUser === true || options.perUserClient === true || options.perSession === true
+        ? 1 : this.getTierMultiplier(req);
       const effectiveMax = endpointConfig.max * tierMultiplier;
 
       const budget = { _max: effectiveMax, _windowMs: endpointConfig.windowMs };
@@ -384,7 +409,8 @@ export class RateLimitMiddleware {
 
   /**
    * Checks the client bucket, then (with options.account) the account+client and account-across-clients buckets, or
-   * (with options.perUser) the user bucket; answers 429 and returns false on the first one exhausted. A denied
+   * (with options.perUser) the user bucket, or (with options.perUserClient) the user+client bucket, and (with
+   * options.perSession) the user+session bucket; answers 429 and returns false on the first one exhausted. A denied
    * bucket leaves the later ones untouched.
    *
    * HAP-1795: only the client bucket (the first) is ever reported. A later bucket counts attempts at an account, the
@@ -400,7 +426,8 @@ export class RateLimitMiddleware {
     budget: RateLimitConfig,
     options: LimitOptions
   ): Promise<boolean> {
-    const identifier = options.perUser === true ? `ip:${this.getClientKeyAddress(req)}` : this.getIdentifier(req);
+    const keyedByAddress = options.perUser === true || options.perUserClient === true || options.perSession === true;
+    const identifier = keyedByAddress ? `ip:${this.getClientKeyAddress(req)}` : this.getIdentifier(req);
     const buckets: Array<{ key: string; identifier: string; budget: RateLimitConfig; name: RefusalBucket }> = [
       { key: `rate-limit:${endpointType}:${identifier}`, identifier, budget, name: 'client' },
     ];
@@ -439,6 +466,36 @@ export class RateLimitMiddleware {
         identifier: `user:${userId}`,
         budget: { _max: max, _windowMs: windowMs },
         name: 'user',
+      });
+    }
+    if (options.perUserClient === true) {
+      // HAP-1716: keyed by the user AND the client address, so an address that is not the owner's spends only its own
+      // buckets; only a holder of the user's session at the owner's address can spend this one. Mounted after
+      // authentication; a missing user throws, which failClosed answers with 503.
+      const userId = req.user?._userId;
+      if (!userId) throw new Error('perUserClient limiter reached without a verified user');
+      const address = this.getClientKeyAddress(req);
+      buckets.push({
+        key: `rate-limit:${endpointType}-user-client:${userId}:${address}`,
+        identifier: `user-client:${userId}:ip:${address}`,
+        budget: { _max: max, _windowMs: windowMs },
+        name: 'user-client',
+      });
+    }
+    if (options.perSession === true) {
+      // HAP-1716 F1: not keyed by client, so no number of addresses adds guesses; keyed by the login time, so the
+      // owner's other login keeps its own. A missing user or claim throws, which failClosed answers with 503 (never
+      // a fall back to the per-address buckets alone).
+      const userId = req.user?._userId;
+      const authTime = req.user?._authTime;
+      if (!userId || typeof authTime !== 'number' || !Number.isSafeInteger(authTime)) {
+        throw new Error('perSession limiter reached without a verified session');
+      }
+      buckets.push({
+        key: `rate-limit:${endpointType}-session:${userId}:${authTime}`,
+        identifier: `session:${userId}:${authTime}`,
+        budget: { _max: max, _windowMs: windowMs },
+        name: 'session',
       });
     }
 

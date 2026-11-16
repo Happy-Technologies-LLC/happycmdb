@@ -73,6 +73,12 @@ export interface GuardedPasswordRehash extends GuardedUserWrite {
   newHash: string;
 }
 
+/** Revoke-other-sessions write (HAP-1716): the generation advances, the hash is untouched. */
+export interface GuardedEpochBump extends GuardedUserWrite {
+  /** Hash the current password was verified against; the write lands only while it is still stored. */
+  readHash: string;
+}
+
 export interface CredentialEventInput {
   userId: string;
   event: 'default_marker_set_login';
@@ -95,6 +101,12 @@ export interface AuthRepository {
    * generation, is unmarked and stores `readHash`. Never changes the generation. False when nothing was written.
    */
   rehashPasswordGuarded(write: GuardedPasswordRehash): Promise<boolean>;
+  /**
+   * Advances the credential generation by exactly one, leaving the hash as it is, only while the node still has the
+   * authorizing generation, is unmarked, holds an organization and stores `readHash` (HAP-1716). False when nothing
+   * was written.
+   */
+  bumpCredentialEpochGuarded(write: GuardedEpochBump): Promise<boolean>;
   /** Disables the account only while the authorizing generation is current and it is unmarked. */
   disableUserGuarded(write: GuardedUserWrite): Promise<boolean>;
   /**
@@ -161,6 +173,13 @@ export const PASSWORD_CHANGE_OUTCOMES = [
   'success', 'wrong_password', 'policy_failure', 'rotation_lost', 'user_not_found', 'rate_limited',
 ] as const;
 export type PasswordChangeOutcome = (typeof PASSWORD_CHANGE_OUTCOMES)[number];
+
+/** The self-service credential operations that write an audit row per attempt (`metadata.operation`). */
+export type CredentialAuditOperation = 'password_change' | 'revoke_other_sessions';
+const CREDENTIAL_AUDIT_LABELS: Record<CredentialAuditOperation, string> = {
+  password_change: 'Password change',
+  revoke_other_sessions: 'Session revoke',
+};
 
 /**
  * HAP-1711: the client address for an audit row, only when it is a bare IPv4/IPv6 literal that Postgres `inet` stores
@@ -306,11 +325,14 @@ export class AuthService {
 
       await this.repository.updateUserLastLogin(user._id);
       await this.rehashStoredPassword(user, password, credentialEpoch);
-      // Tenant claim comes from the user record, never the request.
+      // Tenant claim comes from the user record, never the request. One login time for both tokens (HAP-1716).
+      const authTime = Math.floor(Date.now() / 1000);
       const accessToken = this.jwtService.generateAccessToken(
-        user._id, user._username, user._role, user._organizationId, credentialEpoch
+        user._id, user._username, user._role, user._organizationId, credentialEpoch, authTime
       );
-      const refreshToken = this.jwtService.generateRefreshToken(user._id, user._username, user._role, credentialEpoch);
+      const refreshToken = this.jwtService.generateRefreshToken(
+        user._id, user._username, user._role, credentialEpoch, authTime
+      );
       return {
         _accessToken: accessToken,
         _refreshToken: refreshToken,
@@ -359,9 +381,10 @@ export class AuthService {
         throw new AuthFailureError('revoked');
       }
 
-      // New tokens from the current user record (org re-read, not copied from the old token); the login time is kept.
+      // New tokens from the current user record (org re-read, not copied from the old token); the login time is kept,
+      // in the access token too (HAP-1716: it is the session-family id, so it must never restart on refresh).
       const accessToken = this.jwtService.generateAccessToken(
-        user._id, user._username, user._role, user._organizationId, credentialEpoch
+        user._id, user._username, user._role, user._organizationId, credentialEpoch, authTime
       );
       const newRefreshToken = this.jwtService.generateRefreshToken(
         user._id, user._username, user._role, credentialEpoch, authTime
@@ -416,6 +439,7 @@ export class AuthService {
         _tier: payload._tier,
         _organizationId: user._organizationId,
         _cep: credentialEpoch,
+        _authTime: payload._authTime,
         iat: payload.iat,
         exp: payload.exp,
         iss: payload.iss,
@@ -668,11 +692,73 @@ export class AuthService {
       logger.warn('Password change API key revocation failed', errorClassFields(error));
     }
     // A new session for this device at the new generation; a fresh authentication, so its login time is now.
+    const authTime = Math.floor(Date.now() / 1000);
     return {
       _accessToken: this.jwtService.generateAccessToken(
-        user._id, user._username, user._role, user._organizationId, nextEpoch
+        user._id, user._username, user._role, user._organizationId, nextEpoch, authTime
       ),
-      _refreshToken: this.jwtService.generateRefreshToken(user._id, user._username, user._role, nextEpoch),
+      _refreshToken: this.jwtService.generateRefreshToken(user._id, user._username, user._role, nextEpoch, authTime),
+      _expiresIn: this.jwtService.getTokenExpiresIn('access'),
+      _user: { _id: user._id, _username: user._username, _role: user._role },
+    };
+  }
+
+  /**
+   * HAP-1716: ends every other session and API key of the user without changing the password, behind a step-up: the
+   * current password is re-entered and verified. Same order as changePassword: unknown user, then a stored user
+   * without an organization (or whose stored organization is not the request's claim; the attempt could not be
+   * audited) is refused with OrganizationRequiredError, then the authorizing generation, then the password. The write
+   * is a compare-and-set that advances the generation by exactly one and leaves the hash and the marker alone, so a
+   * request authorized before an operator rotation or a concurrent change lands nowhere. The generation bump is the
+   * existing mechanism that ends sessions and API keys together (HAP-1285); the API-key rows are then revoked as in
+   * changePassword. Returns a new session for the caller's device at the new generation: the password was just
+   * re-entered, so its login time is now.
+   */
+  async revokeOtherSessions(
+    userId: string,
+    currentPassword: string,
+    authorizingEpoch: number,
+    organizationClaim: string
+  ): Promise<LoginResponse> {
+    const user = await this.repository.findUserById(userId);
+    if (!user) {
+      throw new UserNotFoundError();
+    }
+    const storedOrganization = user._organizationId;
+    if (typeof storedOrganization !== 'string' || storedOrganization === '' || storedOrganization !== organizationClaim) {
+      throw new OrganizationRequiredError();
+    }
+    const credentialEpoch = credentialEpochOf(user);
+    if (!sameGeneration(authorizingEpoch, credentialEpoch)) {
+      throw new CredentialsChangedError();
+    }
+
+    if (!(await this.verifyPassword(currentPassword, user._passwordHash))) {
+      throw new CurrentPasswordIncorrectError();
+    }
+
+    const written = await this.repository.bumpCredentialEpochGuarded({
+      userId, elementId: user._elementId, credentialEpoch, readHash: user._passwordHash,
+    });
+    if (!written) {
+      throw new CredentialsChangedError();
+    }
+    // The writer advanced the generation by exactly one (in Cypher, guarded by `credentialEpoch`).
+    const nextEpoch = credentialEpoch + 1;
+    // Best-effort, as in changePassword: the generation already refuses every older key and the bump has committed.
+    try {
+      await this.repository.revokeApiKeysBelowEpoch(user._id, nextEpoch);
+    } catch (error) {
+      logger.warn('Session revoke API key revocation failed', errorClassFields(error));
+    }
+    // Only a correct password reaches here, so this restart of the session family (a new login time, a fresh
+    // revoke-other-sessions budget) is intended: a wrong guess returns above and never yields a new login time.
+    const authTime = Math.floor(Date.now() / 1000);
+    return {
+      _accessToken: this.jwtService.generateAccessToken(
+        user._id, user._username, user._role, user._organizationId, nextEpoch, authTime
+      ),
+      _refreshToken: this.jwtService.generateRefreshToken(user._id, user._username, user._role, nextEpoch, authTime),
       _expiresIn: this.jwtService.getTokenExpiresIn('access'),
       _user: { _id: user._id, _username: user._username, _role: user._role },
     };
@@ -702,29 +788,30 @@ export class AuthService {
   }
 
   /**
-   * HAP-1368: one audit_log row for a self-service password change attempt: the verified user, the client address,
-   * the outcome and the actor's organization claim; never a password, hash or token. A rate_limited row also names
-   * the refusing bucket (`metadata.bucket`, a fixed code). Best-effort: the outcome is already decided (a changed
-   * password stays changed), so a failed write or a missing organization (tenancy is never inferred) logs fixed text
-   * and returns false; true means the row was written.
+   * HAP-1368: one audit_log row for a self-service credential attempt (`operation`: the password change, or HAP-1716's
+   * revoke of other sessions): the verified user, the client address, the outcome and the actor's organization claim;
+   * never a password, hash or token. A rate_limited row also names the refusing bucket (`metadata.bucket`, a fixed
+   * code). Best-effort: the outcome is already decided (a changed password stays changed), so a failed write or a
+   * missing organization (tenancy is never inferred) logs fixed text and returns false; true means the row was written.
    */
   async auditPasswordChange(
     userId: string, organizationId: string | null, ipAddress: string | undefined, outcome: PasswordChangeOutcome,
-    refusedBy?: RefusalBucket
+    refusedBy?: RefusalBucket, operation: CredentialAuditOperation = 'password_change'
   ): Promise<boolean> {
+    const label = CREDENTIAL_AUDIT_LABELS[operation];
     if (organizationId === null) {
-      logger.error('Password change not audited: the actor has no organization claim');
+      logger.error(`${label} not audited: the actor has no organization claim`);
       return false;
     }
     try {
       await this.repository.recordAudit({
         entity_type: 'USER', entity_id: userId, action: 'UPDATE', actor: userId, actor_type: 'user', changes: [],
-        metadata: { operation: 'password_change', outcome, ...(refusedBy === undefined ? {} : { bucket: refusedBy }) },
+        metadata: { operation, outcome, ...(refusedBy === undefined ? {} : { bucket: refusedBy }) },
         ip_address: auditClientAddress(ipAddress),
       }, organizationId);
       return true;
     } catch {
-      logger.error('Password change audit write failed');
+      logger.error(`${label} audit write failed`);
       return false;
     }
   }

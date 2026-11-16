@@ -152,7 +152,7 @@ curl -X GET https://cmdb.example.com/api/v1/cis \
 
 ## Rate Limiting
 
-The API mounts no global rate limiter: `ApiServer.setupMiddleware` (`rest/server.ts`) applies none, so a request outside the routes below is not rate-limited by the API itself. Limiters sit on three auth routes registered in `AuthController`, and a reverse proxy can add a global limit (see [Proxy limits](#proxy-limits)).
+The API mounts no global rate limiter: `ApiServer.setupMiddleware` (`rest/server.ts`) applies none, so a request outside the routes below is not rate-limited by the API itself. Limiters sit on four auth routes registered in `AuthController`, and a reverse proxy can add a global limit (see [Proxy limits](#proxy-limits)).
 
 ### Rate Limit Rules
 
@@ -160,6 +160,7 @@ The API mounts no global rate limiter: `ApiServer.setupMiddleware` (`rest/server
 |-------|---------|-----------------------------|----------------------------------|
 | `POST /api/v1/auth/login` | `RateLimitMiddleware.limit('auth', …)`: per client address, per account + client address, and per account across all clients | `endpoints.auth` (default 20 per 3600000 ms), `endpoints.authAccount` (5 per 900000 ms), `endpoints.authAccountGlobal` (20 per 900000 ms; `max: 0` turns it off) | fail closed: fixed `503`, `Cache-Control: no-store` |
 | `PUT /api/v1/auth/password` | `RateLimitMiddleware.limit('auth', { perUser: true, … })`: per client address and per verified user | `endpoints.auth` and `endpoints.authAccount` | fail closed: fixed `503`, `Cache-Control: no-store` |
+| `POST /api/v1/auth/sessions/revoke-others` | `RateLimitMiddleware.limit('auth', { perUserClient: true, perSession: true, … })`: per client address, per verified user AND client address, and per verified user AND session (the access token's `_authTime`, constant across refresh; across all client addresses) (HAP-1716). A token without `_authTime` is refused `401` before the limiter | `endpoints.auth` and `endpoints.authAccount` (the last two buckets) | fail closed: fixed `503`, `Cache-Control: no-store` |
 | `POST /api/v1/auth/refresh` | separate `auth-refresh` bucket: `RateLimitMiddleware.custom(endpointBudget('rest'), 'auth-refresh')`; it never uses up login's budget | the REST budget, `endpoints.rest` (default 1000 per 3600000 ms) | fail open: the request is let through |
 
 The refresh limiter is not mounted when `rateLimit.endpoints.rest.max` is `0`. `endpoints.graphql`, `endpoints.health`, `endpoints.discovery` and `endpoints.admin` exist in the config schema, but no route mounts a limiter on them.

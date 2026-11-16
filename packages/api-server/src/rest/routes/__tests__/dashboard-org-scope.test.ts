@@ -368,7 +368,7 @@ const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (userId: string, organizationId?: string) => {
   const user = USERS[userId] ?? USERS['user-a']!;
   return {
-    Authorization: `Bearer ${jwt.generateAccessToken(userId, user._username, user._role as UserRole, organizationId)}`,
+    Authorization: `Bearer ${jwt.generateAccessToken(userId, user._username, user._role as UserRole, organizationId, 0, Math.floor(Date.now() / 1000))}`,
   };
 };
 let AS_A = bearer('user-a', ORG_A);

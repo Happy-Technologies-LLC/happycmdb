@@ -39,7 +39,7 @@ import { CredentialCRUDService, DISCOVERY_CREDENTIAL_PROTOCOLS } from '../../../
 const [A, FIXED, MARK] = ['11111111-1111-4111-8111-111111111111', 'Invalid SSH port', rnd()];
 const ssh = (port?: unknown) => ({ username: 'svc', password: MARK, ...(port === undefined ? {} : { port }) });
 const app = express().use(express.json()).use('/api/v1', getAuthMiddleware().authenticate(), unifiedCredentialRoutes);
-const auth = { Authorization: `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken('a', 'alice', 'operator', A)}` };
+const auth = { Authorization: `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken('a', 'alice', 'operator', A, 0, Math.floor(Date.now() / 1000))}` };
 const crud = new CredentialCRUDService(pool as unknown as Pool);
 const row = async (id: string) => (await sql('SELECT credentials::text AS c, validation_status, last_validated_at FROM credentials WHERE id = $1', [id]))[0];
 const post = (credentials: object, protocol: string = DISCOVERY_CREDENTIAL_PROTOCOLS[0]) => request(app).post('/api/v1/credentials').set(auth).send({ name: rnd(), protocol, scope: 'ssh', credentials });

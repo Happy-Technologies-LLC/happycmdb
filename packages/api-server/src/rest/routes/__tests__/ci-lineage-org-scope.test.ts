@@ -133,7 +133,7 @@ function schemaDdl(): string {
 const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (userId: string) => {
   const user = USERS[userId]!;
-  return { Authorization: `Bearer ${jwt.generateAccessToken(userId, user._username, user._role as UserRole, user._organizationId)}` };
+  return { Authorization: `Bearer ${jwt.generateAccessToken(userId, user._username, user._role as UserRole, user._organizationId, 0, Math.floor(Date.now() / 1000))}` };
 };
 const AS_B = bearer('user-b');
 const AS_ADMIN_B = bearer('admin-b');

@@ -49,7 +49,7 @@ import { unifiedCredentialRoutes } from '../unified-credential.routes';
 
 const [A, GENERIC, MARK] = ['11111111-1111-4111-8111-111111111111', 'Credential validation failed', rnd()];
 const app = express().use(express.json()).use('/api/v1', getAuthMiddleware().authenticate(), unifiedCredentialRoutes);
-const auth = { Authorization: `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken('a', 'alice', 'operator', A)}` };
+const auth = { Authorization: `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken('a', 'alice', 'operator', A, 0, Math.floor(Date.now() / 1000))}` };
 const validate = (id: string) => request(app).post(`/api/v1/credentials/${id}/validate`).set(auth);
 const insert = (id: string, stored: unknown) => sql(`INSERT INTO credentials (id, name, protocol, scope, credentials, created_by, organization_id) VALUES ($1, 'stored', 'ssh_password', 'ssh', $2, 'a', $3)`, [id, JSON.stringify(stored), A]);
 // Serialized log output only: the strings that reach stdout/stderr or the console, never the arguments handed to logger.error.

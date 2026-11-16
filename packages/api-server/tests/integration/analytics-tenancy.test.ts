@@ -34,7 +34,7 @@ app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/analytics', analyticsRoutes);
 const auth = (key: keyof typeof users) => {
   const user = users[key];
-  return { authorization: `Bearer ${jwt.generateAccessToken(user._id, user._username, user._role, '_organizationId' in user ? user._organizationId : undefined)}` };
+  return { authorization: `Bearer ${jwt.generateAccessToken(user._id, user._username, user._role, '_organizationId' in user ? user._organizationId : undefined, 0, Math.floor(Date.now() / 1000))}` };
 };
 const cypher = async (query: string, params: Record<string, unknown> = {}) => {
   const session = graph.getSession();

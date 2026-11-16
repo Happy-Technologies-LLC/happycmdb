@@ -114,7 +114,7 @@ import type { GraphQLContext } from '../../../graphql/resolvers';
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (id: string, forgedOrg?: string) => ({
-  Authorization: `Bearer ${jwt.generateAccessToken(id, users[id]!._username, users[id]!._role, forgedOrg)}`,
+  Authorization: `Bearer ${jwt.generateAccessToken(id, users[id]!._username, users[id]!._role, forgedOrg, 0, Math.floor(Date.now() / 1000))}`,
 });
 const apiKey = () => ({ [loadConfig().auth.apiKeys.headerName]: API_KEY_A });
 const savedKey = apiKeys[createHash('sha256').update(API_KEY_A).digest('hex')]!;

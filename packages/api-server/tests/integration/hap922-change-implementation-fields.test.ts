@@ -37,7 +37,7 @@ app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/itil', itilRoutes);
 const auth = (user: keyof typeof users) => ({ authorization: `Bearer ${jwt.generateAccessToken(users[user]._id,
-  users[user]._username, users[user]._role, users[user]._organizationId)}` });
+  users[user]._username, users[user]._role, users[user]._organizationId, 0, Math.floor(Date.now() / 1000))}` });
 const rows = async (text: string, params: unknown[] = []) => (await sql.query(text, params)).rows;
 const [restOwn, gqlOwn, foreign, bounds] = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
 const snapshot = () => rows('SELECT * FROM itil_changes WHERE organization_id = ANY($1::uuid[]) ORDER BY id', [[A, B]]);

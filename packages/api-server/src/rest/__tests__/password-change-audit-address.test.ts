@@ -184,7 +184,7 @@ function mount(limiter: RateLimitMiddleware) {
 }
 const app = mount({ limit: pass, custom: pass, endpointBudget: () => ({ _max: 1, _windowMs: 1 }) } as unknown as RateLimitMiddleware);
 const limitedApp = mount(realLimiter);
-const token = new JWTService(authConfig.jwt as any).generateAccessToken('user-1', 'alice', 'operator', ORG);
+const token = new JWTService(authConfig.jwt as any).generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000));
 
 const wrongPassword = (clientAddress: string) => request(app).put('/api/v1/auth/password')
   .set({ Authorization: `Bearer ${token}`, 'X-Forwarded-For': clientAddress })
@@ -408,7 +408,7 @@ describe('rate_limited rows: the first refusal per user and refusing bucket per 
   beforeEach(() => { now = Date.now(); clock = jest.spyOn(Date, 'now').mockImplementation(() => now); });
   afterEach(() => { clock.mockRestore(); });
 
-  const tokenNow = () => new JWTService(authConfig.jwt as any).generateAccessToken('user-1', 'alice', 'operator', ORG);
+  const tokenNow = () => new JWTService(authConfig.jwt as any).generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000));
   const attempt = (target: express.Express, address: string, bearer = token) => request(target).put('/api/v1/auth/password')
     .set({ Authorization: `Bearer ${bearer}`, 'X-Forwarded-For': address })
     .send({ currentPassword: randomUUID(), newPassword: randomUUID() });
@@ -632,7 +632,7 @@ describe('rate_limited rows: the first refusal per user and refusing bucket per 
     const ORG_B = '9a1d3c7e-6b24-4f08-8e35-0c7d2b9f4a16';
     const CLAIM_1 = 'rate-limit:auth-user-refused:user-1';
     const CLAIM_2 = 'rate-limit:auth-user-refused:user-2';
-    const tokenTwo = () => new JWTService(authConfig.jwt as any).generateAccessToken('user-2', 'bob', 'operator', ORG_B);
+    const tokenTwo = () => new JWTService(authConfig.jwt as any).generateAccessToken('user-2', 'bob', 'operator', ORG_B, 0, Math.floor(Date.now() / 1000));
     beforeEach(() => {
       repository.extraUsers = [{ ...repository.user, _id: 'user-2', _username: 'bob', _email: 'bob@example.com', _organizationId: ORG_B } as User];
     });

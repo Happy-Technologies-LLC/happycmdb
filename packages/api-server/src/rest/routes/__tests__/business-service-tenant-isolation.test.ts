@@ -192,11 +192,11 @@ describe('N1: the setup guard refuses a superuser or table-owner session', () =>
 
 defineA1RouteSuite({
   app, router: businessServiceRoutes, offeringRouter: serviceOfferingRoutes, rows: db.rows,
-  tokenForT: () => jwt.generateAccessToken('user-t', 'tess', 'operator', T),
+  tokenForT: () => jwt.generateAccessToken('user-t', 'tess', 'operator', T, 0, Math.floor(Date.now() / 1000)),
 });
 // HAP-1425 (PoR S4): the C1 list and the consumer principals, on the same seed and login.
 defineC1ConsumerSuite({
   app, router: businessServiceRoutes, offeringRouter: serviceOfferingRoutes, rows: db.rows,
-  tokenFor: tenant => tenant === T ? jwt.generateAccessToken('user-t', 'tess', 'operator', T)
-    : jwt.generateAccessToken('user-t2', 'tom', 'operator', T2),
+  tokenFor: tenant => tenant === T ? jwt.generateAccessToken('user-t', 'tess', 'operator', T, 0, Math.floor(Date.now() / 1000))
+    : jwt.generateAccessToken('user-t2', 'tom', 'operator', T2, 0, Math.floor(Date.now() / 1000)),
 });

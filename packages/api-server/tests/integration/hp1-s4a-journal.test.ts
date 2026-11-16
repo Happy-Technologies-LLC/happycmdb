@@ -66,7 +66,7 @@ app.use('/api/v1/impact', impactRoutes);
 app.use('/api/v1/business-services', businessServiceRoutes);
 app.use('/api/v1/architecture', architectureRoutes);
 const auth = (user: User) => ({ authorization: `Bearer ${jwt.generateAccessToken(users[user]._id,
-  users[user]._username, users[user]._role, users[user]._organizationId)}` });
+  users[user]._username, users[user]._role, users[user]._organizationId, 0, Math.floor(Date.now() / 1000))}` });
 const api = (user: User) => ({
   get: (path: string) => request(app).get(`/api/v1${path}`).set(auth(user)),
   delete: (path: string) => request(app).delete(`/api/v1${path}`).set(auth(user)),

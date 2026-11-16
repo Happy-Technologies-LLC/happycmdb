@@ -127,7 +127,7 @@ beforeEach(() => {
   app = express();
   app.use(express.json());
   app.use('/api/v1/auth', controller.getRouter());
-  token = new JWTService(authConfig.jwt as any).generateAccessToken('user-1', 'alice', 'operator');
+  token = new JWTService(authConfig.jwt as any).generateAccessToken('user-1', 'alice', 'operator', undefined, 0, Math.floor(Date.now() / 1000));
 });
 
 describe('PUT /profile when the user node vanishes mid-update (HAP-1767)', () => {

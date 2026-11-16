@@ -46,7 +46,7 @@ app.use('/api/v1/drift', driftRoutes);
 app.use('/api/v1/impact', impactRoutes);
 const auth = (key: keyof typeof users) => {
   const user = users[key];
-  return { authorization: `Bearer ${jwt.generateAccessToken(user._id, user._username, user._role, user._organizationId)}` };
+  return { authorization: `Bearer ${jwt.generateAccessToken(user._id, user._username, user._role, user._organizationId, 0, Math.floor(Date.now() / 1000))}` };
 };
 const run = async (cypher: string, params: Record<string, unknown> = {}) => {
   const session = graph.getSession();

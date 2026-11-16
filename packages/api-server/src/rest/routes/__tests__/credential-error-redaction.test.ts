@@ -66,7 +66,7 @@ import { CredentialCRUDService } from '../../../../../database/src/postgres/cred
 const migrations = join(__dirname, '../../../../../database/src/postgres/migrations');
 const app = express().use(express.json()).use('/api/v1', getAuthMiddleware().authenticate(), unifiedCredentialRoutes);
 const jwt = new JWTService(loadConfig().auth.jwt);
-const as = (who: string) => ({ Authorization: `Bearer ${jwt.generateAccessToken(who, identities[who]!._username, identities[who]!._role, A)}` });
+const as = (who: string) => ({ Authorization: `Bearer ${jwt.generateAccessToken(who, identities[who]!._username, identities[who]!._role, A, 0, Math.floor(Date.now() / 1000))}` });
 const encrypt = (plain: string) => getEncryptionService().encrypt(plain) as unknown as Record<string, string>;
 
 // A stored secret that must never reach a logger, and stored values that cannot be decoded. The non-JSON plaintext is

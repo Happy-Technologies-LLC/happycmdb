@@ -86,7 +86,7 @@ if (process.env['HAP1562_ACCEPTANCE'] !== '1') {
     app.use('/api/v1/cis', ciRoutes);
     app.use('/api/v1/business-services', businessServiceRoutes);
     app.use('/api/v1/service-offerings', serviceOfferingRoutes);
-    const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(USER._id, USER._username, 'admin', ORG);
+    const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(USER._id, USER._username, 'admin', ORG, 0, Math.floor(Date.now() / 1000));
     api = { app, token, database };
   }, 180000);
   afterAll(async () => {

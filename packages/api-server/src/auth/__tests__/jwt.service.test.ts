@@ -32,6 +32,31 @@ describe('JWTService refresh tokens (HAP-1297)', () => {
   });
 
   it('access tokens are unchanged: no jti', () => {
-    expect(jwt.decode(service.generateAccessToken('user-1', 'alice', 'operator'))).not.toHaveProperty('jti');
+    expect(jwt.decode(service.generateAccessToken('user-1', 'alice', 'operator', undefined, 0, 1_700_000_000))).not.toHaveProperty('jti');
+  });
+});
+
+describe('JWTService login time (HAP-2077)', () => {
+  const secret = randomBytes(32).toString('hex');
+  const service = new JWTService({
+    secret, accessTokenExpiresIn: '15m', refreshTokenExpiresIn: '7d', issuer: 'cmdb-test', audience: 'cmdb-test-api',
+  } as never);
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('both generators embed exactly the login time passed, not the issue time', () => {
+    jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    const olderLogin = 1_699_000_000;
+
+    const access = service.verifyToken(service.generateAccessToken('u1', 'alice', 'operator', 'org-1', 4, olderLogin));
+    const refresh = service.verifyToken(service.generateRefreshToken('u1', 'alice', 'operator', 4, olderLogin));
+
+    for (const claims of [access, refresh]) {
+      expect(claims._authTime).toBe(olderLogin);
+      expect(claims.iat).toBe(1_700_000_000);
+      expect(claims._authTime).not.toBe(claims.iat);
+      expect(claims._cep).toBe(4);
+    }
+    expect(access._organizationId).toBe('org-1');
   });
 });

@@ -105,7 +105,7 @@ app.use('/api/v1/service-offerings', serviceOfferingRoutes);
 const jwt = new JWTService(loadConfig().auth.jwt);
 // Every request also carries a forged actor header; only the verified token subject may be recorded.
 const headers = (user: string) => ({ 'x-actor': 'forged-admin', authorization: `Bearer ${jwt.generateAccessToken(
-  USERS[user]!._id, USERS[user]!._username, USERS[user]!._role, USERS[user]!._organizationId)}` });
+  USERS[user]!._id, USERS[user]!._username, USERS[user]!._role, USERS[user]!._organizationId, 0, Math.floor(Date.now() / 1000))}` });
 const BASE = { name: 'Payroll run', service_classification: 'application', tbm_tower: 'application', business_criticality: 'high' };
 const NOT_FOUND = { success: false, error: 'Business service not found' };
 const OWNER = 'idp|7f3c2a10-owner-alice';

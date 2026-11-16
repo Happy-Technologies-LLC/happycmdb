@@ -294,7 +294,12 @@ function sql(statement: string, params: unknown[] = []): Promise<unknown[]> {
 // after that timeout; with no timeout set it runs to completion.
 let lineageStallMs = 0;
 let statementTimeoutMs = 0;
-let openTransactions = 0;
+// The harness runs the PRODUCTION `PostgresClient.transaction` (BEGIN / COMMIT, ROLLBACK on error, release in a
+// finally) over a fake pool whose connect() hands out a recording client; PGlite answers its statements.
+interface Checkout { statements: string[]; timeouts: number[]; releases: number }
+const checkouts: Checkout[] = [];
+const { PostgresClient: ProductionPostgresClient } = jest.requireActual<
+  typeof import('../../../../../database/src/postgres/client')>('../../../../../database/src/postgres/client');
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 async function appSql(statement: string, params: unknown[] = []): Promise<unknown[]> {
   assertAppStatement(statement);
@@ -316,22 +321,28 @@ const pg = {
     query: (statement: string, params: unknown[] = []) => pg.query(statement, params),
     release: () => undefined,
   }),
-  transaction: async <T>(callback: (client: { query: typeof pg.query }) => Promise<T>): Promise<T> => {
-    await appSql('BEGIN');
-    openTransactions++;
-    try {
-      const result = await callback(pg);
-      await appSql('COMMIT');
-      return result;
-    } catch (error) {
-      await appSql('ROLLBACK');
-      throw error;
-    } finally {
-      openTransactions--;
-      statementTimeoutMs = 0; // SET LOCAL ends with the transaction
-    }
+  transaction: async <T>(callback: (client: { query: typeof pg.query }) => Promise<T>): Promise<T> =>
+    (await productionClient.transaction(callback as Parameters<typeof productionClient.transaction>[0])) as T,
+};
+const fakePool = {
+  connect: async () => {
+    const checkout: Checkout = { statements: [], timeouts: [], releases: 0 };
+    checkouts.push(checkout);
+    return {
+      query: (statement: string, params: unknown[] = []) => {
+        checkout.statements.push(statement);
+        if (statement.startsWith(`SELECT set_config('statement_timeout'`)) checkout.timeouts.push(Number(params[0]));
+        return pg.query(statement, params);
+      },
+      release: () => {
+        checkout.releases++;
+        statementTimeoutMs = 0; // SET LOCAL ends with the transaction
+      },
+    };
   },
 };
+const productionClient = Object.assign(Object.create(ProductionPostgresClient.prototype), { pool: fakePool }) as
+  InstanceType<typeof ProductionPostgresClient>;
 jest.mock('../../../../../database/src/postgres/client', () => ({ getPostgresClient: () => pg }));
 jest.mock('@cmdb/database', () => ({
   ...jest.requireActual<object>('@cmdb/database/journal/journal'),
@@ -372,7 +383,7 @@ import { getImpactPredictionEngine } from '@cmdb/ai-ml-engine';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { ciRoutes } from '../ci.routes';
-import { IMPACT_LINEAGE_TIMEOUT_MS, impactLineageTimeoutMs } from '../../impact-envelope';
+import { IMPACT_LINEAGE_TIMEOUT_MS, MAX_IMPACT_LINEAGE_TIMEOUT_MS, impactLineageTimeoutMs } from '../../impact-envelope';
 import { itilRoutes } from '../itil.routes';
 import { driftRoutes, impactRoutes } from '../drift-impact.routes';
 import { analyticsRoutes } from '../analytics.routes';
@@ -915,6 +926,12 @@ describe('/api/v1/cis tenant scoping', () => {
         lineageStallMs = stallMs;
       };
       const NO_ENVELOPE = ['basis', 'runtime_blast_radius', 'coverage'];
+      beforeEach(() => { checkouts.length = 0; });
+      const lineageCheckouts = () => checkouts.filter(({ statements }) => statements.some(s => s.includes('ci_source_lineage')));
+      const settled = ({ statements, releases }: Checkout) => ({
+        statements: statements.map(s => (s.startsWith('SELECT set_config') ? 'set_config' : s.includes('ci_source_lineage') ? 'lineage' : s)),
+        releases,
+      });
 
       it.each([
         ['GET /cis/:id/impact', '/api/v1/cis/ci-a-db/impact'],
@@ -934,7 +951,8 @@ describe('/api/v1/cis tenant scoping', () => {
           for (const key of NO_ENVELOPE) expect(res.body).not.toHaveProperty(key);
           expect(JSON.stringify(res.body)).not.toMatch(/ci-a-/);
           expect(Date.now() - started).toBeLessThan(1500); // bounded by the timeout, not by the slow query
-          expect(openTransactions).toBe(0);
+          // The production transaction helper rolled back (never committed) and released the connection exactly once.
+          expect(lineageCheckouts().map(settled)).toEqual([{ statements: ['BEGIN', 'set_config', 'lineage', 'ROLLBACK'], releases: 1 }]);
         } finally {
           engine.mockRestore();
         }
@@ -948,15 +966,26 @@ describe('/api/v1/cis tenant scoping', () => {
 
         expect(res.status).toBe(200);
         expect(res.body.coverage).toMatchObject({ ci_nodes_in_scope: 2, unreported_ci_ids: ['ci-a-db'] });
-        expect(openTransactions).toBe(0);
+        expect(lineageCheckouts().map(settled)).toEqual([{ statements: ['BEGIN', 'set_config', 'lineage', 'COMMIT'], releases: 1 }]);
       });
 
-      it('reads its timeout from IMPACT_LINEAGE_TIMEOUT_MS and falls back to the 3 s default for anything but a positive integer', () => {
+      it('reads its timeout from IMPACT_LINEAGE_TIMEOUT_MS and falls back to the 3 s default for anything but a positive integer up to the PostgreSQL maximum', () => {
         expect(impactLineageTimeoutMs({ IMPACT_LINEAGE_TIMEOUT_MS: '750' })).toBe(750);
-        for (const bad of [undefined, '', '0', '-5', '1.5', 'abc', '1e3x', 'Infinity']) {
+        expect(impactLineageTimeoutMs({ IMPACT_LINEAGE_TIMEOUT_MS: '2147483647' })).toBe(MAX_IMPACT_LINEAGE_TIMEOUT_MS);
+        for (const bad of [undefined, '', '0', '-5', '1.5', 'abc', '1e3x', 'Infinity', '2147483648', '99999999999']) {
           expect(impactLineageTimeoutMs({ IMPACT_LINEAGE_TIMEOUT_MS: bad })).toBe(IMPACT_LINEAGE_TIMEOUT_MS);
         }
         expect(IMPACT_LINEAGE_TIMEOUT_MS).toBe(3000);
+      });
+
+      it('answers an impact read with the default timeout, not a 500, when IMPACT_LINEAGE_TIMEOUT_MS is above the PostgreSQL maximum', async () => {
+        await lineage('ci-a-app', ORG_A);
+        process.env[TIMEOUT_ENV] = '99999999999';
+
+        const res = await request(app).get('/api/v1/cis/ci-a-db/impact').set(AS_A);
+
+        expect(res.status).toBe(200);
+        expect(lineageCheckouts().map(({ timeouts }) => timeouts)).toEqual([[IMPACT_LINEAGE_TIMEOUT_MS]]);
       });
     });
   });

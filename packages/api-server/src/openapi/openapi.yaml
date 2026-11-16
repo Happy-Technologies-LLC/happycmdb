@@ -830,17 +830,46 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [success, data, totalImpacted, depth]
                 properties:
-                  affected_cis:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/CI'
-                  impact_score:
-                    type: number
-                    description: Severity score 0-100
-                  criticality:
-                    type: string
-                    enum: [low, medium, high, critical]
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    required: [ci, upstream, downstream, impact_score, affected_environments]
+                    properties:
+                      ci:
+                        $ref: '#/components/schemas/CI'
+                      upstream:
+                        type: array
+                        description: CIs this CI depends on (deduplicated, excluding the CI itself)
+                        items:
+                          $ref: '#/components/schemas/CI'
+                      downstream:
+                        type: array
+                        description: CIs that would be affected if this CI fails
+                        items:
+                          $ref: '#/components/schemas/CI'
+                      impact_score:
+                        type: number
+                        minimum: 0
+                        maximum: 1
+                        description: >-
+                          Count-based normalization on a 0-1 scale, not a severity rating:
+                          min(totalImpacted / 10, 1), where totalImpacted is the number of
+                          upstream plus downstream CIs. 0 means no related CIs; 1 means ten
+                          or more. Display it as a percentage by multiplying by 100.
+                      affected_environments:
+                        type: array
+                        items:
+                          type: string
+                  totalImpacted:
+                    type: integer
+                    minimum: 0
+                    description: Number of upstream plus downstream CIs
+                  depth:
+                    type: integer
+                    description: Traversal depth that was applied
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

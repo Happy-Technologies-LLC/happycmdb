@@ -480,7 +480,8 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
       const app = express();
       app.use(express.json());
       app.use('/api/v1/auth', controller.getRouter());
-      const bearer = `Bearer ${new JWTService(AUTH_CONFIG.jwt as never).generateAccessToken(USER, USER, 'operator', SELF_SERVICE_ORGANIZATION)}`;
+      // HAP-2077: credentialEpoch and authTime are required; the user's stored generation is 0 (absent) and revoke-others needs a login time.
+      const bearer = `Bearer ${new JWTService(AUTH_CONFIG.jwt as never).generateAccessToken(USER, USER, 'operator', SELF_SERVICE_ORGANIZATION, 0, Math.floor(Date.now() / 1000))}`;
       return operation === 'password_change'
         ? request(app).put('/api/v1/auth/password').set('Authorization', bearer)
           .send({ currentPassword: CURRENT_PASSWORD, newPassword: 'hap2061-new-password-1' })

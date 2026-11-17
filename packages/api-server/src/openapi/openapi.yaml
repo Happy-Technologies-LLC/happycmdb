@@ -3008,6 +3008,44 @@ paths:
                     description: >-
                       Relationships, within the caller's organization, with at least one endpoint that is a
                       critical CI (`bsm_business_criticality` tier_1 or tier_2; services/critical-ci.ts).
+                  open_drift_count:
+                    type: integer
+                    nullable: true
+                    description: >-
+                      BW5. Number of CIs in the caller's organization whose latest drift detection (table
+                      `drift_detection_results`, current CI incarnation) shows drift. A later clean detection closes
+                      it; another organization's rows, replaced incarnations and CIs that no longer exist are never
+                      counted. `null` when it cannot be computed (named in `unavailable`), never a placeholder 0.
+                  configuration_coverage:
+                    type: object
+                    nullable: true
+                    description: >-
+                      BW6. Coverage = CIs that have BOTH an owner AND a discovery source, divided by all CIs, within
+                      the caller's organization. Owner is the normalized `owner` of `GET /cis` (stored `owner`, else
+                      the first usable owner key of `metadata`) and counts only when non-empty after trimming.
+                      Discovery source is at least one `ci_source_lineage` row for the CI in the caller's
+                      organization (a source system has reported it). `null` when it cannot be computed (named in
+                      `unavailable`).
+                    required: [with_owner_and_source, total, ratio]
+                    properties:
+                      with_owner_and_source:
+                        type: integer
+                        description: Numerator.
+                      total:
+                        type: integer
+                        description: Denominator, all CIs in the caller's organization.
+                      ratio:
+                        type: number
+                        nullable: true
+                        description: '`with_owner_and_source / total`; `null` when `total` is 0, never 0 or NaN.'
+                  unavailable:
+                    type: array
+                    items:
+                      type: string
+                    description: >-
+                      Names of fields in this payload that are `null` because no backing data exists or it could not
+                      be computed (`health_score` always; `open_drift_count` or `configuration_coverage` when their
+                      source fails or the organization exceeds the bounded scan).
         '401':
           $ref: '#/components/responses/Unauthorized'
 

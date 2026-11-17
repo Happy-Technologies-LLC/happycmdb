@@ -213,10 +213,13 @@ The view is the `?view=orbit|graph|list` search parameter. The Stage draws a cap
 ("Showing N of M CIs"); the category counts on the chips are the full-estate `by_type` counts.
 
 Health, config drift, coverage, live changes and top services render a "Not available yet" state that names the missing
-backend capability instead of a number: the server has no CI health state, drift count, coverage metric, KPI history,
-tenant-wide change feed or per-service availability on `main`. The dashboard's `health_score` is `null` (unavailable)
+backend capability instead of a number: the server has no CI health state, KPI history, tenant-wide change feed or
+per-service availability on `main`. The dashboard's `health_score` is `null` (unavailable)
 until a CI health state exists (BW1); the Health card shows "Not available yet" for `null` and a percentage only for a
-number, never `0%` as a placeholder. Do not wire a number to those cards until the endpoint exists.
+number, never `0%` as a placeholder. `GET /analytics/dashboard` now also carries `open_drift_count` (BW5) and
+`configuration_coverage` (BW6, `{with_owner_and_source, total, ratio}`; definitions in the OpenAPI schema), each `null`
+and listed in `unavailable` when it cannot be computed; the drift and coverage cards do not read them yet. Do not wire a
+number to a card until its endpoint exists.
 
 Every surface has loading, error and 403 states (`SurfaceState.tsx`). Reads that must not refuse the page (incidents,
 relationships) are sent with `sideRead: true`, so a 403 shows on that surface only. "Run discovery" is gated with

@@ -946,6 +946,7 @@ jobs:
           HAP1562_RESULT: ${{ needs.hap1562-real-store.result }}
         run: |
           set -euo pipefail
+          # The only green path without a verdict: no SHA means nothing to gate.
           if [ -z "$HEAD_SHA" ]; then
             echo "No commit SHA available; skipping ci-rollup/test status."
             exit 0
@@ -1009,3 +1010,10 @@ jobs:
             -f context="ci-rollup/test" \
             -f description="$description" \
             -f target_url="$RUN_URL"
+          # The required check is this job's conclusion, not the commit status
+          # above; fail the job after the status is published (set -e would
+          # have exited before it if gh api failed).
+          if [ "$state" = "failure" ]; then
+            echo "ci-rollup: $description" >&2
+            exit 1
+          fi

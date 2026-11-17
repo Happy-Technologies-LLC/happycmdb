@@ -18,6 +18,24 @@ export interface DashboardStats {
   health_score: number | null;
   /** Relationships with at least one endpoint that is a critical CI (bsm_business_criticality tier_1 or tier_2). */
   critical_relationships: number;
+  /**
+   * BW5: CIs in the caller's organization whose latest drift detection shows drift. null: unavailable (named in
+   * `unavailable`); never a placeholder 0.
+   */
+  open_drift_count?: number | null;
+  /**
+   * BW6: CIs with both an owner and a discovery source (a ci_source_lineage row), over all CIs. `ratio` is null when
+   * `total` is 0. The whole object is null when unavailable (named in `unavailable`).
+   */
+  configuration_coverage?: ConfigurationCoverage | null;
+  /** Fields of this payload that are null because they could not be computed. */
+  unavailable?: string[];
+}
+
+export interface ConfigurationCoverage {
+  with_owner_and_source: number;
+  total: number;
+  ratio: number | null;
 }
 
 export interface DashboardRecentDiscovery {

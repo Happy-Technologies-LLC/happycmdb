@@ -550,7 +550,7 @@ describe('N-21 P-6 dedicated platform-admin flag with seeded-account exclusion',
     return { status: res.statusCode, body: res.body, nextCalled };
   }
   const bearer = (id: string) => ({ authorization: `Bearer ${access(id)}` });
-  const FORBIDDEN = { status: 403, nextCalled: false, body: { success: false, error: 'Forbidden', message: 'Platform administrator required' } };
+  const FORBIDDEN = { status: 403, nextCalled: false, body: expect.objectContaining({ success: false, error: 'Forbidden', message: 'Platform administrator required', code: 'PLATFORM_ADMIN_REQUIRED' }) };
 
   it('grants platform admin only from the flag, never from role or org', async () => {
     repository.users.set('p', user('p', { _passwordHash: operatorHash, _platformAdmin: true, _role: 'viewer' }));

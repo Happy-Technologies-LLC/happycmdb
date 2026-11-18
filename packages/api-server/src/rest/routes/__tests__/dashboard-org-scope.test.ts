@@ -827,7 +827,7 @@ describe('fail closed without an organization claim', () => {
     for (const headers of [bearer('user-none'), bearer('user-bad', 'not-a-uuid')]) {
       const res = await request(app).get(`${path}?organizationId=${ORG_A}`).set(headers);
       expect(res.status).toBe(403);
-      expect(res.body).toEqual({ _error: 'Forbidden', _message: 'Organization claim required' });
+      expect(res.body).toMatchObject({ _error: 'Forbidden', _message: 'Organization claim required', code: 'ORGANIZATION_REQUIRED' });
     }
     expect(pgQueries + cypherRuns.length).toBe(0);
   });

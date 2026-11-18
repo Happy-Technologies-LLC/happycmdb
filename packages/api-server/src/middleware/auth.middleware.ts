@@ -13,6 +13,7 @@ import { AuthFailureError, AuthService } from '../auth/auth.service';
 import { isPlatformAdmin } from '../auth/platform-admin';
 import { holdsScope, type Scope } from '../auth/scopes';
 import { TokenPayload, Permission, ROLE_PERMISSIONS } from '../auth/types';
+import { sendForbidden } from './forbidden-response';
 
 const UNAUTHORIZED = { _error: 'Unauthorized', _message: 'Authentication failed' };
 /** Keep the cause internally; never serialize or log untrusted error text. */
@@ -133,7 +134,7 @@ export class AuthMiddleware {
         return;
       }
       if (req.credentialType !== 'jwt') {
-        res.status(403).json({ _error: 'Forbidden', _message: 'JWT user session required' });
+        sendForbidden(res, 'JWT_SESSION_REQUIRED', 'JWT user session required');
         return;
       }
       next();
@@ -153,9 +154,9 @@ export class AuthMiddleware {
       const userPermissions = ROLE_PERMISSIONS[req.user._role];
 
       if (!userPermissions.includes(permission)) {
-        res.status(403).json({
-          _error: 'Forbidden',
-          _message: `Permission '${permission}' required`,
+        sendForbidden(res, 'PERMISSION_REQUIRED', `Permission '${permission}' required`, {
+          required: { permission },
+          role: req.user._role,
         });
         return;
       }
@@ -177,10 +178,7 @@ export class AuthMiddleware {
       }
 
       if (organizationClaim(req.user) === null) {
-        res.status(403).json({
-          _error: 'Forbidden',
-          _message: 'Organization claim required',
-        });
+        sendForbidden(res, 'ORGANIZATION_REQUIRED', 'Organization claim required');
         return;
       }
 
@@ -199,9 +197,9 @@ export class AuthMiddleware {
       }
 
       if (!roles.includes(req.user._role)) {
-        res.status(403).json({
-          _error: 'Forbidden',
-          _message: `Role '${roles.join(' or ')}' required`,
+        sendForbidden(res, 'ROLE_REQUIRED', `Role '${roles.join(' or ')}' required`, {
+          required: { roles },
+          role: req.user._role,
         });
         return;
       }
@@ -235,11 +233,7 @@ export class AuthMiddleware {
         }
       }
       if (!allowed) {
-        res.status(403).json({
-          success: false,
-          error: 'Forbidden',
-          message: 'Platform administrator required',
-        });
+        sendForbidden(res, 'PLATFORM_ADMIN_REQUIRED', 'Platform administrator required');
         return;
       }
 
@@ -270,7 +264,7 @@ export class AuthMiddleware {
         allowed = false;
       }
       if (!allowed) {
-        res.status(403).json({ _error: 'Forbidden', _message: `Scope '${scope}' required` });
+        sendForbidden(res, 'SCOPE_REQUIRED', `Scope '${scope}' required`, { required: { scope } });
         return;
       }
 

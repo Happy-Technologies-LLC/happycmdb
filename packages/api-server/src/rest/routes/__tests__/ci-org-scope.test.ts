@@ -1118,7 +1118,7 @@ describe('/api/v1/cis tenant scoping', () => {
       const req = request(app)[method as 'get'](path).set(NO_ORG);
       const res = await (body === null ? req : req.send(body));
       expect([method, path, res.status, res.body]).toEqual([
-        method, path, 403, { _error: 'Forbidden', _message: 'Organization claim required' },
+        method, path, 403, expect.objectContaining({ _error: 'Forbidden', _message: 'Organization claim required', code: 'ORGANIZATION_REQUIRED' }),
       ]);
     }
     expect(queryCount).toBe(0);

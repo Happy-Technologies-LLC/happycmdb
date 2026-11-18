@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import type { ServerRole } from '@/lib/permissions';
+import type { Permission, ServerRole } from '@/lib/permissions';
 
 // CI Types
 export type CIType =
@@ -86,6 +86,8 @@ export interface User {
   full_name: string;
   avatar?: string;
   role: ServerRole; // the server's UserRole (packages/api-server/src/auth/types.ts), see lib/permissions.ts
+  /** What the server's role table grants `role` (GET /auth/me); empty when an older server omits it. Display only, never a gate. */
+  permissions: Permission[];
   created_at: string;
   last_login?: string;
   /** Effective platform-administrator status as the server decided it (GET /auth/me); display only, never a gate. */

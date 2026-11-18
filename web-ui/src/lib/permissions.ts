@@ -25,6 +25,9 @@ export const ROLE_PERMISSIONS: Readonly<Record<ServerRole, readonly Permission[]
   agent: ['discover', 'write'],
 };
 
+export const isPermission = (value: unknown): value is Permission =>
+  value === 'read' || value === 'write' || value === 'discover' || value === 'admin';
+
 export const isServerRole = (value: unknown): value is ServerRole =>
   typeof value === 'string' && Object.prototype.hasOwnProperty.call(ROLE_PERMISSIONS, value);
 

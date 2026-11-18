@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { Request, Response, NextFunction } from 'express';
 import { organizationClaim } from '../middleware/auth.middleware';
+import { sendForbidden } from '../middleware/forbidden-response';
 import type { TokenPayload } from './types';
 
 export interface ConnectorScope {
@@ -15,7 +16,7 @@ export function connectorScope(user: TokenPayload | undefined): ConnectorScope {
 export function requireConnectorScope(req: Request, res: Response, next: NextFunction): void {
   const scope = connectorScope((req as Request & { user?: TokenPayload }).user);
   if (scope.organizationId === null) {
-    res.status(403).json({ error: 'Forbidden', message: 'Organization claim required' });
+    sendForbidden(res, 'ORGANIZATION_REQUIRED', 'Organization claim required');
     return;
   }
   next();

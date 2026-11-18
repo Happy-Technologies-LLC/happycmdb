@@ -247,7 +247,10 @@ test('mounted definitions isolate two organizations, redact credentials and refu
     expect(schedule.body).toEqual(unavailable.body);
   }
   expect(queue.add).toHaveBeenCalledTimes(queueBefore);
-  expect((await request(app).get(url).set(headers('none'))).status).toBe(403);
+  const noOrg = await request(app).get(url).set(headers('none'));
+  expect([noOrg.status, noOrg.body]).toEqual([403, expect.objectContaining({
+    success: false, error: 'Forbidden', message: 'Organization claim required', code: 'ORGANIZATION_REQUIRED',
+  })]);
   expect((await query('SELECT name FROM discovery_definitions WHERE id = $1', [idB])).rows).toEqual([{ name: other.body.data.name }]);
 });
 

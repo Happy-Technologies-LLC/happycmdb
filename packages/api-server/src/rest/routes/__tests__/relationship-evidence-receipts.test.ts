@@ -113,7 +113,7 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
   })),
 }));
 
-import { loadConfig } from '@cmdb/common';
+import { logger, loadConfig } from '@cmdb/common';
 import { getNeo4jClient, setJournalSeam } from '@cmdb/database';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
@@ -516,11 +516,11 @@ describe('receipt conflict compare (T2)', () => {
     to_incarnation_id: incarnation(to), evidence_class: 'declared', polarity, source_name: 'api', source_id: null, source_version: null,
     method: 'api', rationale_code: null, observer: 'actor-a', observer_type: 'user' });
   /** Seeds, as the superuser harness, a row with the group's key and T2's content except `override`; stamped a day earlier. */
-  const plant = (from: string, to: string, group: string, content: Record<string, unknown>) => {
+  const plant = (from: string, to: string, group: string, content: Record<string, unknown>, org = A) => {
     const columns = Object.keys(content);
     return rows(`INSERT INTO relationship_evidence_receipts (organization_id, from_ci_id, to_ci_id, relationship_type, correlation_id,
       observed_at, ${columns.join(', ')}) VALUES ($1, $2, $3, 'DEPENDS_ON', $4, now() - interval '1 day',
-      ${columns.map((_, i) => `$${i + 5}`).join(', ')})`, [A, from, to, group, ...columns.map(column => content[column])]);
+      ${columns.map((_, i) => `$${i + 5}`).join(', ')})`, [org, from, to, group, ...columns.map(column => content[column])]);
   };
   const MISMATCHES: [string, unknown][] = [['from_incarnation_id', randomUUID()], ['to_incarnation_id', randomUUID()],
     ['evidence_class', 'static_observed'], ['polarity', 'contradicts'], ['source_name', 'other'], ['source_id', 'x'],
@@ -561,6 +561,82 @@ describe('receipt conflict compare (T2)', () => {
     expect([await receipts(from, to), (await addAudit(from)).length, (await addAudit(to)).length]).toEqual([seeded, 1, 1]);
     expect(seeded).toHaveLength(1);
   });
+
+  // HAP-2128 S-4a: the compare is scoped by the journal row's organization. The INSERT's key includes the organization, so the
+  // other organization's identical row never causes the conflict; it is only here to be found by an unscoped compare.
+  it("another organization's identical row under the same correlation id never vouches for a differing row in this organization: HP1RC, 503", async () => {
+    const [from, to] = [seed(A), seed(A)];
+    setJournalSeam(async (point, { groupId, recovery }) => {
+      if (point !== 'beforeT2' || recovery) return;
+      await plant(from, to, groupId, { ...base(from, to), polarity: 'contradicts' }); // this organization: differs from T2's row
+      await plant(from, to, groupId, base(from, to), B); // another organization: identical to T2's row
+    });
+    const res = await create('a', from, to);
+    setJournalSeam(undefined);
+    expect([res.status, typeof res.body.correlation_id]).toEqual([503, 'string']);
+    expect([(await receipts(from, to)).map(row => `${row['organization_id']}:${row['polarity']}`).sort(), await addAudit(from)])
+      .toEqual([[`${A}:contradicts`, `${B}:supports`].sort(), []]);
+  });
+
+  // HAP-2128 S-2: the one tamper signal is logged with identifiers only.
+  describe('HP1RC log', () => {
+    const logged = () => {
+      const calls: unknown[][] = [];
+      for (const method of ['error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly'] as const) {
+        jest.spyOn(logger, method).mockImplementation(((...args: unknown[]) => {
+          if (String(args[0]).startsWith('HP1')) calls.push([method, ...args]); // the journal's lines; the route's own lines are not under test
+          return logger;
+        }) as never);
+      }
+      return calls;
+    };
+    afterEach(() => jest.restoreAllMocks());
+
+    it('a mismatch writes exactly one warn line naming the organization, correlation id and edge key and nothing of the receipt', async () => {
+      const [from, to] = [seed(A), seed(A)];
+      const lines = logged();
+      let group = '';
+      setJournalSeam(async (point, { groupId, recovery }) => {
+        if (point !== 'beforeT2' || recovery) return;
+        group = groupId;
+        await plant(from, to, groupId, { ...base(from, to), rationale_code: 'planted_rationale', source_name: 'planted_source' });
+      });
+      const res = await create('a', from, to, { properties: { secret: 'payload-value' } });
+      setJournalSeam(undefined);
+      expect(res.status).toBe(503);
+      expect(lines).toEqual([['warn', expect.stringContaining('HP1 receipt conflict'), { organization_id: A, correlation_id: group,
+        from_ci_id: from, to_ci_id: to, relationship_type: 'DEPENDS_ON' }]]);
+      expect(JSON.stringify(lines)).not.toMatch(/planted|payload-value|actor-a|declared/);
+    });
+
+    it('an identical replay logs nothing', async () => {
+      const [from, to] = [seed(A), seed(A)];
+      const lines = logged();
+      setJournalSeam(async (point, { groupId }) => {
+        if (point === 'beforeT2') await plant(from, to, groupId, base(from, to));
+      });
+      const res = await create('a', from, to);
+      setJournalSeam(undefined);
+      expect([res.status, lines]).toEqual([201, []]);
+    });
+  });
+
+  // HAP-2127 D3: a relationship plan stored by the previous image has no receipt.observerType; its audit carries the actor type.
+  it.each([['system', 'sync:c4_releases'], ['user', 'actor-a']] as const)(
+    'a pending pre-HAP-2030 plan (no receipt.observerType, audit actor type %s) is replayed by the sweep with that observer type', async (actorType, actor) => {
+      const [from, to, graph] = [seed(A), seed(A), getNeo4jClient()];
+      setJournalSeam(async point => { if (point === 'beforeT2') throw new Error('crash before T2'); });
+      await expect(graph.writeRelationship('relationship_create', from, to, 'USES', A, actor, {}, undefined, actorType, undefined,
+        { evidenceClass: 'static_observed', sourceName: 'ai_sync', sourceId: 'c4_releases', method: 'ai_sync' })).rejects.toThrow();
+      setJournalSeam(undefined);
+      await rows(`UPDATE ci_reconciliation_operations SET plan = plan #- '{receipt,observerType}' WHERE ci_id = ANY($1::text[])`, [[from, to]]);
+      const [stored] = await rows(`SELECT plan->'receipt' AS receipt, plan->'audit'->>'actorType' AS audit_actor_type
+        FROM ci_reconciliation_operations WHERE ci_id = $1`, [from]);
+      expect([stored!['audit_actor_type'], 'observerType' in stored!['receipt']]).toEqual([actorType, false]);
+      await expireLeases([from, to]);
+      await graph.journal.sweep();
+      expect((await receipts(from, to)).map(row => [row['observer'], row['observer_type']])).toEqual([[actor, actorType]]);
+    });
 
   it('an identical earlier contradicts row is a no-op for DELETE too', async () => {
     const [from, to] = [seed(A), seed(A)];

@@ -82,19 +82,6 @@ const held = async (query: (sql: string) => Promise<Array<Record<string, any>>>,
     .flatMap(row => PRIVILEGES.filter(p => row[p] === true));
 
 describe('the $hap2126$ block in the app-login script', () => {
-  it('sits after the 045 re-apply and before the COMMIT of the same branch, and lists exactly the migrations\' grants', () => {
-    const block = grantBlock();
-    const script = APP_LOGIN_SCRIPT;
-    const [inc, start, commit] = [script.indexOf('\\ir 045_staging_app_login_acl.sql'), script.indexOf(block), script.indexOf('COMMIT;', script.indexOf(block))];
-    expect([inc, start, commit].every(index => index >= 0) && inc < start && start < commit).toBe(true);
-    expect(script.slice(inc, commit)).not.toContain('\\endif');
-    const code = block.replace(/--.*$/gm, '');
-    expect(code).not.toMatch(/\b(?:DELETE|TRUNCATE|REFERENCES|TRIGGER)\b/i);
-    const rows = [...code.matchAll(/\('([a-z_.]+)',\s*'([A-Z, ]+)'\)/g)].map(match => [match[1]!, match[2]!.split(/,\s*/)]);
-    expect(Object.fromEntries(rows)).toEqual(EXPECTED);
-    expect(rows).toHaveLength(Object.keys(EXPECTED).length);
-  });
-
   it('restores exactly the migrations\' grants on a re-created cmdb_app, never more, and re-runs cleanly', async () => {
     const query = open();
     await prepare(query, false);

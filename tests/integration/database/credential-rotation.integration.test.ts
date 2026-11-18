@@ -981,7 +981,7 @@ describe('HAP-1632: portfolio:import scope grant and revoke compare-and-set on N
     await createScopeUser();
     const window = operator();
 
-    await expect(grantPortfolioImportScope(window.graph, ID, 'ci')).resolves.toEqual({ userId: ID, outcome: 'granted' });
+    await expect(grantPortfolioImportScope(window.graph, window.sql, ID, 'ci')).resolves.toMatchObject({ userId: ID, outcome: 'granted', operator: 'ci' });
 
     const props = await stored();
     expect(props['scopes']).toEqual([PORTFOLIO_IMPORT_SCOPE]);
@@ -989,7 +989,7 @@ describe('HAP-1632: portfolio:import scope grant and revoke compare-and-set on N
     expect(neo4j.isDateTime(props['portfolioImportScopeGrantedAt'])).toBe(true);
     expect(await loadedHolds()).toBe(true);
 
-    await expect(grantPortfolioImportScope(window.graph, ID, 'someone-else')).resolves.toEqual({ userId: ID, outcome: 'unchanged' });
+    await expect(grantPortfolioImportScope(window.graph, window.sql, ID, 'someone-else')).resolves.toEqual({ userId: ID, outcome: 'unchanged' });
     expect((await stored())['portfolioImportScopeGrantedBy']).toBe('ci');
   });
 
@@ -997,10 +997,10 @@ describe('HAP-1632: portfolio:import scope grant and revoke compare-and-set on N
     await createScopeUser({ scopes: ['credentials:manage'] });
     const window = operator();
 
-    await grantPortfolioImportScope(window.graph, ID, 'ci');
+    await grantPortfolioImportScope(window.graph, window.sql, ID, 'ci');
     expect((await stored())['scopes']).toEqual(['credentials:manage', PORTFOLIO_IMPORT_SCOPE]);
 
-    await expect(revokePortfolioImportScope(window.graph, ID, 'ci')).resolves.toEqual({ userId: ID, outcome: 'revoked' });
+    await expect(revokePortfolioImportScope(window.graph, window.sql, ID, 'ci')).resolves.toMatchObject({ userId: ID, outcome: 'revoked', operator: 'ci' });
     const props = await stored();
     expect(props['scopes']).toEqual(['credentials:manage']);
     expect(props['portfolioImportScopeRevokedBy']).toBe('ci');
@@ -1011,15 +1011,15 @@ describe('HAP-1632: portfolio:import scope grant and revoke compare-and-set on N
   it('revoking the last entry stores [] (not an absent property) and the next grant matches that empty list', async () => {
     await createScopeUser();
     const window = operator();
-    await grantPortfolioImportScope(window.graph, ID, 'ci');
+    await grantPortfolioImportScope(window.graph, window.sql, ID, 'ci');
 
-    await revokePortfolioImportScope(window.graph, ID, 'ci');
+    await revokePortfolioImportScope(window.graph, window.sql, ID, 'ci');
     const revoked = await stored();
     expect(revoked['scopes']).toEqual([]);
     expect(await loadedHolds()).toBe(false);
-    await expect(revokePortfolioImportScope(window.graph, ID, 'ci')).resolves.toEqual({ userId: ID, outcome: 'unchanged' });
+    await expect(revokePortfolioImportScope(window.graph, window.sql, ID, 'ci')).resolves.toEqual({ userId: ID, outcome: 'unchanged' });
 
-    await expect(grantPortfolioImportScope(window.graph, ID, 'ci')).resolves.toEqual({ userId: ID, outcome: 'granted' });
+    await expect(grantPortfolioImportScope(window.graph, window.sql, ID, 'ci')).resolves.toMatchObject({ userId: ID, outcome: 'granted', operator: 'ci' });
     expect((await stored())['scopes']).toEqual([PORTFOLIO_IMPORT_SCOPE]);
     expect(await loadedHolds()).toBe(true);
   });
@@ -1041,7 +1041,7 @@ describe('HAP-1632: portfolio:import scope grant and revoke compare-and-set on N
     const graphWindow = operator().graph;
     const raced = racing(graphWindow, () => graph.run("MATCH (u:User {_id: $id}) SET u.scopes = ['a', 'other', 'b']", { id: ID }));
 
-    await expect(change(raced, ID, 'ci')).rejects.toMatchObject({ name: 'GrantRefused', reason: 'not_applied' });
+    await expect(change(raced, operator().sql, ID, 'ci')).rejects.toMatchObject({ name: 'GrantRefused', reason: 'not_applied' });
 
     const props = await stored();
     expect(props['scopes']).toEqual(['a', 'other', 'b']);
@@ -1057,7 +1057,7 @@ describe('HAP-1632: portfolio:import scope grant and revoke compare-and-set on N
       await createScopeUser({ scopes: name === 'grant' ? [] : [PORTFOLIO_IMPORT_SCOPE] });
       const raced = racing(operator().graph, () => graph.run(`MATCH (u:User {_id: $id}) ${interference}`, { id: ID }));
 
-      await expect(change(raced, ID, 'ci')).rejects.toMatchObject({ name: 'GrantRefused', reason: 'not_applied' });
+      await expect(change(raced, operator().sql, ID, 'ci')).rejects.toMatchObject({ name: 'GrantRefused', reason: 'not_applied' });
 
       const props = await stored();
       expect(props['scopes']).toEqual(name === 'grant' ? [] : [PORTFOLIO_IMPORT_SCOPE]);
@@ -1133,13 +1133,32 @@ describe('HAP-1632: portfolio:import scope grant and revoke compare-and-set on N
       return { code, out, err };
     };
 
-    expect(await run('grant-portfolio-import-scope', ID)).toEqual({ code: 0, out: [JSON.stringify({ userId: ID, outcome: 'granted' })], err: [] });
+    const granted = await run('grant-portfolio-import-scope', ID);
+    expect([granted.code, granted.out.length, granted.err]).toEqual([0, 1, []]);
     expect((await stored())['scopes']).toEqual([PORTFOLIO_IMPORT_SCOPE]);
     expect(await loadedHolds()).toBe(true);
 
-    expect(await run('revoke-portfolio-import-scope', ID)).toEqual({ code: 0, out: [JSON.stringify({ userId: ID, outcome: 'revoked' })], err: [] });
+    const revoked = await run('revoke-portfolio-import-scope', ID);
+    expect([revoked.code, revoked.out.length, revoked.err]).toEqual([0, 1, []]);
     expect((await stored())['scopes']).toEqual([]);
     expect(await loadedHolds()).toBe(false);
+
+    // HAP-2039: each change left one append-only row on the real table; the printed line names it.
+    const rows = (await pool.query(
+      `SELECT id, event, actor, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS occurred_text
+       FROM auth_credential_events WHERE user_id = $1 AND event LIKE 'portfolio_import_scope_%' ORDER BY occurred_at, id`, [ID])).rows;
+    expect(rows.map(row => [row.event, row.actor])).toEqual([
+      ['portfolio_import_scope_granted', 'window-script:ci'], ['portfolio_import_scope_revoked', 'window-script:ci'],
+    ]);
+    expect([granted, revoked].map(result => JSON.parse(result.out[0]!))).toEqual([
+      { userId: ID, outcome: 'granted', operator: 'ci', occurredAt: rows[0].occurred_text, eventId: rows[0].id },
+      { userId: ID, outcome: 'revoked', operator: 'ci', occurredAt: rows[1].occurred_text, eventId: rows[1].id },
+    ]);
+    // The printed time is the row's full-precision occurred_at: it selects that row.
+    for (const printed of [granted, revoked].map(result => JSON.parse(result.out[0]!))) {
+      expect((await pool.query('SELECT id FROM auth_credential_events WHERE occurred_at = $1', [printed.occurredAt])).rows)
+        .toEqual([{ id: printed.eventId }]);
+    }
 
     // USER (the suite fixture) carries the default-password marker.
     expect(await run('grant-portfolio-import-scope', USER)).toEqual({

@@ -10,7 +10,7 @@
  * timeout (55P03) is a 503 and a recovery backoff. S2: ITIL, restore and relationship writes are audited too (D9).
  */
 import { fork } from 'child_process';
-import { randomBytes, randomUUID } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import express from 'express';
@@ -97,8 +97,9 @@ jest.mock('neo4j-driver', () => {
 });
 // The real @cmdb/database opens the BullMQ Redis connection at import; nothing here queues jobs.
 jest.mock('@cmdb/database/bullmq/queue-manager', () => ({}));
-const users: Record<string, { _id: string; _username: string; _role: 'admin' | 'viewer'; _enabled: boolean; _organizationId?: string }> = {
+const users: Record<string, { _id: string; _username: string; _role: 'admin' | 'operator' | 'viewer'; _enabled: boolean; _organizationId?: string }> = {
   a: { _id: 'actor-a', _username: 'alice', _role: 'admin', _enabled: true, _organizationId: A },
+  operator: { _id: 'actor-o', _username: 'omar', _role: 'operator', _enabled: true, _organizationId: A },
   viewer: { _id: 'actor-v', _username: 'vera', _role: 'viewer', _enabled: true, _organizationId: A },
   none: { _id: 'actor-n', _username: 'nora', _role: 'admin', _enabled: true },
 };
@@ -225,6 +226,156 @@ describe('with AUDIT_CHAIN_KEY', () => {
     expect(entry!.changes).toContainEqual({ field: 'name', old_value: 'seeded', new_value: null });
     expect(await rows(`SELECT actor FROM audit_log WHERE actor <> 'actor-a'`)).toEqual([]);
     expect(await service.verifyAuditChain()).toMatchObject({ ok: true });
+  });
+
+  describe('HAP-797 oversized recovery delete', () => {
+    const recover = (user: string, id: string, body: object = { evidence_ref: 'vault://evidence/legacy-ci-1' }) =>
+      request(app).post(`/api/v1/cis/${id}/oversized-delete`).set(headers(user)).send(body);
+    /** An owned legacy CI holding `props` (stored values the HP1 plan limits refuse). */
+    const seedWith = (props: Record<string, unknown>): string => {
+      const id = seed(A);
+      Object.assign(mockGraph.nodes.get(id)!, props);
+      return id;
+    };
+    const digest = (value: string) => ({ bytes: Buffer.byteLength(JSON.stringify(value)), sha256: createHash('sha256').update(JSON.stringify(value)).digest('hex') });
+    const ciRows = (id: string) => rows('SELECT 1 FROM ci_reconciliation_operations WHERE ci_id = $1 AND state = $2', [id, 'committed']);
+
+    // The limit is on a stored value's JSON bytes (quotes included): 65 534 characters is exactly 64 KiB, 65 535 is 64 KiB + 1.
+    it.each([['metadata', 'metadata'], ['a non-metadata attribute', 'description']])(
+      'a 64 KiB + 1 %s: DELETE stays 422; a non-admin is refused; the admin path deletes it with size, hash and evidence in the chained audit row, never the value', async (_name, field) => {
+        const value = 'x'.repeat(65_535);
+        const id = seedWith({ [field]: value });
+        expect((await del('a', id)).status).toBe(422);
+        expect((await recover('viewer', id)).status).toBe(403);
+        expect((await recover('operator', id)).status).toBe(403);
+        expect((await recover('a', id, {})).status).toBe(400);
+        expect(mockGraph.nodes.has(id)).toBe(true);
+        expect(await audit(id)).toEqual([]);
+
+        expect((await recover('a', id)).status).toBe(204);
+        expect(mockGraph.nodes.has(id)).toBe(false);
+        const [entry, ...extra] = await getAuditService(getPostgresClient().pool).getCIAuditHistory(id, A);
+        expect(extra).toEqual([]);
+        const evidence = digest(value);
+        expect(evidence.bytes).toBe(65_537);
+        expect(entry).toMatchObject({ action: 'DELETE', actor: 'actor-a', actor_type: 'user' });
+        expect(entry!.metadata).toMatchObject({ recovery: 'oversized_delete', evidence_ref: 'vault://evidence/legacy-ci-1',
+          journal_operation: 'delete', oversized_count: 1, oversized: [{ field, ...evidence }] });
+        expect(entry!.changes).toContainEqual({ field, old_value: { $hp797: 'oversized', ...evidence }, new_value: null });
+        expect(entry!.changes).toContainEqual({ field: 'name', old_value: 'seeded', new_value: null });
+        const [history] = await rows('SELECT change_type, previous_values FROM ci_change_history WHERE ci_id = $1', [id]);
+        expect(history).toMatchObject({ change_type: 'deleted', previous_values: { [field]: { $hp797: 'oversized', ...evidence }, name: 'seeded' } });
+        expect(JSON.stringify([await audit(id), history])).not.toContain('xxxxxxxxxxxxxxxx');
+        expect(await getAuditService(getPostgresClient().pool).verifyAuditChain()).toMatchObject({ ok: true });
+      });
+
+    it('a value at exactly 64 KiB is an ordinary delete: DELETE is 204, and the recovery path refuses a CI with nothing oversized (409)', async () => {
+      const [fits, kept] = [seedWith({ description: 'x'.repeat(65_534) }), seedWith({ description: 'x'.repeat(65_534) })];
+      expect((await recover('a', kept)).status).toBe(409);
+      expect(mockGraph.nodes.has(kept)).toBe(true);
+      expect((await del('a', fits)).status).toBe(204);
+      expect(mockGraph.nodes.has(fits)).toBe(false);
+      // 12 x 60 000 bytes is under the 1 MiB plan limit: the ordinary delete plans it, so the recovery path has nothing to do.
+      const many = seedWith(Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`attr${i}`, 'z'.repeat(60_000)])));
+      expect((await recover('a', many)).status).toBe(409);
+      expect((await del('a', many)).status).toBe(204);
+    });
+
+    // The ordinary plan fits up to ~1 MiB, above the 960 KiB snapshot budget: the recovery path must not replace a delete that works.
+    it('a snapshot between the 960 KiB budget and the ordinary plan limit: DELETE is 204 and recovery refuses (409), changing nothing', async () => {
+      const window = seedWith(Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`attr${String(i).padStart(2, '0')}`, `${i}`.padEnd(62_000, 'w')])));
+      const before = (await audit()).length;
+      expect((await recover('a', window)).status).toBe(409);
+      expect([(await audit()).length, mockGraph.nodes.has(window), await ciRows(window)]).toEqual([before, true, []]);
+      expect((await del('a', window)).status).toBe(204);
+      const [entry] = await getAuditService(getPostgresClient().pool).getCIAuditHistory(window, A);
+      expect(entry!.metadata).not.toMatchObject({ recovery: 'oversized_delete' });
+      expect((entry!.changes as Array<{ field: string; old_value: unknown }>).filter(c => c.field.startsWith('attr') && typeof c.old_value === 'string')).toHaveLength(16);
+    });
+
+    it('a snapshot just above the ordinary plan limit with no value over 64 KiB: DELETE is 422; recovery deletes it, replacing only what the plan needs', async () => {
+      const values = Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`attr${String(i).padStart(2, '0')}`, `${i}`.padEnd(62_000, 'w')]));
+      const id = seedWith(values);
+      expect((await del('a', id)).status).toBe(422);
+      expect((await recover('a', id)).status).toBe(204);
+      expect(mockGraph.nodes.has(id)).toBe(false);
+      const [entry] = await getAuditService(getPostgresClient().pool).getCIAuditHistory(id, A);
+      const recorded = (entry!.metadata as { oversized: Array<{ field: string }> }).oversized;
+      expect(recorded.length).toBeGreaterThan(0);
+      expect(recorded.length).toBeLessThan(17);
+      expect(await getAuditService(getPostgresClient().pool).verifyAuditChain()).toMatchObject({ ok: true });
+    });
+
+    it('many values each under 64 KiB but over the 1 MiB plan total: DELETE is 422; recovery keeps what fits and records size and hash for the rest', async () => {
+      const values = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`attr${String(i).padStart(2, '0')}`, `${i}`.padEnd(60_000, 'y')]));
+      const id = seedWith(values);
+      expect((await del('a', id)).status).toBe(422);
+      expect((await recover('a', id)).status).toBe(204);
+      const [entry] = await getAuditService(getPostgresClient().pool).getCIAuditHistory(id, A);
+      const recorded = (entry!.metadata as { oversized: Array<{ field: string; bytes: number; sha256: string }> }).oversized;
+      // 20 x ~60 016 bytes is ~217 KB over the snapshot budget (1 MiB less the 64 KiB envelope); each replacement saves ~59.9 KB.
+      expect(recorded).toHaveLength(4);
+      for (const { field, bytes, sha256 } of recorded) {
+        expect([bytes, sha256]).toEqual([digest(values[field]!).bytes, digest(values[field]!).sha256]);
+      }
+      expect((entry!.changes as Array<{ field: string; old_value: unknown }>).filter(change => change.field.startsWith('attr') && change.old_value === values[change.field]).length)
+        .toBe(20 - recorded.length);
+    });
+
+    // Only the value over 64 KiB is replaced while the rest fits the plan: 9 x 60 000 is ~540 KB, 15 x 60 000 is ~900 KB (plan ~905 KB, within 1 MiB).
+    it.each([9, 15])('one value over 64 KiB beside %i values under every limit: only the oversized value is replaced, the rest stays in history and audit changes', async (count) => {
+      const values: Record<string, string> = Object.fromEntries(Array.from({ length: count }, (_, i) => [`attr${i}`, `${i}`.padEnd(60_000, 'k')]));
+      values['big'] = 'b'.repeat(70_000);
+      const id = seedWith(values);
+      expect((await del('a', id)).status).toBe(422);
+      expect((await recover('a', id)).status).toBe(204);
+      const [entry] = await getAuditService(getPostgresClient().pool).getCIAuditHistory(id, A);
+      const metadata = entry!.metadata as { oversized_count: number; oversized: Array<{ field: string; bytes: number; sha256: string }> };
+      expect(metadata.oversized).toEqual([{ field: 'big', ...digest(values['big']!) }]);
+      expect(metadata.oversized_count).toBe(1);
+      const changes = entry!.changes as Array<{ field: string; old_value: unknown }>;
+      for (const [field, value] of Object.entries(values).filter(([name]) => name !== 'big')) {
+        expect(changes).toContainEqual({ field, old_value: value, new_value: null });
+      }
+      const [row] = await rows('SELECT previous_values FROM ci_change_history WHERE ci_id = $1', [id]);
+      expect(row!['previous_values']).toMatchObject({ ...values, big: { $hp797: 'oversized', ...digest(values['big']!) } });
+    });
+
+    it('GET /:id/stored-properties: admin only; returns every stored value untouched (what GET /:id narrows away) as HP1 JSON, and its sha256 is the recovery evidence', async () => {
+      const description = 'd'.repeat(65_535);
+      const id = seedWith({ description, metadata: '{"k":"v"}', extra: 7 });
+      expect((await request(app).get(`/api/v1/cis/${id}/stored-properties`).set(headers('viewer'))).status).toBe(403);
+      expect((await request(app).get(`/api/v1/cis/${id}/stored-properties`).set(headers('operator'))).status).toBe(403);
+      expect((await request(app).get(`/api/v1/cis/${id}/stored-properties`).set(headers('none'))).status).toBe(403);
+      const res = await request(app).get(`/api/v1/cis/${id}/stored-properties`).set(headers('a'));
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ id, properties: { name: 'seeded', description, metadata: '{"k":"v"}', extra: 7 } });
+      expect((await recover('a', id)).status).toBe(204);
+      const [entry] = await getAuditService(getPostgresClient().pool).getCIAuditHistory(id, A);
+      const [recorded] = (entry!.metadata as { oversized: Array<{ sha256: string }> }).oversized;
+      expect(createHash('sha256').update(JSON.stringify(res.body.data.properties['description'])).digest('hex')).toBe(recorded!.sha256);
+    });
+
+    it('GET /:id/stored-properties of a foreign or missing CI is the constant 404 and reads nothing of the other organization', async () => {
+      const foreign = seedWith({ description: 'secret-of-b' });
+      Object.assign(mockGraph.nodes.get(foreign)!, { organization_id: B });
+      const responses = [await request(app).get(`/api/v1/cis/${foreign}/stored-properties`).set(headers('a')),
+        await request(app).get(`/api/v1/cis/${randomUUID()}/stored-properties`).set(headers('a'))];
+      expect(responses.map(r => r.status)).toEqual([404, 404]);
+      expect(JSON.stringify(responses.map(r => r.body))).not.toContain('secret-of-b');
+    });
+
+    it('a foreign or missing CI is 404 and appends nothing; the evidence reference is bounded and has no control characters', async () => {
+      const [foreign, own] = [seedWith({ description: 'x'.repeat(65_535) }), seedWith({ description: 'x'.repeat(65_535) })];
+      Object.assign(mockGraph.nodes.get(foreign)!, { organization_id: B });
+      const before = (await audit()).length;
+      expect([(await recover('a', foreign)).status, (await recover('a', randomUUID())).status,
+        (await recover('a', own, { evidence_ref: 'x'.repeat(513) })).status, (await recover('a', own, { evidence_ref: 'a\nb' })).status,
+        (await recover('a', own, { evidence_ref: 'vault://e/\u202Egpj.txt' })).status, (await recover('a', own, { evidence_ref: 'a\u200Bb' })).status,
+      ]).toEqual([404, 404, 400, 400, 400, 400]);
+      expect([(await audit()).length, mockGraph.nodes.has(own), mockGraph.nodes.has(foreign)]).toEqual([before, true, true]);
+      expect(await ciRows(own)).toEqual([]);
+    });
   });
 
   it('a W left pending by an unproven outcome is audited once, by the original actor, when recovery commits it', async () => {

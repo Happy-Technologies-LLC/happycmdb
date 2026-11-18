@@ -100,6 +100,16 @@ ciRoutes.put(
 ciRoutes.delete('/:id', authMiddleware.requirePermission('write'), journalRequestGuard(),
   controller.deleteCI.bind(controller));
 
+// HAP-797: admin-only recovery delete of a legacy CI whose stored value breaks the 64 KiB plan limit (the ordinary delete above is 422 for it).
+// The body names the external evidence the full value was preserved in; the audit row carries it with each value's size and hash.
+const oversizedDeleteSchema = Joi.object({
+  evidence_ref: Joi.string().min(1).max(512).pattern(/^[^\p{Cc}\p{Cf}]*$/u).required(),
+});
+ciRoutes.post('/:id/oversized-delete', authMiddleware.requireRole('admin'), journalRequestGuard(),
+  validateRequest(oversizedDeleteSchema, 'body'), controller.deleteOversizedCI.bind(controller));
+// Read-only companion: the full stored values (HP1 JSON) to preserve before the delete. GET /:id narrows the node to fixed keys.
+ciRoutes.get('/:id/stored-properties', authMiddleware.requireRole('admin'), controller.getCIStoredProperties.bind(controller));
+
 // Get CI relationships
 ciRoutes.get(
   '/:id/relationships',

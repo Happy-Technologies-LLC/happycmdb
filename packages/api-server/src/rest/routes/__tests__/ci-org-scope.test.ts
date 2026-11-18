@@ -683,6 +683,10 @@ describe('/api/v1/cis tenant scoping', () => {
     expect([own.status, own.body.data.map((ci: { id: string }) => ci.id), own.body.pagination.total])
       .toEqual([200, ['ci-a-ext'], 1]);
     expect((await list(AS_A, ' ext-1 ')).body.data).toEqual([]); // exact value, never trimmed (D17-9)
+    // HAP-797: only control characters (Cc) are refused; a format character (U+200B) stays a valid external_id.
+    seedCI('ci-a-zwsp', ORG_A, { external_id: 'ext\u200B1' });
+    const zwsp = await list(AS_A, 'ext\u200B1');
+    expect([zwsp.status, zwsp.body.data.map((ci: { id: string }) => ci.id)]).toEqual([200, ['ci-a-zwsp']]);
     const used = await list(AS_C, 'ext-1');
     expect([used.status, used.body.data, used.body.pagination.total]).toEqual([200, [], 0]);
     for (const unused of ['ext-unused', 'x'.repeat(200)]) {
@@ -799,7 +803,7 @@ describe('/api/v1/cis tenant scoping', () => {
     try {
       const post = (extra: object) => request(app).post('/api/v1/cis').set(AS_A).send({ name: 'n', type: 'server', ...extra });
       const UNAVAILABLE = { success: false, error: 'Service Unavailable', message: 'CI write temporarily unavailable' };
-      for (const external of [' ext-1 ', 'x'.repeat(200)]) { // F1: stored verbatim, never trimmed (D17-9); F2: 200 is the bound
+      for (const external of [' ext-1 ', 'x'.repeat(200), 'ext\u200B1']) { // F1: stored verbatim, never trimmed (D17-9); F2: 200 is the bound; HAP-797: U+200B (Cf) stays valid
         const created = await post({ external_id: external });
         expect([created.status, created.body.data.external_id]).toEqual([201, external]);
         expect(graph.nodes.get(created.body.data.id)).toMatchObject({ organization_id: ORG_A, external_id: external });
@@ -807,9 +811,9 @@ describe('/api/v1/cis tenant scoping', () => {
       for (const rows of [[], [GLOBAL], [COMPOSITE, GLOBAL], [COMPOSITE, SERVER_GLOBAL], 'throw' as const]) { // probed on every create
         constraints = rows;
         const refused = await post({ external_id: 'ext-1' });
-        expect([rows, refused.status, refused.body, journal.mock.calls.length]).toEqual([rows, 503, UNAVAILABLE, 2]);
+        expect([rows, refused.status, refused.body, journal.mock.calls.length]).toEqual([rows, 503, UNAVAILABLE, 3]);
       }
-      expect([(await post({})).status, probes]).toEqual([201, 7]); // no external_id: no probe
+      expect([(await post({})).status, probes]).toEqual([201, 8]); // no external_id: no probe
       await request(app).put('/api/v1/cis/ci-a-app').set(AS_A).send({ name: 'renamed', external_id: 'ext-2' });
       expect(update.mock.calls).toEqual([['ci-a-app', { name: 'renamed' }, ORG_A, 'user-a']]);
     } finally {

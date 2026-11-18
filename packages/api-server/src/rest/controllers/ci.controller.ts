@@ -5,7 +5,7 @@ import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { requestActor, sendJournalError } from '../../journal-http';
 import {
-  CI_TRAVERSAL_QUERY_TIMEOUT_MS, createCITraversalWork, getNeo4jClient, getPostgresClient, getAuditService,
+  CI_TRAVERSAL_QUERY_TIMEOUT_MS, createCITraversalWork, enc, getNeo4jClient, getPostgresClient, getAuditService,
 } from '@cmdb/database';
 import { logger, validateCISortField, validateSortDirection } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
@@ -302,6 +302,47 @@ export class CIController {
     } catch (error) {
       if (sendJournalError(res, error)) return;
       logger.error('Error deleting CI', error);
+      res.status(500).json({ success: false, error: 'Failed to delete CI' });
+    }
+  }
+
+  /**
+   * HAP-797: the admin, read-only evidence read for the oversized recovery delete: every stored property of an owned CI, HP1-encoded
+   * (`enc`, the form the recovery's `bytes` and `sha256` describe), so nothing is narrowed, parsed or truncated. 404 missing/foreign,
+   * 409 while the CI has an unresolved journal write.
+   */
+  async getCIStoredProperties(req: Request, res: Response): Promise<void> {
+    try {
+      const id = req.params['id']!;
+      const organizationId = requestOrganizationId(req);
+      const stored = await readSingleCI(organizationId, id, () => this.neo4jClient.getCIProperties(id, organizationId));
+      if (!stored) {
+        sendCINotFound(res);
+        return;
+      }
+      res.json({ success: true, data: { id, properties: enc(stored) } });
+    } catch (error) {
+      if (error instanceof CIGapError) {
+        res.status(409).json(CI_GAP_RESPONSE);
+        return;
+      }
+      logger.error('Error reading stored CI properties', error);
+      res.status(500).json({ success: false, error: 'Failed to retrieve CI' });
+    }
+  }
+
+  /** HAP-797: the admin recovery delete (route-gated) of a CI whose stored value the ordinary delete cannot plan. 204; 404 missing/foreign; 409 not oversized. */
+  async deleteOversizedCI(req: Request, res: Response): Promise<void> {
+    try {
+      if (!(await this.neo4jClient.deleteOversizedCI(req.params['id']!, requestOrganizationId(req), requestActor(req),
+        req.body.evidence_ref as string))) {
+        sendCINotFound(res);
+        return;
+      }
+      res.status(204).send();
+    } catch (error) {
+      if (sendJournalError(res, error)) return;
+      logger.error('Error deleting oversized CI', error);
       res.status(500).json({ success: false, error: 'Failed to delete CI' });
     }
   }

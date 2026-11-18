@@ -234,9 +234,22 @@ curl -X POST "$CMDB/api/v1/cis/$CI_ID/oversized-delete" \
   -d '{"evidence_ref": "vault://cmdb-evidence/legacy-ci-1234"}'
 ```
 
-1. Preserve the full value first, outside the CMDB (for example `GET /api/v1/cis/:id`, saved to your evidence store). `evidence_ref` is a free-text reference of 1 to 512 characters without control characters; the CMDB does not resolve or check it.
+1. Preserve the full values first, outside the CMDB. `GET /api/v1/cis/:id` is NOT the preservation copy: it returns only fixed keys plus parsed `metadata`, so an attribute such as `description` and the stored `metadata` string are missing. Use the admin-only, read-only `GET /api/v1/cis/:id/stored-properties` (the `admin` role; a viewer or operator gets `403`, a missing or foreign CI the constant `404`, a CI with an unresolved journal write `409`) and save the response body to your evidence store:
+
+   ```bash
+   curl -sS "$CMDB/api/v1/cis/$CI_ID/stored-properties" -H "Authorization: Bearer $ADMIN_TOKEN" > "ci-$CI_ID.stored.json"
+   ```
+
+   `data.properties` holds every stored property exactly as stored, in the HP1 JSON encoding (`$hp1` tags keep integer, float, temporal and non-UTF-8 values lossless; plain strings and `metadata` stay as stored). Saving this response is the preservation; the recovery fixes a snapshot from the CI's stored values at the time of the delete, so a CI that changes between the read and the delete shows different `sha256` values in the audit row. `evidence_ref` is a free-text reference of 1 to 512 characters without control characters; the CMDB does not resolve or check it.
 2. The call runs the same journaled delete (`204` on success, `404` for a missing or foreign CI). The CI's own state, relationships and derived rows are removed exactly as `DELETE` would.
-3. Evidence is bounded. The `ci_change_history` `deleted` row and the `DELETE` audit row hold every value that fits, and for each value that does not, `{"$hp797": "oversized", "bytes": N, "sha256": "..."}` instead of the value. `bytes` and `sha256` are over `JSON.stringify` of the value (UTF-8), so you can recompute both from the preserved copy. The audit row's `metadata` carries `recovery: "oversized_delete"`, `evidence_ref`, `oversized_count` and the largest 20 `{field, bytes, sha256}` entries. It is a hash-chained `audit_log` row by the verified admin, like any CI delete.
+3. Evidence is bounded. The `ci_change_history` `deleted` row and the `DELETE` audit row hold every value that fits, and for each value that does not, `{"$hp797": "oversized", "bytes": N, "sha256": "..."}` instead of the value. A value is replaced when it breaks a per-value limit (over 64 KiB, or an array over 1000 members). Only if the snapshot with those replacements still exceeds 1 MiB less a 64 KiB envelope are further values replaced, largest first, until it fits; no value that fits every limit is replaced otherwise. `bytes` and `sha256` are over `JSON.stringify` of the value's HP1 encoding (UTF-8), the `properties[field]` member of the saved file, not over the raw value: for an integer or temporal array the two differ (a 1001-element integer array is 24 917 bytes encoded). Recompute from the saved file:
+
+   ```bash
+   node -e 'const v=JSON.parse(require("fs").readFileSync(process.argv[1])).data.properties[process.argv[2]];
+   const j=JSON.stringify(v);console.log(Buffer.byteLength(j),require("crypto").createHash("sha256").update(j).digest("hex"))' "ci-$CI_ID.stored.json" description
+   ```
+
+   The two printed values must equal the `bytes` and `sha256` of that field in the audit row. The audit row's `metadata` carries `recovery: "oversized_delete"`, `evidence_ref`, `oversized_count` and the largest 20 `{field, bytes, sha256}` entries. It is a hash-chained `audit_log` row by the verified admin, like any CI delete.
 4. A CI with no value over the limits is refused with `409` (`not_oversized`): use the ordinary `DELETE`. The ordinary `DELETE` and merge stay `422` for an oversized CI; there is no merge recovery, so delete the oversized CI through this path and re-create or re-discover it.
 
 Not covered: a CI with more than 1000 stored properties (a different limit) stays `422`.

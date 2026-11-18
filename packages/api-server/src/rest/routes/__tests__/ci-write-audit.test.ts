@@ -273,7 +273,7 @@ describe('with AUDIT_CHAIN_KEY', () => {
       expect(mockGraph.nodes.has(kept)).toBe(true);
       expect((await del('a', fits)).status).toBe(204);
       expect(mockGraph.nodes.has(fits)).toBe(false);
-      // 12 x 60 000 bytes is over the recovery snapshot budget but under the 1 MiB plan limit: the ordinary delete plans it.
+      // 12 x 60 000 bytes is under the 1 MiB plan limit: the ordinary delete plans it, so the recovery path has nothing to do.
       const many = seedWith(Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`attr${i}`, 'z'.repeat(60_000)])));
       expect((await recover('a', many)).status).toBe(409);
       expect((await del('a', many)).status).toBe(204);
@@ -286,12 +286,55 @@ describe('with AUDIT_CHAIN_KEY', () => {
       expect((await recover('a', id)).status).toBe(204);
       const [entry] = await getAuditService(getPostgresClient().pool).getCIAuditHistory(id, A);
       const recorded = (entry!.metadata as { oversized: Array<{ field: string; bytes: number; sha256: string }> }).oversized;
-      expect(recorded.length).toBeGreaterThan(0);
+      // 20 x ~60 016 bytes is ~217 KB over the snapshot budget (1 MiB less the 64 KiB envelope); each replacement saves ~59.9 KB.
+      expect(recorded).toHaveLength(4);
       for (const { field, bytes, sha256 } of recorded) {
         expect([bytes, sha256]).toEqual([digest(values[field]!).bytes, digest(values[field]!).sha256]);
       }
       expect((entry!.changes as Array<{ field: string; old_value: unknown }>).filter(change => change.field.startsWith('attr') && change.old_value === values[change.field]).length)
         .toBe(20 - recorded.length);
+    });
+
+    // Only the value over 64 KiB is replaced while the rest fits the plan: 9 x 60 000 is ~540 KB, 15 x 60 000 is ~900 KB (plan ~905 KB, within 1 MiB).
+    it.each([9, 15])('one value over 64 KiB beside %i values under every limit: only the oversized value is replaced, the rest stays in history and audit changes', async (count) => {
+      const values: Record<string, string> = Object.fromEntries(Array.from({ length: count }, (_, i) => [`attr${i}`, `${i}`.padEnd(60_000, 'k')]));
+      values['big'] = 'b'.repeat(70_000);
+      const id = seedWith(values);
+      expect((await del('a', id)).status).toBe(422);
+      expect((await recover('a', id)).status).toBe(204);
+      const [entry] = await getAuditService(getPostgresClient().pool).getCIAuditHistory(id, A);
+      const metadata = entry!.metadata as { oversized_count: number; oversized: Array<{ field: string; bytes: number; sha256: string }> };
+      expect(metadata.oversized).toEqual([{ field: 'big', ...digest(values['big']!) }]);
+      expect(metadata.oversized_count).toBe(1);
+      const changes = entry!.changes as Array<{ field: string; old_value: unknown }>;
+      for (const [field, value] of Object.entries(values).filter(([name]) => name !== 'big')) {
+        expect(changes).toContainEqual({ field, old_value: value, new_value: null });
+      }
+      const [row] = await rows('SELECT previous_values FROM ci_change_history WHERE ci_id = $1', [id]);
+      expect(row!['previous_values']).toMatchObject({ ...values, big: { $hp797: 'oversized', ...digest(values['big']!) } });
+    });
+
+    it('GET /:id/stored-properties: admin only; returns every stored value untouched (what GET /:id narrows away) as HP1 JSON, and its sha256 is the recovery evidence', async () => {
+      const description = 'd'.repeat(65_535);
+      const id = seedWith({ description, metadata: '{"k":"v"}', extra: 7 });
+      expect((await request(app).get(`/api/v1/cis/${id}/stored-properties`).set(headers('viewer'))).status).toBe(403);
+      expect((await request(app).get(`/api/v1/cis/${id}/stored-properties`).set(headers('none'))).status).toBe(403);
+      const res = await request(app).get(`/api/v1/cis/${id}/stored-properties`).set(headers('a'));
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ id, properties: { name: 'seeded', description, metadata: '{"k":"v"}', extra: 7 } });
+      expect((await recover('a', id)).status).toBe(204);
+      const [entry] = await getAuditService(getPostgresClient().pool).getCIAuditHistory(id, A);
+      const [recorded] = (entry!.metadata as { oversized: Array<{ sha256: string }> }).oversized;
+      expect(createHash('sha256').update(JSON.stringify(res.body.data.properties['description'])).digest('hex')).toBe(recorded!.sha256);
+    });
+
+    it('GET /:id/stored-properties of a foreign or missing CI is the constant 404 and reads nothing of the other organization', async () => {
+      const foreign = seedWith({ description: 'secret-of-b' });
+      Object.assign(mockGraph.nodes.get(foreign)!, { organization_id: B });
+      const responses = [await request(app).get(`/api/v1/cis/${foreign}/stored-properties`).set(headers('a')),
+        await request(app).get(`/api/v1/cis/${randomUUID()}/stored-properties`).set(headers('a'))];
+      expect(responses.map(r => r.status)).toEqual([404, 404]);
+      expect(JSON.stringify(responses.map(r => r.body))).not.toContain('secret-of-b');
     });
 
     it('a foreign or missing CI is 404 and appends nothing; the evidence reference is bounded and has no control characters', async () => {

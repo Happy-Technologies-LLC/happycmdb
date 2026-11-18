@@ -151,8 +151,14 @@ export function assertPlanRepresentable(plan: Encoded): void {
 /** HAP-797: stands in for a stored value that exceeds a plan limit; the value itself is never copied into evidence. */
 export interface OversizedValue { field: string; bytes: number; sha256: string }
 export const OVERSIZED_TAG = '$hp797';
-/** Snapshot budget once the plain snapshot breaks a limit: history.previous is stored once in the plan, so this leaves the 1 MiB plan limit ample room for the envelope. */
-export const OVERSIZED_SNAPSHOT_BYTES = 512 * 1024;
+/** Room the plan envelope (audit metadata, history row fields) needs besides the snapshot; history.previous is stored once in the plan. */
+export const OVERSIZED_ENVELOPE_BYTES = 64 * 1024;
+/** Snapshot budget: what is left of the 1 MiB plan limit after the envelope. Values are hashed away only when the bounded snapshot exceeds it. */
+export const OVERSIZED_SNAPSHOT_BYTES = PLAN_LIMITS.totalBytes - OVERSIZED_ENVELOPE_BYTES;
+
+/** JSON bytes of the stand-in for a value whose HP1 encoding is `bytes` long (the sha256 is always 64 hex characters). */
+const stubBytes = (bytes: number): number =>
+  Buffer.byteLength(JSON.stringify({ [OVERSIZED_TAG]: 'oversized', bytes, sha256: '0'.repeat(64) }));
 
 const representable = (encoded: Encoded): boolean => {
   try { assertPlanRepresentable(encoded); return true; } catch (error) {
@@ -163,25 +169,29 @@ const representable = (encoded: Encoded): boolean => {
 
 /**
  * HAP-797: the bounded form of a CI's raw properties for the admin oversized-delete path. A property whose encoding breaks a
- * §3.6 limit (a value over 64 KiB, an array over 1000 members) is replaced by `{ $hp797: 'oversized', bytes, sha256 }`; so,
- * only when the whole snapshot still breaks a limit (total over 1 MiB), are the largest remaining values until it fits
- * OVERSIZED_SNAPSHOT_BYTES. A CI the ordinary delete can plan therefore has no oversized value. `bytes` and `sha256` describe the
+ * §3.6 limit (a value over 64 KiB, an array over 1000 members) is replaced by `{ $hp797: 'oversized', bytes, sha256 }`. Only if
+ * the snapshot with just those replacements still exceeds OVERSIZED_SNAPSHOT_BYTES (the 1 MiB plan total less the envelope) are
+ * the largest remaining values replaced too, one by one, until it fits: a value that fits every limit is never replaced
+ * otherwise. A CI the ordinary delete can plan therefore has no replaced value. `bytes` and `sha256` describe the
  * value's HP1 JSON encoding (`JSON.stringify(enc(value))`, UTF-8), so a holder of the value can recompute both. The snapshot is
  * encoded like any plan map (`enc`), so odd property names are escaped. A value `enc` itself cannot represent still throws
  * PlanUnrepresentableError: there is nothing to measure.
  */
 export function boundOversizedSnapshot(props: Record<string, unknown>): { snapshot: Encoded; oversized: OversizedValue[] } {
+  const emptyMap = Buffer.byteLength(JSON.stringify(enc({})));
   const entries = Object.keys(props).sort().map(field => {
     const json = JSON.stringify(enc(props[field]));
-    return { field, json, bytes: Buffer.byteLength(json), keep: true };
+    // What the member adds to the encoded map besides its value (key, colon, comma, any escaping), measured with a 4-byte `null`.
+    const overhead = Buffer.byteLength(JSON.stringify(enc({ [field]: null }))) - emptyMap - 4 + 1;
+    return { field, json, bytes: Buffer.byteLength(json), overhead, keep: representable(enc(props[field])) };
   });
-  for (const entry of entries) entry.keep = representable(enc(props[entry.field]));
-  if (!representable(enc(props))) {
-    let total = entries.reduce((sum, entry) => entry.keep ? sum + entry.bytes : sum, 0);
-    for (const entry of entries.filter(e => e.keep).sort((a, b) => b.bytes - a.bytes)) {
+  // The snapshot's size with the per-value replacements applied; the trim phase decides from it, not from the original props.
+  let total = emptyMap + entries.reduce((sum, e) => sum + e.overhead + (e.keep ? e.bytes : stubBytes(e.bytes)), 0);
+  if (total > OVERSIZED_SNAPSHOT_BYTES) {
+    for (const entry of entries.filter(e => e.keep && e.bytes > stubBytes(e.bytes)).sort((a, b) => b.bytes - a.bytes)) {
       if (total <= OVERSIZED_SNAPSHOT_BYTES) break;
       entry.keep = false;
-      total -= entry.bytes;
+      total -= entry.bytes - stubBytes(entry.bytes);
     }
   }
   const bounded: Record<string, unknown> = {};

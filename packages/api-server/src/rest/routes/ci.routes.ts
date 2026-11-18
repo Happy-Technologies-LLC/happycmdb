@@ -107,6 +107,8 @@ const oversizedDeleteSchema = Joi.object({
 });
 ciRoutes.post('/:id/oversized-delete', authMiddleware.requireRole('admin'), journalRequestGuard(),
   validateRequest(oversizedDeleteSchema, 'body'), controller.deleteOversizedCI.bind(controller));
+// Read-only companion: the full stored values (HP1 JSON) to preserve before the delete. GET /:id narrows the node to fixed keys.
+ciRoutes.get('/:id/stored-properties', authMiddleware.requireRole('admin'), controller.getCIStoredProperties.bind(controller));
 
 // Get CI relationships
 ciRoutes.get(

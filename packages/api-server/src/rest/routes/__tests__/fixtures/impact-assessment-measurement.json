@@ -1,0 +1,76 @@
+{
+  "fixtureVersion": "1",
+  "readAt": "2026-06-15T12:00:00.000Z",
+  "targetCi": "ci-checkout-api",
+  "edges": [
+    {
+      "id": "edge-declared",
+      "case": "declared-dependency",
+      "from": "ci-checkout-api",
+      "to": "ci-payments-db",
+      "type": "DEPENDS_ON",
+      "rows": [
+        { "evidence_class": "declared", "polarity": "supports", "n": 1, "newest": "2026-05-16T12:00:00.000Z" }
+      ],
+      "expectedCurrentness": "current"
+    },
+    {
+      "id": "edge-observed",
+      "case": "observed-dependency",
+      "from": "ci-checkout-api",
+      "to": "ci-session-cache",
+      "type": "DEPENDS_ON",
+      "rows": [
+        { "evidence_class": "static_observed", "polarity": "supports", "n": 3, "newest": "2026-06-13T12:00:00.000Z" }
+      ],
+      "expectedCurrentness": "current"
+    },
+    {
+      "id": "edge-stale",
+      "case": "stale-observation",
+      "from": "ci-checkout-api",
+      "to": "ci-legacy-report-service",
+      "type": "DEPENDS_ON",
+      "rows": [
+        { "evidence_class": "static_observed", "polarity": "supports", "n": 2, "newest": "2026-05-06T12:00:00.000Z" }
+      ],
+      "expectedCurrentness": "stale"
+    },
+    {
+      "id": "edge-contradicted",
+      "case": "contradicted-claim",
+      "from": "ci-checkout-api",
+      "to": "ci-feature-flag-service",
+      "type": "DEPENDS_ON",
+      "rows": [
+        { "evidence_class": "declared", "polarity": "supports", "n": 1, "newest": "2026-03-17T12:00:00.000Z" },
+        { "evidence_class": "static_observed", "polarity": "contradicts", "n": 1, "newest": "2026-06-14T12:00:00.000Z" }
+      ],
+      "expectedCurrentness": "contradicted"
+    },
+    {
+      "id": "edge-unobserved",
+      "case": "unobserved-runtime-connection",
+      "from": "ci-checkout-api",
+      "to": "ci-ledger-exporter",
+      "type": "DEPENDS_ON",
+      "rows": [],
+      "expectedCurrentness": "unsupported"
+    }
+  ],
+  "beyondGraph": ["ci-tax-rate-service", "ci-fraud-scorer"],
+  "answerKey": {
+    "falseComplete": {
+      "declaredGraphIsCompleteRuntimeBlastRadius": false
+    },
+    "missedDependency": {
+      "mustName": ["ci-tax-rate-service", "ci-fraud-scorer"]
+    },
+    "wronglyTrustedEdge": {
+      "notCurrentEdges": ["edge-stale", "edge-contradicted", "edge-unobserved"]
+    },
+    "wronglyDiscardedEdge": {
+      "currentEdges": ["edge-declared", "edge-observed"]
+    }
+  }
+}

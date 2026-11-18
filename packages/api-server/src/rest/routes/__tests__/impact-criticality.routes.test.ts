@@ -49,6 +49,20 @@ jest.mock('../../../auth/auth-bootstrap', () => {
     apiKeys: { headerName: 'X-API-Key' },
   } as ConfigSchema['auth']) };
 });
+// HAP-2030: this suite pins the engine's traversal and cache behaviour, not edge evidence (impact-graph-evidence.test.ts
+// owns that). The evidence read, which would need Neo4j incarnations and PostgreSQL receipts, is stubbed at its module
+// boundary and answers "no receipts" for every edge it is asked about.
+jest.mock('../../edge-evidence', () => {
+  const actual = jest.requireActual<typeof import('../../edge-evidence')>('../../edge-evidence');
+  return {
+    ...actual,
+    loadEdgeEvidence: async (_organizationId: string, edges: Array<{ from: string; to: string; type: string }>) =>
+      new Map(edges.map(edge => [actual.edgeKey(edge.from, edge.to, edge.type), {
+        currentness: 'unsupported' as const,
+        evidence: actual.summarizeEvidence(edge.from, edge.to, edge.type, []),
+      }])),
+  };
+});
 
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { impactRoutes } from '../drift-impact.routes';
@@ -59,6 +73,9 @@ app.use('/api/v1/impact', getAuthMiddleware().authenticate(), impactRoutes);
 const criticality = (id: string) => request(app).get(`/api/v1/impact/criticality/${id}`).set('authorization', 'Bearer viewer');
 const graph = (depth: number) => request(app).get(`/api/v1/impact/graph/A?max_depth=${depth}`).set('authorization', 'Bearer viewer');
 const graphRecord = (fields: Record<string, unknown>) => ({ get: (key: string) => fields[key] });
+// HAP-2030 adds `currentness` and `evidence` to each edge; the members the engine produced must stay exactly as they were.
+const withoutEvidence = (edgeList: Array<Record<string, unknown>>) =>
+  edgeList.map(({ currentness: _currentness, evidence: _evidence, ...engineMembers }) => engineMembers);
 
 beforeEach(() => {
   principalSequence++;
@@ -268,7 +285,7 @@ it('preserves a small owned graph at depth boundaries and rejects depth outside 
     expect(response.status).toBe(200);
     expect(response.body.data.nodes.map((node: { ci_id: string; criticality: number }) =>
       [node.ci_id, node.criticality])).toEqual([['A', 50], ['B', 50]]);
-    expect(response.body.data.edges).toEqual([{
+    expect(withoutEvidence(response.body.data.edges)).toEqual([{
       source_id: 'A', target_id: 'B', relationship_type: 'DEPENDS_ON', weight: 1, is_critical: true,
     }]);
     expect(response.body.data.metadata).toMatchObject({ total_nodes: 2, total_edges: 1, max_depth: depth });
@@ -302,7 +319,7 @@ it('keeps uncached small-graph scores while writing the completed graph cache', 
   expect(response.status).toBe(200);
   expect(response.body.data.nodes.map((node: { ci_id: string; criticality: number }) =>
     [node.ci_id, node.criticality])).toEqual([['A', 62], ['B', 45]]);
-  expect(response.body.data.edges).toEqual([{
+  expect(withoutEvidence(response.body.data.edges)).toEqual([{
     source_id: 'A', target_id: 'B', relationship_type: 'DEPENDS_ON', weight: 1, is_critical: true,
   }]);
   expect(query.mock.calls.filter(([sql]) => sql.includes('INSERT INTO ci_criticality_scores'))).toHaveLength(2);

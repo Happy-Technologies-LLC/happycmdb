@@ -26,6 +26,7 @@ import { AuthenticatedRequest, requestOrganizationId } from '../../middleware/au
 import { assertNoCIGap, writeReferencedCIs } from '../../read-admission';
 import { sendJournalError } from '../../journal-http';
 import { impactEnvelope } from '../impact-envelope';
+import { loadEdgeEvidence, qualificationOf } from '../edge-evidence';
 
 type SnapshotType = 'configuration' | 'performance' | 'relationships';
 
@@ -382,7 +383,19 @@ export class DriftImpactController {
     const graph = await this.impactEngine.buildDependencyGraph(rootCiId, maxDepth, organizationId);
     architectureRemainingMs();
     const envelope = await impactEnvelope(organizationId, graph.nodes.map(graphNode => graphNode.ci_id));
-    return { status: 200, body: { success: true, data: graph, ...envelope } };
+    // Evidence never enters the engine (its criticality cache stays evidence-free): the engine's edges are annotated here.
+    const qualified = await loadEdgeEvidence(
+      organizationId,
+      graph.edges.map(edge => ({ from: edge.source_id, to: edge.target_id, type: edge.relationship_type })),
+      { timeoutMs: architectureRemainingMs() });
+    architectureRemainingMs();
+    const data = {
+      ...graph,
+      edges: graph.edges.map(edge => ({
+        ...edge, ...qualificationOf(qualified, edge.source_id, edge.target_id, edge.relationship_type),
+      })),
+    };
+    return { status: 200, body: { success: true, data, ...envelope } };
   }
 
   async getDependencyGraph(req: AuthenticatedRequest, res: Response): Promise<void> {

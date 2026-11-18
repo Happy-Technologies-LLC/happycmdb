@@ -321,7 +321,8 @@ describe('atomicity and replay', () => {
     const group = lost.body.correlation_id as string;
     const [stored] = await rows('SELECT plan->\'receipt\' AS receipt FROM ci_reconciliation_operations WHERE group_id = $1 LIMIT 1', [group]);
     expect(stored!['receipt']).toEqual({ from, to, fromIncarnationId: incarnation(from), toIncarnationId: incarnation(to), type: 'DEPENDS_ON',
-      evidenceClass: 'declared', polarity: 'supports', sourceName: 'api', sourceId: null, sourceVersion: null, method: 'api', rationaleCode: null });
+      evidenceClass: 'declared', polarity: 'supports', sourceName: 'api', sourceId: null, sourceVersion: null, method: 'api', rationaleCode: null,
+      observerType: 'user' });
     await rows(`INSERT INTO relationship_evidence_receipts (organization_id, from_ci_id, to_ci_id, from_incarnation_id, to_incarnation_id,
       relationship_type, evidence_class, polarity, source_name, method, observed_at, observer, observer_type, correlation_id)
       VALUES ($1, $2, $3, $4, $5, 'DEPENDS_ON', 'declared', 'supports', 'api', 'api', now(), 'earlier-attempt', 'user', $6)`,

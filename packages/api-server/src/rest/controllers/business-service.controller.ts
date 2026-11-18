@@ -10,7 +10,7 @@ import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import type { PoolClient } from 'pg';
 import {
-  auditChainReady, CI_TRAVERSAL_QUERY_TIMEOUT_MS, CITraversalLimitError, createCITraversalWork,
+  auditChainReady, CI_TRAVERSAL_QUERY_TIMEOUT_MS, CITraversalLimitError, createCITraversalWork, type CIEdgeRef,
   getNeo4jClient, getPostgresClient, JournalUnavailableError, MAX_CI_TRAVERSAL_NODES, MAX_CI_TRAVERSAL_WORK,
 } from '@cmdb/database';
 import { logger } from '@cmdb/common';
@@ -23,6 +23,7 @@ import {
 import { decodeListCursor, encodeListCursor } from '../../services/c1-list-cursor';
 import { sendTraversalFailure } from './traversal-failure';
 import { impactEnvelope } from '../impact-envelope';
+import { loadEdgeEvidence, qualificationOf, type EdgeQualification } from '../edge-evidence';
 import {
   appendPortfolioAudit, ifMatchVersion, sendWriteFailure, WRITE_UNAVAILABLE, type WriteRefusal,
 } from './portfolio-write';
@@ -52,7 +53,11 @@ const CONTEXT_MAX_DEPTH = 5;
 type ContextNode =
   | { kind: 'business_service'; id: string; name: string; criticality: string; lifecycle: string }
   | { kind: 'ci'; id: string; name: string; type: string; status: string };
-type ContextEdge = { from: string; to: string; type: string; dependency_type?: string; mapping_type?: string };
+type ContextEdge = {
+  from: string; to: string; type: string; dependency_type?: string; mapping_type?: string;
+  /** HAP-2030: only on edges between two CIs. */
+  currentness?: EdgeQualification['currentness']; evidence?: EdgeQualification['evidence'];
+};
 type ContextReach = { kind: ContextNode['kind']; id: string; distance: number };
 /** One step of a /context service walk; name and status columns belong to the service the step reaches. */
 type ServiceWalkRow = {
@@ -877,17 +882,27 @@ export class BusinessServiceController {
         reached(reach.dependencies, 'ci', mapping.ci_id, 1);
       }
       const roots = [...new Set(mapped.map(mapping => mapping.ci_id))];
+      const ciEdges: CIEdgeRef[] = [];
       for (const direction of roots.length === 0 ? [] : ['out', 'in'] as const) {
         const graph = await getNeo4jClient().getDependencyGraph(roots, organizationId, CONTEXT_MAX_DEPTH, direction, work);
         for (const { ci, distance } of graph.nodes) {
           addNode({ kind: 'ci', id: ci._id, name: ci.name, type: ci._type, status: ci._status });
           reached(direction === 'out' ? reach.dependencies : reach.impact, 'ci', ci._id, distance + 1);
         }
-        for (const edge of graph.edges) addEdge(edge);
+        ciEdges.push(...graph.edges);
       }
 
       const envelope = await impactEnvelope(
         organizationId, [...nodes.values()].filter(node => node.kind === 'ci').map(node => node.id));
+
+      // HAP-2030: receipts exist only for Neo4j CI relationships. One evidence read qualifies the CI edges of both directions;
+      // service-to-service and MAPPED_CI edges get neither member. CI edges are keyed apart from the context edges, so a
+      // service edge with the same id strings is neither replaced nor qualified.
+      const qualified = await loadEdgeEvidence(organizationId, ciEdges, { timeoutMs: CI_TRAVERSAL_QUERY_TIMEOUT_MS });
+      for (const edge of ciEdges) {
+        edges.set(JSON.stringify(['ci', edge.from, edge.to, edge.type]),
+          { ...edge, ...qualificationOf(qualified, edge.from, edge.to, edge.type) });
+      }
 
       res.json({
         success: true,

@@ -96,8 +96,9 @@ is performed by this change.
 - `DELETE /cis/{id}` - Delete CI
 - `POST /cis/search` - Search CIs
 - `GET /cis/{id}/relationships` - Get CI relationships
-- `GET /cis/{id}/dependencies` - Get dependency tree
-- `GET /cis/{id}/impact` - Impact analysis
+- `GET /cis/{id}/dependencies` - Get dependency tree; `edges[]` lists every followed edge with `currentness` (`current|stale|contradicted|unsupported`) and an `evidence` aggregate (HAP-2030). Currentness is derived at read from the edge's receipts against the database clock (windows: declared 180 d, static_observed 7 d, runtime_observed 1 d, inferred never current; no receipt is `unsupported`), never stored, and `current` is not a runtime guarantee. A failed or timed-out evidence read is 504/503, never an optimistic body
+- `GET /cis/{id}/impact` - Impact analysis; same `edges[]` with `currentness` and `evidence` over the downstream and upstream edges (HAP-2030), 503/504 documented
+- `GET /impact/graph/{rootCiId}` - Bounded dependency graph; every `data.edges[]` item carries `currentness` and `evidence` (HAP-2030), 503/504 documented, never a partial graph
 - `GET /cis/{id}/audit` - Audit history
 
 Every REST/GraphQL CI and relationship write (create, update, delete, ITIL
@@ -314,7 +315,7 @@ Scoped to the caller's organization: 403 without an organization claim; a servic
 - `POST /business-services/{service_id}/cis` - Map CIs
 - `DELETE /business-services/{service_id}/cis/{ci_id}` - Unmap CI
 - `GET /business-services/{service_id}/dependencies` - Service dependencies
-- `GET /business-services/{service_id}/context` - C1 context read: dependency and impact subgraph (services and mapped CIs, both directions, depth 5 / 100 nodes / 400 adjacency rows / 5 s statements; refused with 503/504 over a bound, never truncated)
+- `GET /business-services/{service_id}/context` - C1 context read: dependency and impact subgraph (services and mapped CIs, both directions, depth 5 / 100 nodes / 400 adjacency rows / 5 s statements; refused with 503/504 over a bound, never truncated). CI-to-CI edges carry `currentness` and `evidence` (HAP-2030); service-to-service and MAPPED_CI edges carry neither
 - `POST /business-services/{service_id}/dependencies` - Create dependency
 - `DELETE /business-services/{service_id}/dependencies/{depends_on_service_id}` - Delete dependency
 - `GET /business-services/{service_id}/health` - Incident and change metrics (7/30-day UTC windows)

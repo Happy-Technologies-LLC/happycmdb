@@ -122,6 +122,8 @@ The `200` also carries `basis` (`"declared_graph_reachability"`), `runtime_blast
 
 The `coverage` read of `ci_source_lineage` runs in its own short transaction under a PostgreSQL `statement_timeout` (HAP-2071): 3000 ms by default, set by `IMPACT_LINEAGE_TIMEOUT_MS` (a positive integer in milliseconds, at most 2147483647, the PostgreSQL maximum; any other value, including a larger one, falls back to the default). When it fires, the endpoint answers its `504` timeout response and sends no `basis`, `runtime_blast_radius` or `coverage`, so a response never claims coverage it did not compute. The connection is released.
 
+The per-edge evidence read of the same endpoint (HAP-2030) has its own bound: one PostgreSQL statement under a `statement_timeout` of 3000 ms by default, set by `IMPACT_EVIDENCE_TIMEOUT_MS` (same rules as `IMPACT_LINEAGE_TIMEOUT_MS`). When it fires, or the edge limit (1000) is exceeded, the endpoint answers its `504` or `503` response with no partial body. CI-to-CI edges of `GET /api/v1/business-services/{service_id}/context` carry `currentness` and `evidence`; service-to-service and `MAPPED_CI` edges carry neither. See [Evidence-qualified relationships and impact](/architecture/system-overview#evidence-qualified-relationships-and-impact-proposed).
+
 ```json
 {
   "success": true,

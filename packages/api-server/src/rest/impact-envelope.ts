@@ -16,11 +16,14 @@ export const IMPACT_LINEAGE_TIMEOUT_MS = 3000;
  */
 export const MAX_IMPACT_LINEAGE_TIMEOUT_MS = 2147483647;
 
+/** The statement_timeout knobs' one validation: a positive integer no greater than the int4 ceiling, else `fallback`. */
+export function boundedStatementTimeoutMs(raw: string | undefined, fallback: number): number {
+  const configured = Number(raw);
+  return Number.isSafeInteger(configured) && configured > 0 && configured <= MAX_IMPACT_LINEAGE_TIMEOUT_MS ? configured : fallback;
+}
+
 export function impactLineageTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
-  const configured = Number(env['IMPACT_LINEAGE_TIMEOUT_MS']);
-  return Number.isSafeInteger(configured) && configured > 0 && configured <= MAX_IMPACT_LINEAGE_TIMEOUT_MS
-    ? configured
-    : IMPACT_LINEAGE_TIMEOUT_MS;
+  return boundedStatementTimeoutMs(env['IMPACT_LINEAGE_TIMEOUT_MS'], IMPACT_LINEAGE_TIMEOUT_MS);
 }
 
 /**
@@ -45,7 +48,11 @@ export interface ImpactEnvelope {
     ci_nodes_in_scope: number;
     /** In-scope CIs with no `ci_source_lineage` row in the caller's organization, sorted. */
     unreported_ci_ids: string[];
-    /** Relationship evidence receipts exist (HAP-2029) but no `runtime_observed` producer does, so none is ever in scope; reading receipts for coverage is HAP-2030. */
+    /**
+     * Relationship evidence receipts exist (HAP-2029) but no `runtime_observed` producer does, so none is ever in scope.
+     * HAP-2030 qualifies each edge of an impact read (`edge-evidence.ts`) but deliberately leaves this flag `false` until a
+     * runtime producer exists.
+     */
     runtime_observed_receipts_in_scope: false;
     note: typeof COVERAGE_NOTE;
   };

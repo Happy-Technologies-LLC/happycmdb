@@ -33,7 +33,7 @@ import type { JournaledWrite } from '../../../../../database/src/journal/journal
 import { dec } from '../../../../../database/src/journal/encoding';
 import {
   APP_GRANTS_SQL, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql, journalReadAclSql,
-  lineageReadAclSql, lineageTableSql,
+  lineageReadAclSql, lineageTableSql, receiptTableSql,
 } from './fixtures/app-login';
 
 // Placeholder config so loadConfig() validates; no Neo4j/Redis/PostgreSQL server is contacted.
@@ -196,6 +196,14 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
   if (cypher.startsWith('MATCH (ci:CI {id: $id})') && cypher.endsWith('RETURN properties(ci) AS props')) {
     const props = graph.nodes.get(params['id'] as string);
     return props !== undefined && ciInScope(props) ? [record({ props: { ...props } })] : [];
+  }
+
+  // HAP-2030 getCIIncarnations: the current incarnation of each requested CI the scope owns, in one statement.
+  if (cypher.includes('ci.id IN $ids') && cypher.includes('AS incarnationId')) {
+    return (params['ids'] as string[]).flatMap(id => {
+      const props = graph.nodes.get(id);
+      return props && ciInScope(props) ? [record({ ciId: id, incarnationId: props['incarnation_id'] ?? null })] : [];
+    });
   }
 
   if (cypher.startsWith('MATCH (ci:CI) WHERE') && cypher.includes('AS incarnationId')) {
@@ -428,6 +436,8 @@ beforeAll(async () => {
   // prove their privilege sets.
   await sql(`${lineageTableSql()}\n${APP_GRANTS_SQL}\n${journalReadAclSql()}\n${lineageReadAclSql()}\n`
     + `GRANT SELECT, INSERT, UPDATE, DELETE ON ${[...derivedTables, 'ci_reconciliation_operations', 'ci_reconciliation_epochs'].join(', ')} TO cmdb_user;`);
+  // HAP-2030: 054 verbatim (the edge-evidence read of the impact reads; SELECT, INSERT only for the app login).
+  await sql(receiptTableSql());
 });
 
 beforeEach(async () => {

@@ -145,7 +145,8 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
     pattern: /INSERT\s+INTO\s+auth_credential_events/gi,
     reviewed: {
       'packages/api-server/src/auth/neo4j-auth.repository.ts': 1,
-      'packages/api-server/src/scripts/identity-window.ts': 1,
+      // Reviewed (HAP-2039): the scope grant and revoke audit row
+      'packages/api-server/src/scripts/identity-window.ts': 2,
       'packages/api-server/src/scripts/rotate-user-password.ts': 3,
     },
   },

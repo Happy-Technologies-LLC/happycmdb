@@ -194,12 +194,34 @@ scripts/identity-window.ts grant-portfolio-import-scope  --user-id <id> --operat
 scripts/identity-window.ts revoke-portfolio-import-scope --user-id <id> --operator <name>
 ```
 
-Both require `--user-id` and `--operator` and print one JSON line
-`{"userId": "<id>", "outcome": "granted" | "unchanged" | "revoked"}`. Grant adds only `portfolio:import` (no
-duplicate, other scopes kept); revoke removes only that entry. A repeat is `unchanged` and writes nothing. The
-audit trail is that line plus the node properties `portfolioImportScopeGrantedBy/At` or
-`portfolioImportScopeRevokedBy/At` (operator name and time); there is no audit-table row. Both refuse
-(exit 2, `GrantRefused`) an unknown or ambiguous identity, an identity held by another node
+Both require `--user-id` and `--operator` (1-200 printable characters after trimming; control, format (for example
+U+202E, U+200B) and line/paragraph separator characters are refused; anything else invalid exits 1 before
+any store opens). Grant adds only `portfolio:import` (no duplicate, other scopes kept); revoke removes only that
+entry. A change prints one JSON line
+`{"userId": "<id>", "outcome": "granted" | "revoked", "operator": "<name>", "occurredAt": "<UTC, microseconds>", "eventId": "<uuid>"}`;
+a repeat is `unchanged`, prints `{"userId": "<id>", "outcome": "unchanged"}` and writes nothing. Each `granted` or
+`revoked` change appends one row to the append-only `auth_credential_events` table (event
+`portfolio_import_scope_granted` / `portfolio_import_scope_revoked`, actor `window-script:<operator>`). `eventId` is
+that row's `id` (its primary key: look the row up by it); `occurredAt` is that row's `occurred_at` at full microsecond
+precision (`2026-11-18T09:30:00.123456Z`), so `WHERE occurred_at = '<occurredAt>'` matches it too. The history of every
+grant and revoke is kept. The node
+properties `portfolioImportScopeGrantedBy/At` and `portfolioImportScopeRevokedBy/At` remain only as the latest-state
+cache; each new change overwrites them. Read the history with:
+
+```sql
+SELECT id, occurred_at, event, user_id, actor FROM auth_credential_events
+WHERE event LIKE 'portfolio_import_scope_%' ORDER BY occurred_at;
+```
+
+The scope change in Neo4j is made first and the audit row second; the two stores cannot share a transaction. If the
+row cannot be written, the command exits 3 (`AuditWriteFailed`, fixed message: the change was applied but its audit
+row was not written) and the scope change stays applied, with the node properties as the only record. The message
+names the recovery for its own action: after a failed grant, revoke and re-grant to record it; after a failed revoke,
+grant and re-revoke to record it. Never re-grant after a failed revoke without re-revoking: that leaves the user
+holding the scope with no revoke row. An error while shaping the printed result after the row was written exits 1,
+never 3.
+
+Grant and revoke both refuse (exit 2, `GrantRefused`) an unknown or ambiguous identity, an identity held by another node
 (`identity_collision`), a seeded account, a default-password account, a `scopes` value that is not a list of
 strings, and a write that lost the compare-and-set race (`not_applied`: the user's scopes or eligibility changed
 between the read and the write; re-run). Role `admin`, organization and platform administration grant

@@ -142,7 +142,31 @@ RETURNING id, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.U
  */
 const SCOPE_LOCK_SQL = 'SELECT pg_advisory_xact_lock(2129, hashtext($1))';
 const SCOPE_EVENTS = { granted: 'portfolio_import_scope_granted', revoked: 'portfolio_import_scope_revoked' } as const;
-/** The stored actor is `window-script:<operator>` in a VARCHAR(255). */
+/** The stored actor of a real change is `window-script:<operator>`, of a record-only recovery row
+ * `window-script-record:<operator>` (HAP-2131), each in a VARCHAR(255). The event kind is the same for both. */
+const ACTOR_PREFIX = 'window-script:';
+const RECORD_ACTOR_PREFIX = 'window-script-record:';
+/**
+ * HAP-2131: the record-only insert. One statement, run under the per-user lock: it appends the recovery row unless the
+ * user's latest scope row (any actor) is already a recovery row of this same event, in which case it appends nothing and
+ * returns that row. So a retry after an ambiguous commit adds no duplicate, while a later grant/revoke cycle (whose rows,
+ * real or recovery, become the latest) can be recorded again. `inserted` tells the two apart.
+ */
+const RECORD_EVENT_SQL = `
+WITH latest AS (
+  SELECT id, event, actor, occurred_at FROM auth_credential_events
+  WHERE user_id = $1 AND event IN ('${SCOPE_EVENTS.granted}', '${SCOPE_EVENTS.revoked}')
+  ORDER BY occurred_at DESC, id DESC LIMIT 1
+), existing AS (
+  SELECT id, actor, occurred_at FROM latest WHERE event = $2 AND actor LIKE '${RECORD_ACTOR_PREFIX}%'
+), inserted AS (
+  INSERT INTO auth_credential_events (user_id, event, actor, occurred_at)
+  SELECT $1, $2, $3, clock_timestamp() WHERE NOT EXISTS (SELECT 1 FROM existing)
+  RETURNING id, actor, occurred_at
+)
+SELECT id, actor, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS occurred_at, true AS inserted FROM inserted
+UNION ALL
+SELECT id, actor, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS occurred_at, false AS inserted FROM existing`;
 const MAX_OPERATOR_LENGTH = 200;
 const OPERATOR_INVALID = '--operator must be 1-200 printable characters';
 
@@ -210,7 +234,7 @@ export async function scanDefaultPasswords(
     }
     const [result] = await graph.write(SCAN_MARK_CYPHER, { eid: row['eid'], verifiedHash: hash, verifiedEpoch: row['e0'] });
     if (toNumber(result?.['n']) === 1) {
-      await sql.query(SCAN_EVENT_SQL, [id, `window-script:${operator}`]);
+      await sql.query(SCAN_EVENT_SQL, [id, `${ACTOR_PREFIX}${operator}`]);
       marked.push(id);
     } else {
       alreadyMarkedOrRaced.push(id);
@@ -305,7 +329,11 @@ export type ScopeChange =
   | { userId: string; outcome: 'unchanged' }
   | { userId: string; outcome: 'granted' | 'revoked'; operator: string; occurredAt: string; eventId: string };
 
-/** HAP-2129: the result of recording an already-applied change: the row the recording appended, no Neo4j write behind it. */
+/**
+ * HAP-2129: the result of recording an already-applied change: the row the recording appended, no Neo4j write behind it.
+ * HAP-2131: `alreadyRecorded` is true when the row is an earlier recovery row that this run found instead of appending
+ * (a retry); `operator` is then that earlier row's operator.
+ */
 export interface ScopeRecord {
   userId: string;
   outcome: 'granted' | 'revoked';
@@ -313,6 +341,7 @@ export interface ScopeRecord {
   occurredAt: string;
   eventId: string;
   recordOnly: true;
+  alreadyRecorded: boolean;
 }
 
 /** The Neo4j change committed and its auth_credential_events row was not written. Carries no cause: the
@@ -380,7 +409,13 @@ async function resolveUnderLock(
   } catch {
     throw new ScopeLockUnavailable(action);
   }
-  return resolveIdentity(graph, userId, action);
+  const reread = await resolveIdentity(graph, userId, action);
+  // The node was read again only after the lock on the resolved id; if its id moved in between, the lock held is no
+  // longer the one for this user: refuse before anything is written (nothing was) and let the operator run again.
+  if (reread.mappedId !== resolved.mappedId) {
+    throw new GrantRefused('not_applied', action);
+  }
+  return reread;
 }
 
 interface ScopeEventRow {
@@ -390,13 +425,28 @@ interface ScopeEventRow {
 }
 
 async function insertScopeEvent(tx: RotationSqlQuery, mappedId: string, outcome: 'granted' | 'revoked', operator: string): Promise<ScopeEventRow> {
-  return { userId: mappedId, outcome, rows: (await tx.query(SCOPE_EVENT_SQL, [mappedId, SCOPE_EVENTS[outcome], `window-script:${operator}`])).rows };
+  return { userId: mappedId, outcome, rows: (await tx.query(SCOPE_EVENT_SQL, [mappedId, SCOPE_EVENTS[outcome], `${ACTOR_PREFIX}${operator}`])).rows };
+}
+
+/** HAP-2131: the recovery row of an applied change, or the earlier recovery row that already covers it (`inserted` false). */
+async function insertRecordEvent(tx: RotationSqlQuery, mappedId: string, outcome: 'granted' | 'revoked', operator: string): Promise<ScopeEventRow> {
+  return { userId: mappedId, outcome, rows: (await tx.query(RECORD_EVENT_SQL, [mappedId, SCOPE_EVENTS[outcome], `${RECORD_ACTOR_PREFIX}${operator}`])).rows };
 }
 
 /** Shaping of the committed row; it runs after the transaction, so an error here never claims the row was not written. */
-function shapeEvent({ userId, outcome, rows }: ScopeEventRow, operator: string): Omit<ScopeRecord, 'recordOnly'> {
+function shapeEvent({ userId, outcome, rows }: ScopeEventRow, operator: string): Omit<ScopeRecord, 'recordOnly' | 'alreadyRecorded'> {
   const [event] = rows;
   return { userId, outcome, operator, occurredAt: String(event!['occurred_at']), eventId: String(event!['id']) };
+}
+
+/** The user's scope state as Neo4j holds it now, or undefined when it cannot be read (or is no longer eligible). */
+async function holdsScopeNow(graph: RotationGraph, userId: string, action: string): Promise<boolean | undefined> {
+  try {
+    const { row } = await resolveIdentity(graph, userId, action);
+    return observedScopes(row, action).includes(PORTFOLIO_IMPORT_SCOPE);
+  } catch {
+    return undefined;
+  }
 }
 
 async function changePortfolioImportScope(
@@ -413,10 +463,20 @@ async function changePortfolioImportScope(
         return { unchanged: mappedId };
       }
       const scopes = grant ? [...observed, PORTFOLIO_IMPORT_SCOPE] : observed.filter(scope => scope !== PORTFOLIO_IMPORT_SCOPE);
-      const [written] = await graph.write(
-        grant ? GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER : REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER,
-        { eid: row['eid'], id: userId, observed, scopes, operator }
-      );
+      let written: Row | undefined;
+      try {
+        [written] = await graph.write(
+          grant ? GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER : REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER,
+          { eid: row['eid'], id: userId, observed, scopes, operator }
+        );
+      } catch (error) {
+        // HAP-2131: the write errored on the client, but Neo4j may have committed it (the lost-acknowledgement case).
+        // Under the lock nothing else writes, so a scope state that is now the requested one means the change is applied
+        // and has no row: exit 3 with the record-only recovery, not the raw error. A state that is unchanged, or that
+        // cannot be read, keeps the error.
+        applied = (await holdsScopeNow(graph, userId, action)) === grant;
+        throw error;
+      }
       if (toNumber(written?.['n']) !== 1) {
         throw new GrantRefused('not_applied', action);
       }
@@ -460,12 +520,13 @@ export async function recordPortfolioImportScope(
         throw new GrantRefused('scope_state_mismatch', RECORD_ACTION);
       }
       attempted = true;
-      return insertScopeEvent(tx, mappedId, grant ? 'granted' : 'revoked', operator);
+      return insertRecordEvent(tx, mappedId, grant ? 'granted' : 'revoked', operator);
     });
   } catch (error) {
     throw attempted ? new RecordWriteFailed() : error;
   }
-  return { ...shapeEvent(event, operator), recordOnly: true };
+  const [row] = event.rows;
+  return { ...shapeEvent(event, String(row!['actor']).slice(RECORD_ACTOR_PREFIX.length)), recordOnly: true, alreadyRecorded: row!['inserted'] === false };
 }
 
 /** FD-5: assigns a user's first organization; the same one again is `unchanged` with no write. */
@@ -529,6 +590,19 @@ values.push(argv[++i]!);
   return values;
 }
 
+const VALUE_FLAGS = ['--operator', '--user-id', '--organization-id', '--except'];
+/** HAP-2131: a bare flag (`--grant`, `--revoke`), matched only where it is a flag: the token after a value flag is that flag's value. */
+function hasFlag(argv: readonly string[], flag: string): boolean {
+  for (let i = 1; i < argv.length; i++) {
+    if (VALUE_FLAGS.includes(argv[i]!)) {
+      i++;
+    } else if (argv[i] === flag) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * CLI entry: `inventory` | `stamp [--except <id>]...` | `scan --operator <name>` |
  * `grant-platform-admin --user-id <id> --operator <name>` |
@@ -556,14 +630,14 @@ export async function main(
     if (SCOPE_COMMANDS.includes(command ?? '') && flagValues(argv, '--user-id')[0] === undefined) {
       throw new Error('--user-id <id> is required');
     }
-    // Scope commands only: the stored actor is `window-script:<operator>` (VARCHAR(255)), so an overlong value would
-    // fail the audit insert AFTER the Neo4j change. The message never echoes the value.
+    // Scope commands only: the stored actor is `window-script:<operator>` or `window-script-record:<operator>`
+    // (VARCHAR(255)), so an overlong value would fail the audit insert AFTER the Neo4j change. The message never echoes the value.
     const scopeOperator = SCOPE_COMMANDS.includes(command ?? '') ? operator!.trim() : undefined;
     if (scopeOperator !== undefined && ([...scopeOperator].length > MAX_OPERATOR_LENGTH || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(scopeOperator))) {
       throw new Error(OPERATOR_INVALID);
     }
-    const recordGrant = argv.includes('--grant');
-    if (command === RECORD_COMMAND && recordGrant === argv.includes('--revoke')) {
+    const recordGrant = hasFlag(argv, '--grant');
+    if (command === RECORD_COMMAND && recordGrant === hasFlag(argv, '--revoke')) {
       throw new Error('exactly one of --grant or --revoke is required');
     }
     const assignment = command === 'assign-organization' ? assignmentArgs(argv) : undefined;

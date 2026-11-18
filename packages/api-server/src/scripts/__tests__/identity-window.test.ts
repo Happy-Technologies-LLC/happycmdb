@@ -560,8 +560,8 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
       recorded.push(...(await events()).map(r => [String(r['event']), String(r['actor'])] as [string, string]));
     }
     expect(recorded).toEqual([
-      ['portfolio_import_scope_granted', 'window-script:alice'],
-      ['portfolio_import_scope_revoked', 'window-script:alice'],
+      ['portfolio_import_scope_granted', 'window-script-record:alice'],
+      ['portfolio_import_scope_revoked', 'window-script-record:alice'],
     ]);
   });
 
@@ -656,8 +656,8 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
 
     const rows = await events();
     expect([code, err]).toEqual([0, []]);
-    expect(rows.map(r => [r['event'], r['user_id'], r['actor']])).toEqual([[event, 'p', 'window-script:carol']]);
-    expect(JSON.parse(out[0]!)).toEqual({ userId: 'p', outcome, operator: 'carol', occurredAt: rows[0]!['occurred_text'], eventId: rows[0]!['id'], recordOnly: true });
+    expect(rows.map(r => [r['event'], r['user_id'], r['actor']])).toEqual([[event, 'p', 'window-script-record:carol']]);
+    expect(JSON.parse(out[0]!)).toEqual({ userId: 'p', outcome, operator: 'carol', occurredAt: rows[0]!['occurred_text'], eventId: rows[0]!['id'], recordOnly: true, alreadyRecorded: false });
     expect(calls.reads).toBeGreaterThan(0);
     expect(calls.writes).toBe(0);
     expect(JSON.stringify(users)).toBe(before);
@@ -720,6 +720,173 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     expect(calls.writes).toBe(0);
     expect(JSON.stringify(users)).toBe(before);
     expect(await events()).toEqual([]);
+  });
+
+  // HAP-2131: recovery rows are told apart from real ones, and a retry adds none.
+  const REAL_ACTOR = 'window-script:alice';
+  const RECORD_ACTOR = 'window-script-record:alice';
+  const rowsOf = async () => (await events()).map(r => [String(r['event']), String(r['actor'])]);
+
+  it('a recovery row has the same event as the real one but its own actor marker, and a retry adds no row', async () => {
+    const users = [user()];
+    await grantPortfolioImportScope(fakeGraph(users), keysSql, 'p', 'alice'); // a real grant row
+    await revokePortfolioImportScope(fakeGraph(users), insertting(() => { throw new Error('down'); }), 'p', 'alice').catch(() => undefined); // applied, no row
+    expect(users[0]!.props['scopes']).toEqual([]);
+    open.mockReturnValue(storesOf(users));
+
+    const first = await run([RECORD_CMD, '--revoke', '--user-id', 'p', '--operator', 'alice']);
+    const retry = await run([RECORD_CMD, '--revoke', '--user-id', 'p', '--operator', 'bob']);
+
+    expect(await rowsOf()).toEqual([
+      ['portfolio_import_scope_granted', REAL_ACTOR], ['portfolio_import_scope_revoked', RECORD_ACTOR],
+    ]);
+    const rows = await events();
+    expect([first.code, retry.code]).toEqual([0, 0]);
+    expect(JSON.parse(first.out[0]!)).toMatchObject({ outcome: 'revoked', operator: 'alice', eventId: rows[1]!['id'], recordOnly: true, alreadyRecorded: false });
+    // The retry (even by another operator) reports the row that already covers the change, and writes nothing.
+    expect(JSON.parse(retry.out[0]!)).toEqual({ userId: 'p', outcome: 'revoked', operator: 'alice', occurredAt: rows[1]!['occurred_text'], eventId: rows[1]!['id'], recordOnly: true, alreadyRecorded: true });
+  });
+
+  it('a later change is recorded again: only a recovery row that is the latest scope row of the same event covers a record', async () => {
+    const users = [user()];
+    const failing = insertting(() => { throw new Error('down'); });
+    open.mockReturnValue(storesOf(users));
+    const record = (flag: string) => run([RECORD_CMD, flag, '--user-id', 'p', '--operator', 'alice']);
+
+    await grantPortfolioImportScope(fakeGraph(users), failing, 'p', 'alice').catch(() => undefined);
+    await record('--grant');
+    await revokePortfolioImportScope(fakeGraph(users), failing, 'p', 'alice').catch(() => undefined); // revoked, no row
+    await record('--revoke');
+    await grantPortfolioImportScope(fakeGraph(users), failing, 'p', 'alice').catch(() => undefined); // granted again, no row
+    await record('--grant');
+    await record('--grant');
+
+    expect(await rowsOf()).toEqual([
+      ['portfolio_import_scope_granted', RECORD_ACTOR], ['portfolio_import_scope_revoked', RECORD_ACTOR], ['portfolio_import_scope_granted', RECORD_ACTOR],
+    ]);
+  });
+
+  it('a real row after a recovery row of the same event means the next record appends again', async () => {
+    const users = [user()];
+    const failing = insertting(() => { throw new Error('down'); });
+    open.mockReturnValue(storesOf(users));
+    await grantPortfolioImportScope(fakeGraph(users), failing, 'p', 'alice').catch(() => undefined);
+    await run([RECORD_CMD, '--grant', '--user-id', 'p', '--operator', 'alice']);
+    await revokePortfolioImportScope(fakeGraph(users), keysSql, 'p', 'alice');
+    await grantPortfolioImportScope(fakeGraph(users), failing, 'p', 'alice').catch(() => undefined);
+
+    await run([RECORD_CMD, '--grant', '--user-id', 'p', '--operator', 'alice']);
+
+    expect(await rowsOf()).toEqual([
+      ['portfolio_import_scope_granted', RECORD_ACTOR], ['portfolio_import_scope_revoked', REAL_ACTOR], ['portfolio_import_scope_granted', RECORD_ACTOR],
+    ]);
+  });
+
+  it('a recovery row of one user never covers another user', async () => {
+    const users = [user({ scopes: [SCOPE] }), { elementId: '4:q', props: { _id: 'q', _username: 'quinn', scopes: [SCOPE] } }];
+    open.mockReturnValue(storesOf(users));
+
+    for (const id of ['p', 'q']) await run([RECORD_CMD, '--grant', '--user-id', id, '--operator', 'alice']);
+
+    expect((await events()).map(r => r['user_id'])).toEqual(['p', 'q']);
+  });
+
+  // HAP-2131: a Neo4j write that errors on the client after the server committed it.
+  /** The graph whose scope write is applied and then errors, as `tx.commit()` rejecting after the server committed. */
+  const commitThenError = (inner: RotationGraph, apply: boolean, rereadFails = false): RotationGraph => {
+    let failed = false;
+    return {
+      read: async (cypher, params) => {
+        if (failed && rereadFails) throw new Error('neo4j unreachable password=hunter2');
+        return inner.read(cypher, params);
+      },
+      write: async (cypher, params) => {
+        failed = true;
+        if (apply) await inner.write(cypher, params);
+        throw new Error('commit acknowledgement lost password=hunter2');
+      },
+    };
+  };
+
+  it.each([
+    ['grant-portfolio-import-scope', 'grant', [], [SCOPE]],
+    ['revoke-portfolio-import-scope', 'revoke', [SCOPE], []],
+  ] as const)('%s whose Neo4j commit applied but errored on the client exits 3 with the record-only recovery, and that recovery succeeds', async (command, action, before, after) => {
+    const users = [user({ scopes: [...before] })];
+    open.mockReturnValue({ ...storesOf(users), graph: commitThenError(fakeGraph(users), true) });
+
+    const failed = await run([command, '--user-id', 'p', '--operator', 'alice']);
+
+    expect([failed.code, failed.out]).toEqual([3, []]);
+    expect(failed.err).toEqual([`identity-window: portfolio-import scope ${action}: the scope change is applied but its audit row was not written; record it with: ${RECORD} --${action} --user-id <id> --operator <name>`]);
+    expect(JSON.stringify(failed.err)).not.toContain('hunter2');
+    expect(users[0]!.props['scopes']).toEqual(after);
+    expect(await events()).toEqual([]);
+
+    open.mockReturnValue(storesOf(users));
+    const record = await run([RECORD_CMD, `--${action}`, '--user-id', 'p', '--operator', 'alice']);
+
+    expect(record.code).toBe(0);
+    expect(await rowsOf()).toEqual([[action === 'grant' ? 'portfolio_import_scope_granted' : 'portfolio_import_scope_revoked', RECORD_ACTOR]]);
+  });
+
+  it('a Neo4j write error that did not apply the change keeps exit 1 and the raw error, and so does one whose state cannot be re-read', async () => {
+    for (const [apply, rereadFails] of [[false, false], [true, true]] as const) {
+      const users = [user()];
+      open.mockReturnValue({ ...storesOf(users), graph: commitThenError(fakeGraph(users), apply, rereadFails) });
+
+      const { code, out, err } = await run(['grant-portfolio-import-scope', '--user-id', 'p', '--operator', 'alice']);
+
+      expect([code, out]).toEqual([1, []]);
+      expect(err).toEqual(['identity-window: commit acknowledgement lost password=hunter2']);
+    }
+    expect(await events()).toEqual([]);
+  });
+
+  it('a node whose id moves between the two reads under the lock is refused with no write and no row', async () => {
+    const users = [user({ id: 'alias' })];
+    const graph = fakeGraph(users);
+    let identityReads = 0;
+    const moving: RotationGraph = {
+      read: async (cypher, params) => {
+        const rows = await graph.read(cypher, params);
+        if (norm(cypher) === norm(GRANT_IDENTITY_CYPHER) && ++identityReads === 1) users[0]!.props['_id'] = 'q';
+        return rows;
+      },
+      write: graph.write,
+    };
+    const { calls, graph: counting } = counted(moving);
+
+    for (const act of [
+      () => grantPortfolioImportScope(counting, keysSql, 'alias', 'alice'),
+      () => recordPortfolioImportScope(counting, keysSql, 'alias', 'alice', false),
+    ]) {
+      identityReads = 0;
+      users[0]!.props['_id'] = 'p';
+      await expect(act()).rejects.toMatchObject({ name: 'GrantRefused', reason: 'not_applied' });
+    }
+
+    expect(calls.writes).toBe(0);
+    expect(users[0]!.props['scopes']).toBeUndefined();
+    expect(await events()).toEqual([]);
+  });
+
+  it('--grant and --revoke are flags only: as the value of another flag they are not a direction', async () => {
+    open.mockReturnValue(storesOf([user()]));
+
+    const none = await run([RECORD_CMD, '--operator', '--grant', '--user-id', 'p']);
+    const both = await run([RECORD_CMD, '--user-id', '--revoke', '--operator', '--grant']);
+
+    expect([none.code, none.out, none.err]).toEqual([1, [], ['identity-window: exactly one of --grant or --revoke is required']]);
+    expect(both.code).toBe(1);
+    expect(open).not.toHaveBeenCalled();
+    expect(await events()).toEqual([]);
+
+    // The value is the operator; the real flag still decides the direction.
+    open.mockReturnValue(storesOf([user()]));
+    const revoke = await run([RECORD_CMD, '--revoke', '--operator', '--grant', '--user-id', 'p']);
+    expect(revoke.code).toBe(0);
+    expect(await rowsOf()).toEqual([['portfolio_import_scope_revoked', 'window-script-record:--grant']]);
   });
 
   it.each([

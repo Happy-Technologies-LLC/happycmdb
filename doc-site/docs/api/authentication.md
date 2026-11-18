@@ -219,7 +219,12 @@ WHERE event LIKE 'portfolio_import_scope_%' ORDER BY occurred_at;
 
 The scope change in Neo4j is made first and the audit row second; the two stores cannot share a transaction. If the
 row cannot be written, the command exits 3 (`AuditWriteFailed`, fixed message: the change was applied but its audit
-row was not written) and the scope change stays applied, with the node properties as the only record.
+row was not written) and the scope change stays applied, with the node properties as the only record. The same exit 3
+covers a Neo4j write that errors on the client after the server may have committed it (a lost commit acknowledgement):
+the command then re-reads the user's scope under the lock, and if it already holds the requested state the change is
+applied and unrecorded, so it exits 3 as above, not 1. If the scope is unchanged after the error, or cannot be re-read
+(Neo4j still unreachable), the raw error is printed with exit 1: check the live scope, and run the record command only
+if it changed.
 
 **Recovery after exit 3: `record-portfolio-import-scope`.** The exit-3 message prints the exact command for its own
 action, with the same flag as the failed run:
@@ -231,15 +236,23 @@ scripts/identity-window.ts record-portfolio-import-scope --revoke --user-id <id>
 
 It writes the missing `portfolio_import_scope_granted` / `portfolio_import_scope_revoked` row and **makes no Neo4j
 write**: do not grant or revoke again (that would change the scope a second time and leave the first change
-unrecorded). Exactly one of `--grant` or `--revoke` is required, and `--operator` has the validation above; the
-operator who runs the record is the row's actor (`window-script:<operator>`) and the row's time is the time of the
-record, not of the original change. Before it writes, it reads the live scope and refuses, with exit 2
+unrecorded). Exactly one of `--grant` or `--revoke` is required (matched only as a flag: the token after
+`--operator`, `--user-id`, `--organization-id` or `--except` is that flag's value, never a direction), and
+`--operator` has the validation above. The row has the same event as a real change but its actor is
+`window-script-record:<operator>`, so a recovery row is told apart from a grant or revoke row; the operator who runs
+the record is the actor, and the row's time is the time of the record, not of the original change. Before it
+writes, it reads the live scope and refuses, with exit 2
 (`GrantRefused`, `scope_state_mismatch`) and no row, unless the state matches the action: `--grant` only while the
 user holds `portfolio:import`, `--revoke` only while the user does not. It applies the identity refusals of grant and
-revoke below, and prints the same JSON line as a change, with `"recordOnly": true`. Run it once per exit 3: it does
-not look for an existing row, so a second run writes a second row. If the record's own insert fails it exits 1
+revoke below, and prints the same JSON line as a change, with `"recordOnly": true` and `"alreadyRecorded"`. The record
+is idempotent: under the lock it appends nothing when the user's latest scope row (any actor) is already a recovery
+row of the same event, and prints that row with `"alreadyRecorded": true` (its `operator` is the earlier row's), so a
+retry after an ambiguous commit adds no duplicate. A later grant or revoke, real or recovered, makes the next record
+of the same event append again. It does not check the node properties, so a scope changed with no row between two
+records of one event is not seen as a new change. If the record's own insert fails it exits 1
 (`the audit row was not written and nothing else was changed`); run the same command again. An error while shaping the
-printed result after the row was written exits 1, never 3.
+printed result after the row was written exits 1, never 3. To list only the recovery rows:
+`WHERE event LIKE 'portfolio_import_scope_%' AND actor LIKE 'window-script-record:%'`.
 
 **Per-user lock.** Grant, revoke and record each take a PostgreSQL transaction-scoped advisory lock keyed on the
 target user id, `pg_advisory_xact_lock(2129, hashtext(<user id>))`, as the first statement of the transaction that
@@ -249,12 +262,17 @@ user's audit rows, ordered by `occurred_at` (the time of the insert, not of the 
 of the Neo4j changes. Different users do not wait for each other. The two-integer form with class 2129 is a different
 key space from every other advisory lock in the application (one-bigint keys, and the two-integer class 8271), so no
 existing lock is taken or blocked by a user id; a hash collision of two ids only makes their runs wait for each other.
+The lock wait is **unbounded**: there is no `lock_timeout`, and the Neo4j reads made while the lock is held have no
+timeout (each Neo4j write transaction is bounded at 30 seconds), so a stalled run holds up every other run on the
+same user until it ends or its PostgreSQL session is cancelled. A cancellation is reported as "PostgreSQL is
+unavailable" with nothing changed. This is acceptable for an interactive operator command; stop the stalled run.
 
 **PostgreSQL outage.** The lock is a precondition: when PostgreSQL cannot be connected to, grant, revoke and record
 now refuse up front, with exit 1 and a fixed message (`... refused: PostgreSQL is unavailable, so the per-user lock
 could not be taken; nothing was changed`), before any Neo4j read or write. Before HAP-2129 a PostgreSQL outage let the
-Neo4j change happen and ended in exit 3. Now exit 3 means only that PostgreSQL failed after the Neo4j change was made
-(the insert or the commit failed): recover it with the record command above. After an exit 1 refusal, re-run the
+Neo4j change happen and ended in exit 3. Now exit 3 means only that the Neo4j change was made and has no audit row:
+PostgreSQL failed after it (the insert or the commit failed) or the Neo4j write errored after committing: recover it
+with the record command above. After an exit 1 refusal, re-run the
 same grant or revoke once PostgreSQL is back.
 
 Grant and revoke both refuse (exit 2, `GrantRefused`) an unknown or ambiguous identity, an identity held by another node

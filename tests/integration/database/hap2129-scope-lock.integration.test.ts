@@ -163,8 +163,37 @@ describe('the per-user scope lock on a real PostgreSQL', () => {
     expect(await rowsOf(user.id)).toEqual([]);
     // ...and does not leave the user locked.
     expect((await within(grantPortfolioImportScope(user.view().graph, operator().sql, user.id, 'alice'), 'the grant')).outcome).toBe('granted');
-    expect((await within(recordPortfolioImportScope(user.view().graph, operator().sql, user.id, 'alice', true), 'the record')).outcome).toBe('granted');
-    expect((await rowsOf(user.id)).map(row => row.event)).toEqual(['portfolio_import_scope_granted', 'portfolio_import_scope_granted']);
+    const recorded = await within(recordPortfolioImportScope(user.view().graph, operator().sql, user.id, 'alice', true), 'the record');
+    expect([recorded.outcome, recorded.alreadyRecorded]).toEqual(['granted', false]);
+    // HAP-2131: the recovery row has the event of the real one and its own actor marker; a retry appends nothing.
+    const retried = await within(recordPortfolioImportScope(user.view().graph, operator().sql, user.id, 'bob', true), 'the retried record');
+    expect([retried.eventId, retried.alreadyRecorded]).toEqual([recorded.eventId, true]);
+    expect((await rowsOf(user.id)).map(row => [row.event, row.actor])).toEqual([
+      ['portfolio_import_scope_granted', 'window-script:alice'], ['portfolio_import_scope_granted', 'window-script-record:alice'],
+    ]);
+  });
+
+  it('two concurrent record runs on one user append one recovery row: the second, queued at the lock, finds the first', async () => {
+    const user = memoryUser([PORTFOLIO_IMPORT_SCOPE]);
+    const gate = deferred();
+    let entered = false;
+    const first = user.view();
+    const holding: RotationGraph = {
+      read: async (cypher, params) => { entered = true; await gate.promise; return first.graph.read(cypher, params); },
+      write: first.graph.write,
+    };
+
+    const a = recordPortfolioImportScope(holding, operator().sql, user.id, 'alice', true);
+    await until(async () => entered, 'the first record to read the user while holding the lock');
+    const b = recordPortfolioImportScope(user.view().graph, operator().sql, user.id, 'bob', true);
+    await until(async () => (await waitingOnScopeLock()) >= 1, 'the second record to wait on the advisory lock');
+    expect(await rowsOf(user.id)).toEqual([]);
+    gate.resolve();
+    const [recordedA, recordedB] = await within(Promise.all([a, b]), 'both records');
+
+    expect([recordedA.alreadyRecorded, recordedB.alreadyRecorded]).toEqual([false, true]);
+    expect(recordedB.eventId).toBe(recordedA.eventId);
+    expect((await rowsOf(user.id)).map(row => [row.event, row.actor])).toEqual([['portfolio_import_scope_granted', 'window-script-record:alice']]);
   });
 
   it('refuses before any Neo4j access when PostgreSQL cannot be connected to', async () => {

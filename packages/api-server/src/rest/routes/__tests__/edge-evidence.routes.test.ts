@@ -723,6 +723,21 @@ describe.each(ENDPOINTS)('GET /cis/:id/%s', (name, path) => {
       expect(receiptCheckouts().map(settled)).toEqual([{ statements: ['BEGIN', 'set_config', 'receipts', 'ROLLBACK'], releases: 1 }]);
     });
 
+    it('SELECT revoked on the receipts table (42501) is the endpoint\'s existing 500 with no members, never unsupported, and recovers on re-grant (HAP-2126)', async () => {
+      const x = await withEdge();
+      await ownerExec('REVOKE SELECT ON relationship_evidence_receipts FROM cmdb_user');
+      let res;
+      try {
+        res = await get('a', path(x));
+      } finally {
+        await ownerExec('GRANT SELECT ON relationship_evidence_receipts TO cmdb_user');
+      }
+      expect([res.status, res.body]).toEqual([500, FAILURES[name]]);
+      expect(res.text).not.toMatch(EDGE_WORDS);
+      expect(res.text).not.toContain('unsupported');
+      expect((await get('a', path(x))).status).toBe(200);
+    });
+
     it('a connection error on the receipts read is the same 500 with no members', async () => {
       const x = await withEdge();
       mockPg.failReceiptsRead = Object.assign(new Error('Connection terminated unexpectedly'), { code: 'ECONNRESET' });

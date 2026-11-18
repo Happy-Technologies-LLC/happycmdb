@@ -215,3 +215,54 @@ fi
 compose run --rm migrator
 assert_fresh_end_state 'down + re-up'
 echo 'Disposable generation-94 upgrade and 045 rollback + re-up passed'
+
+# HAP-2126: a cmdb_app dropped and re-created by app-login (045 plus the per-table grants of 046-048 and 054, re-applied
+# because the migrator never re-runs a recorded migration) must hold exactly what it holds after a fresh migration. The
+# matrix is every privilege of cmdb_app on every relation, schema and function of public and cmdb.
+grant_matrix() {
+  owner_psql -c "
+    SELECT n.nspname || '.' || c.relname || '|' || p.privilege || '|'
+        || CASE WHEN CASE WHEN c.relkind = 'S' THEN has_sequence_privilege('cmdb_app', c.oid, p.privilege)
+                     ELSE has_table_privilege('cmdb_app', c.oid, p.privilege) END THEN 't' ELSE 'f' END
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      CROSS JOIN LATERAL unnest(CASE WHEN c.relkind = 'S' THEN ARRAY['USAGE', 'SELECT', 'UPDATE']
+        ELSE ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'] END) AS p(privilege)
+      WHERE n.nspname IN ('public', 'cmdb') AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
+    UNION ALL
+    SELECT 'schema ' || n.nspname || '|' || p.privilege || '|'
+        || CASE WHEN has_schema_privilege('cmdb_app', n.oid, p.privilege) THEN 't' ELSE 'f' END
+      FROM pg_namespace n CROSS JOIN (VALUES ('USAGE'), ('CREATE')) AS p(privilege) WHERE n.nspname IN ('public', 'cmdb')
+    UNION ALL
+    SELECT 'function ' || f.oid::regprocedure::text || '|EXECUTE|'
+        || CASE WHEN has_function_privilege('cmdb_app', f.oid, 'EXECUTE') THEN 't' ELSE 'f' END
+      FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace WHERE n.nspname IN ('public', 'cmdb')" | LC_ALL=C sort
+}
+grant_matrix > "$scratch/matrix_baseline"
+# Non-empty and carrying the five per-table grants of the app-login block, so an empty diff cannot pass.
+[ "$(wc -l < "$scratch/matrix_baseline")" -gt 100 ] || { echo 'cmdb_app grant matrix is unexpectedly small' >&2; exit 1; }
+for entry in service_offerings:SELECT,INSERT,UPDATE ai_sync_cursors:SELECT,INSERT,UPDATE portfolio_imports:SELECT,INSERT \
+  portfolio_import_map:SELECT,INSERT relationship_evidence_receipts:SELECT,INSERT; do
+  for privilege in SELECT INSERT UPDATE DELETE TRUNCATE REFERENCES TRIGGER; do
+    expected=f
+    case ",${entry#*:}," in *",$privilege,"*) expected=t ;; esac
+    grep -qxF "public.${entry%%:*}|$privilege|$expected" "$scratch/matrix_baseline" \
+      || { echo "baseline matrix lacks public.${entry%%:*}|$privilege|$expected" >&2; exit 1; }
+  done
+done
+compose stop api-server
+for _ in $(seq 30); do
+  sessions=$(owner_psql -c "SELECT count(*) FROM pg_stat_activity WHERE usename = 'cmdb_app'")
+  [ "$sessions" = 0 ] && break
+  sleep 1
+done
+[ "$sessions" = 0 ] || { echo 'cmdb_app sessions outlived the API' >&2; exit 1; }
+owner_psql -c 'DROP OWNED BY cmdb_app; DROP ROLE cmdb_app'
+[ "$(owner_psql -c "SELECT count(*) FROM pg_roles WHERE rolname = 'cmdb_app'")" = 0 ] \
+  || { echo 'cmdb_app survived DROP ROLE' >&2; exit 1; }
+compose run --rm migrator
+grant_matrix > "$scratch/matrix_recreated"
+if ! diff -u "$scratch/matrix_baseline" "$scratch/matrix_recreated"; then
+  echo 'A re-created cmdb_app differs from a freshly migrated one (rows above: - fresh, + re-created)' >&2
+  exit 1
+fi
+echo 'Disposable cmdb_app re-creation equals a fresh install'

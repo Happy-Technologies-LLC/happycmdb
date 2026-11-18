@@ -633,4 +633,42 @@ describe('ImpactPredictionEngine', () => {
       expect(decommissionImpact.impact_score).toBeGreaterThan(configChangeImpact.impact_score);
     });
   });
+
+  describe('criticality walk minted incarnation validation (HAP-2126)', () => {
+    const FALLBACK = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const malformed = ['not-a-uuid', '', '00000000-0000-0000-0000-000000000000'];
+    // getCI yields no valid marker: absent, or itself malformed.
+    const graphMarkers: Array<Record<string, unknown>> = [{}, { _incarnation_id: 'not-a-uuid' }];
+    const cases = graphMarkers.flatMap(marker => malformed.map(fallback => [marker, fallback] as const));
+
+    it.each(cases)(
+      'refuses graph marker %j with minted fallback %j: no SQL, nothing stored',
+      async (marker, fallback) => {
+        mockNeo4jClient.getCI.mockImplementation(async (id: string) => ({ id, ...marker }));
+        mockNeo4jClient.ensureCIIncarnation.mockResolvedValue(fallback);
+
+        await expect(engine.getCriticalityScore('ci-legacy', 'org-a')).rejects.toThrow('CI not found: ci-legacy');
+
+        expect(mockNeo4jClient.ensureCIIncarnation).toHaveBeenCalledTimes(1);
+        expect(mockNeo4jClient.getSession).not.toHaveBeenCalled();
+        expect(mockPgClient.query).not.toHaveBeenCalled(); // neither the cache SELECT nor any store
+      }
+    );
+
+    it('passes a valid minted fallback to the cache SELECT unchanged', async () => {
+      mockNeo4jClient.getCI.mockImplementation(async (id: string) => ({ id }));
+      mockNeo4jClient.ensureCIIncarnation.mockResolvedValue(FALLBACK);
+      mockPgClient.query.mockResolvedValueOnce({
+        rows: [{ ci_id: 'ci-legacy', ci_name: 'legacy', criticality_score: 42, factors: {}, calculated_at: new Date() }],
+      });
+
+      const score = await engine.getCriticalityScore('ci-legacy', 'org-a');
+
+      expect(score.criticality_score).toBe(42);
+      expect(mockPgClient.query).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockPgClient.query.mock.calls[0];
+      expect(sql).toContain('ci_criticality_scores');
+      expect(params).toEqual(['ci-legacy', FALLBACK, 'org-a']);
+    });
+  });
 });

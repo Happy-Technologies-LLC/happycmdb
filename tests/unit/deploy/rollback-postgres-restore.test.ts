@@ -200,7 +200,8 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
     writeFileSync(join(dir, 'grant-step.sh'), out.slice(out.lastIndexOf('\n', out.indexOf('MANDATORY POST-RESTORE GRANT STEP')) + 1));
     const ledger = ['032_secret_table_public_grants', '033_public_business_service_audit_acl', '034_history_sequence_discovery_acl',
       '039_recent_audit_activity_acl', '044_business_service_journal_read_acl', '045_staging_app_login_acl', '046_service_offerings',
-      '047_ai_sync_cursors', '048_portfolio_import', '050_bi_cost_view_grants', '051_bi_view_security_barrier'].map((name) => `${name}.sql`);
+      '047_ai_sync_cursors', '048_portfolio_import', '050_bi_cost_view_grants', '051_bi_view_security_barrier',
+      '054_relationship_evidence_receipts'].map((name) => `${name}.sql`);
     mkdirSync(join(dir, 'grant'));
     stub('grant/psql', [
       'echo "psql $*" >> "$OUT.calls"',
@@ -212,6 +213,17 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
     });
     const calls = existsSync(join(dir, 'grant.calls')) ? readFileSync(join(dir, 'grant.calls'), 'utf8').split('\n') : [];
     expect(calls.flatMap((line) => line.match(/ -f \S*\/(\d{3})_\S*\.sql/)?.[1] ?? [])).toEqual(files);
+    // 054 replays only its grants (no -f of the file, which replaces functions and triggers): append-only, so no UPDATE/DELETE.
+    const receiptCalls = calls.filter((line) => line.includes('relationship_evidence_receipts'));
+    const receipts = receiptCalls[0];
+    if (failFile === '') {
+      expect(receipts).toContain('GRANT SELECT, INSERT ON public.relationship_evidence_receipts');
+      expect(receipts).not.toMatch(/UPDATE|DELETE/);
+      expect(receipts).not.toMatch(/ -f /);
+      expect(receiptCalls).toHaveLength(1);
+    } else {
+      expect(receipts).toBeUndefined();
+    }
     expect(calls.findIndex((line) => line.includes('REVOKE EXECUTE'))).toBeLessThan(calls.findIndex((line) => line.includes(' -f ')));
     expect(calls.findIndex((line) => line.includes('REVOKE EXECUTE'))).toBeGreaterThanOrEqual(0);
     // 032 grants metabase_readonly the cross-tenant view that 033 revokes: 032's own transaction takes it back.

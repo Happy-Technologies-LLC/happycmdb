@@ -1333,6 +1333,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: One or both CIs not found
+        '503':
+          description: >-
+            CI write temporarily unavailable (HAP-2126): the evidence receipt table is missing or this API's database login
+            lacks INSERT on it, so the write is refused before anything is written (no `correlation_id`); or the journal's
+            second phase failed after the edge was applied (the body carries a `correlation_id`; recovery completes it or
+            marks the group failed)
 
   /relationships/{id}:
     delete:
@@ -1354,6 +1360,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '503':
+          description: >-
+            CI write temporarily unavailable (HAP-2126): same refusal as creating a relationship; nothing was deleted when the
+            body carries no `correlation_id`
 
   /relationships/evidence:
     get:

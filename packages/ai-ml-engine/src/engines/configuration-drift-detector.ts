@@ -486,7 +486,7 @@ export class ConfigurationDriftDetector {
     baseline: BaselineSnapshot, organizationId: string, ciIds: string[], admit?: ReferencedWrite
   ): Promise<void> {
     // Atomically mint a marker for a legacy owned graph node before SQL writes (never inside the transaction).
-    const incarnationId = await this.neo4jClient.ensureCIIncarnation(baseline.ci_id, organizationId);
+    const incarnationId = ciIncarnationId(await this.neo4jClient.ensureCIIncarnation(baseline.ci_id, organizationId));
     if (!incarnationId) throw new Error('CI not found');
     const inserted = await (admit ?? this.direct)(ciIds, client => client.query(
       `INSERT INTO baseline_snapshots
@@ -512,7 +512,7 @@ export class ConfigurationDriftDetector {
    * Store drift detection result
    */
   private async storeDriftResult(result: DriftDetectionResult, organizationId: string, admit?: ReferencedWrite): Promise<void> {
-    const incarnationId = await this.neo4jClient.ensureCIIncarnation(result.ci_id, organizationId);
+    const incarnationId = ciIncarnationId(await this.neo4jClient.ensureCIIncarnation(result.ci_id, organizationId));
     if (!incarnationId) throw new Error('CI not found');
     const inserted = await (admit ?? this.direct)([result.ci_id], client => client.query(
       `INSERT INTO drift_detection_results

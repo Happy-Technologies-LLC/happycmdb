@@ -18,7 +18,9 @@
  *   exactly one unambiguous, non-seeded, unmarked user.
  * - `grant-portfolio-import-scope` / `revoke-portfolio-import-scope` (HAP-1632): adds or removes only the
  *   `portfolio:import` entry of one such user's stored `scopes` list; the other entries and every other
- *   property stay. The grantedBy/At or revokedBy/At node properties plus the printed result are the audit.
+ *   property stay. Each granted/revoked change (not `unchanged`) appends one auth_credential_events row (HAP-2039)
+ *   and prints its operator, time and event id; the grantedBy/At or revokedBy/At node properties stay as the
+ *   latest-state cache only.
  * - `assign-organization`: sets the first organization (FD-5) of one such user
  *   that is not a platform admin and has none or a non-UUID one; never reassigns.
  *
@@ -113,6 +115,14 @@ RETURN count(u) AS n`;
 
 const SCAN_EVENT_SQL = `
 INSERT INTO auth_credential_events (user_id, event, actor) VALUES ($1, 'default_marker_set_scan', $2)`;
+
+/** HAP-2039: the audit row of one scope change; the event is one of SCOPE_EVENTS, never user input. */
+const SCOPE_EVENT_SQL = `
+INSERT INTO auth_credential_events (user_id, event, actor) VALUES ($1, $2, $3) RETURNING id, occurred_at`;
+const SCOPE_EVENTS = { granted: 'portfolio_import_scope_granted', revoked: 'portfolio_import_scope_revoked' } as const;
+/** The stored actor is `window-script:<operator>` in a VARCHAR(255). */
+const MAX_OPERATOR_LENGTH = 200;
+const OPERATOR_INVALID = '--operator must be 1-200 printable characters';
 
 const toNumber = (value: unknown): number => (neo4j.isInt(value) ? neo4j.integer.toNumber(value) : Number(value));
 /** The API's organization-claim shape (auth.middleware.ts organizationClaim). */
@@ -267,10 +277,21 @@ function observedScopes(row: Row, action: string): string[] {
   return stored;
 }
 
-export type ScopeChange = { userId: string; outcome: 'granted' | 'unchanged' | 'revoked' };
+export type ScopeChange =
+  | { userId: string; outcome: 'unchanged' }
+  | { userId: string; outcome: 'granted' | 'revoked'; operator: string; occurredAt: string; eventId: string };
+
+/** The Neo4j change committed and its auth_credential_events row was not written. Carries no cause: the
+ * message is fixed text naming the action only, and the node properties stay as the fallback record. */
+export class AuditWriteFailed extends Error {
+  constructor(action: string) {
+    super(`${action}: the change was applied but its audit row was not written; revoke and re-grant to record it`);
+    this.name = 'AuditWriteFailed';
+  }
+}
 
 async function changePortfolioImportScope(
-  graph: RotationGraph, userId: string, operator: string, action: string, grant: boolean
+  graph: RotationGraph, sql: RotationSqlQuery, userId: string, operator: string, action: string, grant: boolean
 ): Promise<ScopeChange> {
   const { row, mappedId } = await resolveIdentity(graph, userId, action);
   const observed = observedScopes(row, action);
@@ -285,17 +306,27 @@ async function changePortfolioImportScope(
   if (toNumber(result?.['n']) !== 1) {
     throw new GrantRefused('not_applied', action);
   }
-  return { userId: mappedId, outcome: grant ? 'granted' : 'revoked' };
+  const outcome = grant ? 'granted' : 'revoked';
+  try {
+    const [event] = (await sql.query(SCOPE_EVENT_SQL, [mappedId, SCOPE_EVENTS[outcome], `window-script:${operator}`])).rows;
+    return { userId: mappedId, outcome, operator, occurredAt: new Date(event!['occurred_at'] as Date | string).toISOString(), eventId: String(event!['id']) };
+  } catch {
+    throw new AuditWriteFailed(action);
+  }
 }
 
 /** HAP-1632: adds `portfolio:import` to one eligible user's scopes, keeping every other entry; already held is `unchanged`. */
-export function grantPortfolioImportScope(graph: RotationGraph, userId: string, operator: string): Promise<ScopeChange> {
-  return changePortfolioImportScope(graph, userId, operator, GRANT_ACTION, true);
+export function grantPortfolioImportScope(
+  graph: RotationGraph, sql: RotationSqlQuery, userId: string, operator: string
+): Promise<ScopeChange> {
+  return changePortfolioImportScope(graph, sql, userId, operator, GRANT_ACTION, true);
 }
 
 /** HAP-1632: removes only `portfolio:import` from one eligible user's scopes; not held is `unchanged`. */
-export function revokePortfolioImportScope(graph: RotationGraph, userId: string, operator: string): Promise<ScopeChange> {
-  return changePortfolioImportScope(graph, userId, operator, REVOKE_ACTION, false);
+export function revokePortfolioImportScope(
+  graph: RotationGraph, sql: RotationSqlQuery, userId: string, operator: string
+): Promise<ScopeChange> {
+  return changePortfolioImportScope(graph, sql, userId, operator, REVOKE_ACTION, false);
 }
 
 /** FD-5: assigns a user's first organization; the same one again is `unchanged` with no write. */
@@ -385,6 +416,12 @@ export async function main(
     if (SCOPE_COMMANDS.includes(command ?? '') && flagValues(argv, '--user-id')[0] === undefined) {
       throw new Error('--user-id <id> is required');
     }
+    // Scope commands only: the stored actor is `window-script:<operator>` (VARCHAR(255)), so an overlong value would
+    // fail the audit insert AFTER the Neo4j change. The message never echoes the value.
+    const scopeOperator = SCOPE_COMMANDS.includes(command ?? '') ? operator!.trim() : undefined;
+    if (scopeOperator !== undefined && ([...scopeOperator].length > MAX_OPERATOR_LENGTH || /[\p{Cc}\p{Zl}\p{Zp}]/u.test(scopeOperator))) {
+      throw new Error(OPERATOR_INVALID);
+    }
     const assignment = command === 'assign-organization' ? assignmentArgs(argv) : undefined;
     stores = openOperatorStores(env);
     if (command === 'inventory') {
@@ -400,9 +437,9 @@ throw new Error('--user-id <id> is required');
 }
       io.stdout(JSON.stringify(await grantPlatformAdmin(stores.graph, userId, operator!)));
     } else if (command === 'grant-portfolio-import-scope') {
-      io.stdout(JSON.stringify(await grantPortfolioImportScope(stores.graph, flagValues(argv, '--user-id')[0]!, operator!)));
+      io.stdout(JSON.stringify(await grantPortfolioImportScope(stores.graph, stores.sql, flagValues(argv, '--user-id')[0]!, scopeOperator!)));
     } else if (command === 'revoke-portfolio-import-scope') {
-      io.stdout(JSON.stringify(await revokePortfolioImportScope(stores.graph, flagValues(argv, '--user-id')[0]!, operator!)));
+      io.stdout(JSON.stringify(await revokePortfolioImportScope(stores.graph, stores.sql, flagValues(argv, '--user-id')[0]!, scopeOperator!)));
     } else if (assignment !== undefined) {
       io.stdout(JSON.stringify(await assignOrganization(stores.graph, stores.sql, assignment.userId, assignment.organizationId, operator!)));
     } else {
@@ -411,7 +448,7 @@ throw new Error('--user-id <id> is required');
     return 0;
   } catch (error) {
     io.stderr(`identity-window: ${error instanceof Error ? error.message : String(error)}`);
-    return error instanceof GrantRefused ? 2 : 1;
+    return error instanceof GrantRefused ? 2 : error instanceof AuditWriteFailed ? 3 : 1;
   } finally {
     await stores?.close();
   }

@@ -9,7 +9,7 @@
  * Neo4j is an in-memory model of the exported statements.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from '@jest/globals';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import * as bcrypt from 'bcrypt';
 import { fork } from 'child_process';
 import { readFileSync } from 'fs';
@@ -19,7 +19,7 @@ import { join } from 'path';
 import { holdsScope } from '../../auth/scopes';
 import type { User } from '../../auth/types';
 import {
-  ASSIGN_ORGANIZATION_CYPHER, assignOrganization, main,
+  ASSIGN_ORGANIZATION_CYPHER, AuditWriteFailed, assignOrganization, main,
   GRANT_HOLDERS_CYPHER, GRANT_IDENTITY_CYPHER, GRANT_PLATFORM_ADMIN_CYPHER, GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER, GrantRefused,
   REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER, SCAN_MARK_CYPHER,
   SCAN_USERS_CYPHER, grantPlatformAdmin, grantPortfolioImportScope, revokePortfolioImportScope, scanDefaultPasswords,
@@ -27,17 +27,25 @@ import {
 import { APPLY_CYPHER } from '../rotate-user-password';
 import type { RotationGraph, Row } from '../rotate-user-password';
 
+// main() opens its stores through openOperatorStores; the tests hand it the in-memory graph and PGlite instead, and
+// assert whether a store was opened at all. The default delegates to the real function (which needs CMDB_ROTATE_*).
+jest.mock('../operator-stores', () => {
+  const actual = jest.requireActual<typeof import('../operator-stores')>('../operator-stores');
+  return { ...actual, openOperatorStores: jest.fn(actual.openOperatorStores) };
+});
+import * as operatorStores from '../operator-stores';
+
 type Node = { elementId: string; props: Row };
 
 // api_keys is real PostgreSQL (PGlite in a child process), so the enabledApiKeys WHERE clause is executed.
 const host = fork(join(__dirname, '../../rest/routes/__tests__/fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let nextId = 0;
 const pending = new Map<number, { resolve: (rows: Row[]) => void; reject: (e: Error) => void }>();
-host.on('message', ({ id, rows, error }: { id: number; rows: Row[]; error?: string }) => {
+host.on('message', ({ id, rows, error, code }: { id: number; rows: Row[]; error?: string; code?: string }) => {
   const p = pending.get(id)!;
   pending.delete(id);
   if (error === undefined) p.resolve(rows);
-  else p.reject(new Error(error));
+  else p.reject(Object.assign(new Error(error), { code }));
 });
 function send(op: 'exec' | 'query', text: string, params: unknown[] = []): Promise<Row[]> {
   const id = nextId++;
@@ -46,10 +54,17 @@ function send(op: 'exec' | 'query', text: string, params: unknown[] = []): Promi
     host.send({ id, op, sql: text, params });
   });
 }
+const MIGRATIONS = join(__dirname, '../../../../database/src/postgres/migrations');
+const migration = (name: string) => readFileSync(join(MIGRATIONS, name), 'utf8');
+/** auth_credential_events as the migrations build it: the real 020 (append-only triggers included), then the real 055. */
+async function resetEvents(): Promise<void> {
+  await send('exec', 'DROP TABLE IF EXISTS auth_credential_events');
+  await send('exec', migration('020_auth_credential_events.sql'));
+  await send('exec', migration('055_auth_credential_events_scope_events.sql'));
+}
 const keysSql = { query: async (text: string, params: unknown[] = []) => ({ rows: await send('query', text, params) }) };
 beforeAll(async () => {
-  const migrations = join(__dirname, '../../../../database/src/postgres/migrations');
-  const schema = readFileSync(join(migrations, '001_complete_schema.sql'), 'utf8');
+  const schema = migration('001_complete_schema.sql');
   const start = schema.indexOf('CREATE TABLE IF NOT EXISTS api_keys (');
   await send('exec', schema.slice(start, schema.indexOf(');', start) + 2));
   await send('exec', 'ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS credential_epoch INTEGER NOT NULL DEFAULT 0');
@@ -193,11 +208,12 @@ describe('grant-platform-admin (P-6)', () => {
 describe('portfolio-import scope grant and revoke (HAP-1632)', () => {
   const SCOPE = 'portfolio:import';
   const user = (props: Row = {}): Node => ({ elementId: '4:p', props: { _id: 'p', _username: 'pat', _email: 'pat@example.com', ...props } });
+  beforeEach(resetEvents);
 
   it('adds the scope to a user with none, recording the operator, and touches nothing else', async () => {
     const users = [user({ _role: 'operator', platformAdmin: false })];
 
-    await expect(grantPortfolioImportScope(fakeGraph(users), 'p', 'nick')).resolves.toEqual({ userId: 'p', outcome: 'granted' });
+    await expect(grantPortfolioImportScope(fakeGraph(users), keysSql, 'p', 'nick')).resolves.toMatchObject({ userId: 'p', outcome: 'granted' });
     expect(users[0]!.props).toMatchObject({ scopes: [SCOPE], portfolioImportScopeGrantedBy: 'nick', _role: 'operator', platformAdmin: false });
     expect(Object.keys(users[0]!.props).sort()).toEqual(
       ['_email', '_id', '_role', '_username', 'platformAdmin', 'portfolioImportScopeGrantedAt', 'portfolioImportScopeGrantedBy', 'scopes']);
@@ -207,9 +223,9 @@ describe('portfolio-import scope grant and revoke (HAP-1632)', () => {
     const users = [user({ scopes: ['credentials:manage'] })];
     const graph = fakeGraph(users);
 
-    await expect(grantPortfolioImportScope(graph, 'p', 'nick')).resolves.toMatchObject({ outcome: 'granted' });
+    await expect(grantPortfolioImportScope(graph, keysSql, 'p', 'nick')).resolves.toMatchObject({ outcome: 'granted' });
     expect(users[0]!.props['scopes']).toEqual(['credentials:manage', SCOPE]);
-    await expect(grantPortfolioImportScope(graph, 'p', 'other')).resolves.toEqual({ userId: 'p', outcome: 'unchanged' });
+    await expect(grantPortfolioImportScope(graph, keysSql, 'p', 'other')).resolves.toEqual({ userId: 'p', outcome: 'unchanged' });
     expect(users[0]!.props).toMatchObject({ scopes: ['credentials:manage', SCOPE], portfolioImportScopeGrantedBy: 'nick' });
   });
 
@@ -217,12 +233,12 @@ describe('portfolio-import scope grant and revoke (HAP-1632)', () => {
     const users = [user({ scopes: ['credentials:manage', SCOPE, 'reports:read'] })];
     const graph = fakeGraph(users);
 
-    await expect(revokePortfolioImportScope(graph, 'p', 'nick')).resolves.toEqual({ userId: 'p', outcome: 'revoked' });
+    await expect(revokePortfolioImportScope(graph, keysSql, 'p', 'nick')).resolves.toMatchObject({ userId: 'p', outcome: 'revoked' });
     expect(users[0]!.props).toMatchObject({ scopes: ['credentials:manage', 'reports:read'], portfolioImportScopeRevokedBy: 'nick' });
-    await expect(revokePortfolioImportScope(graph, 'p', 'other')).resolves.toEqual({ userId: 'p', outcome: 'unchanged' });
+    await expect(revokePortfolioImportScope(graph, keysSql, 'p', 'other')).resolves.toEqual({ userId: 'p', outcome: 'unchanged' });
     expect(users[0]!.props).toMatchObject({ scopes: ['credentials:manage', 'reports:read'], portfolioImportScopeRevokedBy: 'nick' });
     const none = [user()];
-    await expect(revokePortfolioImportScope(fakeGraph(none), 'p', 'nick')).resolves.toMatchObject({ outcome: 'unchanged' });
+    await expect(revokePortfolioImportScope(fakeGraph(none), keysSql, 'p', 'nick')).resolves.toMatchObject({ outcome: 'unchanged' });
     expect(none[0]!.props['scopes']).toBeUndefined();
   });
 
@@ -234,7 +250,7 @@ describe('portfolio-import scope grant and revoke (HAP-1632)', () => {
       const users = [user({ ...props, scopes: [SCOPE] })];
       const before = structuredClone(users[0]!.props);
 
-      await expect(change(fakeGraph(users), 'p', 'nick')).rejects.toMatchObject({ name: 'GrantRefused', reason: 'seeded_account' });
+      await expect(change(fakeGraph(users), keysSql, 'p', 'nick')).rejects.toMatchObject({ name: 'GrantRefused', reason: 'seeded_account' });
       expect(users[0]!.props).toEqual(before);
     }
   });
@@ -244,10 +260,10 @@ describe('portfolio-import scope grant and revoke (HAP-1632)', () => {
     const text = [user({ scopes: SCOPE })];
     const mixed = [user({ scopes: [SCOPE, 7] })];
 
-    await expect(grantPortfolioImportScope(fakeGraph([]), 'p', 'nick')).rejects.toMatchObject({ reason: 'unknown_identity' });
-    await expect(revokePortfolioImportScope(fakeGraph(twin), 'x', 'nick')).rejects.toMatchObject({ reason: 'ambiguous_identity' });
-    await expect(grantPortfolioImportScope(fakeGraph(text), 'p', 'nick')).rejects.toMatchObject({ reason: 'unsupported_value' });
-    await expect(revokePortfolioImportScope(fakeGraph(mixed), 'p', 'nick')).rejects.toMatchObject({ reason: 'unsupported_value' });
+    await expect(grantPortfolioImportScope(fakeGraph([]), keysSql, 'p', 'nick')).rejects.toMatchObject({ reason: 'unknown_identity' });
+    await expect(revokePortfolioImportScope(fakeGraph(twin), keysSql, 'x', 'nick')).rejects.toMatchObject({ reason: 'ambiguous_identity' });
+    await expect(grantPortfolioImportScope(fakeGraph(text), keysSql, 'p', 'nick')).rejects.toMatchObject({ reason: 'unsupported_value' });
+    await expect(revokePortfolioImportScope(fakeGraph(mixed), keysSql, 'p', 'nick')).rejects.toMatchObject({ reason: 'unsupported_value' });
     expect([text[0]!.props['scopes'], mixed[0]!.props['scopes']]).toEqual([SCOPE, [SCOPE, 7]]);
   });
 
@@ -272,7 +288,7 @@ describe('portfolio-import scope grant and revoke (HAP-1632)', () => {
         write: graph.write,
       };
 
-      await expect(act(racing, 'p', 'nick')).rejects.toMatchObject({ name: 'GrantRefused', reason: 'not_applied' });
+      await expect(act(racing, keysSql, 'p', 'nick')).rejects.toMatchObject({ name: 'GrantRefused', reason: 'not_applied' });
       expect(JSON.stringify(users[0]!.props)).toBe(raced);
     }
   });
@@ -316,7 +332,7 @@ describe('portfolio-import scope grant and revoke (HAP-1632)', () => {
     await scanDefaultPasswords(graph, sql, (p, h) => bcrypt.compare(p, h), 'nick');
     expect(marked(users[0]!)).toBe(true);
     expect(holdsScope(loaded(), SCOPE)).toBe(false);
-    await expect(revokePortfolioImportScope(graph, 'p', 'nick')).rejects.toMatchObject({ reason: 'seeded_account' });
+    await expect(revokePortfolioImportScope(graph, keysSql, 'p', 'nick')).rejects.toMatchObject({ reason: 'seeded_account' });
     expect(users[0]!.props['scopes']).toEqual(['credentials:manage', SCOPE]);
 
     // The operator password reset clears the flag; the stored grant is live again until it is revoked.
@@ -329,9 +345,197 @@ describe('portfolio-import scope grant and revoke (HAP-1632)', () => {
     expect(users[0]!.props['defaultPasswordSuspect']).toBe(false);
     expect(holdsScope(loaded(), SCOPE)).toBe(true);
 
-    await expect(revokePortfolioImportScope(graph, 'p', 'nick')).resolves.toEqual({ userId: 'p', outcome: 'revoked' });
+    await expect(revokePortfolioImportScope(graph, keysSql, 'p', 'nick')).resolves.toMatchObject({ userId: 'p', outcome: 'revoked' });
     expect(users[0]!.props['scopes']).toEqual(['credentials:manage']);
     expect(holdsScope(loaded(), SCOPE)).toBe(false);
+  });
+});
+
+describe('portfolio-import scope audit events (HAP-2039)', () => {
+  const SCOPE = 'portfolio:import';
+  const user = (props: Row = {}): Node => ({ elementId: '4:p', props: { _id: 'p', _username: 'pat', _email: 'pat@example.com', ...props } });
+  // Insertion order, not ORDER BY occurred_at: two statements can share a timestamp, and the table is append-only.
+  const events = () => send('query', 'SELECT id, user_id, event, actor, occurred_at, ref_event_id, target_epoch, reason, revoked_api_keys FROM auth_credential_events');
+  const storesOf = (users: Node[]) => ({ graph: fakeGraph(users), sql: keysSql, lock: { acquire: async () => undefined, release: async () => undefined }, close: async () => undefined });
+  const open = operatorStores.openOperatorStores as jest.MockedFunction<typeof operatorStores.openOperatorStores>;
+  const realOpen = open.getMockImplementation()!;
+  const run = async (argv: string[]) => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await main(argv, {}, { stdout: line => out.push(line), stderr: line => err.push(line) });
+    return { code, out, err };
+  };
+
+  beforeEach(async () => {
+    await resetEvents();
+    open.mockReset();
+    open.mockImplementation(realOpen);
+  });
+
+  it('two grant/revoke cycles leave four append-only rows in order; the node keeps only the latest pair', async () => {
+    const users = [user()];
+    const graph = fakeGraph(users);
+
+    await grantPortfolioImportScope(graph, keysSql, 'p', 'alice');
+    await revokePortfolioImportScope(graph, keysSql, 'p', 'alice');
+    await grantPortfolioImportScope(graph, keysSql, 'p', 'bob');
+    await revokePortfolioImportScope(graph, keysSql, 'p', 'bob');
+
+    const rows = await events();
+    expect(rows.map(r => [r['event'], r['user_id'], r['actor']])).toEqual([
+      ['portfolio_import_scope_granted', 'p', 'window-script:alice'],
+      ['portfolio_import_scope_revoked', 'p', 'window-script:alice'],
+      ['portfolio_import_scope_granted', 'p', 'window-script:bob'],
+      ['portfolio_import_scope_revoked', 'p', 'window-script:bob'],
+    ]);
+    expect(new Set(rows.map(r => r['id'])).size).toBe(4);
+    const times = rows.map(r => (r['occurred_at'] as Date).getTime());
+    expect(times).toEqual([...times].sort((a, b) => a - b));
+    expect(rows.every(r => r['ref_event_id'] === null && r['target_epoch'] === null && r['reason'] === null && r['revoked_api_keys'] === null)).toBe(true);
+    // History lives in the table: the node's properties name only the last operator.
+    expect(users[0]!.props).toMatchObject({ scopes: [], portfolioImportScopeGrantedBy: 'bob', portfolioImportScopeRevokedBy: 'bob' });
+  });
+
+  it('prints the operator, the row time and the row id for granted and revoked', async () => {
+    const graph = fakeGraph([user()]);
+
+    const granted = await grantPortfolioImportScope(graph, keysSql, 'p', 'alice');
+    const revoked = await revokePortfolioImportScope(graph, keysSql, 'p', 'alice');
+
+    const [first, second] = await events();
+    expect(Object.keys(granted)).toEqual(['userId', 'outcome', 'operator', 'occurredAt', 'eventId']);
+    expect(granted).toEqual({ userId: 'p', outcome: 'granted', operator: 'alice', occurredAt: (first!['occurred_at'] as Date).toISOString(), eventId: first!['id'] });
+    expect(revoked).toEqual({ userId: 'p', outcome: 'revoked', operator: 'alice', occurredAt: (second!['occurred_at'] as Date).toISOString(), eventId: second!['id'] });
+  });
+
+  it('writes no row, and prints nothing more than the id and outcome, when the scope is already as asked', async () => {
+    const held = fakeGraph([user({ scopes: [SCOPE] })]);
+    const absent = fakeGraph([user()]);
+
+    await expect(grantPortfolioImportScope(held, keysSql, 'p', 'alice')).resolves.toEqual({ userId: 'p', outcome: 'unchanged' });
+    await expect(revokePortfolioImportScope(absent, keysSql, 'p', 'alice')).resolves.toEqual({ userId: 'p', outcome: 'unchanged' });
+    expect(await events()).toEqual([]);
+  });
+
+  it('writes no row and no node change for any refused change, including a lost compare-and-set race', async () => {
+    const twin = [{ elementId: '4:a', props: { _id: 'x' } }, { elementId: '4:b', props: { id: 'x' } }];
+    const collide = [{ elementId: '4:a', props: { _id: 'x', id: 'y' } }, { elementId: '4:b', props: { id: 'x' } }];
+    const cases: Array<[string, Node[], string]> = [
+      ['unknown', [], 'p'], ['ambiguous', twin, 'x'], ['collision', collide, 'y'],
+      ['seeded', [user({ seedProvenance: 'pre-cutover-inventory' })], 'p'],
+      ['default-password flagged', [user({ defaultPasswordSuspect: true })], 'p'],
+      ['non-list scopes', [user({ scopes: SCOPE })], 'p'],
+    ];
+    for (const [label, users, id] of cases) {
+      for (const change of [grantPortfolioImportScope, revokePortfolioImportScope]) {
+        const before = JSON.stringify(users);
+        await expect(change(fakeGraph(users), keysSql, id, 'alice')).rejects.toBeInstanceOf(GrantRefused);
+        expect([label, JSON.stringify(users)]).toEqual([label, before]);
+      }
+    }
+    for (const change of [grantPortfolioImportScope, revokePortfolioImportScope]) {
+      const users = [user({ scopes: change === grantPortfolioImportScope ? ['a'] : ['a', SCOPE] })];
+      const graph = fakeGraph(users);
+      let raced = '';
+      const racing: RotationGraph = {
+        read: async (cypher, params) => {
+          const rows = await graph.read(cypher, params);
+          if (norm(cypher) === norm(GRANT_IDENTITY_CYPHER)) {
+            users[0]!.props['scopes'] = ['b'];
+            raced = JSON.stringify(users);
+          }
+          return rows;
+        },
+        write: graph.write,
+      };
+      await expect(change(racing, keysSql, 'p', 'alice')).rejects.toMatchObject({ reason: 'not_applied' });
+      expect(JSON.stringify(users)).toBe(raced);
+    }
+    expect(await events()).toEqual([]);
+  });
+
+  it('throws AuditWriteFailed with fixed text when the insert fails; the Neo4j change stays applied', async () => {
+    const users = [user()];
+    const failing = { query: async () => { throw new Error('password=hunter2 connection refused'); } };
+
+    const error = await grantPortfolioImportScope(fakeGraph(users), failing, 'p', 'alice').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(AuditWriteFailed);
+    expect((error as Error).message).toBe(
+      'portfolio-import scope grant: the change was applied but its audit row was not written; revoke and re-grant to record it');
+    expect(JSON.stringify(error)).not.toContain('hunter2');
+    expect(users[0]!.props).toMatchObject({ scopes: [SCOPE], portfolioImportScopeGrantedBy: 'alice' });
+    await expect(revokePortfolioImportScope(fakeGraph(users), failing, 'p', 'alice')).rejects.toMatchObject({
+      name: 'AuditWriteFailed',
+      message: 'portfolio-import scope revoke: the change was applied but its audit row was not written; revoke and re-grant to record it',
+    });
+    expect(users[0]!.props['scopes']).toEqual([]);
+  });
+
+  it('main exits 3 with the fixed message and prints no result when the audit table rejects the insert', async () => {
+    const users = [user()];
+    open.mockReturnValue(storesOf(users));
+    await send('exec', 'DROP TABLE auth_credential_events');
+
+    const { code, out, err } = await run(['grant-portfolio-import-scope', '--user-id', 'p', '--operator', 'alice']);
+
+    expect([code, out]).toEqual([3, []]);
+    expect(err).toEqual(['identity-window: portfolio-import scope grant: the change was applied but its audit row was not written; revoke and re-grant to record it']);
+    expect(users[0]!.props['scopes']).toEqual([SCOPE]);
+    expect(await send('query', `SELECT to_regclass('public.auth_credential_events')::text AS t`)).toEqual([{ t: null }]);
+  });
+
+  it('main stores the trimmed operator, prints the result line, and accepts exactly 200 characters', async () => {
+    const users = [user()];
+    open.mockReturnValue(storesOf(users));
+
+    const granted = await run(['grant-portfolio-import-scope', '--user-id', 'p', '--operator', '  alice  ']);
+    const long = 'é'.repeat(200);
+    const revoked = await run(['revoke-portfolio-import-scope', '--user-id', 'p', '--operator', long]);
+
+    const [first, second] = await events();
+    expect(granted.code).toBe(0);
+    expect(JSON.parse(granted.out[0]!)).toEqual({ userId: 'p', outcome: 'granted', operator: 'alice', occurredAt: (first!['occurred_at'] as Date).toISOString(), eventId: first!['id'] });
+    expect(first!['actor']).toBe('window-script:alice');
+    expect(users[0]!.props['portfolioImportScopeGrantedBy']).toBe('alice');
+    expect(revoked.code).toBe(0);
+    expect(second!['actor']).toBe(`window-script:${long}`);
+  });
+
+  it('main prints only the id and outcome for unchanged, and writes no row', async () => {
+    open.mockReturnValue(storesOf([user()]));
+
+    const { code, out } = await run(['revoke-portfolio-import-scope', '--user-id', 'p', '--operator', 'alice']);
+
+    expect([code, out]).toEqual([0, ['{"userId":"p","outcome":"unchanged"}']]);
+    expect(await events()).toEqual([]);
+  });
+
+  it.each([
+    ['201 characters', 'a'.repeat(201)],
+    ['a newline', 'ali\nce'],
+    ['a NUL', 'ali\u0000ce'],
+    ['a DEL', 'ali\u007fce'],
+    ['a C1 control', 'ali\u0085ce'],
+    ['a line separator', 'ali\u2028ce'],
+  ])('main refuses an --operator with %s before any store opens, without echoing it', async (_label, operator) => {
+    for (const command of ['grant-portfolio-import-scope', 'revoke-portfolio-import-scope']) {
+      open.mockReturnValue(storesOf([user()]));
+      const { code, out, err } = await run([command, '--user-id', 'p', '--operator', operator]);
+
+      expect([code, out, err]).toEqual([1, [], ['identity-window: --operator must be 1-200 printable characters']]);
+      expect(open).not.toHaveBeenCalled();
+    }
+    expect(await events()).toEqual([]);
+  });
+
+  it('keeps the rows append-only: UPDATE, DELETE and TRUNCATE of a grant/revoke row fail with SQLSTATE 55000', async () => {
+    await grantPortfolioImportScope(fakeGraph([user()]), keysSql, 'p', 'alice');
+
+    for (const statement of [`UPDATE auth_credential_events SET actor = 'x'`, 'DELETE FROM auth_credential_events', 'TRUNCATE auth_credential_events']) {
+      await expect(send('exec', statement)).rejects.toMatchObject({ code: '55000' });
+    }
+    expect(await events()).toHaveLength(1);
   });
 });
 

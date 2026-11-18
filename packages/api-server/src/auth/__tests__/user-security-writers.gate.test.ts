@@ -145,9 +145,9 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
     pattern: /INSERT\s+INTO\s+auth_credential_events/gi,
     reviewed: {
       'packages/api-server/src/auth/neo4j-auth.repository.ts': 1,
-      // Reviewed: the window scan row, plus SCOPE_EVENT_SQL (HAP-2039), the one statement behind the scope grant, the scope revoke
-      // and (HAP-2129) the record-only recovery: the recovery adds no writer, so the exact count stays 2.
-      'packages/api-server/src/scripts/identity-window.ts': 2,
+      // Reviewed: the window scan row, SCOPE_EVENT_SQL (HAP-2039), the one statement behind the scope grant and the scope revoke,
+      // and RECORD_EVENT_SQL (HAP-2131), the record-only recovery's idempotent insert (the actor marks it as a recovery row).
+      'packages/api-server/src/scripts/identity-window.ts': 3,
       'packages/api-server/src/scripts/rotate-user-password.ts': 3,
     },
   },

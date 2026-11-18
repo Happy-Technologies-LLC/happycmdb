@@ -856,7 +856,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [basis, runtime_blast_radius, coverage]
+                required: [basis, runtime_blast_radius, coverage, edges]
                 properties:
                   ci:
                     $ref: '#/components/schemas/CI'
@@ -879,12 +879,25 @@ paths:
                     $ref: '#/components/schemas/ImpactRuntimeBlastRadius'
                   coverage:
                     $ref: '#/components/schemas/ImpactCoverage'
+                  edges:
+                    type: array
+                    description: >-
+                      Every edge the traversal followed, as stored (from is the
+                      stored start CI), deduplicated by (from, to, type) and
+                      sorted by from, to, then type, each with the evidence
+                      currentness derived at this read.
+                    items:
+                      $ref: '#/components/schemas/QualifiedEdge'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/CIForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/CITraversalLimit'
+        '504':
+          $ref: '#/components/responses/CITraversalTimeout'
 
   /cis/{id}/impact:
     get:
@@ -908,7 +921,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [success, data, totalImpacted, depth, basis, runtime_blast_radius, coverage]
+                required: [success, data, totalImpacted, depth, basis, runtime_blast_radius, coverage, edges]
                 properties:
                   success:
                     type: boolean
@@ -954,12 +967,26 @@ paths:
                     $ref: '#/components/schemas/ImpactRuntimeBlastRadius'
                   coverage:
                     $ref: '#/components/schemas/ImpactCoverage'
+                  edges:
+                    type: array
+                    description: >-
+                      Every edge either traversal (downstream and upstream)
+                      followed, as stored (from is the stored start CI),
+                      deduplicated by (from, to, type) and sorted by from, to,
+                      then type, each with the evidence currentness derived at
+                      this read.
+                    items:
+                      $ref: '#/components/schemas/QualifiedEdge'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/CIForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/CITraversalLimit'
+        '504':
+          $ref: '#/components/responses/CITraversalTimeout'
 
   /impact/graph/{rootCiId}:
     get:
@@ -1027,7 +1054,7 @@ paths:
                         type: array
                         items:
                           type: object
-                          required: [source_id, target_id, relationship_type, weight, is_critical]
+                          required: [source_id, target_id, relationship_type, weight, is_critical, currentness, evidence]
                           properties:
                             source_id:
                               type: string
@@ -1039,6 +1066,10 @@ paths:
                               type: number
                             is_critical:
                               type: boolean
+                            currentness:
+                              $ref: '#/components/schemas/EdgeCurrentness'
+                            evidence:
+                              $ref: '#/components/schemas/EdgeEvidence'
                       metadata:
                         type: object
                         properties:
@@ -1068,11 +1099,43 @@ paths:
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '503':
-          description: The graph exceeds a traversal budget
+          description: >-
+            The graph exceeds a traversal budget, or the evidence read behind
+            the edges' currentness was refused for a resource limit. Nothing is
+            returned partially.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                type: object
+                required: [success, error]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [false]
+                  error:
+                    type: string
+              example:
+                success: false
+                error: Impact criticality resource limit exceeded
+        '504':
+          description: >-
+            The analysis, or the evidence read behind the edges' currentness,
+            exceeded its deadline. Nothing is returned partially: an edge is
+            never reported `unsupported` because its evidence could not be read.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, error]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [false]
+                  error:
+                    type: string
+              example:
+                success: false
+                error: Impact analysis timed out
 
   /cis/{id}/audit:
     get:
@@ -5286,6 +5349,46 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
 
+    CITraversalLimit:
+      description: >-
+        The traversal, or the evidence read behind the edges' currentness,
+        exceeded a resource bound. Nothing is returned partially.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, error]
+            properties:
+              success:
+                type: boolean
+                enum: [false]
+              error:
+                type: string
+          example:
+            success: false
+            error: CI traversal resource limit exceeded
+
+    CITraversalTimeout:
+      description: >-
+        A graph statement, the impact envelope's lineage read, or the evidence
+        read behind the edges' currentness timed out. Nothing is returned
+        partially: an edge is never reported `unsupported` because its evidence
+        could not be read.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, error]
+            properties:
+              success:
+                type: boolean
+                enum: [false]
+              error:
+                type: string
+          example:
+            success: false
+            error: CI traversal timed out
+
   schemas:
     # =========================================================================
     # CORE MODELS
@@ -6758,6 +6861,94 @@ components:
           type: string
           description: Fixed text. A missing edge is not evidence of no dependency.
 
+    EdgeCurrentness:
+      type: string
+      enum: [current, stale, contradicted, unsupported]
+      description: >-
+        How well the edge's evidence receipts (HAP-2029) support it now,
+        derived at this read from the receipts and the database clock, never
+        stored. `unsupported`: no receipt is on record for the edge between the
+        current incarnations of its two CIs (an edge written before receipts
+        existed has none). `contradicted`: a contradicting receipt is at least
+        as new as the newest non-inferred supporting receipt, or there is no
+        such support (a tie is contradicted; an `inferred` support never
+        supersedes a contradiction). `stale`: supported, but no supporting class
+        has a receipt inside its freshness window, or only `inferred` support
+        exists. `current`: at least one supporting class has a receipt inside
+        its window. The windows are policy constants of the service, not
+        guarantees: declared 180 days, static_observed 7 days,
+        runtime_observed 1 day, inferred never current. `current` says a
+        receipt of that age exists; it is not a runtime guarantee that the
+        dependency holds now.
+
+    EdgeEvidence:
+      type: object
+      description: >-
+        A coarse aggregate of the newest receipts of one edge (at most 200 are
+        scanned). It never carries an organization, incarnation, source,
+        observer or correlation id; the receipts themselves are read from
+        `receipts_href`.
+      required: [classes, support, receipt_count, receipts_truncated, last_supported_at, receipts_href]
+      properties:
+        classes:
+          type: array
+          description: >-
+            Evidence classes of the scanned SUPPORTING receipts, in the fixed
+            order declared, static_observed, runtime_observed, inferred.
+          items:
+            type: string
+            enum: [declared, static_observed, runtime_observed, inferred]
+        support:
+          type: object
+          description: Scanned receipts by polarity.
+          required: [supports, contradicts]
+          properties:
+            supports:
+              type: integer
+              minimum: 0
+            contradicts:
+              type: integer
+              minimum: 0
+        receipt_count:
+          type: integer
+          minimum: 0
+          maximum: 200
+          description: Receipts scanned (supports plus contradicts).
+        receipts_truncated:
+          type: boolean
+          description: True when the scan hit its 200-receipt cap, so older receipts exist unseen.
+        last_supported_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            Observation time of the newest supporting receipt of any class
+            (inferred included), UTC; null when no scanned receipt supports.
+        receipts_href:
+          type: string
+          description: >-
+            The receipts read (`GET /relationships/evidence`) for this edge,
+            with from_id, to_id and type URL-encoded.
+
+    QualifiedEdge:
+      type: object
+      description: One followed edge with the evidence currentness derived at this read.
+      required: [from, to, type, currentness, evidence]
+      properties:
+        from:
+          type: string
+          description: Stored start CI of the relationship.
+        to:
+          type: string
+          description: Stored end CI of the relationship.
+        type:
+          type: string
+          example: DEPENDS_ON
+        currentness:
+          $ref: '#/components/schemas/EdgeCurrentness'
+        evidence:
+          $ref: '#/components/schemas/EdgeEvidence'
+
     BusinessServiceContext:
       type: object
       required: [service_id, tenant_id, nodes, edges, dependencies, impact, bounds]
@@ -6796,7 +6987,10 @@ components:
           description: >-
             From the dependent to what it depends on. DEPENDS_ON between
             services carries dependency_type; MAPPED_CI (service to CI)
-            carries mapping_type; CI edges are the graph's DEPENDS_ON.
+            carries mapping_type; CI edges are the graph's DEPENDS_ON. Only the
+            CI edges carry `currentness` and `evidence` (receipts exist only
+            for graph relationships between CIs): service-to-service DEPENDS_ON
+            and MAPPED_CI edges carry neither.
           items:
             type: object
             required: [from, to, type]
@@ -6812,6 +7006,10 @@ components:
                 type: string
               mapping_type:
                 type: string
+              currentness:
+                $ref: '#/components/schemas/EdgeCurrentness'
+              evidence:
+                $ref: '#/components/schemas/EdgeEvidence'
         dependencies:
           type: array
           description: >-

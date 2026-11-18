@@ -5,7 +5,7 @@ import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { requestActor, sendJournalError } from '../../journal-http';
 import {
-  createCITraversalWork, getNeo4jClient, getPostgresClient, getAuditService,
+  CI_TRAVERSAL_QUERY_TIMEOUT_MS, createCITraversalWork, getNeo4jClient, getPostgresClient, getAuditService,
 } from '@cmdb/database';
 import { logger, validateCISortField, validateSortDirection } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
@@ -18,6 +18,7 @@ import {
 import { withNormalizedCIFields } from '../../services/ci-normalized-fields';
 import { sendTraversalFailure } from './traversal-failure';
 import { impactEnvelope } from '../impact-envelope';
+import { loadEdgeEvidence, qualifyEdges } from '../edge-evidence';
 
 /**
  * The one 404 for a CI that is missing or belongs to another organization:
@@ -423,18 +424,20 @@ export class CIController {
         return;
       }
 
-      const dependencies = await this.neo4jClient.getDependencies(id, organizationId, depthNum);
+      const { paths: dependencies, edges: followed } = await this.neo4jClient.getDependenciesWithEdges(id, organizationId, depthNum);
       // Every node of every returned path is the root or the end of a segment.
       const envelope = await impactEnvelope(organizationId, [
         id, ...dependencies.flatMap((path: any) => (path.segments || []).map((segment: any) => segment.end?.properties?.id)),
       ].filter((ciId): ciId is string => typeof ciId === 'string'));
+      const qualified = await loadEdgeEvidence(organizationId, followed, { timeoutMs: CI_TRAVERSAL_QUERY_TIMEOUT_MS });
 
       res.json({
         success: true,
         data: dependencies,
         count: dependencies.length,
         depth: depthNum,
-        ...envelope
+        ...envelope,
+        edges: qualifyEdges(followed, qualified)
       });
     } catch (error) {
       if (sendTraversalFailure(res, error)) return;
@@ -482,8 +485,10 @@ export class CIController {
 
       // Both owned traversals share one request work/node budget.
       const work = createCITraversalWork();
-      const downstream = await this.neo4jClient.impactAnalysis(id, organizationId, depthNum, work);
-      const upstream = await this.neo4jClient.getDependencies(id, organizationId, depthNum, work);
+      const downstreamTraversal = await this.neo4jClient.impactAnalysisWithEdges(id, organizationId, depthNum, work);
+      const upstreamTraversal = await this.neo4jClient.getDependenciesWithEdges(id, organizationId, depthNum, work);
+      const downstream = downstreamTraversal.nodes;
+      const upstream = upstreamTraversal.paths;
 
       // Extract unique CIs from downstream
       const downstreamCIs = downstream.map((item: any) => convertNeo4jTypes(item._ci));
@@ -529,13 +534,16 @@ export class CIController {
       const envelope = await impactEnvelope(organizationId, [
         id, ...downstreamCIs.map((ci: any) => ci.id), ...upstreamCIs.map((ci: any) => ci.id),
       ]);
+      const followed = [...downstreamTraversal.edges, ...upstreamTraversal.edges];
+      const qualified = await loadEdgeEvidence(organizationId, followed, { timeoutMs: CI_TRAVERSAL_QUERY_TIMEOUT_MS });
 
       res.json({
         success: true,
         data: impactAnalysis,
         totalImpacted: totalImpacted,
         depth: depthNum,
-        ...envelope
+        ...envelope,
+        edges: qualifyEdges(followed, qualified)
       });
     } catch (error) {
       if (sendTraversalFailure(res, error)) return;

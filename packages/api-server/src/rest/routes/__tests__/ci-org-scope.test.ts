@@ -1127,6 +1127,97 @@ describe('/api/v1/cis tenant scoping', () => {
   });
 });
 
+describe('CI health on GET /cis and GET /cis/:id (HAP-1923 BW1)', () => {
+  const healthOf = (body: { data: Array<{ id: string; health: unknown }> }) =>
+    Object.fromEntries(body.data.map(ci => [ci.id, ci.health]));
+  const incident = (n: number, ci: string, priority: number, status: string, org: string | null) => sql(
+    `INSERT INTO itil_incidents (id, incident_number, title, impact, urgency, priority, affected_ci_id, status,
+       reported_by, organization_id) VALUES (gen_random_uuid(), $1, 't', 'high', 'high', $2, $3, $4, 'x', $5)`,
+    [`INC-H${n}`, priority, ci, status, org]);
+  const seedHealthCIs = () => {
+    for (const id of ['ci-h-ok', 'ci-h-p1', 'ci-h-p2', 'ci-h-p3', 'ci-h-mixed', 'ci-h-closed', 'ci-h-legacy']) seedCI(id, ORG_A);
+    seedCI('ci-h-b', ORG_B);
+  };
+
+  it('is null, never healthy, while the ITIL record tables do not exist', async () => {
+    seedHealthCIs();
+    const list = await request(app).get('/api/v1/cis').set(AS_A);
+    expect(list.status).toBe(200);
+    expect(Object.values(healthOf(list.body))).not.toHaveLength(0);
+    expect(new Set(Object.values(healthOf(list.body)))).toEqual(new Set([null]));
+    const detail = await request(app).get('/api/v1/cis/ci-h-ok').set(AS_A);
+    expect(detail.body.data).toMatchObject({ id: 'ci-h-ok', health: null });
+  });
+
+  describe('with the ITIL tables', () => {
+    beforeAll(async () => {
+      const ddl = readFileSync(join(__dirname, '../../../../../database/src/postgres/migrations/001_complete_schema.sql'), 'utf8');
+      await sql(ddl.match(/CREATE TABLE IF NOT EXISTS itil_incidents \([\s\S]*?\n\);/)![0]);
+      await sql('ALTER TABLE itil_incidents ADD COLUMN organization_id uuid');
+      await sql(`GRANT SELECT ON itil_incidents TO cmdb_user`);
+    });
+    afterAll(() => sql('DROP TABLE itil_incidents'));
+    beforeEach(async () => {
+      await sql('DELETE FROM itil_incidents');
+      await incident(1, 'ci-h-p1', 1, 'in_progress', ORG_A);
+      await incident(2, 'ci-h-p2', 2, 'new', ORG_A);
+      await incident(3, 'ci-h-p3', 3, 'new', ORG_A);
+      await incident(4, 'ci-h-mixed', 5, 'new', ORG_A);
+      await incident(5, 'ci-h-mixed', 2, 'new', ORG_A);
+      await incident(6, 'ci-h-closed', 1, 'resolved', ORG_A);
+      await incident(7, 'ci-h-closed', 1, 'closed', ORG_A);
+      await incident(8, 'ci-h-closed', 1, 'cancelled', ORG_A);
+      await incident(9, 'ci-h-legacy', 1, 'new', null); // pre-cutover row with no organization: inert
+    });
+
+    it('derives healthy, degraded and critical from open incidents of the caller organization', async () => {
+      seedHealthCIs();
+      const list = await request(app).get('/api/v1/cis').set(AS_A);
+      expect(healthOf(list.body)).toMatchObject({
+        'ci-h-ok': 'healthy', 'ci-h-p1': 'critical', 'ci-h-p2': 'critical', 'ci-h-p3': 'degraded',
+        'ci-h-mixed': 'critical', 'ci-h-closed': 'healthy', 'ci-h-legacy': 'healthy',
+      });
+      for (const [id, health] of [['ci-h-p1', 'critical'], ['ci-h-p3', 'degraded'], ['ci-h-closed', 'healthy']]) {
+        const detail = await request(app).get(`/api/v1/cis/${id}`).set(AS_A);
+        expect(detail.body.data).toMatchObject({ id, health });
+      }
+    });
+
+    it("never reads another organization's incidents, and A's incidents never mark B's CIs", async () => {
+      seedHealthCIs();
+      await incident(20, 'ci-h-ok', 1, 'new', ORG_B); // B names A's CI id
+      await incident(21, 'ci-h-b', 3, 'new', ORG_A); // A names B's CI id
+      const own = await request(app).get('/api/v1/cis').set(AS_A);
+      expect(healthOf(own.body)['ci-h-ok']).toBe('healthy');
+      expect(own.body.data.map((ci: { id: string }) => ci.id)).not.toContain('ci-h-b');
+      const theirs = await request(app).get('/api/v1/cis').set(AS_B);
+      const seen = healthOf(theirs.body);
+      expect(Object.keys(seen).filter(id => id.startsWith('ci-h-'))).toEqual(['ci-h-b']);
+      expect(seen['ci-h-b']).toBe('healthy'); // A's P3 incident on ci-h-b is not B's
+      expect((await request(app).get('/api/v1/cis/ci-h-b').set(AS_A)).body).toEqual(NOT_FOUND);
+    });
+
+    it('keeps every earlier CI key next to health', async () => {
+      seedCI('ci-h-keys', ORG_A);
+      const detail = await request(app).get('/api/v1/cis/ci-h-keys').set(AS_A);
+      expect(Object.keys(detail.body.data)).toEqual(expect.arrayContaining(
+        ['id', 'name', 'type', 'status', 'environment', 'owner', 'provider', 'ip_address', 'tier', 'health']));
+    });
+
+    it('answers health null, not a failed CI read, when the incident read fails', async () => {
+      seedHealthCIs();
+      await sql('ALTER TABLE itil_incidents RENAME COLUMN priority TO priority_x');
+      try {
+        const list = await request(app).get('/api/v1/cis').set(AS_A);
+        expect(list.status).toBe(200);
+        expect(new Set(Object.values(healthOf(list.body)))).toEqual(new Set([null]));
+      } finally {
+        await sql('ALTER TABLE itil_incidents RENAME COLUMN priority_x TO priority');
+      }
+    });
+  });
+});
+
 describe('backfill 001_ci_organization_backfill.cypher', () => {
   // Statements split the way cypher-shell -f reads them: on ';', comment lines dropped.
   const statements = () => readFileSync(BACKFILL, 'utf8')

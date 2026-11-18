@@ -24,6 +24,8 @@ export interface CI {
   provider?: string | null;
   ip_address?: string | string[] | null;
   tier?: string | null;
+  /** Derived by the server from open incidents (services/ci-health.ts); null: the signal is unavailable. */
+  health?: CIHealth | null;
   tags: string[];
   discovered_by?: string;
   last_discovered?: string;
@@ -43,6 +45,9 @@ export type CIType =
   | 'storage'
   | 'load-balancer'
   | 'cloud-resource';
+
+/** Derived CI health (BW1): critical = open incident of priority 1 or 2, degraded = priority 3 to 5, healthy = none. */
+export type CIHealth = 'healthy' | 'degraded' | 'critical';
 
 export type CIStatus = 'active' | 'inactive' | 'maintenance' | 'decommissioned';
 
@@ -94,8 +99,10 @@ export interface DashboardStats {
   by_status: Record<CIStatus, number>;
   by_environment: Record<Environment, number>;
   recent_discoveries: CI[];
-  /** null: unavailable (no CI health state yet, BW1); never a placeholder 0. */
+  /** Percentage of CIs with health `healthy`; null: unavailable (BW1), never a placeholder 0. */
   health_score: number | null;
+  /** CIs by derived health state; null when the signal is unavailable. Optional: older servers omit it. */
+  ci_health?: { healthy: number; degraded: number; critical: number; total: number } | null;
   /** Relationships with at least one endpoint that is a critical CI (bsm_business_criticality tier_1 or tier_2). */
   critical_relationships: number;
 }

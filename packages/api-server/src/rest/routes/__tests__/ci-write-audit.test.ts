@@ -10,7 +10,7 @@
  * timeout (55P03) is a 503 and a recovery backoff. S2: ITIL, restore and relationship writes are audited too (D9).
  */
 import { fork } from 'child_process';
-import { randomBytes, randomUUID } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import express from 'express';
@@ -225,6 +225,81 @@ describe('with AUDIT_CHAIN_KEY', () => {
     expect(entry!.changes).toContainEqual({ field: 'name', old_value: 'seeded', new_value: null });
     expect(await rows(`SELECT actor FROM audit_log WHERE actor <> 'actor-a'`)).toEqual([]);
     expect(await service.verifyAuditChain()).toMatchObject({ ok: true });
+  });
+
+  describe('HAP-797 oversized recovery delete', () => {
+    const recover = (user: string, id: string, body: object = { evidence_ref: 'vault://evidence/legacy-ci-1' }) =>
+      request(app).post(`/api/v1/cis/${id}/oversized-delete`).set(headers(user)).send(body);
+    /** An owned legacy CI holding `props` (stored values the HP1 plan limits refuse). */
+    const seedWith = (props: Record<string, unknown>): string => {
+      const id = seed(A);
+      Object.assign(mockGraph.nodes.get(id)!, props);
+      return id;
+    };
+    const digest = (value: string) => ({ bytes: Buffer.byteLength(JSON.stringify(value)), sha256: createHash('sha256').update(JSON.stringify(value)).digest('hex') });
+    const ciRows = (id: string) => rows('SELECT 1 FROM ci_reconciliation_operations WHERE ci_id = $1 AND state = $2', [id, 'committed']);
+
+    // The limit is on a stored value's JSON bytes (quotes included): 65 534 characters is exactly 64 KiB, 65 535 is 64 KiB + 1.
+    it.each([['metadata', 'metadata'], ['a non-metadata attribute', 'description']])(
+      'a 64 KiB + 1 %s: DELETE stays 422; a non-admin is refused; the admin path deletes it with size, hash and evidence in the chained audit row, never the value', async (_name, field) => {
+        const value = 'x'.repeat(65_535);
+        const id = seedWith({ [field]: value });
+        expect((await del('a', id)).status).toBe(422);
+        expect((await recover('viewer', id)).status).toBe(403);
+        expect((await recover('a', id, {})).status).toBe(400);
+        expect(mockGraph.nodes.has(id)).toBe(true);
+        expect(await audit(id)).toEqual([]);
+
+        expect((await recover('a', id)).status).toBe(204);
+        expect(mockGraph.nodes.has(id)).toBe(false);
+        const [entry, ...extra] = await getAuditService(getPostgresClient().pool).getCIAuditHistory(id, A);
+        expect(extra).toEqual([]);
+        const evidence = digest(value);
+        expect(evidence.bytes).toBe(65_537);
+        expect(entry).toMatchObject({ action: 'DELETE', actor: 'actor-a', actor_type: 'user' });
+        expect(entry!.metadata).toMatchObject({ recovery: 'oversized_delete', evidence_ref: 'vault://evidence/legacy-ci-1',
+          journal_operation: 'delete', oversized_count: 1, oversized: [{ field, ...evidence }] });
+        expect(entry!.changes).toContainEqual({ field, old_value: { $hp797: 'oversized', ...evidence }, new_value: null });
+        expect(entry!.changes).toContainEqual({ field: 'name', old_value: 'seeded', new_value: null });
+        const [history] = await rows('SELECT change_type, previous_values FROM ci_change_history WHERE ci_id = $1', [id]);
+        expect(history).toMatchObject({ change_type: 'deleted', previous_values: { [field]: { $hp797: 'oversized', ...evidence }, name: 'seeded' } });
+        expect(JSON.stringify([await audit(id), history])).not.toContain('xxxxxxxxxxxxxxxx');
+        expect(await getAuditService(getPostgresClient().pool).verifyAuditChain()).toMatchObject({ ok: true });
+      });
+
+    it('a value at exactly 64 KiB is an ordinary delete: DELETE is 204, and the recovery path refuses a CI with nothing oversized (409)', async () => {
+      const [fits, kept] = [seedWith({ description: 'x'.repeat(65_534) }), seedWith({ description: 'x'.repeat(65_534) })];
+      expect((await recover('a', kept)).status).toBe(409);
+      expect(mockGraph.nodes.has(kept)).toBe(true);
+      expect((await del('a', fits)).status).toBe(204);
+      expect(mockGraph.nodes.has(fits)).toBe(false);
+    });
+
+    it('many values each under 64 KiB but over the 1 MiB plan total: DELETE is 422; recovery keeps what fits and records size and hash for the rest', async () => {
+      const values = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`attr${String(i).padStart(2, '0')}`, `${i}`.padEnd(60_000, 'y')]));
+      const id = seedWith(values);
+      expect((await del('a', id)).status).toBe(422);
+      expect((await recover('a', id)).status).toBe(204);
+      const [entry] = await getAuditService(getPostgresClient().pool).getCIAuditHistory(id, A);
+      const recorded = (entry!.metadata as { oversized: Array<{ field: string; bytes: number; sha256: string }> }).oversized;
+      expect(recorded.length).toBeGreaterThan(0);
+      for (const { field, bytes, sha256 } of recorded) {
+        expect([bytes, sha256]).toEqual([digest(values[field]!).bytes, digest(values[field]!).sha256]);
+      }
+      expect((entry!.changes as Array<{ field: string; old_value: unknown }>).filter(change => change.field.startsWith('attr') && change.old_value === values[change.field]).length)
+        .toBe(20 - recorded.length);
+    });
+
+    it('a foreign or missing CI is 404 and appends nothing; the evidence reference is bounded and has no control characters', async () => {
+      const [foreign, own] = [seedWith({ description: 'x'.repeat(65_535) }), seedWith({ description: 'x'.repeat(65_535) })];
+      Object.assign(mockGraph.nodes.get(foreign)!, { organization_id: B });
+      const before = (await audit()).length;
+      expect([(await recover('a', foreign)).status, (await recover('a', randomUUID())).status,
+        (await recover('a', own, { evidence_ref: 'x'.repeat(513) })).status, (await recover('a', own, { evidence_ref: 'a\nb' })).status,
+      ]).toEqual([404, 404, 400, 400]);
+      expect([(await audit()).length, mockGraph.nodes.has(own), mockGraph.nodes.has(foreign)]).toEqual([before, true, true]);
+      expect(await ciRows(own)).toEqual([]);
+    });
   });
 
   it('a W left pending by an unproven outcome is audited once, by the original actor, when recovery commits it', async () => {

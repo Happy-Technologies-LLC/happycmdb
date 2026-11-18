@@ -19,6 +19,7 @@ export {
 } from './journal/journal';
 export type { JournalSeam, StoredPlan, ConflictPlan, JournalActorType, RelationshipEvidence } from './journal/journal';
 export { enc, dec, isStorableString } from './journal/encoding';
+export type { OversizedValue } from './journal/encoding';
 
 // HAP-1442 AI inventory: the only writer of source-owned AI CIs (its grant token is deliberately not exported)
 export { AISyncWriter, AISyncWriteRefused } from './ai-inventory/ai-sync-writer';

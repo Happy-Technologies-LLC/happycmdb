@@ -9,6 +9,7 @@
  * normalizes away) and strings jsonb cannot store are tagged; any literal
  * object with a `$hp1` member is map-wrapped so it never equals a tag.
  */
+import { createHash } from 'crypto';
 import neo4j from 'neo4j-driver';
 
 export type Encoded = null | boolean | number | string | Encoded[] | { [key: string]: Encoded };
@@ -145,4 +146,45 @@ export function assertPlanRepresentable(plan: Encoded): void {
   };
   if (Buffer.byteLength(JSON.stringify(plan)) > PLAN_LIMITS.totalBytes) throw new PlanUnrepresentableError();
   walk(plan, 0);
+}
+
+/** HAP-797: stands in for a stored value that exceeds a plan limit; the value itself is never copied into evidence. */
+export interface OversizedValue { field: string; bytes: number; sha256: string }
+export const OVERSIZED_TAG = '$hp797';
+/** Snapshot budget: history.previous is stored once in the plan, so this leaves the 1 MiB plan limit ample room for the envelope. */
+export const OVERSIZED_SNAPSHOT_BYTES = 512 * 1024;
+
+/**
+ * HAP-797: the bounded form of a CI's raw properties for the admin oversized-delete path. A property whose encoding breaks a
+ * §3.6 limit (a value over 64 KiB, an array over 1000 members), and then the largest remaining ones while the snapshot
+ * exceeds OVERSIZED_SNAPSHOT_BYTES, is replaced by `{ $hp797: 'oversized', bytes, sha256 }`. `bytes` and `sha256` describe the
+ * value's HP1 JSON encoding (`JSON.stringify(enc(value))`, UTF-8), so a holder of the value can recompute both. A value `enc`
+ * itself cannot represent still throws PlanUnrepresentableError: there is nothing to measure.
+ */
+export function boundOversizedSnapshot(props: Record<string, unknown>): { snapshot: Record<string, Encoded>; oversized: OversizedValue[] } {
+  const entries = Object.keys(props).sort().map(field => {
+    const encoded = enc(props[field]);
+    const json = JSON.stringify(encoded);
+    let representable = true;
+    try { assertPlanRepresentable(encoded); } catch (error) {
+      if (!(error instanceof PlanUnrepresentableError)) throw error;
+      representable = false;
+    }
+    return { field, encoded, json, bytes: Buffer.byteLength(json), representable };
+  });
+  let total = entries.reduce((sum, entry) => entry.representable ? sum + entry.bytes : sum, 0);
+  for (const entry of [...entries].filter(e => e.representable).sort((a, b) => b.bytes - a.bytes)) {
+    if (total <= OVERSIZED_SNAPSHOT_BYTES) break;
+    entry.representable = false;
+    total -= entry.bytes;
+  }
+  const snapshot: Record<string, Encoded> = {};
+  const oversized: OversizedValue[] = [];
+  for (const { field, encoded, json, bytes, representable } of entries) {
+    if (representable) { snapshot[field] = encoded; continue; }
+    const sha256 = createHash('sha256').update(json).digest('hex');
+    snapshot[field] = { [OVERSIZED_TAG]: 'oversized', bytes, sha256 };
+    oversized.push({ field, bytes, sha256 });
+  }
+  return { snapshot, oversized };
 }

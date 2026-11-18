@@ -108,6 +108,7 @@ api-server/src/
 - `POST /api/v1/cis` - Create new CI
 - `PUT /api/v1/cis/:id` - Update CI
 - `DELETE /api/v1/cis/:id` - Delete CI
+- `POST /api/v1/cis/:id/oversized-delete` - Admin-only audited delete of a CI whose stored value breaks the 64 KiB plan limit (see [Troubleshooting](/operations/troubleshooting#issue-5-a-ci-cannot-be-deleted-or-merged-422-ci-cannot-be-changed-through-the-audited-path))
 - `GET /api/v1/cis/:id/relationships` - Get relationships
 - `GET /api/v1/cis/:id/dependencies` - Get dependency tree
 - `POST /api/v1/discovery/jobs` - Trigger discovery

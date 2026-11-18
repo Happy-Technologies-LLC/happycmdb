@@ -107,7 +107,7 @@ export class JournalPlanThrottledError extends Error {
 }
 /** v16 §7 conflict precondition refused under the slot (409); the journal row is aborted with the reason. */
 export class JournalConflictError extends Error {
-  constructor(readonly reason: 'pending_content' | 'stale_conflict' | 'revision_mismatch' | 'not_stale') { super(reason); }
+  constructor(readonly reason: 'pending_content' | 'stale_conflict' | 'revision_mismatch' | 'not_stale' | 'not_oversized') { super(reason); }
 }
 export { PlanUnrepresentableError };
 

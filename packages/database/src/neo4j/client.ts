@@ -12,10 +12,10 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 import { getPostgresClient } from '../postgres/client';
-import { enc, isStorableString } from '../journal/encoding';
+import { boundOversizedSnapshot, enc, isStorableString } from '../journal/encoding';
 import type { Encoded } from '../journal/encoding';
 import {
-  assertJournalSchema, JournalGapError, JournalGraphRunner, JournalPlanThrottledError, JournalTargetMissingError,
+  assertJournalSchema, JournalConflictError, JournalGapError, JournalGraphRunner, JournalPlanThrottledError, JournalTargetMissingError,
   ReconciliationJournal, StoredPlan, JournalUnavailableError, assertExternalIdSchema, type JournalActorType,
   type RelationshipEvidence,
 } from '../journal/journal';
@@ -728,6 +728,40 @@ export class Neo4jClient {
             history: { changeType: 'deleted', changedFields: ['*'], source: 'api', previous: enc(props), next: null,
               incarnationId: ciIncarnationId(props['incarnation_id'] as string | null) },
             audit: { action: 'DELETE' },
+          };
+        },
+        result: async () => true,
+      });
+    } catch (error) {
+      if (error instanceof JournalTargetMissingError) return false;
+      throw error;
+    }
+  }
+
+  /**
+   * HAP-797: the recovery delete of a legacy CI the ordinary `deleteCI` can never remove, because a stored value breaks a
+   * §3.6 plan limit (a 422 on every attempt). Same journaled delete, but the history row and the audit `changes` hold a bounded
+   * snapshot: each such value is replaced by its byte size and SHA-256 (`boundOversizedSnapshot`), never copied, and the audit
+   * metadata names `evidenceRef`, the caller's reference to wherever the full value was preserved. Authorization is the
+   * caller's (the route requires the admin role). A CI with no oversized value is a 409 (`not_oversized`): that is what
+   * `deleteCI` is for. False when missing or foreign.
+   */
+  async deleteOversizedCI(id: string, organizationId: string, actor: string, evidenceRef: string): Promise<boolean> {
+    if (!(await this.admitOwned(organizationId, [id]))) return false;
+    try {
+      return await this.journal.run({
+        organizationId, actor, operation: 'delete', ciIds: [id],
+        plan: async (): Promise<StoredPlan> => {
+          const props = await this.getCIProperties(id, organizationId);
+          if (!props) throw new JournalTargetMissingError();
+          const { snapshot, oversized } = boundOversizedSnapshot(props);
+          if (oversized.length === 0) throw new JournalConflictError('not_oversized');
+          return {
+            graph: { kind: 'delete', label: null, params: enc({ id }) },
+            history: { changeType: 'deleted', changedFields: ['*'], source: 'api', previous: snapshot, next: null,
+              incarnationId: ciIncarnationId(props['incarnation_id'] as string | null) },
+            audit: { action: 'DELETE', metadata: { recovery: 'oversized_delete', evidence_ref: evidenceRef,
+              oversized_count: oversized.length, oversized: [...oversized].sort((a, b) => b.bytes - a.bytes).slice(0, 20) } },
           };
         },
         result: async () => true,

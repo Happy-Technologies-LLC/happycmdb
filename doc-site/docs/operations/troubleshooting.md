@@ -220,6 +220,27 @@ kubectl set env deployment/api-server -n cmdb \
 kubectl scale deployment/api-server --replicas=5 -n cmdb
 ```
 
+### Issue 5: A CI cannot be deleted or merged (422 "CI cannot be changed through the audited path")
+
+**Symptoms:**
+- `DELETE /api/v1/cis/:id` (or a merge touching the CI) returns `422 Unprocessable Entity` on every attempt
+- The CI stores a value over the HAP-443 plan limits: more than 64 KiB for one value (the JSON bytes of the encoded value, quotes included: a 65 535-character string is 64 KiB + 1), an array over 1000 members, or a CI whose values total over 1 MiB. `metadata` and every other stored property count alike. The request guard (400) and the journal plan check (422) refuse new values like these, so the holder is a legacy CI.
+
+**Recovery (admin only):** `POST /api/v1/cis/:id/oversized-delete` with the `admin` role (the `write` permission is not enough: a viewer or operator gets `403`) and a body naming where the full value was preserved:
+
+```bash
+curl -X POST "$CMDB/api/v1/cis/$CI_ID/oversized-delete" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"evidence_ref": "vault://cmdb-evidence/legacy-ci-1234"}'
+```
+
+1. Preserve the full value first, outside the CMDB (for example `GET /api/v1/cis/:id`, saved to your evidence store). `evidence_ref` is a free-text reference of 1 to 512 characters without control characters; the CMDB does not resolve or check it.
+2. The call runs the same journaled delete (`204` on success, `404` for a missing or foreign CI). The CI's own state, relationships and derived rows are removed exactly as `DELETE` would.
+3. Evidence is bounded. The `ci_change_history` `deleted` row and the `DELETE` audit row hold every value that fits, and for each value that does not, `{"$hp797": "oversized", "bytes": N, "sha256": "..."}` instead of the value. `bytes` and `sha256` are over `JSON.stringify` of the value (UTF-8), so you can recompute both from the preserved copy. The audit row's `metadata` carries `recovery: "oversized_delete"`, `evidence_ref`, `oversized_count` and the largest 20 `{field, bytes, sha256}` entries. It is a hash-chained `audit_log` row by the verified admin, like any CI delete.
+4. A CI with no value over the limits is refused with `409` (`not_oversized`): use the ordinary `DELETE`. The ordinary `DELETE` and merge stay `422` for an oversized CI; there is no merge recovery, so delete the oversized CI through this path and re-create or re-discover it.
+
+Not covered: a CI with more than 1000 stored properties (a different limit) stays `422`.
+
 ## Discovery Job Failures
 
 ### Issue 1: AWS Discovery Failing

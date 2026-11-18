@@ -306,6 +306,22 @@ export class CIController {
     }
   }
 
+  /** HAP-797: the admin recovery delete (route-gated) of a CI whose stored value DELETE cannot plan. 204; 404 missing/foreign; 409 not oversized. */
+  async deleteOversizedCI(req: Request, res: Response): Promise<void> {
+    try {
+      if (!(await this.neo4jClient.deleteOversizedCI(req.params['id']!, requestOrganizationId(req), requestActor(req),
+        req.body.evidence_ref as string))) {
+        sendCINotFound(res);
+        return;
+      }
+      res.status(204).send();
+    } catch (error) {
+      if (sendJournalError(res, error)) return;
+      logger.error('Error deleting oversized CI', error);
+      res.status(500).json({ success: false, error: 'Failed to delete CI' });
+    }
+  }
+
   async getCIRelationships(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;

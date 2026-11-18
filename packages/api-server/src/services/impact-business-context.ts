@@ -22,7 +22,6 @@
  */
 
 import { getPostgresClient } from '@cmdb/database';
-import { ChangeType, RiskLevel, type ImpactAnalysis } from '@cmdb/ai-ml-engine';
 
 const HOURS_PER_YEAR = 8760;
 const CRITICALITY_ORDER = ['critical', 'high', 'medium', 'low'] as const;
@@ -141,10 +140,20 @@ export interface ImpactRecommendation {
 
 const MAINTENANCE_WINDOW_DOWNTIME_MINUTES = 30;
 const LONG_CHAIN_HOPS = 3;
+/** The engine's `ChangeType` values, as strings so this service (reached from the controllers the e2e type-check imports) needs no ai-ml-engine build. */
 const ROLLBACK_CHANGE_TYPES: ReadonlySet<string> = new Set([
-  ChangeType.CONFIGURATION_CHANGE, ChangeType.VERSION_UPGRADE, ChangeType.NETWORK_CHANGE, ChangeType.SECURITY_CHANGE,
-  ChangeType.DECOMMISSION,
+  'configuration_change', 'version_upgrade', 'network_change', 'security_change', 'decommission',
 ]);
+
+/** The fields of the engine's `ImpactAnalysis` the rules read. */
+export interface RecommendationInput {
+  change_type: string;
+  risk_level: string;
+  blast_radius: number;
+  affected_cis: ReadonlyArray<{ hop_count: number }>;
+  critical_path: readonly string[];
+  estimated_downtime_minutes?: number | undefined;
+}
 
 /**
  * BW12: deterministic, rule-based recommendations for a predicted change. No model, no randomness, no I/O: the same
@@ -161,7 +170,7 @@ const ROLLBACK_CHANGE_TYPES: ReadonlySet<string> = new Set([
  *  - `no_recorded_dependents`: blast_radius is 0. The graph is declared edges only, so this is not proof of none.
  */
 export function deriveImpactRecommendations(
-  impact: Pick<ImpactAnalysis, 'change_type' | 'risk_level' | 'blast_radius' | 'affected_cis' | 'critical_path' | 'estimated_downtime_minutes'>,
+  impact: RecommendationInput,
   services: readonly Pick<AffectedBusinessService, 'business_criticality'>[]
 ): ImpactRecommendation[] {
   const out: ImpactRecommendation[] = [];
@@ -169,7 +178,7 @@ export function deriveImpactRecommendations(
   const direct = impact.affected_cis.filter(ci => ci.hop_count === 1).length;
   const critical = services.filter(s => s.business_criticality === 'critical' || s.business_criticality === 'high').length;
 
-  if (impact.risk_level === RiskLevel.CRITICAL || impact.risk_level === RiskLevel.HIGH
+  if (impact.risk_level === 'critical' || impact.risk_level === 'high'
       || (impact.estimated_downtime_minutes ?? 0) >= MAINTENANCE_WINDOW_DOWNTIME_MINUTES) {
     add('maintenance_window', 'Schedule this change in an approved maintenance window.');
   }
@@ -179,13 +188,13 @@ export function deriveImpactRecommendations(
   if (critical > 0) {
     add('notify_service_owners', `Notify the owners of the ${critical} critical or high-criticality business services affected.`);
   }
-  if (ROLLBACK_CHANGE_TYPES.has(impact.change_type) && impact.risk_level !== RiskLevel.MINIMAL) {
+  if (ROLLBACK_CHANGE_TYPES.has(impact.change_type) && impact.risk_level !== 'minimal') {
     add('rollback_plan', 'Prepare and test a rollback plan before starting.');
   }
-  if (impact.change_type === ChangeType.FAILOVER) {
+  if (impact.change_type === 'failover') {
     add('verify_standby', 'Confirm the standby target is healthy and in sync before failing over.');
   }
-  if (impact.change_type === ChangeType.DECOMMISSION && impact.blast_radius > 0) {
+  if (impact.change_type === 'decommission' && impact.blast_radius > 0) {
     add('clear_dependents_first', 'Migrate or retire the dependent CIs before decommissioning.');
   }
   if (impact.critical_path.length - 1 >= LONG_CHAIN_HOPS) {

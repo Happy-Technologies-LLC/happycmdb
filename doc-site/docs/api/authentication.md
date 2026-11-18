@@ -223,8 +223,19 @@ row was not written) and the scope change stays applied, with the node propertie
 covers a Neo4j write that errors on the client after the server may have committed it (a lost commit acknowledgement):
 the command then re-reads the user's scope under the lock, and if it already holds the requested state the change is
 applied and unrecorded, so it exits 3 as above, not 1. If the scope is unchanged after the error, or cannot be re-read
-(Neo4j still unreachable), the raw error is printed with exit 1: check the live scope, and run the record command only
-if it changed.
+(Neo4j still unreachable), the outcome is unknown, because Neo4j may still apply the write after that re-read. The
+command then appends one row for the requested change with actor `window-script-ambiguous:<operator>` (same event
+as a real change, inside the same transaction as the lock) and exits 1 with the error text, redacted. An
+ambiguous row means "requested, outcome not confirmed", not "applied": it is also written when the write was refused
+outright, so it is expected noise, and it never counts as a recovery row. Check the live scope; run the record
+command only if it changed. If the ambiguous row itself cannot be written, the original error stands and the exit
+is still 1; this path never exits 0. Exit 1 prints the error text with credential-like content replaced by `***`:
+URL userinfo (`scheme://user:pw@host`), `Bearer <token>`, and the value after `=` or `:` of any key containing
+`password`, `passwd`, `token` or `secret`. A value flag directly followed by another value flag
+(`--operator --user-id p`) is a usage error (exit 1, before any store opens), not an operator named `--user-id`.
+
+Ambiguous rows are not confirmed changes: exclude them from a history read with
+`AND actor NOT LIKE 'window-script-ambiguous:%'`.
 
 **Recovery after exit 3: `record-portfolio-import-scope`.** The exit-3 message prints the exact command for its own
 action, with the same flag as the failed run:
@@ -246,10 +257,13 @@ writes, it reads the live scope and refuses, with exit 2
 user holds `portfolio:import`, `--revoke` only while the user does not. It applies the identity refusals of grant and
 revoke below, and prints the same JSON line as a change, with `"recordOnly": true` and `"alreadyRecorded"`. The record
 is idempotent: under the lock it appends nothing when the user's latest scope row (any actor) is already a recovery
-row of the same event, and prints that row with `"alreadyRecorded": true` (its `operator` is the earlier row's), so a
-retry after an ambiguous commit adds no duplicate. A later grant or revoke, real or recovered, makes the next record
-of the same event append again. It does not check the node properties, so a scope changed with no row between two
-records of one event is not seen as a new change. If the record's own insert fails it exits 1
+row of the same event and is not older than the node's own marker of that change (`portfolioImportScopeGrantedAt`
+for `--grant`, `portfolioImportScopeRevokedAt` for `--revoke`), and prints that row with `"alreadyRecorded": true`
+(its `operator` is the earlier row's), so a retry after an ambiguous commit adds no duplicate. A later grant or
+revoke, real or recovered, makes the next record of the same event append again, and so does a later change whose
+recovery was skipped: it re-stamps the marker after the earlier recovery row, so the earlier row no longer covers
+it. The marker is Neo4j's clock and the row is PostgreSQL's: a skew can only make the marker look newer than a row
+that does cover it, which appends one extra recovery row, never hides a change. If the record's own insert fails it exits 1
 (`the audit row was not written and nothing else was changed`); run the same command again. An error while shaping the
 printed result after the row was written exits 1, never 3. To list only the recovery rows:
 `WHERE event LIKE 'portfolio_import_scope_%' AND actor LIKE 'window-script-record:%'`.

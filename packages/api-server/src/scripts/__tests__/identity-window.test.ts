@@ -22,7 +22,7 @@ import {
   ASSIGN_ORGANIZATION_CYPHER, AuditWriteFailed, assignOrganization, main,
   GRANT_HOLDERS_CYPHER, GRANT_IDENTITY_CYPHER, GRANT_PLATFORM_ADMIN_CYPHER, GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER, GrantRefused,
   REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER, SCAN_MARK_CYPHER,
-  SCAN_USERS_CYPHER, grantPlatformAdmin, grantPortfolioImportScope, recordPortfolioImportScope, revokePortfolioImportScope, scanDefaultPasswords,
+  SCAN_USERS_CYPHER, SCOPE_MARKERS_CYPHER, grantPlatformAdmin, grantPortfolioImportScope, recordPortfolioImportScope, redactSecrets, revokePortfolioImportScope, scanDefaultPasswords,
 } from '../identity-window';
 import { APPLY_CYPHER } from '../rotate-user-password';
 import type { RotationGraph, RotationSql, RotationSqlQuery, Row } from '../rotate-user-password';
@@ -138,6 +138,12 @@ function fakeGraph(users: Node[]): RotationGraph {
       if (q === norm(GRANT_HOLDERS_CYPHER)) {
         const keys = params['keys'] as unknown[];
         return [{ holders: neo4j.int(users.filter(u => keys.includes(u.props['_id']) || keys.includes(u.props['id'])).length) }];
+      }
+      if (q === norm(SCOPE_MARKERS_CYPHER)) {
+        const ms = (value: unknown) => (value instanceof Date ? neo4j.int(value.getTime()) : null);
+        return users.filter(u => u.elementId === params['eid']).map(u => ({
+          grantedMs: ms(u.props['portfolioImportScopeGrantedAt']), revokedMs: ms(u.props['portfolioImportScopeRevokedAt']),
+        }));
       }
       if (q === norm(SCAN_USERS_CYPHER)) {
         return users.map(u => ({ eid: u.elementId, id: u.props['_id'] ?? u.props['id'], hash: hashOf(u), e0: neo4j.int(epochOf(u)) }));
@@ -830,7 +836,7 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     expect(await rowsOf()).toEqual([[action === 'grant' ? 'portfolio_import_scope_granted' : 'portfolio_import_scope_revoked', RECORD_ACTOR]]);
   });
 
-  it('a Neo4j write error that did not apply the change keeps exit 1 and the raw error, and so does one whose state cannot be re-read', async () => {
+  it('a Neo4j write error that did not apply the change exits 1 with the error text redacted, and so does one whose state cannot be re-read', async () => {
     for (const [apply, rereadFails] of [[false, false], [true, true]] as const) {
       const users = [user()];
       open.mockReturnValue({ ...storesOf(users), graph: commitThenError(fakeGraph(users), apply, rereadFails) });
@@ -838,8 +844,121 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
       const { code, out, err } = await run(['grant-portfolio-import-scope', '--user-id', 'p', '--operator', 'alice']);
 
       expect([code, out]).toEqual([1, []]);
-      expect(err).toEqual(['identity-window: commit acknowledgement lost password=hunter2']);
+      expect(err).toEqual(['identity-window: commit acknowledgement lost password=***']);
+      expect(err.join()).not.toContain('hunter2');
     }
+  });
+
+  // HAP-2136 F2: the write errored, the re-read did not show the change, and Neo4j applies it afterwards.
+  const AMBIGUOUS_ACTOR = 'window-script-ambiguous:alice';
+  /** The graph whose scope write errors without applying; `land()` is the server applying it afterwards. */
+  const lateCommit = (users: Node[]) => {
+    const inner = fakeGraph(users);
+    let pendingWrite: (() => Promise<unknown>) | undefined;
+    const graph: RotationGraph = {
+      read: inner.read,
+      write: async (cypher, params) => {
+        pendingWrite = () => inner.write(cypher, params);
+        throw new Error('commit acknowledgement lost password=hunter2');
+      },
+    };
+    return { graph, land: async () => { await pendingWrite!(); } };
+  };
+
+  it.each([
+    ['grant-portfolio-import-scope', [], 'portfolio_import_scope_granted', [SCOPE]],
+    ['revoke-portfolio-import-scope', [SCOPE], 'portfolio_import_scope_revoked', []],
+  ] as const)('%s whose write lands after the re-read exits 1 with an ambiguous row for the requested change', async (command, before, event, after) => {
+    const users = [user({ scopes: [...before] })];
+    const { graph, land } = lateCommit(users);
+    open.mockReturnValue({ ...storesOf(users), graph });
+
+    const { code, out, err } = await run([command, '--user-id', 'p', '--operator', 'alice']);
+    await land();
+
+    expect([code, out]).toEqual([1, []]);
+    expect(err).toEqual(['identity-window: commit acknowledgement lost password=***']);
+    expect(users[0]!.props['scopes']).toEqual(after);
+    expect((await events()).map(r => [r['user_id'], r['event'], r['actor']])).toEqual([['p', event, AMBIGUOUS_ACTOR]]);
+  });
+
+  it('an unreadable state after the write error also leaves an ambiguous row; a failing ambiguous insert keeps exit 1 and writes nothing', async () => {
+    const users = [user()];
+    open.mockReturnValue({ ...storesOf(users), graph: commitThenError(fakeGraph(users), true, true) });
+
+    const unreadable = await run(['grant-portfolio-import-scope', '--user-id', 'p', '--operator', 'alice']);
+
+    expect(unreadable.code).toBe(1);
+    expect((await events()).map(r => [r['event'], r['actor']])).toEqual([['portfolio_import_scope_granted', AMBIGUOUS_ACTOR]]);
+
+    await resetEvents();
+    const second = [user()];
+    open.mockReturnValue({ ...storesOf(second), graph: lateCommit(second).graph, sql: insertting(() => { throw new Error('password=hunter2 insert refused'); }) });
+
+    const failed = await run(['grant-portfolio-import-scope', '--user-id', 'p', '--operator', 'alice']);
+
+    expect([failed.code, failed.out]).toEqual([1, []]);
+    expect(failed.err).toEqual(['identity-window: commit acknowledgement lost password=***']);
+    expect(await events()).toEqual([]);
+  });
+
+  it('an ambiguous row never counts as a recovery row: the next record appends its own', async () => {
+    const users = [user()];
+    const { graph, land } = lateCommit(users);
+    open.mockReturnValue({ ...storesOf(users), graph });
+    await run(['grant-portfolio-import-scope', '--user-id', 'p', '--operator', 'alice']);
+    await land();
+    open.mockReturnValue(storesOf(users));
+
+    const record = await run([RECORD_CMD, '--grant', '--user-id', 'p', '--operator', 'alice']);
+
+    expect(JSON.parse(record.out[0]!)).toMatchObject({ outcome: 'granted', recordOnly: true, alreadyRecorded: false });
+    expect(await rowsOf()).toEqual([['portfolio_import_scope_granted', AMBIGUOUS_ACTOR], ['portfolio_import_scope_granted', RECORD_ACTOR]]);
+  });
+
+  // HAP-2136 F1: an earlier recovery row of the same event covers a record only while no later change re-stamped the node.
+  it('a skipped recovery between two records of one event does not let the earlier recovery row absorb the second', async () => {
+    const users = [user()];
+    const failing = insertting(() => { throw new Error('down'); });
+    open.mockReturnValue(storesOf(users));
+    const record = (flag: string) => run([RECORD_CMD, flag, '--user-id', 'p', '--operator', 'alice']);
+    const pause = () => new Promise(resolve => setTimeout(resolve, 15));
+
+    await grantPortfolioImportScope(fakeGraph(users), failing, 'p', 'alice').catch(() => undefined); // exit 3
+    await pause();
+    const first = await record('--grant');
+    await pause();
+    await revokePortfolioImportScope(fakeGraph(users), failing, 'p', 'alice').catch(() => undefined); // exit 3, recovery skipped
+    await pause();
+    await grantPortfolioImportScope(fakeGraph(users), failing, 'p', 'alice').catch(() => undefined); // exit 3
+    await pause();
+    const second = await record('--grant');
+    const retry = await record('--grant');
+
+    expect([first, second, retry].map(r => JSON.parse(r.out[0]!).alreadyRecorded)).toEqual([false, false, true]);
+    expect(await rowsOf()).toEqual([['portfolio_import_scope_granted', RECORD_ACTOR], ['portfolio_import_scope_granted', RECORD_ACTOR]]);
+    expect(JSON.parse(retry.out[0]!).eventId).toBe((await events())[1]!['id']);
+  });
+
+  // HAP-2136 F3
+  it('redacts credential-like content of an error text before it is printed', () => {
+    expect(redactSecrets('connect failed: password=hunter2 token=abc.def secret: s3cr3t client_secret="two words" Authorization: Bearer eyJhbGciOi.x.y bolt://neo4j:pw%40d@db.internal:7687/x'))
+      .toBe('connect failed: password=*** token=*** secret: *** client_secret=*** Authorization: Bearer *** bolt://***@db.internal:7687/x');
+    expect(redactSecrets('connect ECONNREFUSED 10.0.0.5:5432')).toBe('connect ECONNREFUSED 10.0.0.5:5432');
+  });
+
+  // HAP-2136 F4
+  it.each([
+    [['grant-portfolio-import-scope', '--operator', '--user-id', 'p'], '--operator'],
+    [['grant-portfolio-import-scope', '--user-id', '--operator', 'alice'], '--user-id'],
+    [['stamp', '--except', '--user-id', 'p'], '--except'],
+  ] as const)('%j: a value flag followed by another flag is a usage error before any store opens', async (argv, flag) => {
+    open.mockReturnValue(storesOf([user()]));
+
+    const { code, out, err } = await run([...argv]);
+
+    expect([code, out, err]).toEqual([1, [], [`identity-window: ${flag} requires a value, found another flag in its place`]]);
+    expect(open).not.toHaveBeenCalled();
     expect(await events()).toEqual([]);
   });
 

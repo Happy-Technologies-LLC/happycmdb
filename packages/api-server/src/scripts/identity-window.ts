@@ -27,6 +27,9 @@
  * - `record-portfolio-import-scope --grant|--revoke` (HAP-2129): writes the audit row of a scope change that is
  *   already applied in Neo4j (the exit-3 recovery) and makes no Neo4j write; it refuses unless the live scope list
  *   matches the action being recorded.
+ *   HAP-2136: an earlier recovery row of the same event absorbs a record only while it is not older than the node's own
+ *   grantedAt/revokedAt marker; a Neo4j write error whose outcome is unknown (state unchanged or unreadable on re-read)
+ *   leaves a `window-script-ambiguous:<operator>` row and exits 1; exit-1 text is redacted (redactSecrets).
  * - `assign-organization`: sets the first organization (FD-5) of one such user
  *   that is not a platform admin and has none or a non-UUID one; never reassigns.
  *
@@ -143,14 +146,20 @@ RETURNING id, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.U
 const SCOPE_LOCK_SQL = 'SELECT pg_advisory_xact_lock(2129, hashtext($1))';
 const SCOPE_EVENTS = { granted: 'portfolio_import_scope_granted', revoked: 'portfolio_import_scope_revoked' } as const;
 /** The stored actor of a real change is `window-script:<operator>`, of a record-only recovery row
- * `window-script-record:<operator>` (HAP-2131), each in a VARCHAR(255). The event kind is the same for both. */
+ * `window-script-record:<operator>` (HAP-2131), of an ambiguous-outcome row `window-script-ambiguous:<operator>`
+ * (HAP-2136), each in a VARCHAR(255). The event kind is the same for all three. */
 const ACTOR_PREFIX = 'window-script:';
 const RECORD_ACTOR_PREFIX = 'window-script-record:';
+const AMBIGUOUS_ACTOR_PREFIX = 'window-script-ambiguous:';
 /**
  * HAP-2131: the record-only insert. One statement, run under the per-user lock: it appends the recovery row unless the
  * user's latest scope row (any actor) is already a recovery row of this same event, in which case it appends nothing and
- * returns that row. So a retry after an ambiguous commit adds no duplicate, while a later grant/revoke cycle (whose rows,
- * real or recovery, become the latest) can be recorded again. `inserted` tells the two apart.
+ * returns that row. So a retry after an ambiguous commit adds no duplicate. `inserted` tells the two apart.
+ * HAP-2136: that earlier recovery row covers this record only when it is not older than the node's own marker of the
+ * requested change ($4, epoch milliseconds of portfolioImportScopeGrantedAt / RevokedAt, null when absent). A later
+ * grant/revoke cycle whose recovery was skipped re-stamps the marker after the earlier row, so it is not covered and
+ * its own row is appended. A clock skew can only make the marker look newer than a row that does cover it, which
+ * appends one extra, distinguishable recovery row; it never hides a change.
  */
 const RECORD_EVENT_SQL = `
 WITH latest AS (
@@ -158,7 +167,9 @@ WITH latest AS (
   WHERE user_id = $1 AND event IN ('${SCOPE_EVENTS.granted}', '${SCOPE_EVENTS.revoked}')
   ORDER BY occurred_at DESC, id DESC LIMIT 1
 ), existing AS (
-  SELECT id, actor, occurred_at FROM latest WHERE event = $2 AND actor LIKE '${RECORD_ACTOR_PREFIX}%'
+  SELECT id, actor, occurred_at FROM latest
+  WHERE event = $2 AND actor LIKE '${RECORD_ACTOR_PREFIX}%'
+    AND ($4::double precision IS NULL OR occurred_at >= to_timestamp($4::double precision / 1000))
 ), inserted AS (
   INSERT INTO auth_credential_events (user_id, event, actor, occurred_at)
   SELECT $1, $2, $3, clock_timestamp() WHERE NOT EXISTS (SELECT 1 FROM existing)
@@ -167,6 +178,10 @@ WITH latest AS (
 SELECT id, actor, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS occurred_at, true AS inserted FROM inserted
 UNION ALL
 SELECT id, actor, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS occurred_at, false AS inserted FROM existing`;
+/** HAP-2136: the node's own record of its latest scope changes, read by element id; the epoch is null while absent. */
+export const SCOPE_MARKERS_CYPHER = `
+MATCH (u:User) WHERE elementId(u) = $eid
+RETURN u.portfolioImportScopeGrantedAt.epochMillis AS grantedMs, u.portfolioImportScopeRevokedAt.epochMillis AS revokedMs`;
 const MAX_OPERATOR_LENGTH = 200;
 const OPERATOR_INVALID = '--operator must be 1-200 printable characters';
 
@@ -428,9 +443,17 @@ async function insertScopeEvent(tx: RotationSqlQuery, mappedId: string, outcome:
   return { userId: mappedId, outcome, rows: (await tx.query(SCOPE_EVENT_SQL, [mappedId, SCOPE_EVENTS[outcome], `${ACTOR_PREFIX}${operator}`])).rows };
 }
 
-/** HAP-2131: the recovery row of an applied change, or the earlier recovery row that already covers it (`inserted` false). */
-async function insertRecordEvent(tx: RotationSqlQuery, mappedId: string, outcome: 'granted' | 'revoked', operator: string): Promise<ScopeEventRow> {
-  return { userId: mappedId, outcome, rows: (await tx.query(RECORD_EVENT_SQL, [mappedId, SCOPE_EVENTS[outcome], `${RECORD_ACTOR_PREFIX}${operator}`])).rows };
+/** HAP-2136: the row of a change whose Neo4j outcome is unknown: the requested event, the ambiguous actor marker. */
+async function insertAmbiguousEvent(tx: RotationSqlQuery, mappedId: string, outcome: 'granted' | 'revoked', operator: string): Promise<ScopeEventRow> {
+  return { userId: mappedId, outcome, rows: (await tx.query(SCOPE_EVENT_SQL, [mappedId, SCOPE_EVENTS[outcome], `${AMBIGUOUS_ACTOR_PREFIX}${operator}`])).rows };
+}
+
+/** HAP-2131: the recovery row of an applied change, or the earlier recovery row that already covers it (`inserted` false).
+ * `markerMs` is the node's own marker of this change (HAP-2136), null when the node has none. */
+async function insertRecordEvent(
+  tx: RotationSqlQuery, mappedId: string, outcome: 'granted' | 'revoked', operator: string, markerMs: number | null
+): Promise<ScopeEventRow> {
+  return { userId: mappedId, outcome, rows: (await tx.query(RECORD_EVENT_SQL, [mappedId, SCOPE_EVENTS[outcome], `${RECORD_ACTOR_PREFIX}${operator}`, markerMs])).rows };
 }
 
 /** Shaping of the committed row; it runs after the transaction, so an error here never claims the row was not written. */
@@ -454,7 +477,10 @@ async function changePortfolioImportScope(
 ): Promise<ScopeChange> {
   // Set once the Neo4j change has committed: from then on any failure to commit the row is AuditWriteFailed.
   let applied = false;
-  let result: { unchanged: string } | { event: ScopeEventRow };
+  let result: { unchanged: string } | { event: ScopeEventRow } | { ambiguous: unknown };
+  // Set when the write errored with its outcome unknown and the ambiguous row was written in the transaction: the
+  // original error is rethrown after the commit (or if the commit fails), never the commit's own.
+  let ambiguous: { error: unknown } | undefined;
   try {
     result = await underUserLock(sql, userId, action, async tx => {
       const { row, mappedId } = await resolveUnderLock(graph, tx, userId, action);
@@ -472,10 +498,21 @@ async function changePortfolioImportScope(
       } catch (error) {
         // HAP-2131: the write errored on the client, but Neo4j may have committed it (the lost-acknowledgement case).
         // Under the lock nothing else writes, so a scope state that is now the requested one means the change is applied
-        // and has no row: exit 3 with the record-only recovery, not the raw error. A state that is unchanged, or that
-        // cannot be read, keeps the error.
+        // and has no row: exit 3 with the record-only recovery, not the raw error.
         applied = (await holdsScopeNow(graph, userId, action)) === grant;
-        throw error;
+        if (applied) {
+          throw error;
+        }
+        // HAP-2136: any other state (unchanged, or unreadable) is not proof the write never lands: Neo4j may still
+        // apply it after this re-read. Record the requested change as ambiguous before exiting 1. If that row cannot
+        // be written the original error stands (exit 1 either way; this path never exits 0).
+        try {
+          await insertAmbiguousEvent(tx, mappedId, grant ? 'granted' : 'revoked', operator);
+        } catch {
+          throw error;
+        }
+        ambiguous = { error };
+        return { ambiguous: error };
       }
       if (toNumber(written?.['n']) !== 1) {
         throw new GrantRefused('not_applied', action);
@@ -484,7 +521,10 @@ async function changePortfolioImportScope(
       return { event: await insertScopeEvent(tx, mappedId, grant ? 'granted' : 'revoked', operator) };
     });
   } catch (error) {
-    throw applied ? new AuditWriteFailed(grant) : error;
+    throw applied ? new AuditWriteFailed(grant) : ambiguous?.error ?? error;
+  }
+  if ('ambiguous' in result) {
+    throw result.ambiguous;
   }
   return 'unchanged' in result ? { userId: result.unchanged, outcome: 'unchanged' } : shapeEvent(result.event, operator);
 }
@@ -519,8 +559,12 @@ export async function recordPortfolioImportScope(
       if (observedScopes(row, RECORD_ACTION).includes(PORTFOLIO_IMPORT_SCOPE) !== grant) {
         throw new GrantRefused('scope_state_mismatch', RECORD_ACTION);
       }
+      // HAP-2136: the node's marker of the change being recorded; an earlier recovery row covers this record only if
+      // it is not older than that marker. An unreadable marker fails the command before any row is written.
+      const [markers] = await graph.read(SCOPE_MARKERS_CYPHER, { eid: row['eid'] });
+      const marker = markers?.[grant ? 'grantedMs' : 'revokedMs'];
       attempted = true;
-      return insertRecordEvent(tx, mappedId, grant ? 'granted' : 'revoked', operator);
+      return insertRecordEvent(tx, mappedId, grant ? 'granted' : 'revoked', operator, marker === null || marker === undefined ? null : toNumber(marker));
     });
   } catch (error) {
     throw attempted ? new RecordWriteFailed() : error;
@@ -591,6 +635,35 @@ values.push(argv[++i]!);
 }
 
 const VALUE_FLAGS = ['--operator', '--user-id', '--organization-id', '--except'];
+/**
+ * HAP-2136: a value flag directly followed by another value flag (`--operator --user-id p`) has no value of its own;
+ * flagValues would read the next flag's name as the value. Refused before any store opens, without echoing a value.
+ * `--grant`/`--revoke` as a value stay values (HAP-2131: `--operator --grant` names the operator `--grant`).
+ */
+function assertFlagValues(argv: readonly string[]): void {
+  for (let i = 1; i < argv.length; i++) {
+    if (VALUE_FLAGS.includes(argv[i]!)) {
+      const next = argv[i + 1];
+      if (next !== undefined && VALUE_FLAGS.includes(next)) {
+        throw new Error(`${argv[i]} requires a value, found another flag in its place`);
+      }
+      i++;
+    }
+  }
+}
+
+const REDACTED = '***';
+/**
+ * HAP-2136: credential-like content of an error text, replaced before it is printed: URL userinfo, `Bearer <token>`, and
+ * the value of any `password`/`passwd`/`token`/`secret` key (also inside a longer name such as `access_token`) after
+ * `=` or `:`. Best effort for driver and network error text; the scope and rotation paths print fixed text instead.
+ */
+export function redactSecrets(text: string): string {
+  return text
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/]*@/gi, `$1${REDACTED}@`)
+    .replace(/\bBearer\s+[^\s,;]+/gi, `Bearer ${REDACTED}`)
+    .replace(/(\b[\w.-]*(?:password|passwd|token|secret)[\w.-]*["']?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi, `$1${REDACTED}`);
+}
 /** HAP-2131: a bare flag (`--grant`, `--revoke`), matched only where it is a flag: the token after a value flag is that flag's value. */
 function hasFlag(argv: readonly string[], flag: string): boolean {
   for (let i = 1; i < argv.length; i++) {
@@ -623,6 +696,7 @@ export async function main(
     if (!COMMANDS.includes(command ?? '')) {
       throw new Error(USAGE);
     }
+    assertFlagValues(argv);
     const operator = flagValues(argv, '--operator')[0];
     if (OPERATOR_COMMANDS.includes(command ?? '') && (operator === undefined || operator.trim() === '')) {
       throw new Error('--operator <name> is required');
@@ -667,7 +741,7 @@ throw new Error('--user-id <id> is required');
     }
     return 0;
   } catch (error) {
-    io.stderr(`identity-window: ${error instanceof Error ? error.message : String(error)}`);
+    io.stderr(`identity-window: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
     return error instanceof GrantRefused ? 2 : error instanceof AuditWriteFailed ? 3 : 1;
   } finally {
     await stores?.close();

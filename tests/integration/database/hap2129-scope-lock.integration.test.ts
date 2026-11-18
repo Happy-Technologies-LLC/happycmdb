@@ -14,7 +14,7 @@ import { Pool } from 'pg';
 
 import { PORTFOLIO_IMPORT_SCOPE } from '../../../packages/api-server/src/auth/scopes';
 import {
-  GRANT_HOLDERS_CYPHER, GRANT_IDENTITY_CYPHER, GrantRefused, ScopeLockUnavailable,
+  GRANT_HOLDERS_CYPHER, GRANT_IDENTITY_CYPHER, GrantRefused, SCOPE_MARKERS_CYPHER, ScopeLockUnavailable,
   grantPortfolioImportScope, recordPortfolioImportScope, revokePortfolioImportScope,
 } from '../../../packages/api-server/src/scripts/identity-window';
 import { openOperatorStores, type OperatorStores } from '../../../packages/api-server/src/scripts/operator-stores';
@@ -75,6 +75,7 @@ function memoryUser(scopes: string[]) {
             platformAdmin: false, org: null, scopes: [...state.scopes], epoch: neo4j.int(0) }];
         }
         if (cypher === GRANT_HOLDERS_CYPHER) return [{ holders: neo4j.int(1) }];
+        if (cypher === SCOPE_MARKERS_CYPHER) return [{ grantedMs: null, revokedMs: null }];
         throw new Error('unexpected read');
       },
       write: async (_cypher, params) => {

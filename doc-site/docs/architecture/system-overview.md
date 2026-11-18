@@ -233,7 +233,9 @@ Deviations from the Target design, stated plainly. `runtime_observed_receipts_in
 
 **Known limit of the four reads.** Only `GET /cis/:id/dependencies`, `GET /cis/:id/impact` and `GET /business-services/:id/context` follow `DEPENDS_ON` only; the AI sync writes `USES` edges, so none of those three lists one. `GET /impact/graph/:rootCiId` is different: its traversal (`buildDependencyGraph`) matches an untyped `-[rel]-` relationship, so it lists AI-sync `USES` edges (with `is_critical` false, since only `DEPENDS_ON` is critical), and each such edge carries `currentness` and `evidence` like any other. The AI-sync receipts are therefore visible through `/impact/graph` and `GET /api/v1/relationships/evidence`, and the re-observation keeps them current; they are not visible through the three `DEPENDS_ON`-only reads. This story changes no traversal and adds no relationship type to any Cypher: widening the three reads would change what they mean.
 
-Not in this story: the evidence drawer and unknown-coverage markers in the web UI (story 4), the measurement protocol (story 5), a `runtime_observed` producer, the source-enabled check, receipt retention and a backfill.
+Not in this story: the evidence drawer and unknown-coverage markers in the web UI (story 4), a `runtime_observed` producer, the source-enabled check, receipt retention and a backfill.
+
+**Story 5 status (HAP-2032, implemented in the PR that cites it).** The measurement protocol is written down as [Impact-Assessment Measurement Protocol](/operations/impact-assessment-measurement); it is a protocol, and no measurement has been run. It defines the two arms (the current view and the evidence view), the four countable error kinds, the review-effort measures, the procedure and the reporting rule, and leaves the sample size and decision threshold to the founder before the first run. The disposable scenario and its answer key are `packages/api-server/src/rest/routes/__tests__/fixtures/impact-assessment-measurement.json`, whose expected currentness values a unit test checks against `deriveCurrentness`. No runtime, API, migration or web-ui change.
 
 ### Later (Proposed)
 

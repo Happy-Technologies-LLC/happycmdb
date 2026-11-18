@@ -312,7 +312,7 @@ describe('atomicity and replay', () => {
       .toEqual({ state: 'committed', plan: null });
   });
 
-  it('a stored plan with a receipt replays to one row even when its receipt is already present (T2 replay is a no-op)', async () => {
+  it('a stored plan whose identical earlier attempt is already present replays to that one row (T2 replay is a no-op)', async () => {
     const [from, to, graph] = [seed(A), seed(A), getNeo4jClient()];
     setJournalSeam(async point => { if (point === 'afterW') throw new Error('reply lost'); });
     const lost = await create('a', from, to);
@@ -323,15 +323,16 @@ describe('atomicity and replay', () => {
     expect(stored!['receipt']).toEqual({ from, to, fromIncarnationId: incarnation(from), toIncarnationId: incarnation(to), type: 'DEPENDS_ON',
       evidenceClass: 'declared', polarity: 'supports', sourceName: 'api', sourceId: null, sourceVersion: null, method: 'api', rationaleCode: null,
       observerType: 'user' });
+    // The same content under the same key, stamped earlier: a crashed first T2 whose commit was lost.
     await rows(`INSERT INTO relationship_evidence_receipts (organization_id, from_ci_id, to_ci_id, from_incarnation_id, to_incarnation_id,
       relationship_type, evidence_class, polarity, source_name, method, observed_at, observer, observer_type, correlation_id)
-      VALUES ($1, $2, $3, $4, $5, 'DEPENDS_ON', 'declared', 'supports', 'api', 'api', now(), 'earlier-attempt', 'user', $6)`,
+      VALUES ($1, $2, $3, $4, $5, 'DEPENDS_ON', 'declared', 'supports', 'api', 'api', now() - interval '1 day', 'actor-a', 'user', $6)`,
     [A, from, to, incarnation(from), incarnation(to), group]);
+    const [earlier] = await receipts(from, to);
     await expireLeases([from, to]);
     await graph.journal.sweep();
-    expect([(await receipts(from, to)).map(row => row['observer']),
-      (await rows('SELECT state FROM ci_reconciliation_operations WHERE group_id = $1', [group])).map(row => row['state'])])
-      .toEqual([['earlier-attempt'], ['committed', 'committed']]);
+    expect([await receipts(from, to), (await rows('SELECT state FROM ci_reconciliation_operations WHERE group_id = $1', [group])).map(row => row['state'])])
+      .toEqual([[earlier], ['committed', 'committed']]); // one row, still the earlier receipt_id and observed_at
   });
 
   it('a T2 whose receipt insert fails leaves the group pending with no receipt; the sweep later writes exactly one', async () => {
@@ -454,5 +455,126 @@ describe('trusted descriptor', () => {
     expect((await rows('SELECT * FROM relationship_evidence_receipts WHERE from_ci_id = $1', [from]))[0]).toMatchObject({
       evidence_class: 'static_observed', polarity: 'supports', source_name: 'ai_sync', source_id: 'c4_releases', source_version: 'v2',
       method: 'ai_sync', rationale_code: 'release_pin', observer: 'sync:c4_releases', observer_type: 'system' });
+  });
+});
+
+// HAP-2126 L2: ensureCIIncarnation returns an existing malformed value untouched; the fallback is validated like the first read.
+describe('malformed stored incarnation id', () => {
+  const MALFORMED = ['not-a-uuid', '', '00000000-0000-0000-0000-000000000000', 'ZZZZZZZZ-ZZZZ-4ZZZ-8ZZZ-ZZZZZZZZZZZZ'];
+  const cases = MALFORMED.flatMap(bad => (['from', 'to'] as const).map(end => [bad, end] as const));
+
+  it.each(cases)('a stored incarnation %j on the %s endpoint is the 404 before any write, and is not repaired', async (bad, end) => {
+    const [from, to] = [seed(A), seed(A)];
+    const broken = end === 'from' ? from : to;
+    mockGraph.nodes.get(broken)!['incarnation_id'] = bad;
+    const writes = mockGraph.writes.length;
+    const res = await create('a', from, to);
+    expect([res.status, res.body]).toEqual([404, NOT_FOUND]);
+    expect([mockGraph.writes.length, mockGraph.edges.has(edge(from, to)), await receipts(from, to), await addAudit(from), await addAudit(to),
+      (await rows('SELECT state FROM ci_reconciliation_operations WHERE ci_id = ANY($1::text[])', [[from, to]])).map(row => row['state']),
+      incarnation(broken)]).toEqual([writes, false, [], [], [], ['aborted', 'aborted'], bad]);
+  });
+
+  it.each(cases)('DELETE of an existing edge with a stored incarnation %j on the %s endpoint is the 404 and keeps the edge', async (bad, end) => {
+    const [from, to] = [seed(A), seed(A)];
+    expect((await create('a', from, to)).status).toBe(201);
+    mockGraph.nodes.get(end === 'from' ? from : to)!['incarnation_id'] = bad;
+    const res = await remove('a', from, to);
+    // The DELETE route answers every `false` (missing edge or endpoint) with its one 404.
+    expect([res.status, res.body.message, mockGraph.edges.has(edge(from, to)), (await receipts(from, to)).map(row => row['polarity'])])
+      .toEqual([404, 'Relationship not found', true, ['supports']]);
+  });
+
+  it('reobserveRelationship answers missing for such an endpoint and appends nothing', async () => {
+    const [from, to, graph] = [seed(A), seed(A), getNeo4jClient()];
+    mockGraph.nodes.get(to)!['incarnation_id'] = 'not-a-uuid';
+    // The graph fake has no OPTIONAL MATCH, so the edge-exists read is answered here; the endpoint read is the real one.
+    const exists = jest.spyOn(graph, 'relationshipExists').mockResolvedValue(true);
+    try {
+      const outcome = await graph.reobserveRelationship(from, to, 'DEPENDS_ON', A, 'sync', undefined,
+        { evidenceClass: 'static_observed', sourceName: 'sync', method: 'static_analysis' });
+      expect([outcome, await receipts(from, to)]).toEqual(['missing', []]);
+    } finally {
+      exists.mockRestore();
+    }
+  });
+
+  it('controls: a well-formed uppercase UUID is accepted and recorded, and a legacy CI with none is still assigned one', async () => {
+    const [from, to, legacy] = [seed(A), seed(A), seed(A, false)];
+    const upper = randomUUID().toUpperCase();
+    mockGraph.nodes.get(from)!['incarnation_id'] = upper;
+    expect((await create('a', from, to)).status).toBe(201);
+    expect((await receipts(from, to))[0]!['from_incarnation_id']).toBe(upper.toLowerCase());
+    expect((await create('a', legacy, to)).status).toBe(201);
+    expect(typeof incarnation(legacy)).toBe('string');
+  });
+});
+
+// HAP-2126 L3: a row already under T2's key with different content must fail the write, never commit as if recorded.
+describe('receipt conflict compare (T2)', () => {
+  const base = (from: string, to: string, polarity = 'supports'): Record<string, unknown> => ({ from_incarnation_id: incarnation(from),
+    to_incarnation_id: incarnation(to), evidence_class: 'declared', polarity, source_name: 'api', source_id: null, source_version: null,
+    method: 'api', rationale_code: null, observer: 'actor-a', observer_type: 'user' });
+  /** Seeds, as the superuser harness, a row with the group's key and T2's content except `override`; stamped a day earlier. */
+  const plant = (from: string, to: string, group: string, content: Record<string, unknown>) => {
+    const columns = Object.keys(content);
+    return rows(`INSERT INTO relationship_evidence_receipts (organization_id, from_ci_id, to_ci_id, relationship_type, correlation_id,
+      observed_at, ${columns.join(', ')}) VALUES ($1, $2, $3, 'DEPENDS_ON', $4, now() - interval '1 day',
+      ${columns.map((_, i) => `$${i + 5}`).join(', ')})`, [A, from, to, group, ...columns.map(column => content[column])]);
+  };
+  const MISMATCHES: [string, unknown][] = [['from_incarnation_id', randomUUID()], ['to_incarnation_id', randomUUID()],
+    ['evidence_class', 'static_observed'], ['polarity', 'contradicts'], ['source_name', 'other'], ['source_id', 'x'],
+    ['source_version', '1'], ['method', 'other'], ['rationale_code', 'x'], ['observer', 'someone-else'], ['observer_type', 'system']];
+
+  it.each(MISMATCHES)('a pre-existing row differing in %s is a 503 with the edge applied, the row untouched and the group failed by the sweep', async (column, value) => {
+    const [from, to, graph] = [seed(A), seed(A), getNeo4jClient()];
+    let seeded: Record<string, unknown>[] = [];
+    setJournalSeam(async (point, { groupId, recovery }) => {
+      if (point !== 'beforeT2' || recovery) return;
+      await plant(from, to, groupId, { ...base(from, to), [column]: value });
+      seeded = await receipts(from, to);
+    });
+    const res = await create('a', from, to);
+    setJournalSeam(undefined);
+    expect([res.status, typeof res.body.correlation_id]).toEqual([503, 'string']);
+    expect(seeded).toHaveLength(1);
+    const state = async () => [await receipts(from, to), await addAudit(from), await addAudit(to), mockGraph.edges.has(edge(from, to)),
+      (await rows('SELECT state, last_error FROM ci_reconciliation_operations WHERE ci_id = ANY($1::text[])', [[from, to]]))];
+    expect(await state()).toEqual([seeded, [], [], true, [{ state: 'pending', last_error: null }, { state: 'pending', last_error: null }]]);
+    await expireLeases([from, to]);
+    await graph.journal.sweep();
+    expect(await state()).toEqual([seeded, [], [], true,
+      [{ state: 'failed', last_error: 't2_failed' }, { state: 'failed', last_error: 't2_failed' }]]);
+  });
+
+  it('an identical earlier row (NULL source id, version and rationale, earlier observed_at) is a no-op: 201, the earlier row stays the only one', async () => {
+    const [from, to] = [seed(A), seed(A)];
+    let seeded: Record<string, unknown>[] = [];
+    setJournalSeam(async (point, { groupId }) => {
+      if (point !== 'beforeT2') return;
+      await plant(from, to, groupId, base(from, to));
+      seeded = await receipts(from, to);
+    });
+    const res = await create('a', from, to);
+    setJournalSeam(undefined);
+    expect(res.status).toBe(201);
+    expect([await receipts(from, to), (await addAudit(from)).length, (await addAudit(to)).length]).toEqual([seeded, 1, 1]);
+    expect(seeded).toHaveLength(1);
+  });
+
+  it('an identical earlier contradicts row is a no-op for DELETE too', async () => {
+    const [from, to] = [seed(A), seed(A)];
+    expect((await create('a', from, to)).status).toBe(201);
+    let seeded: Record<string, unknown>[] = [];
+    setJournalSeam(async (point, { groupId }) => {
+      if (point !== 'beforeT2') return;
+      await plant(from, to, groupId, base(from, to, 'contradicts'));
+      seeded = (await receipts(from, to)).filter(row => row['polarity'] === 'contradicts');
+    });
+    const res = await remove('a', from, to);
+    setJournalSeam(undefined);
+    const all = await receipts(from, to);
+    expect([res.status, all.filter(row => row['polarity'] === 'contradicts'), all.length]).toEqual([200, seeded, 2]);
+    expect(seeded).toHaveLength(1);
   });
 });

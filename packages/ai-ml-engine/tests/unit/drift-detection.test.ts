@@ -629,4 +629,74 @@ describe('ConfigurationDriftDetector', () => {
       expect(result.drift_score).toBeLessThanOrEqual(100);
     });
   });
+
+  describe('minted incarnation fallback validation (HAP-2126)', () => {
+    const FALLBACK = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const malformedFallbacks = ['not-a-uuid', '', '00000000-0000-0000-0000-000000000000'];
+    const uuidStatements = () => (mockPgClient.query.mock.calls as [string, unknown[]][])
+      .filter(([sql]) => sql.includes('::uuid'));
+
+    it.each(malformedFallbacks)(
+      'storeBaseline refuses a malformed minted incarnation %j and never issues the INSERT',
+      async (malformed) => {
+        mockNeo4jClient.getCI.mockResolvedValue({ id: 'ci-web-001' });
+        mockNeo4jClient.ensureCIIncarnation.mockResolvedValue(malformed);
+        mockNeo4jClient.getSession.mockReturnValue(createMockNeo4jSession([{ ci: mockCIs.webServer }]));
+
+        await expect(
+          detector.createBaseline('ci-web-001', 'configuration', 'admin', 'org-a')
+        ).rejects.toThrow('CI not found');
+
+        expect(mockNeo4jClient.ensureCIIncarnation).toHaveBeenCalledWith('ci-web-001', 'org-a');
+        expect(uuidStatements()).toHaveLength(0);
+        expect(mockPgClient.query).not.toHaveBeenCalled();
+      }
+    );
+
+    it('storeBaseline passes a valid minted incarnation to the INSERT unchanged', async () => {
+      mockNeo4jClient.getCI.mockResolvedValue({ id: 'ci-web-001' });
+      mockNeo4jClient.ensureCIIncarnation.mockResolvedValue(FALLBACK);
+      mockNeo4jClient.getSession.mockReturnValue(createMockNeo4jSession([{ ci: mockCIs.webServer }]));
+      mockPgClient.query.mockResolvedValue({ rows: [{ id: 'drift-test-uuid' }] });
+
+      await detector.createBaseline('ci-web-001', 'configuration', 'admin', 'org-a');
+
+      const inserts = uuidStatements().filter(([sql]) => sql.includes('INSERT INTO baseline_snapshots'));
+      expect(inserts).toHaveLength(1);
+      expect(inserts[0]![1][7]).toBe(FALLBACK);
+      expect(inserts[0]![1][8]).toBe('org-a');
+    });
+
+    it.each(malformedFallbacks)(
+      'storeDriftResult refuses a malformed minted incarnation %j: no INSERT and no event',
+      async (malformed) => {
+        mockNeo4jClient.ensureCIIncarnation.mockResolvedValue(malformed);
+        mockPgClient.query.mockResolvedValueOnce({ rows: [mockBaselineSnapshots.configuration] });
+        // A critical drift would emit an event if the result were stored.
+        mockNeo4jClient.getSession.mockReturnValue(createMockNeo4jSession([{ ci: mockDriftedConfig.criticalDrift }]));
+
+        await expect(detector.detectDrift('ci-web-001', 'org-a')).rejects.toThrow('CI not found');
+
+        expect(mockNeo4jClient.ensureCIIncarnation).toHaveBeenCalledWith('ci-web-001', 'org-a');
+        expect(uuidStatements().filter(([sql]) => sql.includes('INSERT INTO drift_detection_results'))).toHaveLength(0);
+        expect(mockPgClient.query).toHaveBeenCalledTimes(1); // only the approved-baseline SELECT
+        expect(mockEventProducer.emit).not.toHaveBeenCalled();
+      }
+    );
+
+    it('storeDriftResult passes a valid minted incarnation to the INSERT unchanged', async () => {
+      mockNeo4jClient.ensureCIIncarnation.mockResolvedValue(FALLBACK);
+      mockPgClient.query
+        .mockResolvedValueOnce({ rows: [mockBaselineSnapshots.configuration] })
+        .mockResolvedValue({ rows: [{ id: 1 }] });
+      mockNeo4jClient.getSession.mockReturnValue(createMockNeo4jSession([{ ci: mockDriftedConfig.criticalDrift }]));
+
+      await detector.detectDrift('ci-web-001', 'org-a');
+
+      const inserts = uuidStatements().filter(([sql]) => sql.includes('INSERT INTO drift_detection_results'));
+      expect(inserts).toHaveLength(1);
+      expect(inserts[0]![1][7]).toBe(FALLBACK);
+      expect(inserts[0]![1][8]).toBe('org-a');
+    });
+  });
 });

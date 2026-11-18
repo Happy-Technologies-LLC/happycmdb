@@ -316,7 +316,7 @@ export class ImpactPredictionEngine {
       const ci = await this.neo4jClient.getCI(ciId, organizationId, architectureRemainingMs());
       if (!ci) throw new Error(`CI not found: ${ciId}`);
       const incarnationId = ciIncarnationId(ci)
-        ?? await this.neo4jClient.ensureCIIncarnation(ciId, organizationId, architectureRemainingMs());
+        ?? ciIncarnationId(await this.neo4jClient.ensureCIIncarnation(ciId, organizationId, architectureRemainingMs()));
       if (!incarnationId) throw new Error(`CI not found: ${ciId}`);
       walk.incarnations.set(ciId, incarnationId);
       const cached = await this.queryWithDeadline(

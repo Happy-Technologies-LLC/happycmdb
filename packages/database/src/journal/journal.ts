@@ -148,7 +148,12 @@ let receiptsReady = false;
  * v16 §3.2 schema/fence gate, before any journal or data query of a journaled writer.
  * `merge` (merge, hold, resolve) also refuses the initdb variant whose lineage/field `ci_id` is uuid.
  * `receipts` (relationship writes only, HAP-2029) also needs the evidence receipt table: T2 runs after W changed the graph,
- * so a missing table must be a 503 here, never an edge without evidence and a failed recovery.
+ * so a missing table must be a 503 here, never an edge without evidence and a failed recovery. HAP-2126: it also needs
+ * INSERT privilege on that table for the connected login (`has_table_privilege(current_user, ...)`), else the same 503.
+ * Readiness is cached per process like the table check (a privilege changes only with a role re-creation, which comes with
+ * a deploy that restarts the API); a negative or errored probe is never cached, and an SQLSTATE 42501 (`schemaFault`)
+ * resets the cache so the next write re-probes. The first write after a revocation under a warm cache still fails in T2
+ * (W applied, group pending, later failed): closing that window would mean probing on every write.
  */
 export async function assertJournalSchema(graph: JournalGraphRunner, merge = false, receipts = false): Promise<void> {
   try {
@@ -172,6 +177,7 @@ export async function assertJournalSchema(graph: JournalGraphRunner, merge = fal
     }
     if (schemaReady && receipts && !receiptsReady) {
       const table = await getPostgresClient().pool.query(`SELECT to_regclass('public.relationship_evidence_receipts') IS NOT NULL
+        AND has_table_privilege(current_user, to_regclass('public.relationship_evidence_receipts'), 'INSERT')
         AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass('public.relationship_evidence_receipts')
                     AND conname = 'relationship_evidence_receipts_class') AS ready`);
       receiptsReady = table.rows[0]?.ready === true;
@@ -205,7 +211,7 @@ export async function assertExternalIdSchema(graph: JournalGraphRunner): Promise
 
 function schemaFault(error: unknown): void {
   const code = errorCode(error);
-  if (code === '42P01' || code === '42703' ||
+  if (code === '42P01' || code === '42703' || code === '42501' ||
     (code.startsWith('Neo.ClientError.Schema.') && !code.endsWith('ConstraintValidationFailed'))) schemaReady = mergeReady = receiptsReady = false;
 }
 
@@ -290,16 +296,34 @@ async function writeEvidence(client: PoolClient, row: { group_id: string; organi
   }
   if (plan.receipt) {
     // HAP-2029: organization, observer and replay key come from the journal row, the time from this transaction's server
-    // clock; the plan names the edge and the descriptor only. A replayed T2 (recovery sweep) conflicts and writes nothing.
+    // clock; the plan names the edge and the descriptor only. A replayed T2 (recovery sweep) conflicts with its own earlier
+    // row and writes nothing; a row under the same key with DIFFERENT content (HAP-2126) throws HP1RC, so the write is never
+    // committed as if its evidence had been recorded. DO UPDATE would need UPDATE privilege, which the logins never hold.
     const receipt = plan.receipt;
-    await client.query(`INSERT INTO relationship_evidence_receipts (organization_id, from_ci_id, to_ci_id, from_incarnation_id,
+    const inserted = await client.query(`INSERT INTO relationship_evidence_receipts (organization_id, from_ci_id, to_ci_id, from_incarnation_id,
         to_incarnation_id, relationship_type, evidence_class, polarity, source_name, source_id, source_version, method,
         rationale_code, observed_at, observer, observer_type, correlation_id)
       VALUES ($1, $2, $3, $4::uuid, $5::uuid, $6, $7, $8, $9, $10, $11, $12, $13, now(), $14, $15, $16::uuid)
-      ON CONFLICT (organization_id, correlation_id, from_ci_id, to_ci_id, relationship_type) DO NOTHING`,
+      ON CONFLICT (organization_id, correlation_id, from_ci_id, to_ci_id, relationship_type) DO NOTHING
+      RETURNING receipt_id`,
     [org, receipt.from, receipt.to, receipt.fromIncarnationId, receipt.toIncarnationId, receipt.type, receipt.evidenceClass,
       receipt.polarity, receipt.sourceName, receipt.sourceId, receipt.sourceVersion, receipt.method, receipt.rationaleCode,
       actor, receipt.observerType ?? 'user', group]);
+    if (inserted.rows.length === 0) {
+      // observed_at and receipt_id are not compared: a replay legitimately stamps a later now().
+      const same = await client.query(`SELECT EXISTS (SELECT 1 FROM relationship_evidence_receipts
+        WHERE organization_id = $1 AND correlation_id = $2::uuid AND from_ci_id = $3 AND to_ci_id = $4 AND relationship_type = $5
+          AND from_incarnation_id IS NOT DISTINCT FROM $6::uuid AND to_incarnation_id IS NOT DISTINCT FROM $7::uuid
+          AND evidence_class IS NOT DISTINCT FROM $8 AND polarity IS NOT DISTINCT FROM $9
+          AND source_name IS NOT DISTINCT FROM $10 AND source_id IS NOT DISTINCT FROM $11
+          AND source_version IS NOT DISTINCT FROM $12 AND method IS NOT DISTINCT FROM $13
+          AND rationale_code IS NOT DISTINCT FROM $14 AND observer IS NOT DISTINCT FROM $15
+          AND observer_type IS NOT DISTINCT FROM $16) AS same`,
+      [org, group, receipt.from, receipt.to, receipt.type, receipt.fromIncarnationId, receipt.toIncarnationId,
+        receipt.evidenceClass, receipt.polarity, receipt.sourceName, receipt.sourceId, receipt.sourceVersion, receipt.method,
+        receipt.rationaleCode, actor, receipt.observerType ?? 'user']);
+      if (same.rows[0]?.same !== true) throw Object.assign(new Error('receipt conflict mismatch'), { code: 'HP1RC' });
+    }
   }
   const exactlyOne = (count: number | null) => {
     if (count !== 1) throw Object.assign(new Error('conflict lifecycle mismatch'), { code: 'HP1CF' });

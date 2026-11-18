@@ -784,7 +784,8 @@ export class Neo4jClient {
   /** The endpoint's CI incarnation (assigned on first derived write for a legacy CI); a missing or foreign CI is a 404. */
   private async endpointIncarnation(id: string, organizationId: string): Promise<string> {
     const props = await this.getCIProperties(id, organizationId);
-    const incarnationId = (props && ciIncarnationId(props)) ?? await this.ensureCIIncarnation(id, organizationId);
+    // A malformed stored id is returned untouched by ensureCIIncarnation: validate the fallback too (HAP-2126).
+    const incarnationId = (props && ciIncarnationId(props)) ?? ciIncarnationId(await this.ensureCIIncarnation(id, organizationId));
     if (!incarnationId) throw new JournalTargetMissingError();
     return incarnationId;
   }

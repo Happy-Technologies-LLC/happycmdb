@@ -3,7 +3,8 @@
 -- its attributes and sets its password from APP_LOGIN_PASSWORD. The password is read from the environment with
 -- \getenv, sent only inside a \gexec statement (never echoed), errors are terse (no statement text) and this session
 -- does not log statements, so the value reaches neither output nor the server log.
--- When 045 is already applied, its grants are re-applied (idempotent), so a re-created cmdb_app is never left bare.
+-- When 045 is already applied, 045 and the per-table grants of 046, 047, 048 and 054 are re-applied (idempotent), so a
+-- re-created cmdb_app is never left bare (HAP-2126).
 -- Rollback mode: when the API is configured to use the owner login (POSTGRES_APP_USER=<owner>), this does nothing.
 \set ON_ERROR_STOP on
 \set VERBOSITY terse
@@ -58,6 +59,28 @@ SELECT to_regclass('cmdb.schema_migrations') IS NOT NULL AS has_ledger \gset
   \if :has_045
     BEGIN;
     \ir 045_staging_app_login_acl.sql
+    SET LOCAL lock_timeout = '3s';
+    SET LOCAL statement_timeout = '30s';
+    DO $hap2126$
+    DECLARE g record;
+    BEGIN
+      -- Grants that 046, 047, 048 and 054 give the app logins; a re-created cmdb_app lacks them (045 does not cover
+      -- them and the migrator never re-runs a recorded migration). A table not yet migrated is absent: its row does
+      -- nothing and the migrator's own grant comes later. Exactly the migrations' grants, never broader: the three
+      -- append-only tables (048's two and the receipts) get no UPDATE, and nothing here grants DELETE or TRUNCATE.
+      FOR g IN SELECT * FROM (VALUES
+        ('public.service_offerings',              'SELECT, INSERT, UPDATE'),
+        ('public.ai_sync_cursors',                'SELECT, INSERT, UPDATE'),
+        ('public.portfolio_imports',              'SELECT, INSERT'),
+        ('public.portfolio_import_map',           'SELECT, INSERT'),
+        ('public.relationship_evidence_receipts', 'SELECT, INSERT')
+      ) AS t(rel, privs) LOOP
+        IF to_regclass(g.rel) IS NOT NULL THEN
+          EXECUTE format('GRANT %s ON %s TO cmdb_app', g.privs, g.rel);
+        END IF;
+      END LOOP;
+    END
+    $hap2126$;
     COMMIT;
   \endif
 \endif

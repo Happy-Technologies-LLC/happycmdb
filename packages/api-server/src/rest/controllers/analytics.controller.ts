@@ -14,6 +14,7 @@ import {
   assertNoCIGap, CIGapError, CI_GAP_RESPONSE, CIListUnavailableError, CI_LIST_UNAVAILABLE_RESPONSE, readCIList, readSingleCI,
 } from '../../read-admission';
 import { criticalTiersParam } from '../../services/critical-ci';
+import { parseRecentChangesOptions, readRecentChanges } from '../../services/recent-changes.service';
 import { readEstateKpis } from '../../services/estate-kpi.service';
 
 /** readCIList's 10 s budget plus its snapshot and recheck round trips. */
@@ -402,6 +403,37 @@ export class AnalyticsController {
     }
 
     return { startDate, endDate };
+  }
+
+  /**
+   * Tenant-wide recent CI changes feed for the estate hub's "Live changes" (HAP-1926 BW9).
+   * GET /analytics/recent-changes?window=1h|24h&limit=1..100. Rules and fences: services/recent-changes.service.ts.
+   */
+  async getRecentChanges(req: Request, res: Response): Promise<void> {
+    const options = parseRecentChangesOptions(req.query as Record<string, unknown>);
+    if ('error' in options) {
+      res.status(400).json({ success: false, error: 'Bad Request', message: options.error });
+      return;
+    }
+    await executeBoundedAnalysis(req, res, async () => {
+      const organizationId = requestOrganizationId(req);
+      const incarnations = await this.neo4jClient.listCIIncarnations(organizationId);
+      const session = this.neo4jClient.getSession();
+      try {
+        const data = await readRecentChanges(this.postgresClient, session, incarnations, organizationId, options);
+        return { status: 200, body: { success: true, data } };
+      } finally {
+        await session.close();
+      }
+    }, {
+      scope: 'analytics',
+      timeoutMs: 10_000,
+      withDeadline: (_deadline, operation) => operation(),
+      deadlineError: () => new CIAnalyticsLimitError(),
+      failure: error => error instanceof CIAnalyticsLimitError
+        ? { status: 503, message: 'Analytics resource limit exceeded' } : null,
+      internalError: 'Failed to retrieve recent changes',
+    });
   }
 
   /**

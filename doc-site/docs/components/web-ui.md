@@ -213,13 +213,22 @@ The view is the `?view=orbit|graph|list` search parameter. The Stage draws a cap
 ("Showing N of M CIs"); the category counts on the chips are the full-estate `by_type` counts.
 
 Health, config drift, coverage, live changes and top services render a "Not available yet" state that names the missing
-backend capability instead of a number: the server has no CI health state, KPI history, tenant-wide change feed or
-per-service availability on `main`. The dashboard's `health_score` is `null` (unavailable)
+backend capability instead of a number: the UI does not read the tenant-wide change feed or per-service availability yet
+(the server has them, below) and the server has no CI health state or KPI history. The dashboard's `health_score` is `null` (unavailable)
 until a CI health state exists (BW1); the Health card shows "Not available yet" for `null` and a percentage only for a
 number, never `0%` as a placeholder. `GET /analytics/dashboard` now also carries `open_drift_count` (BW5) and
 `configuration_coverage` (BW6, `{with_owner_and_source, total, ratio}`; definitions in the OpenAPI schema), each `null`
 and listed in `unavailable` when it cannot be computed; the drift and coverage cards do not read them yet. Do not wire a
 number to a card until its endpoint exists.
+
+The backends for the incident ribbon figures, live changes and top services now exist (HAP-1926, BW8 to BW10); the UI
+does not read them yet. `GET /itil/metrics/open-incidents` returns the open incidents with the affected service and
+`users_affected` / `revenue_per_hour`, taken from the figures recorded on the affected CI's mapped service
+(`metadata.user_count`, `metadata.revenue_impact.annual_revenue_supported / 8760`), `null` and listed in `unavailable`
+when none is recorded. `GET /analytics/recent-changes?window=1h|24h` is the tenant-wide change feed (poll, no push).
+`GET /business-services/availability` is incident-derived (P1/P2 downtime on the service's mapped CIs over 24 h), not a
+probe: 100 means "no P1/P2 incident recorded", and a service with no mapped CI is `null`. The rules are in
+`services/incident-business-impact.ts`, `recent-changes.service.ts` and `service-availability.service.ts`.
 
 Every surface has loading, error and 403 states (`SurfaceState.tsx`). Reads that must not refuse the page (incidents,
 relationships) are sent with `sideRead: true`, so a 403 shows on that surface only. "Run discovery" is gated with

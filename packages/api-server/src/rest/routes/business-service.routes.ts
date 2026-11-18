@@ -197,6 +197,17 @@ businessServiceRoutes.get(
 );
 
 /**
+ * @route   GET /api/v1/business-services/availability
+ * @desc    24 h availability of the top services, derived from P1/P2 incidents on each service's mapped CIs
+ *          (no uptime probe exists). Registered before /:service_id.
+ * @access  Private
+ */
+businessServiceRoutes.get(
+  '/availability',
+  controller.getServiceAvailability.bind(controller)
+);
+
+/**
  * @route   GET /api/v1/business-services/:service_id
  * @desc    Get a specific business service by ID
  * @access  Private

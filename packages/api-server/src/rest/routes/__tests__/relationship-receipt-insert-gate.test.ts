@@ -206,7 +206,7 @@ it('G0 cold: SELECT revoked and INSERT kept, a relationship write is 503 before 
     await receipts(from, to), await receipts(from, existing)]).toEqual([[], [], false, true, [], []]);
 });
 
-// G1, runs first: the journal caches its readiness, so this is the cold gate.
+// G1: G0 left the cache cold (a refused probe is never cached), so this is still the cold gate.
 it('G1 cold: INSERT revoked, a relationship write is 503 before T1 with no edge, journal row or receipt; CI writes and the evidence read are unaffected', async () => {
   const [from, to, existing] = [seed(), seed(), seed()];
   mockGraph.edges.set(edge(from, existing), {});
@@ -241,6 +241,27 @@ it('G3 warm cache, then a revocation: the next write fails in T2 (documented win
   expect([refused.status, refused.body.correlation_id, mockGraph.edges.has(edge(refusedFrom, refusedTo)), await operations([refusedFrom, refusedTo])])
     .toEqual([503, undefined, false, []]);
   await ownerExec(GRANT_INSERT);
+  expect((await create(healedFrom, healedTo)).status).toBe(201);
+  await ownerRows('UPDATE ci_reconciliation_operations SET lease_expires_at = now() - interval \'1 minute\' WHERE ci_id = ANY($1::text[])',
+    [[lostFrom, lostTo]]);
+  await getNeo4jClient().journal.sweep();
+  expect([(await receipts(lostFrom, lostTo)).length, (await operations([lostFrom, lostTo])).map(row => row['state'])])
+    .toEqual([1, ['committed', 'committed']]);
+});
+
+it('G4 warm cache, then SELECT revoked and INSERT kept: the next write fails in T2 (42501 resets the cache), the one after is refused before T1, a re-grant heals the first', async () => {
+  const [warmFrom, warmTo, lostFrom, lostTo, refusedFrom, refusedTo, healedFrom, healedTo] = [seed(), seed(), seed(), seed(), seed(), seed(), seed(), seed()];
+  expect((await create(warmFrom, warmTo)).status).toBe(201); // caches readiness while both privileges are held
+  await ownerExec(REVOKE_SELECT);
+  expect(await ownerRows(`SELECT has_table_privilege('cmdb_user', 'relationship_evidence_receipts', 'INSERT') AS i,
+    has_table_privilege('cmdb_user', 'relationship_evidence_receipts', 'SELECT') AS s`)).toEqual([{ i: true, s: false }]);
+  const window = await create(lostFrom, lostTo); // cached readiness: W applies, T2's INSERT ... RETURNING and compare need SELECT (42501)
+  expect([window.status, typeof window.body.correlation_id, mockGraph.edges.has(edge(lostFrom, lostTo)), await receipts(lostFrom, lostTo),
+    (await operations([lostFrom, lostTo])).map(row => row['state'])]).toEqual([503, 'string', true, [], ['pending', 'pending']]);
+  const refused = await create(refusedFrom, refusedTo); // 42501 reset the cache: the probe now sees the missing SELECT
+  expect([refused.status, refused.body.correlation_id, mockGraph.edges.has(edge(refusedFrom, refusedTo)), await operations([refusedFrom, refusedTo])])
+    .toEqual([503, undefined, false, []]);
+  await ownerExec(GRANT_SELECT);
   expect((await create(healedFrom, healedTo)).status).toBe(201);
   await ownerRows('UPDATE ci_reconciliation_operations SET lease_expires_at = now() - interval \'1 minute\' WHERE ci_id = ANY($1::text[])',
     [[lostFrom, lostTo]]);

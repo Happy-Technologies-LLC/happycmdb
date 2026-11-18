@@ -3,6 +3,7 @@
 
 import axios from 'axios';
 import { attachSession } from '../lib/session';
+import type { AffectedBusinessService } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
@@ -107,6 +108,13 @@ export interface ImpactAnalysis {
   /** GET /cis/:id/impact: min(upstream + downstream count / 10, 1), a 0-1 ratio. Multiply by 100 to show a percentage. */
   impact_score: number;
   affected_environments: Environment[];
+  /** HAP-1927 BW11: business services mapped to this CI or its downstream CIs, with derived cost per hour. */
+  affected_business_services?: AffectedBusinessService[];
+  /** annual revenue / 8760 summed over the affected services that have revenue; null (listed in `unavailable`) when none does. */
+  cost_per_hour?: number | null;
+  cost_per_hour_services_priced?: number;
+  /** Fields that have no backing data on this response. */
+  unavailable?: string[];
 }
 
 export interface CreateCIRequest {

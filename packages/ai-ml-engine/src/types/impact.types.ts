@@ -27,6 +27,8 @@ export enum ChangeType {
   NETWORK_CHANGE = 'network_change',
   SECURITY_CHANGE = 'security_change',
   PERFORMANCE_TUNING = 'performance_tuning',
+  /** HAP-1927 (BW12): switch the CI's role to a standby. Weighted and given a downtime estimate by ImpactPredictionEngine. */
+  FAILOVER = 'failover',
 }
 
 export enum RiskLevel {
@@ -46,7 +48,15 @@ export interface AffectedCI {
   hop_count: number; // Distance from source
   impact_probability: number; // 0-100
   estimated_impact: string;
+  /**
+   * HAP-1927 (BW12): which side of the source CI this one is on. `downstream` = it depends on the source (affected when the
+   * source changes or fails); `upstream` = the source depends on it. The prediction walks dependents only, so every record
+   * it produces is `downstream`. Records persisted before this field carry no `direction`.
+   */
+  direction: ImpactDirection;
 }
+
+export type ImpactDirection = 'upstream' | 'downstream';
 
 export enum ImpactType {
   DIRECT = 'direct', // Direct dependency

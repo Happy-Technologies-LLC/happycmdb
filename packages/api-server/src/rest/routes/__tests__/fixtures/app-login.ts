@@ -158,6 +158,28 @@ export const lineageReadAclSql = () => `BEGIN;\n${migrationSql('053_business_ser
  */
 export const receiptTableSql = () => `BEGIN;\n${migrationSql('054_relationship_evidence_receipts.sql')}\nCOMMIT;`;
 
+/**
+ * PGlite: the tables the HAP-1927 impact business-service read joins (ci_business_service_mappings, dim_business_services,
+ * cmdb.dim_ci), as 001 creates them plus the organization, lifecycle and org_backfilled columns 008, 011 and 043 add. Run it
+ * as the owner, after the journal tables exist and before APP_GRANTS_SQL (which grants the app login on them).
+ */
+export const impactBusinessTablesSql = () => {
+  const ddl = migrationSql('001_complete_schema.sql');
+  const create = (table: string) => {
+    const match = ddl.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table.replace('.', '\\.')} \\([\\s\\S]*?\\n\\);`));
+    if (!match) throw new Error(`Missing production table ${table}`);
+    return match[0];
+  };
+  return `CREATE SCHEMA IF NOT EXISTS cmdb;
+${create('dim_business_services')}
+${create('ci_business_service_mappings')}
+${create('cmdb.dim_ci')}
+ALTER TABLE dim_business_services ADD COLUMN IF NOT EXISTS organization_id UUID,
+  ADD COLUMN IF NOT EXISTS lifecycle VARCHAR(20) NOT NULL DEFAULT 'planned';
+ALTER TABLE cmdb.dim_ci ADD COLUMN IF NOT EXISTS organization_id UUID,
+  ADD COLUMN IF NOT EXISTS org_backfilled BOOLEAN NOT NULL DEFAULT FALSE;`;
+};
+
 /** PGlite: every later statement, from the routes or the test, runs as the app login. */
 export const ENTER_APP_LOGIN_SQL = `RESET ROLE; SET SESSION AUTHORIZATION ${APP_LOGIN};`;
 /** PGlite's bootstrap superuser, its authenticated backend user (RESET SESSION AUTHORIZATION does not return to it). */

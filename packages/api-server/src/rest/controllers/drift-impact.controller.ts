@@ -27,6 +27,7 @@ import { assertNoCIGap, writeReferencedCIs } from '../../read-admission';
 import { sendJournalError } from '../../journal-http';
 import { impactEnvelope } from '../impact-envelope';
 import { loadEdgeEvidence, qualificationOf } from '../edge-evidence';
+import { deriveImpactRecommendations, loadImpactBusinessContext } from '../../services/impact-business-context';
 
 type SnapshotType = 'configuration' | 'performance' | 'relationships';
 
@@ -333,7 +334,13 @@ export class DriftImpactController {
     architectureRemainingMs();
     const impact = await this.impactEngine.predictChangeImpact(
       ci_id, normalizedChangeType, requestOrganizationId(req), this.admit(req));
-    return { status: 201, body: { success: true, data: impact } };
+    // HAP-1927 BW11/BW12: derived after the engine's own write, so none of it is stored with the analysis.
+    const businessContext = await loadImpactBusinessContext(
+      requestOrganizationId(req), [ci_id, ...impact.affected_cis.map(affected => affected.ci_id)],
+      { timeoutMs: architectureRemainingMs() });
+    architectureRemainingMs();
+    const recommendations = deriveImpactRecommendations(impact, businessContext.affected_business_services);
+    return { status: 201, body: { success: true, data: { ...impact, ...businessContext, recommendations } } };
   }
 
   async predictImpact(req: AuthenticatedRequest, res: Response): Promise<void> {

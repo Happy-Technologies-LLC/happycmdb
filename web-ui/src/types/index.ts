@@ -308,6 +308,32 @@ export interface ImpactAnalysis {
   analyzed_at: string;
   estimated_downtime_minutes?: number;
   affected_cis: AffectedCI[];
+  /** HAP-1927 BW11/BW12: present on POST /impact/predict only (not on history rows). See the OpenAPI schema. */
+  affected_business_services?: AffectedBusinessService[];
+  /** annual revenue / 8760 summed over the affected services that have revenue; null (listed in `unavailable`) when none does. */
+  cost_per_hour?: number | null;
+  /** How many affected services contributed to `cost_per_hour`; a lower bound when fewer than `affected_business_services.length`. */
+  cost_per_hour_services_priced?: number;
+  /** Rule-based, deterministic recommendations (no LLM). */
+  recommendations?: ImpactRecommendation[];
+  /** Fields that have no backing data on this response. */
+  unavailable?: string[];
+}
+
+export interface AffectedBusinessService {
+  service_id: string;
+  name: string;
+  business_criticality: 'critical' | 'high' | 'medium' | 'low';
+  lifecycle: string;
+  users: number | null;
+  annual_revenue: number | null;
+  cost_per_hour: number | null;
+  affected_ci_ids: string[];
+}
+
+export interface ImpactRecommendation {
+  id: string;
+  message: string;
 }
 
 export interface AffectedCI {
@@ -319,6 +345,8 @@ export interface AffectedCI {
   hop_count: number;
   impact_probability: number;
   estimated_impact: string;
+  /** Absent on records stored before HAP-1927. The prediction walks dependents only, so it is `downstream`. */
+  direction?: 'upstream' | 'downstream';
 }
 
 export interface DriftDetectionResult {

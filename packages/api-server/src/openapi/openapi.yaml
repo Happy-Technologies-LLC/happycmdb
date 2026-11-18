@@ -954,6 +954,14 @@ paths:
                         type: array
                         items:
                           type: string
+                      affected_business_services:
+                        $ref: '#/components/schemas/ImpactBusinessContext/properties/affected_business_services'
+                      cost_per_hour:
+                        $ref: '#/components/schemas/ImpactBusinessContext/properties/cost_per_hour'
+                      cost_per_hour_services_priced:
+                        $ref: '#/components/schemas/ImpactBusinessContext/properties/cost_per_hour_services_priced'
+                      unavailable:
+                        $ref: '#/components/schemas/ImpactBusinessContext/properties/unavailable'
                   totalImpacted:
                     type: integer
                     minimum: 0
@@ -987,6 +995,89 @@ paths:
           $ref: '#/components/responses/CITraversalLimit'
         '504':
           $ref: '#/components/responses/CITraversalTimeout'
+
+  /impact/predict:
+    post:
+      tags: [Impact]
+      summary: Predict the impact of a change to a CI
+      description: >-
+        Walks the CI's dependents over declared graph edges, scores the change and persists the analysis
+        (`impact_analyses`). The response adds three things computed at read time and never persisted
+        (HAP-1927, BW11 and BW12): `affected_business_services` with `cost_per_hour` (the business services mapped to the
+        CI or to any affected CI, in the caller's organization; see `ImpactBusinessContext`), a `direction` on every affected CI
+        (`downstream`: the prediction follows dependents only), and `recommendations`, a deterministic rule list (no model,
+        no randomness: the same response fields always give the same list, in this order):
+
+        - `maintenance_window`: `risk_level` is `critical` or `high`, or `estimated_downtime_minutes` is 30 or more.
+
+        - `notify_dependents`: `blast_radius` is above 0.
+
+        - `notify_service_owners`: an affected business service has criticality `critical` or `high`.
+
+        - `rollback_plan`: `change_type` is `configuration_change`, `version_upgrade`, `network_change`, `security_change`
+        or `decommission`, and `risk_level` is not `minimal`.
+
+        - `verify_standby`: `change_type` is `failover`.
+
+        - `clear_dependents_first`: `change_type` is `decommission` and `blast_radius` is above 0.
+
+        - `review_dependency_chain`: `critical_path` spans 3 or more hops.
+
+        - `no_recorded_dependents`: `blast_radius` is 0 (declared edges only; not proof that nothing depends on the CI).
+
+        `failover` is weighted 1.2 and its `estimated_downtime_minutes` is the heuristic `15 + blast_radius * 3`; it is an
+        estimate from the dependent count, not a measured switchover time.
+      operationId: predictImpact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ci_id, change_type]
+              properties:
+                ci_id:
+                  type: string
+                change_type:
+                  type: string
+                  enum: [configuration_change, version_upgrade, restart, decommission, network_change, security_change, performance_tuning, failover]
+      responses:
+        '201':
+          description: The predicted impact
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/ImpactAnalysis'
+                      - $ref: '#/components/schemas/ImpactBusinessContext'
+                      - type: object
+                        required: [recommendations]
+                        properties:
+                          recommendations:
+                            type: array
+                            description: Rule-based recommendations; each `id` is stable, the `message` is for display.
+                            items:
+                              $ref: '#/components/schemas/ImpactRecommendation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          description: A resource limit was exceeded, or the business-service read was refused. Nothing is returned partially.
+        '504':
+          description: The analysis, including the business-service read, exceeded its deadline.
 
   /impact/graph/{rootCiId}:
     get:
@@ -6824,6 +6915,143 @@ components:
           $ref: '#/components/schemas/C1Lifecycle'
         service_level:
           $ref: '#/components/schemas/ServiceOfferingLevel'
+
+    ImpactAnalysis:
+      type: object
+      required: [id, source_ci_id, source_ci_name, change_type, impact_score, affected_cis, blast_radius, critical_path, risk_level, analyzed_at]
+      properties:
+        id:
+          type: string
+        source_ci_id:
+          type: string
+        source_ci_name:
+          type: string
+        change_type:
+          type: string
+          enum: [configuration_change, version_upgrade, restart, decommission, network_change, security_change, performance_tuning, failover]
+        impact_score:
+          type: number
+          description: 0-100
+        affected_cis:
+          type: array
+          items:
+            type: object
+            required: [ci_id, ci_name, ci_type, impact_type, dependency_path, hop_count, impact_probability, estimated_impact]
+            properties:
+              ci_id:
+                type: string
+              ci_name:
+                type: string
+              ci_type:
+                type: string
+              impact_type:
+                type: string
+                enum: [direct, indirect, cascading, performance, availability]
+              dependency_path:
+                type: array
+                items:
+                  type: string
+              hop_count:
+                type: integer
+              impact_probability:
+                type: number
+                description: 0-100
+              estimated_impact:
+                type: string
+              direction:
+                type: string
+                enum: [upstream, downstream]
+                description: >-
+                  Which side of the source CI this one is on. `downstream` depends on the source and is affected when it
+                  changes. The prediction follows dependents only, so it always returns `downstream`. Analyses stored before
+                  HAP-1927 carry no `direction`.
+        blast_radius:
+          type: integer
+        critical_path:
+          type: array
+          items:
+            type: string
+        risk_level:
+          type: string
+          enum: [critical, high, medium, low, minimal]
+        analyzed_at:
+          type: string
+          format: date-time
+        estimated_downtime_minutes:
+          type: integer
+          description: Absent for change types without an estimate (for example `configuration_change`).
+
+    AffectedBusinessService:
+      type: object
+      required: [service_id, name, business_criticality, lifecycle, users, annual_revenue, cost_per_hour, affected_ci_ids]
+      properties:
+        service_id:
+          type: string
+        name:
+          type: string
+        business_criticality:
+          type: string
+          enum: [critical, high, medium, low]
+        lifecycle:
+          type: string
+        users:
+          type: integer
+          nullable: true
+          description: Positive `user_count` in the service's metadata; null when not recorded.
+        annual_revenue:
+          type: number
+          nullable: true
+          description: Positive `annual_revenue_supported` in the service's metadata; null when not recorded.
+        cost_per_hour:
+          type: number
+          nullable: true
+          description: '`annual_revenue / 8760`, rounded to cents; null (never 0) when there is no revenue.'
+        affected_ci_ids:
+          type: array
+          description: The CIs of this impact (the source CI or one downstream of it) the service is mapped to.
+          items:
+            type: string
+
+    ImpactBusinessContext:
+      type: object
+      description: >-
+        HAP-1927 (BW11). Business services mapped (`ci_business_service_mappings`) to the source CI or to any CI downstream of it,
+        read in the caller's organization only: the service, the mapped CI and a reconciliation-pending CI are all
+        organization-checked, and retired services are skipped. Upstream CIs are not affected, so their services are not
+        listed. Service-to-service dependencies are not followed.
+      required: [affected_business_services, cost_per_hour, cost_per_hour_services_priced, unavailable]
+      properties:
+        affected_business_services:
+          type: array
+          description: Sorted by criticality (critical first), then name.
+          items:
+            $ref: '#/components/schemas/AffectedBusinessService'
+        cost_per_hour:
+          type: number
+          nullable: true
+          description: >-
+            Sum of the services' `cost_per_hour`, rounded to cents (N3: annual revenue / 8760 per service). Null, never 0,
+            when no affected service has revenue. When only some do, it is a lower bound: see `cost_per_hour_services_priced`.
+        cost_per_hour_services_priced:
+          type: integer
+          description: How many of `affected_business_services` carry revenue and so contribute to `cost_per_hour`.
+        unavailable:
+          type: array
+          description: >-
+            Fields with no backing data: `cost_per_hour` (no service has revenue),
+            `affected_business_services[].cost_per_hour` and `affected_business_services[].users` (at least one service lacks it).
+          items:
+            type: string
+
+    ImpactRecommendation:
+      type: object
+      required: [id, message]
+      properties:
+        id:
+          type: string
+          enum: [maintenance_window, notify_dependents, notify_service_owners, rollback_plan, verify_standby, clear_dependents_first, review_dependency_chain, no_recorded_dependents]
+        message:
+          type: string
 
     ImpactBasis:
       type: string

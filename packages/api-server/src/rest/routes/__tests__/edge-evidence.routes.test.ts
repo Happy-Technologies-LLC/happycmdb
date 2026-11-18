@@ -209,7 +209,7 @@ import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { ciRoutes } from '../ci.routes';
 import { relationshipRoutes } from '../relationship.routes';
 import {
-  EDGE_EVIDENCE_SCAN_CAP, IMPACT_EVIDENCE_TIMEOUT_MS, MAX_EDGE_EVIDENCE_EDGES, impactEvidenceTimeoutMs, loadEdgeEvidence,
+  EDGE_EVIDENCE_SCAN_CAP, IMPACT_EVIDENCE_TIMEOUT_MS, MAX_EDGE_EVIDENCE_EDGES, loadEdgeEvidence,
 } from '../../edge-evidence';
 import { MAX_IMPACT_LINEAGE_TIMEOUT_MS } from '../../impact-envelope';
 import {
@@ -918,16 +918,5 @@ describe('loadEdgeEvidence', () => {
   it('issues nothing for no edges', async () => {
     expect((await loadEdgeEvidence(A, [], { timeoutMs: 1000 })).size).toBe(0);
     expect([mockPg.statements, mockNeo.statements]).toEqual([[], []]);
-  });
-});
-
-describe('IMPACT_EVIDENCE_TIMEOUT_MS', () => {
-  it('is a positive integer up to the PostgreSQL maximum; anything else is the 3 s default', () => {
-    expect(impactEvidenceTimeoutMs({ IMPACT_EVIDENCE_TIMEOUT_MS: '750' })).toBe(750);
-    expect(impactEvidenceTimeoutMs({ IMPACT_EVIDENCE_TIMEOUT_MS: '2147483647' })).toBe(MAX_IMPACT_LINEAGE_TIMEOUT_MS);
-    for (const bad of [undefined, '', '0', '-5', '1.5', 'abc', 'NaN', '1e3x', 'Infinity', '2147483648', '99999999999']) {
-      expect(impactEvidenceTimeoutMs({ IMPACT_EVIDENCE_TIMEOUT_MS: bad })).toBe(IMPACT_EVIDENCE_TIMEOUT_MS);
-    }
-    expect(IMPACT_EVIDENCE_TIMEOUT_MS).toBe(3000);
   });
 });

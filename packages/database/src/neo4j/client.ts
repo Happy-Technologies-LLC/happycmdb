@@ -15,8 +15,9 @@ import { getPostgresClient } from '../postgres/client';
 import { enc, isStorableString } from '../journal/encoding';
 import type { Encoded } from '../journal/encoding';
 import {
-  assertJournalSchema, JournalGapError, JournalGraphRunner, JournalTargetMissingError, ReconciliationJournal, StoredPlan,
-  JournalUnavailableError, assertExternalIdSchema, type JournalActorType, type RelationshipEvidence,
+  assertJournalSchema, JournalGapError, JournalGraphRunner, JournalPlanThrottledError, JournalTargetMissingError,
+  ReconciliationJournal, StoredPlan, JournalUnavailableError, assertExternalIdSchema, type JournalActorType,
+  type RelationshipEvidence,
 } from '../journal/journal';
 import { auditChainReady } from '../postgres/audit.service';
 import { SOURCE_OWNED_WRITE, type SourceOwnedGrant } from './source-owned-grant';
@@ -160,9 +161,6 @@ type TraversalNode = { node: Node; distance: number };
 /** HAP-2030: a relationship as stored: `from` is its start CI, `to` its end CI, `type` the Neo4j relationship type. */
 export interface CIEdgeRef { from: string; to: string; type: string }
 const edgeRef = (edge: TraversalEdge): CIEdgeRef => ({ from: edge.startNodeId, to: edge.endNodeId, type: edge.relationship.type });
-
-/** Under the slot, a re-observation found a recent receipt of its own source: nothing to append (see reobserveRelationship). */
-class ReobservationThrottled extends Error {}
 
 export class Neo4jClient {
   private driver: Driver;
@@ -830,14 +828,14 @@ export class Neo4jClient {
           const fromIncarnationId = await this.endpointIncarnation(fromId, organizationId);
           const toIncarnationId = await this.endpointIncarnation(toId, organizationId);
           if (await this.hasRecentObservation(organizationId, fromId, toId, label, fromIncarnationId, toIncarnationId,
-            { ...evidence, rationaleCode: 'reobserved' })) throw new ReobservationThrottled();
+            { ...evidence, rationaleCode: 'reobserved' })) throw new JournalPlanThrottledError();
           return { graph: null, receipt: { from: fromId, to: toId, fromIncarnationId, toIncarnationId, type: label,
             ...descriptor, polarity: 'supports' } };
         },
         result: async () => 'reobserved',
       });
     } catch (error) {
-      if (error instanceof ReobservationThrottled) return 'throttled';
+      if (error instanceof JournalPlanThrottledError) return 'throttled';
       if (error instanceof JournalTargetMissingError) return 'missing';
       throw error;
     }

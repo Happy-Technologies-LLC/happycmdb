@@ -145,10 +145,36 @@ describe('the evidence read as a NOSUPERUSER app login on real PostgreSQL', () =
     expect(qualified.size).toBe(1); // not 22023: PostgreSQL took the value
   });
 
-  it('falls back to the default for one millisecond more, which PostgreSQL would refuse', async () => {
-    process.env['IMPACT_EVIDENCE_TIMEOUT_MS'] = '2147483648';
-    expect(impactEvidenceTimeoutMs()).toBe(3000);
-    await expect(loadEdgeEvidence(ORG, [EDGE], { timeoutMs: 1000 })).resolves.toBeDefined();
+  // HAP-2127 (sec L1): the statement timeout must be transaction-local. A session-level `set_config(..., false)` would leave it on
+  // the pooled connection for the next, unrelated checkout. The connection the read used is proven to be the one inspected.
+  it('leaves no statement_timeout behind on the connection a COMMITTED evidence read used', async () => {
+    const pool = app.client!.pool;
+    const baseline = await app.client!.getClient();
+    const pooledDefault = (await baseline.query("SELECT current_setting('statement_timeout') AS t")).rows[0].t as string;
+    baseline.release();
+    process.env['IMPACT_EVIDENCE_TIMEOUT_MS'] = '4321';
+    expect(pooledDefault).not.toBe('4321ms');
+    const connect = pool.connect.bind(pool) as unknown as () => Promise<PoolClient>;
+    const used: Array<number | null> = [];
+    const spy = jest.spyOn(pool, 'connect') as unknown as jest.Mock<() => Promise<PoolClient>>;
+    spy.mockImplementation(async () => {
+      const client = await connect();
+      used.push(client.processID);
+      return client;
+    });
+    try {
+      expect((await loadEdgeEvidence(ORG, [EDGE], { timeoutMs: 1000 })).size).toBe(1); // COMMITTED, not rolled back
+    } finally {
+      spy.mockRestore();
+    }
+    expect(used).toHaveLength(1);
+    const again = await app.client!.getClient(); // the pool hands back its most recently released connection
+    try {
+      expect(again.processID).toBe(used[0]);
+      expect((await again.query("SELECT current_setting('statement_timeout') AS t")).rows[0].t).toBe(pooledDefault);
+    } finally {
+      again.release();
+    }
   });
 
   it('reads the receipts through idx_relationship_evidence_receipts_edge, not a scan of the table', async () => {

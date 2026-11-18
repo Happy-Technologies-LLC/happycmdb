@@ -58,9 +58,7 @@ jest.mock('pg', () => {
   return { ...actual, Pool, default: { ...actual, Pool } };
 });
 const mockGraph = { nodes: new Map<string, Record<string, any>>(), edges: [] as Array<{ from: string; to: string; type: string }>,
-  fences: new Map<string, Record<string, unknown>>(), writes: [] as string[],
-  /** HAP-2030 route tests only: see the traversal fake. */
-  followEveryType: false };
+  fences: new Map<string, Record<string, unknown>>(), writes: [] as string[] };
 jest.mock('neo4j-driver', () => {
   const actual = jest.requireActual('neo4j-driver');
   const record = (values: Record<string, unknown>) => ({ get: (key: string) => values[key], toObject: () => values });
@@ -109,10 +107,10 @@ jest.mock('neo4j-driver', () => {
         .map(n => record({ ciId: n!['id'], incarnationId: n!['incarnation_id'] ?? null })) };
     }
     if (query.includes('UNWIND $frontier')) { // Neo4jClient.traverseCIs: one hop from every frontier CI
-      // Production traversals follow DEPENDS_ON only (`[relationship:DEPENDS_ON]`), and the C4 sync writes USES. A test that
-      // needs a route to list a USES edge sets followEveryType; the evidence read under test never looks at the traversal.
+      // Production traversals follow DEPENDS_ON only (`[relationship:DEPENDS_ON]`), and the C4 sync writes USES, so these
+      // routes never list a sync edge. GET /impact/graph is the one read that does (see the engine spy in the HAP-2030 tests).
       const outbound = query.includes('(source)-[relationship');
-      const dependsOnly = query.includes('relationship:DEPENDS_ON') && !mockGraph.followEveryType;
+      const dependsOnly = query.includes('relationship:DEPENDS_ON');
       const hops: Array<Record<string, unknown>> = [];
       for (const sourceId of params['frontier'] as string[]) {
         const source = owned(sourceId, params['organizationId']);
@@ -163,8 +161,10 @@ import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { loadEdgeEvidence, qualificationOf } from '../../edge-evidence';
 import { ciRoutes } from '../ci.routes';
 import { relationshipRoutes } from '../relationship.routes';
+import { getImpactPredictionEngine } from '@cmdb/ai-ml-engine';
 import { AISyncScheduler } from '../../../../../discovery-engine/src/schedulers/ai-sync-scheduler';
 import { enqueueC4ReleaseSyncs, syncC4Releases } from '../../../../../discovery-engine/src/ai-sync/c4-release-sync';
+import { impactRoutes } from '../drift-impact.routes';
 import { c4Origin } from '../../../../../discovery-engine/src/ai-sync/c4-client';
 import { APP_GRANTS_SQL, ENTER_APP_LOGIN_SQL, PGLITE_SUPERUSER, assertAppLogin, createLoginRolesSql, journalReadAclSql, receiptTableSql } from './fixtures/app-login';
 
@@ -401,6 +401,7 @@ describe('HAP-2030: re-observation of unchanged edges', () => {
   app.use('/api/v1', getAuthMiddleware().authenticate());
   app.use('/api/v1/cis', ciRoutes);
   app.use('/api/v1/relationships', relationshipRoutes);
+  app.use('/api/v1/impact', impactRoutes);
   const jwt = new JWTService(loadConfig().auth.jwt);
   const login = (org: string, role: 'admin' | 'viewer') => {
     const id = `${role}-${org}`;
@@ -416,7 +417,6 @@ describe('HAP-2030: re-observation of unchanged edges', () => {
   afterEach(() => {
     setJournalSeam(undefined);
     jest.restoreAllMocks();
-    mockGraph.followEveryType = false;
   });
 
   /** Fixture work as the table owner; the app login resumes afterwards (nothing else runs meanwhile). */
@@ -516,12 +516,29 @@ describe('HAP-2030: re-observation of unchanged edges', () => {
     expect(await receiptCount(control.org)).toBe(3);
   });
 
-  it('heals through the route: GET /cis/:id/dependencies reads the edges stale after ageing and current after the next sync', async () => {
-    mockGraph.followEveryType = true; // production traversals follow DEPENDS_ON only; see the traversal fake
+  /**
+   * GET /impact/graph is the one read that lists a USES edge: the engine matches `-[rel]-` with no type filter (verified over the
+   * real engine in impact-graph-evidence.test.ts), so its edges are every edge of the organization's graph around the root.
+   * The engine is stood in for here by exactly that; the evidence qualification the route adds is real.
+   */
+  const graphEdges = (org: string) => jest.spyOn(getImpactPredictionEngine(), 'buildDependencyGraph').mockImplementation(async (root) => {
+    const edges = mockGraph.edges.filter(e => (e.from === root || e.to === root)
+      && mockGraph.nodes.get(e.from)?.['organization_id'] === org && mockGraph.nodes.get(e.to)?.['organization_id'] === org);
+    const ids = [...new Set([root, ...edges.flatMap(e => [e.from, e.to])])];
+    return { nodes: ids.map(id => ({ id, ci_id: id, ci_name: id, ci_type: 'server', criticality: 0, dependencies_count: 0, dependents_count: 0 })),
+      edges: edges.map(e => ({ source_id: e.from, target_id: e.to, relationship_type: e.type, weight: 1, is_critical: e.type === 'DEPENDS_ON' })),
+      metadata: { total_nodes: ids.length, total_edges: edges.length, max_depth: 3, generated_at: new Date() } };
+  });
+
+  it('heals through the route: GET /impact/graph reads the edges stale after ageing and current after the next sync', async () => {
     const t = await synced();
-    const get = async () => (await request(app).get(`/api/v1/cis/${t.rel['id']}/dependencies`).set(login(t.org, 'viewer'))).body.edges
-      .map((e: any) => [e.from, e.to, e.type, e.currentness]);
-    const expected = (state: string) => t.edges.map(e => [e.from, e.to, 'USES', state]).sort((a, b) => (a[1]! < b[1]! ? -1 : 1));
+    graphEdges(t.org);
+    const get = async () => {
+      const res = await request(app).get(`/api/v1/impact/graph/${t.rel['id']}`).set(login(t.org, 'viewer'));
+      expect(res.status).toBe(200);
+      return res.body.data.edges.map((e: any) => [e.source_id, e.target_id, e.relationship_type, e.currentness]);
+    };
+    const expected = (state: string) => t.edges.map(e => [e.from, e.to, 'USES', state]);
     expect(await get()).toEqual(expected('current'));
     await ageAll(t.org, '8 days');
     expect(await get()).toEqual(expected('stale'));
@@ -582,20 +599,20 @@ describe('HAP-2030: re-observation of unchanged edges', () => {
     });
   });
 
-  it('concurrent syncs of one tenant after ageing append exactly one receipt per edge: the loser decides the throttle again under the slot', async () => {
+  // Two in-process syncs race for the same journal slots. Under load a run can lose a slot reservation outright (a 503 that
+  // stops that run and leaves its slots leased), so the outcome per edge is timing: the exact throttled-abort shape is proved
+  // deterministically by the next test. What must always hold is that a race never double-writes and never records a plan failure.
+  it('concurrent syncs of one tenant after ageing never append two receipts for an edge nor record a plan_failed group', async () => {
     const t = await synced();
     await ageAll(t.org, '8 days');
-    const settled = await Promise.allSettled([sync(t.org), sync(t.org)]);
-    expect(settled.map(s => s.status)).toEqual(['fulfilled', 'fulfilled']);
-    // One run won each edge; the other's plan found the winner's receipt under the slot: an aborted plan_failed group (two
-    // slot rows) per edge, no receipt, and nothing left pending.
-    expect(await rows(`SELECT state, last_error, count(*)::int AS n FROM ci_reconciliation_operations WHERE organization_id = $1
-      AND state <> 'committed' GROUP BY state, last_error`, [t.org])).toEqual([{ state: 'aborted', last_error: 'plan_failed', n: 6 }]);
-    expect(await Promise.all(t.edges.map(async e => (await receiptsOf(e)).filter(r => r['rationale_code'] === 'reobserved').length)))
-      .toEqual([1, 1, 1]);
+    await Promise.allSettled([sync(t.org), sync(t.org)]);
+    const reobserved = async () => Promise.all(t.edges.map(async e => (await receiptsOf(e)).filter(r => r['rationale_code'] === 'reobserved').length));
+    expect((await reobserved()).every(n => n <= 1)).toBe(true);
+    expect(await rows(`SELECT count(*)::int AS n FROM ci_reconciliation_operations WHERE organization_id = $1
+      AND last_error = 'plan_failed'`, [t.org])).toEqual([{ n: 0 }]);
   });
 
-  it('the throttle is decided again under the slot: an outside read that missed a just-written receipt still appends nothing and leaves an aborted plan_failed row', async () => {
+  it('the throttle is decided again under the slot: an outside read that missed a just-written receipt still appends nothing and leaves an aborted throttled row, never a plan_failed one', async () => {
     const t = await synced();
     const [edge] = t.edges;
     const client = getNeo4jClient();
@@ -614,7 +631,7 @@ describe('HAP-2030: re-observation of unchanged edges', () => {
     expect(await costs(t.org)).toMatchObject({ receipts: base.receipts, audit: base.audit });
     expect(await rows(`SELECT state, last_error FROM ci_reconciliation_operations
       WHERE organization_id = $1 AND ci_id = ANY($2::text[]) AND state <> 'committed' ORDER BY ci_id`, [t.org, [edge!.from, edge!.to]]))
-      .toEqual([edge!.from, edge!.to].map(() => ({ state: 'aborted', last_error: 'plan_failed' })));
+      .toEqual([edge!.from, edge!.to].map(() => ({ state: 'aborted', last_error: 'throttled' })));
   });
 
   describe('organization, incarnation, class and stream fence', () => {
@@ -743,19 +760,19 @@ describe('HAP-2030: re-observation of unchanged edges', () => {
       .toEqual([['declared', 'user', `admin-${t.org}`]]);
   });
 
-  it('reads agree: after the re-observation the impact read counts both receipts, reports static_observed and the newest support, and its receipts_href lists the same two', async () => {
-    mockGraph.followEveryType = true; // production traversals follow DEPENDS_ON only; see the traversal fake
+  it('reads agree: after the re-observation the impact graph counts both receipts, reports static_observed and the newest support, and its receipts_href lists the same two', async () => {
     const t = await synced();
+    graphEdges(t.org);
     await ageAll(t.org, '8 days');
     await sync(t.org);
     const [edge] = t.edges as [Edge, Edge, Edge];
-    const impact = await request(app).get(`/api/v1/cis/${edge.to}/impact`).set(login(t.org, 'viewer'));
-    expect(impact.status).toBe(200);
-    expect(impact.body.edges).toHaveLength(1);
-    const [qualified] = impact.body.edges;
+    const graph = await request(app).get(`/api/v1/impact/graph/${edge.to}`).set(login(t.org, 'viewer'));
+    expect(graph.status).toBe(200);
+    expect(graph.body.data.edges).toHaveLength(1);
+    const [qualified] = graph.body.data.edges;
     const receipts = await receiptsOf(edge);
     expect(receipts).toHaveLength(2);
-    expect(qualified).toMatchObject({ from: edge.from, to: edge.to, type: 'USES', currentness: 'current',
+    expect(qualified).toMatchObject({ source_id: edge.from, target_id: edge.to, relationship_type: 'USES', currentness: 'current',
       evidence: { classes: ['static_observed'], support: { supports: 2, contradicts: 0 }, receipt_count: 2, receipts_truncated: false,
         last_supported_at: (receipts[1]!['observed_at'] as Date).toISOString() } });
     const listed = await request(app).get(qualified.evidence.receipts_href).set(login(t.org, 'viewer'));

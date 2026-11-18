@@ -147,6 +147,8 @@ const ownerExec = (text: string) => owner(() => mockSql(text, [], 'exec'));
 const ownerRows = (text: string, params: unknown[] = []) => owner(async () => (await mockSql(text, params)).rows);
 const REVOKE_INSERT = 'REVOKE INSERT ON relationship_evidence_receipts FROM cmdb_user';
 const GRANT_INSERT = 'GRANT INSERT ON relationship_evidence_receipts TO cmdb_user';
+const REVOKE_SELECT = 'REVOKE SELECT ON relationship_evidence_receipts FROM cmdb_user';
+const GRANT_SELECT = 'GRANT SELECT ON relationship_evidence_receipts TO cmdb_user';
 const receipts = (from: string, to: string) => ownerRows(
   'SELECT receipt_id, polarity FROM relationship_evidence_receipts WHERE from_ci_id = $1 AND to_ci_id = $2', [from, to]);
 const operations = (ids: string[]) => ownerRows('SELECT state FROM ci_reconciliation_operations WHERE ci_id = ANY($1::text[]) ORDER BY ci_id', [ids]);
@@ -185,7 +187,24 @@ beforeAll(async () => {
   await assertAppLogin(async text => (await mockSql(text)).rows);
 });
 afterAll(() => { host.kill(); });
-afterEach(() => ownerExec(GRANT_INSERT)); // never leaves a revocation behind
+afterEach(() => ownerExec(`${GRANT_INSERT}; ${GRANT_SELECT}`)); // never leaves a revocation behind
+
+// G0, runs before G1 and leaves the cache cold (a refused probe is never cached), so G1 is still the cold gate. HAP-2128 S-1:
+// T2's ON CONFLICT arbiter, RETURNING and compare need SELECT, so a login holding INSERT without SELECT must be refused before
+// T1 exactly like one without INSERT (a single 'SELECT, INSERT' probe would pass it: has_table_privilege ORs the list).
+it('G0 cold: SELECT revoked and INSERT kept, a relationship write is 503 before T1 with no edge, journal row or receipt', async () => {
+  const [from, to, existing] = [seed(), seed(), seed()];
+  mockGraph.edges.set(edge(from, existing), {});
+  await ownerExec(REVOKE_SELECT);
+  expect(await ownerRows(`SELECT has_table_privilege('cmdb_user', 'relationship_evidence_receipts', 'INSERT') AS i,
+    has_table_privilege('cmdb_user', 'relationship_evidence_receipts', 'SELECT') AS s`)).toEqual([{ i: true, s: false }]);
+  const created = await create(from, to);
+  expect([created.status, created.body.correlation_id]).toEqual([503, undefined]); // no group id: refused before T1
+  const removed = await remove(from, existing);
+  expect([removed.status, removed.body.correlation_id]).toEqual([503, undefined]);
+  expect([await operations([from, to, existing]), mockGraph.writes, mockGraph.edges.has(edge(from, to)), mockGraph.edges.has(edge(from, existing)),
+    await receipts(from, to), await receipts(from, existing)]).toEqual([[], [], false, true, [], []]);
+});
 
 // G1, runs first: the journal caches its readiness, so this is the cold gate.
 it('G1 cold: INSERT revoked, a relationship write is 503 before T1 with no edge, journal row or receipt; CI writes and the evidence read are unaffected', async () => {

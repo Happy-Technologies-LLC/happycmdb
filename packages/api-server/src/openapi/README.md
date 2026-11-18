@@ -152,6 +152,7 @@ stream of the same organization's CI writes, about one queued referenced write p
 - `POST /relationships` - Create relationship
 - `DELETE /relationships/{id}` - Delete relationship
 - `GET /relationships/type/{type}` - Get by type
+- `GET /relationships/evidence` - An edge's server-assigned evidence receipts (HAP-2029): newest first, organization-scoped, `from_id`, `to_id` and `type` required, `limit` at most 200 (default 50). Both CIs must be the caller's: any other endpoint is the same 404. Receipts are history, not currentness; an edge written before receipts existed has none
 
 ### Search (`/api/v1/search`)
 - `POST /search/advanced` - Advanced search with filters

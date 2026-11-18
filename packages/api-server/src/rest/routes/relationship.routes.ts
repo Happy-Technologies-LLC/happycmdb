@@ -24,6 +24,20 @@ const listRelationshipsQuerySchema = Joi.object({
   offset: Joi.number().integer().min(0).default(0),
 });
 
+// HAP-2029: one edge's evidence receipts. Registered before any parameterized GET.
+const evidenceQuerySchema = Joi.object({
+  from_id: Joi.string().min(1).max(255).required(),
+  to_id: Joi.string().min(1).max(255).required(),
+  type: schemas.relationshipType.required(),
+  limit: Joi.number().integer().min(1).max(200).default(50),
+  offset: Joi.number().integer().min(0).default(0),
+});
+relationshipRoutes.get(
+  '/evidence',
+  validateRequest(evidenceQuerySchema, 'query'),
+  controller.listEvidence.bind(controller)
+);
+
 // GET /relationships - List relationships with filtering
 relationshipRoutes.get(
   '/',

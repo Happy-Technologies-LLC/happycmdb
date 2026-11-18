@@ -58,6 +58,23 @@ export interface StoredPlan {
    */
   audit?: { action: 'CREATE' | 'UPDATE' | 'DELETE' | 'RELATIONSHIP_ADD' | 'RELATIONSHIP_REMOVE'; changes?: Encoded;
     actorType?: JournalActorType; metadata?: Record<string, unknown> };
+  /**
+   * HAP-2029: the relationship evidence receipt T2 appends beside the lineage row. It carries neither the organization,
+   * the observer nor a time: T2 stamps those from the journal row and its own clock, never from the plan or the request.
+   */
+  receipt?: {
+    from: string; to: string; fromIncarnationId: string; toIncarnationId: string; type: string;
+    evidenceClass: RelationshipEvidenceClass; polarity: 'supports' | 'contradicts';
+    sourceName: string; sourceId: string | null; sourceVersion: string | null; method: string; rationaleCode: string | null;
+  };
+}
+
+/** HAP-2029: the classes an in-process writer may assert. `runtime_observed` and `inferred` are valid table values with no producer. */
+export type RelationshipEvidenceClass = 'declared' | 'static_observed';
+/** HAP-2029: the trusted descriptor of who asserts a relationship write. Never built from a request. */
+export interface RelationshipEvidence {
+  evidenceClass: RelationshipEvidenceClass; sourceName: string; sourceId?: string; sourceVersion?: string;
+  method: string; rationaleCode?: string;
 }
 
 /** Graph runner for W and recovery: one auto-commit statement, records as plain objects. */
@@ -124,11 +141,14 @@ function errorCode(error: unknown): string {
 
 let schemaReady = false;
 let mergeReady = false;
+let receiptsReady = false;
 /**
  * v16 §3.2 schema/fence gate, before any journal or data query of a journaled writer.
  * `merge` (merge, hold, resolve) also refuses the initdb variant whose lineage/field `ci_id` is uuid.
+ * `receipts` (relationship writes only, HAP-2029) also needs the evidence receipt table: T2 runs after W changed the graph,
+ * so a missing table must be a 503 here, never an edge without evidence and a failed recovery.
  */
-export async function assertJournalSchema(graph: JournalGraphRunner, merge = false): Promise<void> {
+export async function assertJournalSchema(graph: JournalGraphRunner, merge = false, receipts = false): Promise<void> {
   try {
     if (!schemaReady) {
       const pg = await getPostgresClient().pool.query(`SELECT
@@ -148,10 +168,16 @@ export async function assertJournalSchema(graph: JournalGraphRunner, merge = fal
           AND column_name = 'ci_id' AND data_type = 'character varying'`);
       mergeReady = ids.rows[0]?.n === 2;
     }
+    if (schemaReady && receipts && !receiptsReady) {
+      const table = await getPostgresClient().pool.query(`SELECT to_regclass('public.relationship_evidence_receipts') IS NOT NULL
+        AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass('public.relationship_evidence_receipts')
+                    AND conname = 'relationship_evidence_receipts_class') AS ready`);
+      receiptsReady = table.rows[0]?.ready === true;
+    }
   } catch {
-    schemaReady = mergeReady = false;
+    schemaReady = mergeReady = receiptsReady = false;
   }
-  if (!schemaReady || (merge && !mergeReady)) throw new JournalUnavailableError();
+  if (!schemaReady || (merge && !mergeReady) || (receipts && !receiptsReady)) throw new JournalUnavailableError();
 }
 
 /**
@@ -178,7 +204,7 @@ export async function assertExternalIdSchema(graph: JournalGraphRunner): Promise
 function schemaFault(error: unknown): void {
   const code = errorCode(error);
   if (code === '42P01' || code === '42703' ||
-    (code.startsWith('Neo.ClientError.Schema.') && !code.endsWith('ConstraintValidationFailed'))) schemaReady = mergeReady = false;
+    (code.startsWith('Neo.ClientError.Schema.') && !code.endsWith('ConstraintValidationFailed'))) schemaReady = mergeReady = receiptsReady = false;
 }
 
 interface Slot { id: string; ciId: string; operation: JournalOperation }
@@ -259,6 +285,19 @@ async function writeEvidence(client: PoolClient, row: { group_id: string; organi
       ON CONFLICT (organization_id, ci_id, source_name, source_id) DO UPDATE SET
         confidence_score = EXCLUDED.confidence_score, last_correlation_id = EXCLUDED.last_correlation_id, last_seen_at = now()`,
     [org, ci, plan.lineage.source, plan.lineage.sourceId, plan.lineage.confidence === null ? null : Math.round(plan.lineage.confidence), group]);
+  }
+  if (plan.receipt) {
+    // HAP-2029: organization, observer and replay key come from the journal row, the time from this transaction's server
+    // clock; the plan names the edge and the descriptor only. A replayed T2 (recovery sweep) conflicts and writes nothing.
+    const receipt = plan.receipt;
+    await client.query(`INSERT INTO relationship_evidence_receipts (organization_id, from_ci_id, to_ci_id, from_incarnation_id,
+        to_incarnation_id, relationship_type, evidence_class, polarity, source_name, source_id, source_version, method,
+        rationale_code, observed_at, observer, observer_type, correlation_id)
+      VALUES ($1, $2, $3, $4::uuid, $5::uuid, $6, $7, $8, $9, $10, $11, $12, $13, now(), $14, $15, $16::uuid)
+      ON CONFLICT (organization_id, correlation_id, from_ci_id, to_ci_id, relationship_type) DO NOTHING`,
+    [org, receipt.from, receipt.to, receipt.fromIncarnationId, receipt.toIncarnationId, receipt.type, receipt.evidenceClass,
+      receipt.polarity, receipt.sourceName, receipt.sourceId, receipt.sourceVersion, receipt.method, receipt.rationaleCode,
+      actor, plan.audit?.actorType ?? 'user', group]);
   }
   const exactlyOne = (count: number | null) => {
     if (count !== 1) throw Object.assign(new Error('conflict lifecycle mismatch'), { code: 'HP1CF' });
@@ -361,7 +400,8 @@ export class ReconciliationJournal {
 
   async run<T>(write: JournaledWrite<T>): Promise<T> {
     if (!auditChainReady()) throw new JournalUnavailableError(); // HAP-1001 D12: every journaled write, before T1
-    await assertJournalSchema(this.graph, ['create', 'update', 'resolve_conflict'].includes(write.operation));
+    await assertJournalSchema(this.graph, ['create', 'update', 'resolve_conflict'].includes(write.operation),
+      write.operation === 'relationship_write');
     const groupId = randomUUID();
     const slots = [...new Set(write.ciIds)].sort().map(ciId => ({ id: randomUUID(), ciId, operation: write.operation }));
     await this.reserve(write, groupId, slots);

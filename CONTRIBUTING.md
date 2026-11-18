@@ -62,7 +62,7 @@ This is a TypeScript monorepo using npm workspaces. Packages are layered:
 ## Coding Standards
 
 - **TypeScript strict mode** is enforced via `tsconfig.base.json`
-- **ESLint** with `@typescript-eslint` rules: `npm run lint`
+- **ESLint** with `@typescript-eslint` rules: `npm run lint` lints each backend package against `.eslint-baseline.json` (CI job `backend-lint`). Existing findings are recorded per file and rule; a PR may not add any. After fixing some, `npm run lint:baseline` writes the lower counts down. `web-ui` has its own config: `npm run lint --workspace=web-ui`
 - **Prettier** for formatting: `npm run format`
 - **No `any` types** unless absolutely necessary
 - **Async/await** everywhere (no callbacks)

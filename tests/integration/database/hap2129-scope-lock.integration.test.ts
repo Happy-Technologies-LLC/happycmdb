@@ -14,7 +14,7 @@ import { Pool } from 'pg';
 
 import { PORTFOLIO_IMPORT_SCOPE } from '../../../packages/api-server/src/auth/scopes';
 import {
-  GRANT_HOLDERS_CYPHER, GRANT_IDENTITY_CYPHER, GrantRefused, ScopeLockUnavailable,
+  GRANT_HOLDERS_CYPHER, GRANT_IDENTITY_CYPHER, GrantRefused, SCOPE_MARKERS_CYPHER, ScopeLockUnavailable,
   grantPortfolioImportScope, recordPortfolioImportScope, revokePortfolioImportScope,
 } from '../../../packages/api-server/src/scripts/identity-window';
 import { openOperatorStores, type OperatorStores } from '../../../packages/api-server/src/scripts/operator-stores';
@@ -63,7 +63,8 @@ afterEach(() => { gates.splice(0).forEach(gate => gate.resolve()); });
 /** A user node's scope list, shared by every graph view of it (one Neo4j). */
 function memoryUser(scopes: string[]) {
   const id = `hap2129-${randomUUID()}`;
-  const state = { scopes: [...scopes] };
+  // A user that already holds the scope was granted by this build: its node carries the grant's operation id.
+  const state = { scopes: [...scopes], grantedOp: scopes.length > 0 ? randomUUID().replace(/-/g, '') : null as string | null, revokedOp: null as string | null };
   /** One operator's connection to it; `beforeWrite` holds that operator's Neo4j write (after the lock was taken). */
   const view = (beforeWrite?: () => Promise<void>) => {
     const calls = { reads: 0, writes: 0 };
@@ -75,6 +76,7 @@ function memoryUser(scopes: string[]) {
             platformAdmin: false, org: null, scopes: [...state.scopes], epoch: neo4j.int(0) }];
         }
         if (cypher === GRANT_HOLDERS_CYPHER) return [{ holders: neo4j.int(1) }];
+        if (cypher === SCOPE_MARKERS_CYPHER) return [{ grantedOp: state.grantedOp, revokedOp: state.revokedOp }];
         throw new Error('unexpected read');
       },
       write: async (_cypher, params) => {
@@ -82,7 +84,9 @@ function memoryUser(scopes: string[]) {
         await beforeWrite?.();
         // The statements' compare-and-set: writes only while the list is the one the resolution observed.
         if (JSON.stringify(state.scopes) !== JSON.stringify(params['observed'])) return [{ n: neo4j.int(0) }];
+        const granting = (params['scopes'] as string[]).includes(PORTFOLIO_IMPORT_SCOPE);
         state.scopes = params['scopes'] as string[];
+        state[granting ? 'grantedOp' : 'revokedOp'] = params['operationId'] as string;
         return [{ n: neo4j.int(1) }];
       },
     };
@@ -101,8 +105,9 @@ async function until(condition: () => Promise<boolean>, what: string): Promise<v
 /** Backends waiting on a scope lock (class 2129, the two-integer advisory form). */
 const waitingOnScopeLock = async (): Promise<number> => Number((await monitor.query(
   `SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND classid = 2129 AND objsubid = 2 AND NOT granted`)).rows[0].n);
+// A recovery row's actor ends in `#<operation id>` (HAP-2136); it is stripped here, the id itself is not under test.
 const rowsOf = async (userId: string) => (await monitor.query(
-  `SELECT event, actor, occurred_at FROM auth_credential_events WHERE user_id = $1 ORDER BY occurred_at, id`, [userId])).rows;
+  `SELECT event, regexp_replace(actor, '#[0-9a-f]{32}$', '') AS actor, occurred_at FROM auth_credential_events WHERE user_id = $1 ORDER BY occurred_at, id`, [userId])).rows;
 const within = <T>(work: Promise<T>, what: string, ms = 10_000): Promise<T> => Promise.race([
   work, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${what} did not finish within ${ms} ms`)), ms)),
 ]);

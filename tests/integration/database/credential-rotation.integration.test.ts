@@ -63,7 +63,7 @@ import {
 import {
   GRANT_IDENTITY_CYPHER, GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER, REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER,
   assignOrganization, grantPlatformAdmin, grantPortfolioImportScope, inventorySeedAccounts, main as identityWindowCli,
-  revokePortfolioImportScope, scanDefaultPasswords, stampSeedAccounts,
+  SCOPE_MARKERS_CYPHER, revokePortfolioImportScope, scanDefaultPasswords, stampSeedAccounts,
 } from '../../../packages/api-server/src/scripts/identity-window';
 import { PORTFOLIO_IMPORT_SCOPE, holdsScope } from '../../../packages/api-server/src/auth/scopes';
 import { LockBusyError, openOperatorStores, type OperatorStores } from '../../../packages/api-server/src/scripts/operator-stores';
@@ -987,6 +987,11 @@ describe('HAP-1632: portfolio:import scope grant and revoke compare-and-set on N
     expect(props['scopes']).toEqual([PORTFOLIO_IMPORT_SCOPE]);
     expect(props['portfolioImportScopeGrantedBy']).toBe('ci');
     expect(neo4j.isDateTime(props['portfolioImportScopeGrantedAt'])).toBe(true);
+    expect(props['portfolioImportScopeGrantedOpId']).toMatch(/^[0-9a-f]{32}$/);
+    // The record reads that id back through the real marker statement.
+    expect(await operator().graph.read(SCOPE_MARKERS_CYPHER, { eid: await elementId(ID) })).toEqual([
+      { grantedOp: props['portfolioImportScopeGrantedOpId'], revokedOp: null },
+    ]);
     expect(await loadedHolds()).toBe(true);
 
     await expect(grantPortfolioImportScope(window.graph, window.sql, ID, 'someone-else')).resolves.toEqual({ userId: ID, outcome: 'unchanged' });
@@ -1066,6 +1071,7 @@ describe('HAP-1632: portfolio:import scope grant and revoke compare-and-set on N
     }
   });
 
+  const OPERATION_ID = '0123456789abcdef0123456789abcdef';
   const statements: Array<[string, string, string[], string[], string]> = [
     ['grant', GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER, [], [PORTFOLIO_IMPORT_SCOPE], 'Granted'],
     ['revoke', REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER, [PORTFOLIO_IMPORT_SCOPE], [], 'Revoked'],
@@ -1074,7 +1080,7 @@ describe('HAP-1632: portfolio:import scope grant and revoke compare-and-set on N
   describe.each(statements)('the %s statement itself', (_name, cypher, before, after, stamp) => {
     const run = async (params: Record<string, unknown>, id = ID) => {
       const rows = await operator().graph.write(cypher, {
-        eid: await elementId(id), id, observed: before, scopes: after, operator: 'ci', ...params,
+        eid: await elementId(id), id, observed: before, scopes: after, operator: 'ci', operationId: OPERATION_ID, ...params,
       });
       return neo4j.integer.toNumber(rows[0]!['n'] as never);
     };
@@ -1087,6 +1093,7 @@ describe('HAP-1632: portfolio:import scope grant and revoke compare-and-set on N
       const props = await stored();
       expect(props['scopes']).toEqual(after);
       expect(props[`portfolioImportScope${stamp}By`]).toBe('ci');
+      expect(props[`portfolioImportScope${stamp}OpId`]).toBe(OPERATION_ID);
     });
 
     it('refuses a stored list that differs from the observed one, whether it grew or was replaced', async () => {

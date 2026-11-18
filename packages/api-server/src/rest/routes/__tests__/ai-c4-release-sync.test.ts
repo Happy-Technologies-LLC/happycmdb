@@ -125,7 +125,7 @@ import { getNeo4jClient, getPostgresClient, getUnifiedCredentialService } from '
 import { AISyncScheduler } from '../../../../../discovery-engine/src/schedulers/ai-sync-scheduler';
 import { enqueueC4ReleaseSyncs, syncC4Releases } from '../../../../../discovery-engine/src/ai-sync/c4-release-sync';
 import { c4Origin } from '../../../../../discovery-engine/src/ai-sync/c4-client';
-import { APP_GRANTS_SQL, ENTER_APP_LOGIN_SQL, assertAppLogin, createLoginRolesSql, journalReadAclSql } from './fixtures/app-login';
+import { APP_GRANTS_SQL, ENTER_APP_LOGIN_SQL, assertAppLogin, createLoginRolesSql, journalReadAclSql, receiptTableSql } from './fixtures/app-login';
 
 const rows = async (text: string, params: unknown[] = []) => (await mockSql(text, params)).rows;
 const digest = (hex: string) => `sha256:${hex.repeat(64)}`;
@@ -198,6 +198,7 @@ beforeAll(async () => {
     GRANT SELECT ON credentials TO cmdb_user;
     GRANT USAGE ON ALL SEQUENCES IN SCHEMA public, cmdb TO cmdb_user;`, [], 'exec');
   await mockSql(`BEGIN;\n${sql('047_ai_sync_cursors.sql')}\nCOMMIT;`, [], 'exec');
+  await mockSql(receiptTableSql(), [], 'exec');
   // Given tenant A's HappyLab principal in the credential store (encrypted like every stored credential); B has none.
   await mockSql(`INSERT INTO credentials (name, protocol, scope, credentials, tags, created_by, organization_id)
     VALUES ('happylab c4', 'bearer', 'api', $1::jsonb, ARRAY['happylab-c4'], 'admin-a', $2)`,
@@ -230,6 +231,13 @@ it('A1: an approved release with two model pins becomes one agent-release CI and
   const models = PINS.map(pin => ciOf(A, 'ai-model', 'model_id', pin.model_id)!);
   expect(models.map(m => [m['profile'], m['c4_as_of'], m['first_seen_release']])).toEqual([['default', c4.asOf, R1], ['fast', c4.asOf, R1]]);
   expect(mockGraph.edges).toEqual(models.map(m => ({ from: rel['id'], to: m['id'], type: 'USES' })));
+  // HAP-2029: each USES edge has one static_observed receipt by the stream's system principal; no other class exists.
+  expect(await rows(`SELECT organization_id, from_ci_id, to_ci_id, from_incarnation_id, to_incarnation_id, relationship_type, evidence_class,
+    polarity, source_name, source_id, method, observer, observer_type FROM relationship_evidence_receipts ORDER BY to_ci_id`))
+    .toEqual(models.map(m => ({ organization_id: A, from_ci_id: rel['id'], to_ci_id: m['id'], from_incarnation_id: rel['incarnation_id'],
+      to_incarnation_id: m['incarnation_id'], relationship_type: 'USES', evidence_class: 'static_observed', polarity: 'supports',
+      source_name: 'ai_sync', source_id: 'c4_releases', method: 'ai_sync', observer: 'sync:c4_releases', observer_type: 'system' }))
+      .sort((x, y) => (x.to_ci_id < y.to_ci_id ? -1 : 1)));
   expect(await cursor(A)).toEqual({ cursor: c4.asOf, as_of: new Date(c4.asOf), last_error_code: null });
 });
 

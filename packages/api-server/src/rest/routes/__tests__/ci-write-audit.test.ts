@@ -150,7 +150,7 @@ beforeAll(async () => {
   ...['drift_detection_results (ci_id', 'baseline_snapshots (ci_id', 'impact_analyses (source_ci_id', 'ci_criticality_scores (ci_id']
     .map(table => `CREATE TABLE ${table} text, organization_id uuid, ci_incarnation_id uuid);`)].join('\n'), [], 'exec');
   for (const file of ['003_audit_hash_chain.sql', '011_ci_organization_scope.sql', '028_change_history_reconciliation_org_provenance.sql',
-    '029_reconciliation_conflict_identity_rules.sql', '037_reconciliation_org_contract.sql']) {
+    '029_reconciliation_conflict_identity_rules.sql', '037_reconciliation_org_contract.sql', '054_relationship_evidence_receipts.sql']) {
     await mockSql(readFileSync(join(migrations, file), 'utf8'), [], 'exec');
   }
   await mockSql(`ALTER TABLE ci_change_history ADD COLUMN ci_incarnation_id UUID;

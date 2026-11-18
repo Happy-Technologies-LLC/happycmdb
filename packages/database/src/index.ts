@@ -17,7 +17,7 @@ export {
   JournalGapError, JournalAbortedError, JournalTargetMissingError, JournalUnavailableError, PlanUnrepresentableError,
   JournalConflictError, requeueFailedJournalGroup, setJournalSeam, ADMISSION_LOCK_KEY,
 } from './journal/journal';
-export type { JournalSeam, StoredPlan, ConflictPlan, JournalActorType } from './journal/journal';
+export type { JournalSeam, StoredPlan, ConflictPlan, JournalActorType, RelationshipEvidence } from './journal/journal';
 export { enc, dec, isStorableString } from './journal/encoding';
 
 // HAP-1442 AI inventory: the only writer of source-owned AI CIs (its grant token is deliberately not exported)

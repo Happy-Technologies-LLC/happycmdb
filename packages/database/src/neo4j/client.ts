@@ -12,11 +12,11 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 import { getPostgresClient } from '../postgres/client';
-import { enc } from '../journal/encoding';
+import { enc, isStorableString } from '../journal/encoding';
 import type { Encoded } from '../journal/encoding';
 import {
   assertJournalSchema, JournalGapError, JournalGraphRunner, JournalTargetMissingError, ReconciliationJournal, StoredPlan,
-  JournalUnavailableError, assertExternalIdSchema, type JournalActorType,
+  JournalUnavailableError, assertExternalIdSchema, type JournalActorType, type RelationshipEvidence,
 } from '../journal/journal';
 import { auditChainReady } from '../postgres/audit.service';
 import { SOURCE_OWNED_WRITE, type SourceOwnedGrant } from './source-owned-grant';
@@ -26,6 +26,35 @@ function refuseSourceOwnedType(props: Record<string, unknown>, grant: SourceOwne
   if (grant === SOURCE_OWNED_WRITE) return;
   if (Object.entries(props).some(([key, value]) => ['type', 'ci_type'].includes(key.replace(/^_+/, '').toLowerCase())
     && isSourceOwnedCIType(value))) throw new SourceOwnedError();
+}
+
+const EVIDENCE_TOKEN = /^[a-z][a-z0-9_]*$/;
+/**
+ * HAP-2029: the receipt descriptor of a relationship write, validated in process before anything is reserved (a bad one is
+ * a programmer error, not a request error). Default: `declared` by `api`. Mirrors the table's CHECKs so T2 cannot fail on it.
+ */
+function relationshipEvidenceDescriptor(evidence: RelationshipEvidence = { evidenceClass: 'declared', sourceName: 'api', method: 'api' }): {
+  evidenceClass: RelationshipEvidence['evidenceClass']; sourceName: string; sourceId: string | null; sourceVersion: string | null;
+  method: string; rationaleCode: string | null;
+} {
+  const text = (value: unknown, max: number, optional: boolean): string | null => {
+    if (value === undefined && optional) return null;
+    if (typeof value !== 'string' || value.trim() === '' || value.length > max || !isStorableString(value)) {
+      throw new Error('Invalid relationship evidence descriptor');
+    }
+    return value;
+  };
+  const token = (value: unknown, optional: boolean): string | null => {
+    const checked = text(value, 40, optional);
+    if (checked !== null && !EVIDENCE_TOKEN.test(checked)) throw new Error('Invalid relationship evidence descriptor');
+    return checked;
+  };
+  if (evidence.evidenceClass !== 'declared' && evidence.evidenceClass !== 'static_observed') {
+    throw new Error('Invalid relationship evidence descriptor');
+  }
+  return { evidenceClass: evidence.evidenceClass, sourceName: text(evidence.sourceName, 100, false)!,
+    sourceId: text(evidence.sourceId, 255, true), sourceVersion: text(evidence.sourceVersion, 100, true),
+    method: token(evidence.method, false)!, rationaleCode: token(evidence.rationaleCode, true) };
 }
 
 /**
@@ -681,26 +710,47 @@ export class Neo4jClient {
    * missing or foreign, or, on delete, when no such relationship exists.
    * HAP-1001: T2 appends one RELATIONSHIP_ADD/RELATIONSHIP_REMOVE audit row per endpoint.
    * HAP-1444: an endpoint of a source-owned AI class needs the sync writer's grant (AISyncWriter.link).
+   * HAP-2029: T2 also appends one evidence receipt (a create `supports`, a delete `contradicts`) bound to both endpoints'
+   * current CI incarnations. `evidence` is the trusted in-process descriptor of the asserting writer, default
+   * `declared`/`api`; it is never derived from `props` or a request, and an invalid one is a programmer error thrown before
+   * anything is reserved.
    */
   async writeRelationship(kind: 'relationship_create' | 'relationship_delete', fromId: string, toId: string,
     type: string, organizationId: string, actor: string, props: Record<string, unknown> = {},
-    grant?: SourceOwnedGrant, actorType: JournalActorType = 'user', auditMetadata?: Record<string, unknown>): Promise<boolean> {
+    grant?: SourceOwnedGrant, actorType: JournalActorType = 'user', auditMetadata?: Record<string, unknown>,
+    evidence?: RelationshipEvidence): Promise<boolean> {
     const label = validateRelationshipType(type);
+    const descriptor = relationshipEvidenceDescriptor(evidence);
     if (!(await this.admitOwned(organizationId, [fromId, toId], grant))) return false;
     const create = kind === 'relationship_create';
     const relationship = { type: label, from_id: fromId, to_id: toId, ...(create ? { properties: props } : {}) };
     try {
       return await this.journal.run({
         organizationId, actor, actorType, auditMetadata, operation: 'relationship_write', ciIds: [fromId, toId],
-        plan: async () => ({ graph: { kind, label, params: enc({ from: fromId, to: toId, props }) },
-          audit: { action: create ? 'RELATIONSHIP_ADD' : 'RELATIONSHIP_REMOVE', changes: enc([{ field: 'relationship',
-            old_value: create ? null : relationship, new_value: create ? relationship : null }]) } }),
+        plan: async () => {
+          // Under the slot, so neither endpoint can be deleted or re-created between this read and W.
+          const fromIncarnationId = await this.endpointIncarnation(fromId, organizationId);
+          const toIncarnationId = await this.endpointIncarnation(toId, organizationId);
+          return { graph: { kind, label, params: enc({ from: fromId, to: toId, props }) },
+            audit: { action: create ? 'RELATIONSHIP_ADD' : 'RELATIONSHIP_REMOVE', changes: enc([{ field: 'relationship',
+              old_value: create ? null : relationship, new_value: create ? relationship : null }]) },
+            receipt: { from: fromId, to: toId, fromIncarnationId, toIncarnationId, type: label, ...descriptor,
+              polarity: create ? 'supports' : 'contradicts' } };
+        },
         result: async () => true,
       });
     } catch (error) {
       if (error instanceof JournalTargetMissingError) return false;
       throw error;
     }
+  }
+
+  /** The endpoint's CI incarnation (assigned on first derived write for a legacy CI); a missing or foreign CI is a 404. */
+  private async endpointIncarnation(id: string, organizationId: string): Promise<string> {
+    const props = await this.getCIProperties(id, organizationId);
+    const incarnationId = (props && ciIncarnationId(props)) ?? await this.ensureCIIncarnation(id, organizationId);
+    if (!incarnationId) throw new JournalTargetMissingError();
+    return incarnationId;
   }
 
   /**

@@ -45,7 +45,7 @@ export interface ImpactEnvelope {
     ci_nodes_in_scope: number;
     /** In-scope CIs with no `ci_source_lineage` row in the caller's organization, sorted. */
     unreported_ci_ids: string[];
-    /** No receipt table exists yet (HAP-2029), so no runtime observation is ever in scope. */
+    /** Relationship evidence receipts exist (HAP-2029) but no `runtime_observed` producer does, so none is ever in scope; reading receipts for coverage is HAP-2030. */
     runtime_observed_receipts_in_scope: false;
     note: typeof COVERAGE_NOTE;
   };

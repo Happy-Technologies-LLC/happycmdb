@@ -150,7 +150,8 @@ export class AISyncWriter {
     if (from?.['type'] !== allowed.from || to?.['type'] !== allowed.to) throw new AISyncWriteRefused(`${type} needs ${allowed.from} -> ${allowed.to}`);
     if (await this.neo4j.relationshipExists(organizationId, fromCiId, type, toCiId)) return 'unchanged';
     const written = await this.neo4j.writeRelationship('relationship_create', fromCiId, toCiId, type, organizationId, `sync:${stream}`,
-      {}, SOURCE_OWNED_WRITE, 'system');
+      {}, SOURCE_OWNED_WRITE, 'system', undefined,
+      { evidenceClass: 'static_observed', sourceName: 'ai_sync', sourceId: stream, method: 'ai_sync' }); // an inventory states the link
     if (!written) throw new AISyncWriteRefused(`${type} endpoint is missing`);
     return 'created';
   }

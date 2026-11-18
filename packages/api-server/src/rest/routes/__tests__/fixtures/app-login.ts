@@ -151,6 +151,13 @@ export const lineageTableSql = () => {
 /** PGlite: 053 verbatim, the column grant that lets the non-owner app login read the lineage the impact envelope filters on. */
 export const lineageReadAclSql = () => `BEGIN;\n${migrationSql('053_business_service_lineage_read_acl.sql')}\nCOMMIT;`;
 
+/**
+ * PGlite: 054 verbatim (relationship_evidence_receipts with its append-only trigger and the SELECT, INSERT grants to the app
+ * logins that exist), the table every journaled relationship write needs (the journal's schema gate refuses without it).
+ * Run it as the owner, after the login roles exist.
+ */
+export const receiptTableSql = () => `BEGIN;\n${migrationSql('054_relationship_evidence_receipts.sql')}\nCOMMIT;`;
+
 /** PGlite: every later statement, from the routes or the test, runs as the app login. */
 export const ENTER_APP_LOGIN_SQL = `RESET ROLE; SET SESSION AUTHORIZATION ${APP_LOGIN};`;
 /** PGlite's bootstrap superuser, its authenticated backend user (RESET SESSION AUTHORIZATION does not return to it). */

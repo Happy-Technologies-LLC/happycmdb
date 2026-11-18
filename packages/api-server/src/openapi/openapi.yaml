@@ -1292,6 +1292,70 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /relationships/evidence:
+    get:
+      tags: [Relationships]
+      summary: List an edge's evidence receipts
+      description: >-
+        HAP-2029. Server-assigned, append-only receipts for one relationship of the caller's organization, newest first.
+        A receipt is appended in the same journaled write that creates (`supports`) or deletes (`contradicts`) the
+        relationship; its class, polarity, time and observer are stamped by the server from the writer, never from the
+        request. Only receipts for the endpoints' current incarnations are returned, so a re-created CI starts with none.
+        An edge written before receipts existed has none (`receipts: []`); that is not evidence of absence. Both CIs must
+        belong to the caller's organization: a missing, foreign or unowned endpoint is the same 404. Receipts are
+        history, not currentness: read them against the live relationship.
+      operationId: listRelationshipEvidence
+      parameters:
+        - name: from_id
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+          description: Source CI ID
+        - name: to_id
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+          description: Target CI ID
+        - name: type
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [DEPENDS_ON, HOSTS, CONNECTS_TO, USES, OWNED_BY, PART_OF, DEPLOYED_ON, BACKED_UP_BY, INSTANCE_OF]
+          description: Relationship type (the types the REST write accepts)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: Receipts for the edge, newest first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelationshipEvidenceResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /relationships/type/{type}:
     get:
       tags: [Relationships]
@@ -5395,6 +5459,88 @@ components:
         properties:
           type: object
           additionalProperties: true
+
+    RelationshipEvidenceReceipt:
+      type: object
+      required: [receipt_id, evidence_class, polarity, source_name, source_id, source_version, method, rationale_code,
+        observed_at, observer, observer_type, correlation_id]
+      properties:
+        receipt_id:
+          type: string
+          format: uuid
+        evidence_class:
+          type: string
+          description: >-
+            What kind of evidence the writer claims. `declared` is a person or import stating the edge; `static_observed`
+            is read from a source of record. `runtime_observed` and `inferred` are valid values of the table but no
+            writer produces them yet.
+          enum: [declared, static_observed, runtime_observed, inferred]
+        polarity:
+          type: string
+          description: '`supports` for a create, `contradicts` for a delete.'
+          enum: [supports, contradicts]
+        source_name:
+          type: string
+          description: Writer, e.g. `api`, `portfolio_import`, `ai_sync`
+        source_id:
+          type: string
+          nullable: true
+          description: Writer's batch or stream identifier (an import id, a sync stream)
+        source_version:
+          type: string
+          nullable: true
+        method:
+          type: string
+        rationale_code:
+          type: string
+          nullable: true
+        observed_at:
+          type: string
+          format: date-time
+          description: Server time of the journal write; never taken from the request
+        observer:
+          type: string
+          description: The verified principal that wrote the edge (a user id, or `sync:<stream>`)
+        observer_type:
+          type: string
+          enum: [user, system]
+        correlation_id:
+          type: string
+          format: uuid
+          description: The journal group; joins the `RELATIONSHIP_ADD`/`RELATIONSHIP_REMOVE` audit rows (`metadata.correlation_id`)
+
+    RelationshipEvidenceResponse:
+      type: object
+      required: [success, data, pagination]
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          required: [from_id, to_id, type, receipts]
+          properties:
+            from_id:
+              type: string
+            to_id:
+              type: string
+            type:
+              type: string
+            receipts:
+              type: array
+              items:
+                $ref: '#/components/schemas/RelationshipEvidenceReceipt'
+        pagination:
+          type: object
+          required: [total, count, offset, limit]
+          properties:
+            total:
+              type: integer
+            count:
+              type: integer
+            offset:
+              type: integer
+            limit:
+              type: integer
 
     RelationshipType:
       type: string

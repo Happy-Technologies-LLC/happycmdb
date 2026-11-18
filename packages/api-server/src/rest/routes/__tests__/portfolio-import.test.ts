@@ -231,7 +231,7 @@ beforeAll(async () => {
   for (const file of ['003_audit_hash_chain.sql', '008_business_service_organization_scope.sql', '011_ci_organization_scope.sql',
     '028_change_history_reconciliation_org_provenance.sql', '029_reconciliation_conflict_identity_rules.sql',
     '037_reconciliation_org_contract.sql', '043_business_service_record_c1.sql', '046_service_offerings.sql',
-    '048_portfolio_import.sql']) {
+    '048_portfolio_import.sql', '054_relationship_evidence_receipts.sql']) {
     await db(`BEGIN;\n${migrationSql(file)}\nCOMMIT;`);
   }
   // 045's rows for the journal and its evidence tables (045 itself needs the full schema and grants cmdb_app); the
@@ -288,6 +288,10 @@ it('A2/A7: apply writes the plan with its id map and audit rows (import_id, defa
     .toEqual([{ service_level: { response_target_hours: 4 } }]);
   expect([ids[CI(1)], mockGraph.nodes.get(ids[CI(2)]!)?.['environment'], mockGraph.relationships.has(`${ids[CI(1)]}-DEPENDS_ON->${ids[CI(2)]}`)])
     .toEqual([importedCIId(A, CI(1)), 'development', true]);
+  expect(await rows(`SELECT organization_id, from_ci_id, to_ci_id, relationship_type, evidence_class, polarity, source_name, source_id, method,
+    observer, observer_type FROM relationship_evidence_receipts WHERE source_id = $1`, [importId])).toEqual([{ organization_id: A,
+    from_ci_id: ids[CI(1)], to_ci_id: ids[CI(2)], relationship_type: 'DEPENDS_ON', evidence_class: 'declared', polarity: 'supports',
+    source_name: 'portfolio_import', source_id: importId, method: 'portfolio_import', observer: 'actor-m', observer_type: 'user' }]);
   const audit = await rows(`SELECT entity_type, entity_id, action, actor, changes, metadata FROM audit_log ORDER BY timestamp, id`);
   expect(audit.map(row => [row['entity_type'], row['action'], row['actor'], row['metadata']['import_id']])).toEqual([
     ['BUSINESS_SERVICE', 'CREATE', 'actor-m', importId], ['SERVICE_OFFERING', 'CREATE', 'actor-m', importId],

@@ -104,6 +104,11 @@ function auditUpdate(current: Record<string, unknown>, next: Record<string, unkn
 export const MAX_CI_TRAVERSAL_NODES = 100;
 export const MAX_CI_TRAVERSAL_WORK = 400;
 export const CI_TRAVERSAL_QUERY_TIMEOUT_MS = 5000;
+/**
+ * HAP-2030: an AI-sync re-observation of an unchanged edge appends at most one receipt per edge, source and this many hours.
+ * 24 h against the 7-day `static_observed` window: growth is one row per edge per day, and a missed run never flips a state.
+ */
+export const REOBSERVATION_THROTTLE_HOURS = 24;
 
 export class CITraversalLimitError extends Error {
   constructor() {
@@ -151,6 +156,13 @@ type TraversalEdge = {
 };
 
 type TraversalNode = { node: Node; distance: number };
+
+/** HAP-2030: a relationship as stored: `from` is its start CI, `to` its end CI, `type` the Neo4j relationship type. */
+export interface CIEdgeRef { from: string; to: string; type: string }
+const edgeRef = (edge: TraversalEdge): CIEdgeRef => ({ from: edge.startNodeId, to: edge.endNodeId, type: edge.relationship.type });
+
+/** Under the slot, a re-observation found a recent receipt of its own source: nothing to append (see reobserveRelationship). */
+class ReobservationThrottled extends Error {}
 
 export class Neo4jClient {
   private driver: Driver;
@@ -676,6 +688,30 @@ export class Neo4jClient {
   }
 
   /**
+   * HAP-2030: the CURRENT incarnation of each owned CI in one statement; a read, so it assigns nothing. An id the scope does
+   * not own or that no longer exists is absent from the map; an owned legacy CI with no incarnation maps to null.
+   */
+  async getCIIncarnations(ids: string[], scope: CIOrganizationScope, timeoutMs: number): Promise<Map<string, string | null>> {
+    const organizationId = organizationIdParam(scope);
+    const incarnations = new Map<string, string | null>();
+    if (ids.length === 0) return incarnations;
+    const session = this.getSession();
+    try {
+      const result = await session.run(
+        `MATCH (ci:CI) WHERE ${organizationId === null ? 'ci.organization_id IS NOT NULL' : 'ci.organization_id = $organizationId'}
+           AND ci.id IN $ids
+         RETURN ci.id AS ciId, ci.incarnation_id AS incarnationId`,
+        { organizationId, ids }, { timeout: timeoutMs });
+      for (const record of result.records) {
+        incarnations.set(record.get('ciId') as string, ciIncarnationId(record.get('incarnationId') as string | null));
+      }
+      return incarnations;
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
    * Journaled delete (v16 §6.4). The snapshot is the raw property map read by
    * one statement under the slot; T2 writes exactly one org-stamped `deleted`
    * history row and purges this incarnation's derived drift/impact rows. Prior
@@ -719,9 +755,9 @@ export class Neo4jClient {
     type: string, organizationId: string, actor: string, props: Record<string, unknown> = {},
     grant?: SourceOwnedGrant, actorType: JournalActorType = 'user', auditMetadata?: Record<string, unknown>,
     evidence?: RelationshipEvidence): Promise<boolean> {
-    const label = validateRelationshipType(type);
-    const descriptor = relationshipEvidenceDescriptor(evidence);
-    if (!(await this.admitOwned(organizationId, [fromId, toId], grant))) return false;
+    const admitted = await this.admitRelationshipWrite(type, evidence, organizationId, [fromId, toId], grant);
+    if (!admitted) return false;
+    const { label, descriptor } = admitted;
     const create = kind === 'relationship_create';
     const relationship = { type: label, from_id: fromId, to_id: toId, ...(create ? { properties: props } : {}) };
     try {
@@ -751,6 +787,67 @@ export class Neo4jClient {
     const incarnationId = (props && ciIncarnationId(props)) ?? await this.ensureCIIncarnation(id, organizationId);
     if (!incarnationId) throw new JournalTargetMissingError();
     return incarnationId;
+  }
+
+  /**
+   * HAP-2030: whether the edge already has a `supports` receipt of this descriptor's class, source name and source id bound
+   * to exactly these endpoint incarnations, in this organization, newer than the throttle period. The period is measured on
+   * the database clock (T2 stamps `observed_at` with it), never the process clock.
+   */
+  async hasRecentObservation(organizationId: string, fromId: string, toId: string, type: string, fromIncarnationId: string,
+    toIncarnationId: string, evidence: RelationshipEvidence): Promise<boolean> {
+    const label = validateRelationshipType(type);
+    const descriptor = relationshipEvidenceDescriptor(evidence);
+    const result = await getPostgresClient().query(
+      `SELECT EXISTS (SELECT 1 FROM relationship_evidence_receipts
+        WHERE organization_id = $1 AND from_ci_id = $2 AND to_ci_id = $3 AND relationship_type = $4
+          AND from_incarnation_id = $5::uuid AND to_incarnation_id = $6::uuid
+          AND evidence_class = $7 AND polarity = 'supports' AND source_name = $8 AND source_id IS NOT DISTINCT FROM $9
+          AND observed_at > now() - make_interval(hours => $10::int)) AS recent`,
+      [organizationId, fromId, toId, label, fromIncarnationId, toIncarnationId, descriptor.evidenceClass,
+        descriptor.sourceName, descriptor.sourceId, REOBSERVATION_THROTTLE_HOURS]);
+    return result.rows[0]?.recent === true;
+  }
+
+  /**
+   * HAP-2030: re-observation of an UNCHANGED relationship by its source: appends one `supports` receipt (rationale
+   * `reobserved`, observer type `system`) through the same journaled path as `writeRelationship`, and nothing else (no W, no
+   * fence, no audit row, no property). `throttled` when the edge already has a recent receipt of this exact source (decided
+   * again under the slot, so concurrent writers add one row per period); `missing` when an endpoint or the edge is gone.
+   */
+  async reobserveRelationship(fromId: string, toId: string, type: string, organizationId: string, actor: string,
+    grant: SourceOwnedGrant | undefined, evidence: RelationshipEvidence): Promise<'reobserved' | 'throttled' | 'missing'> {
+    const admitted = await this.admitRelationshipWrite(type, { ...evidence, rationaleCode: 'reobserved' }, organizationId,
+      [fromId, toId], grant);
+    if (!admitted) return 'missing';
+    const { label, descriptor } = admitted;
+    try {
+      return await this.journal.run<'reobserved' | 'throttled' | 'missing'>({
+        organizationId, actor, actorType: 'system', operation: 'relationship_write', ciIds: [fromId, toId],
+        plan: async () => {
+          if (!(await this.relationshipExists(organizationId, fromId, label, toId))) throw new JournalTargetMissingError();
+          const fromIncarnationId = await this.endpointIncarnation(fromId, organizationId);
+          const toIncarnationId = await this.endpointIncarnation(toId, organizationId);
+          if (await this.hasRecentObservation(organizationId, fromId, toId, label, fromIncarnationId, toIncarnationId,
+            { ...evidence, rationaleCode: 'reobserved' })) throw new ReobservationThrottled();
+          return { graph: null, receipt: { from: fromId, to: toId, fromIncarnationId, toIncarnationId, type: label,
+            ...descriptor, polarity: 'supports' } };
+        },
+        result: async () => 'reobserved',
+      });
+    } catch (error) {
+      if (error instanceof ReobservationThrottled) return 'throttled';
+      if (error instanceof JournalTargetMissingError) return 'missing';
+      throw error;
+    }
+  }
+
+  /** The shared prelude of every relationship receipt write: validated type and descriptor, then the owned-endpoint gate. */
+  private async admitRelationshipWrite(type: string, evidence: RelationshipEvidence | undefined, organizationId: string,
+    ids: string[], grant: SourceOwnedGrant | undefined) {
+    const label = validateRelationshipType(type);
+    const descriptor = relationshipEvidenceDescriptor(evidence);
+    return (await this.admitOwned(organizationId, ids, grant)) ? { label, descriptor } : null;
   }
 
   /**
@@ -885,16 +982,35 @@ export class Neo4jClient {
     ciId: string, scope: CIOrganizationScope, depth: number = 5,
     work: CITraversalWork = createCITraversalWork()
   ): Promise<Path[]> {
-    return (await this.traverseCIs([ciId], scope, depth, 'out', true, work)).paths;
+    return (await this.getDependenciesWithEdges(ciId, scope, depth, work)).paths;
+  }
+
+  /** HAP-2030: getDependencies plus every DEPENDS_ON edge the traversal followed, as stored (start -> end); no second traversal. */
+  async getDependenciesWithEdges(
+    ciId: string, scope: CIOrganizationScope, depth: number = 5,
+    work: CITraversalWork = createCITraversalWork()
+  ): Promise<{ paths: Path[]; edges: CIEdgeRef[] }> {
+    const { paths, edges } = await this.traverseCIs([ciId], scope, depth, 'out', true, work);
+    return { paths, edges: edges.map(edgeRef) };
   }
 
   async impactAnalysis(
     ciId: string, scope: CIOrganizationScope, depth: number = 5,
     work: CITraversalWork = createCITraversalWork()
   ) {
-    return (await this.traverseCIs([ciId], scope, depth, 'in', true, work)).nodes.map(({ node, distance }) => ({
-      _ci: this.recordToCI(node), _distance: distance,
-    }));
+    return (await this.impactAnalysisWithEdges(ciId, scope, depth, work)).nodes;
+  }
+
+  /** HAP-2030: impactAnalysis plus every DEPENDS_ON edge the traversal followed, as stored (start -> end); no second traversal. */
+  async impactAnalysisWithEdges(
+    ciId: string, scope: CIOrganizationScope, depth: number = 5,
+    work: CITraversalWork = createCITraversalWork()
+  ): Promise<{ nodes: Array<{ _ci: CI; _distance: number }>; edges: CIEdgeRef[] }> {
+    const { nodes, edges } = await this.traverseCIs([ciId], scope, depth, 'in', true, work);
+    return {
+      nodes: nodes.map(({ node, distance }) => ({ _ci: this.recordToCI(node), _distance: distance })),
+      edges: edges.map(edgeRef),
+    };
   }
 
   /**

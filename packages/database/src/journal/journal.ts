@@ -66,6 +66,8 @@ export interface StoredPlan {
     from: string; to: string; fromIncarnationId: string; toIncarnationId: string; type: string;
     evidenceClass: RelationshipEvidenceClass; polarity: 'supports' | 'contradicts';
     sourceName: string; sourceId: string | null; sourceVersion: string | null; method: string; rationaleCode: string | null;
+    /** HAP-2030: stamped by `run` from the write's explicit `actorType`; whatever a plan carries here is overwritten. */
+    observerType?: JournalActorType;
   };
 }
 
@@ -297,7 +299,7 @@ async function writeEvidence(client: PoolClient, row: { group_id: string; organi
       ON CONFLICT (organization_id, correlation_id, from_ci_id, to_ci_id, relationship_type) DO NOTHING`,
     [org, receipt.from, receipt.to, receipt.fromIncarnationId, receipt.toIncarnationId, receipt.type, receipt.evidenceClass,
       receipt.polarity, receipt.sourceName, receipt.sourceId, receipt.sourceVersion, receipt.method, receipt.rationaleCode,
-      actor, plan.audit?.actorType ?? 'user', group]);
+      actor, receipt.observerType ?? 'user', group]);
   }
   const exactlyOne = (count: number | null) => {
     if (count !== 1) throw Object.assign(new Error('conflict lifecycle mismatch'), { code: 'HP1CF' });
@@ -414,6 +416,8 @@ export class ReconciliationJournal {
         plan = { ...plan, audit: { ...plan.audit, actorType: write.actorType ?? 'user',
           ...(write.auditMetadata ? { metadata: write.auditMetadata } : {}) } };
       }
+      // HAP-2030: the receipt's observer type is the caller's too, not the audit stamp's (a plan without audit has none).
+      if (plan.receipt !== undefined) plan = { ...plan, receipt: { ...plan.receipt, observerType: write.actorType ?? 'user' } };
       assertPlanRepresentable(plan as unknown as Encoded);
       // Decoded before W: an undecodable value is a definitive 422, never an unproven W.
       try { params = plan.graph ? dec(plan.graph.params) as Record<string, unknown> : {}; } catch { throw new PlanUnrepresentableError(); }

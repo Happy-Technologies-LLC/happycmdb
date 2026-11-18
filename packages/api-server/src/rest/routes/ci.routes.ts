@@ -31,7 +31,7 @@ const organizationIdForbidden = Joi.any().forbidden();
 // Validation schemas. A client may set external_id on create only (FD17-S3, D17-3/D17-9): at most 200 characters
 // (cmdb.dim_ci), no control characters, stored as sent (not trimmed). The update schema strips it (PUT cannot set it).
 // The list lookup (FD17-S4) validates the value with this same rule ('' is rejected), so a malformed one is a 400.
-const externalIdSchema = Joi.string().max(200).pattern(/^[^\p{Cc}\p{Cf}]*$/u);
+const externalIdSchema = Joi.string().max(200).pattern(/^\P{Cc}*$/u);
 const createCISchema = ciInputSchema.keys({
   id: Joi.any().forbidden(),
   external_id: externalIdSchema.optional(),

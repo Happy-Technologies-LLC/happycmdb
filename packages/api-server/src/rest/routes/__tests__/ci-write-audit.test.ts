@@ -97,8 +97,9 @@ jest.mock('neo4j-driver', () => {
 });
 // The real @cmdb/database opens the BullMQ Redis connection at import; nothing here queues jobs.
 jest.mock('@cmdb/database/bullmq/queue-manager', () => ({}));
-const users: Record<string, { _id: string; _username: string; _role: 'admin' | 'viewer'; _enabled: boolean; _organizationId?: string }> = {
+const users: Record<string, { _id: string; _username: string; _role: 'admin' | 'operator' | 'viewer'; _enabled: boolean; _organizationId?: string }> = {
   a: { _id: 'actor-a', _username: 'alice', _role: 'admin', _enabled: true, _organizationId: A },
+  operator: { _id: 'actor-o', _username: 'omar', _role: 'operator', _enabled: true, _organizationId: A },
   viewer: { _id: 'actor-v', _username: 'vera', _role: 'viewer', _enabled: true, _organizationId: A },
   none: { _id: 'actor-n', _username: 'nora', _role: 'admin', _enabled: true },
 };
@@ -246,6 +247,7 @@ describe('with AUDIT_CHAIN_KEY', () => {
         const id = seedWith({ [field]: value });
         expect((await del('a', id)).status).toBe(422);
         expect((await recover('viewer', id)).status).toBe(403);
+        expect((await recover('operator', id)).status).toBe(403);
         expect((await recover('a', id, {})).status).toBe(400);
         expect(mockGraph.nodes.has(id)).toBe(true);
         expect(await audit(id)).toEqual([]);
@@ -277,6 +279,31 @@ describe('with AUDIT_CHAIN_KEY', () => {
       const many = seedWith(Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`attr${i}`, 'z'.repeat(60_000)])));
       expect((await recover('a', many)).status).toBe(409);
       expect((await del('a', many)).status).toBe(204);
+    });
+
+    // The ordinary plan fits up to ~1 MiB, above the 960 KiB snapshot budget: the recovery path must not replace a delete that works.
+    it('a snapshot between the 960 KiB budget and the ordinary plan limit: DELETE is 204 and recovery refuses (409), changing nothing', async () => {
+      const window = seedWith(Object.fromEntries(Array.from({ length: 16 }, (_, i) => [`attr${String(i).padStart(2, '0')}`, `${i}`.padEnd(62_000, 'w')])));
+      const before = (await audit()).length;
+      expect((await recover('a', window)).status).toBe(409);
+      expect([(await audit()).length, mockGraph.nodes.has(window), await ciRows(window)]).toEqual([before, true, []]);
+      expect((await del('a', window)).status).toBe(204);
+      const [entry] = await getAuditService(getPostgresClient().pool).getCIAuditHistory(window, A);
+      expect(entry!.metadata).not.toMatchObject({ recovery: 'oversized_delete' });
+      expect((entry!.changes as Array<{ field: string; old_value: unknown }>).filter(c => c.field.startsWith('attr') && typeof c.old_value === 'string')).toHaveLength(16);
+    });
+
+    it('a snapshot just above the ordinary plan limit with no value over 64 KiB: DELETE is 422; recovery deletes it, replacing only what the plan needs', async () => {
+      const values = Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`attr${String(i).padStart(2, '0')}`, `${i}`.padEnd(62_000, 'w')]));
+      const id = seedWith(values);
+      expect((await del('a', id)).status).toBe(422);
+      expect((await recover('a', id)).status).toBe(204);
+      expect(mockGraph.nodes.has(id)).toBe(false);
+      const [entry] = await getAuditService(getPostgresClient().pool).getCIAuditHistory(id, A);
+      const recorded = (entry!.metadata as { oversized: Array<{ field: string }> }).oversized;
+      expect(recorded.length).toBeGreaterThan(0);
+      expect(recorded.length).toBeLessThan(17);
+      expect(await getAuditService(getPostgresClient().pool).verifyAuditChain()).toMatchObject({ ok: true });
     });
 
     it('many values each under 64 KiB but over the 1 MiB plan total: DELETE is 422; recovery keeps what fits and records size and hash for the rest', async () => {
@@ -318,6 +345,7 @@ describe('with AUDIT_CHAIN_KEY', () => {
       const description = 'd'.repeat(65_535);
       const id = seedWith({ description, metadata: '{"k":"v"}', extra: 7 });
       expect((await request(app).get(`/api/v1/cis/${id}/stored-properties`).set(headers('viewer'))).status).toBe(403);
+      expect((await request(app).get(`/api/v1/cis/${id}/stored-properties`).set(headers('operator'))).status).toBe(403);
       expect((await request(app).get(`/api/v1/cis/${id}/stored-properties`).set(headers('none'))).status).toBe(403);
       const res = await request(app).get(`/api/v1/cis/${id}/stored-properties`).set(headers('a'));
       expect(res.status).toBe(200);
@@ -343,7 +371,8 @@ describe('with AUDIT_CHAIN_KEY', () => {
       const before = (await audit()).length;
       expect([(await recover('a', foreign)).status, (await recover('a', randomUUID())).status,
         (await recover('a', own, { evidence_ref: 'x'.repeat(513) })).status, (await recover('a', own, { evidence_ref: 'a\nb' })).status,
-      ]).toEqual([404, 404, 400, 400]);
+        (await recover('a', own, { evidence_ref: 'vault://e/\u202Egpj.txt' })).status, (await recover('a', own, { evidence_ref: 'a\u200Bb' })).status,
+      ]).toEqual([404, 404, 400, 400, 400, 400]);
       expect([(await audit()).length, mockGraph.nodes.has(own), mockGraph.nodes.has(foreign)]).toEqual([before, true, true]);
       expect(await ciRows(own)).toEqual([]);
     });

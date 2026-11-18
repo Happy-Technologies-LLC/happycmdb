@@ -599,17 +599,35 @@ describe('HAP-2030: re-observation of unchanged edges', () => {
     });
   });
 
-  // Two in-process syncs race for the same journal slots. Under load a run can lose a slot reservation outright (a 503 that
-  // stops that run and leaves its slots leased), so the outcome per edge is timing: the exact throttled-abort shape is proved
-  // deterministically by the next test. What must always hold is that a race never double-writes and never records a plan failure.
-  it('concurrent syncs of one tenant after ageing never append two receipts for an edge nor record a plan_failed group', async () => {
+  // A real race of two in-process syncs is timing: under CPU contention a run can lose a slot reservation outright (a 503 that
+  // stops that run and leaves its slots leased), so no exact count holds. This is the race's loser made deterministic: the
+  // second sync starts after the first committed, but its cheap throttle read (outside the slot) still predates the first
+  // sync's receipts, exactly what a concurrent loser sees. Only the decision under the slot can stop it.
+  it('a sync whose throttle read predates a concurrent sync\'s receipts appends nothing: exactly one reobserved receipt per edge, an aborted throttled group per edge and no plan_failed', async () => {
     const t = await synced();
     await ageAll(t.org, '8 days');
-    await Promise.allSettled([sync(t.org), sync(t.org)]);
-    const reobserved = async () => Promise.all(t.edges.map(async e => (await receiptsOf(e)).filter(r => r['rationale_code'] === 'reobserved').length));
-    expect((await reobserved()).every(n => n <= 1)).toBe(true);
-    expect(await rows(`SELECT count(*)::int AS n FROM ci_reconciliation_operations WHERE organization_id = $1
-      AND last_error = 'plan_failed'`, [t.org])).toEqual([{ n: 0 }]);
+    const base = await receiptCount(t.org);
+    const client = getNeo4jClient();
+    const real = client.hasRecentObservation.bind(client);
+    expect(await sync(t.org)).toMatchObject({ success: true }); // the winner
+    expect(await receiptCount(t.org)).toBe(base + t.edges.length);
+    const outside = new Set<string>();
+    jest.spyOn(client, 'hasRecentObservation').mockImplementation(async (org, from, to, ...rest) => {
+      if (!outside.has(`${from}|${to}`)) { // the first read per edge is the cheap one outside the slot: it sees no recent receipt
+        outside.add(`${from}|${to}`);
+        return false;
+      }
+      return real(org, from, to, ...rest);
+    });
+    expect(await sync(t.org)).toMatchObject({ success: true }); // the loser
+    expect(outside.size).toBe(t.edges.length); // every edge went to the slot and was decided there
+    expect(await Promise.all(t.edges.map(async e => (await receiptsOf(e)).filter(r => r['rationale_code'] === 'reobserved').length)))
+      .toEqual([1, 1, 1]);
+    expect(await receiptCount(t.org)).toBe(base + t.edges.length);
+    expect(await rows(`SELECT state, last_error, count(*)::int AS n FROM ci_reconciliation_operations WHERE organization_id = $1
+      AND state <> 'committed' GROUP BY state, last_error`, [t.org])).toEqual([{ state: 'aborted', last_error: 'throttled', n: 2 * t.edges.length }]);
+    expect(await count(`SELECT count(*)::int AS n FROM ci_reconciliation_operations WHERE organization_id = $1
+      AND last_error = 'plan_failed'`, [t.org])).toBe(0);
   });
 
   it('the throttle is decided again under the slot: an outside read that missed a just-written receipt still appends nothing and leaves an aborted throttled row, never a plan_failed one', async () => {

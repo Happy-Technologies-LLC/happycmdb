@@ -273,6 +273,10 @@ describe('with AUDIT_CHAIN_KEY', () => {
       expect(mockGraph.nodes.has(kept)).toBe(true);
       expect((await del('a', fits)).status).toBe(204);
       expect(mockGraph.nodes.has(fits)).toBe(false);
+      // 12 x 60 000 bytes is over the recovery snapshot budget but under the 1 MiB plan limit: the ordinary delete plans it.
+      const many = seedWith(Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`attr${i}`, 'z'.repeat(60_000)])));
+      expect((await recover('a', many)).status).toBe(409);
+      expect((await del('a', many)).status).toBe(204);
     });
 
     it('many values each under 64 KiB but over the 1 MiB plan total: DELETE is 422; recovery keeps what fits and records size and hash for the rest', async () => {

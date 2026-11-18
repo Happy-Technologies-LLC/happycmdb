@@ -151,40 +151,46 @@ export function assertPlanRepresentable(plan: Encoded): void {
 /** HAP-797: stands in for a stored value that exceeds a plan limit; the value itself is never copied into evidence. */
 export interface OversizedValue { field: string; bytes: number; sha256: string }
 export const OVERSIZED_TAG = '$hp797';
-/** Snapshot budget: history.previous is stored once in the plan, so this leaves the 1 MiB plan limit ample room for the envelope. */
+/** Snapshot budget once the plain snapshot breaks a limit: history.previous is stored once in the plan, so this leaves the 1 MiB plan limit ample room for the envelope. */
 export const OVERSIZED_SNAPSHOT_BYTES = 512 * 1024;
+
+const representable = (encoded: Encoded): boolean => {
+  try { assertPlanRepresentable(encoded); return true; } catch (error) {
+    if (error instanceof PlanUnrepresentableError) return false;
+    throw error;
+  }
+};
 
 /**
  * HAP-797: the bounded form of a CI's raw properties for the admin oversized-delete path. A property whose encoding breaks a
- * §3.6 limit (a value over 64 KiB, an array over 1000 members), and then the largest remaining ones while the snapshot
- * exceeds OVERSIZED_SNAPSHOT_BYTES, is replaced by `{ $hp797: 'oversized', bytes, sha256 }`. `bytes` and `sha256` describe the
- * value's HP1 JSON encoding (`JSON.stringify(enc(value))`, UTF-8), so a holder of the value can recompute both. A value `enc`
- * itself cannot represent still throws PlanUnrepresentableError: there is nothing to measure.
+ * §3.6 limit (a value over 64 KiB, an array over 1000 members) is replaced by `{ $hp797: 'oversized', bytes, sha256 }`; so,
+ * only when the whole snapshot still breaks a limit (total over 1 MiB), are the largest remaining values until it fits
+ * OVERSIZED_SNAPSHOT_BYTES. A CI the ordinary delete can plan therefore has no oversized value. `bytes` and `sha256` describe the
+ * value's HP1 JSON encoding (`JSON.stringify(enc(value))`, UTF-8), so a holder of the value can recompute both. The snapshot is
+ * encoded like any plan map (`enc`), so odd property names are escaped. A value `enc` itself cannot represent still throws
+ * PlanUnrepresentableError: there is nothing to measure.
  */
-export function boundOversizedSnapshot(props: Record<string, unknown>): { snapshot: Record<string, Encoded>; oversized: OversizedValue[] } {
+export function boundOversizedSnapshot(props: Record<string, unknown>): { snapshot: Encoded; oversized: OversizedValue[] } {
   const entries = Object.keys(props).sort().map(field => {
-    const encoded = enc(props[field]);
-    const json = JSON.stringify(encoded);
-    let representable = true;
-    try { assertPlanRepresentable(encoded); } catch (error) {
-      if (!(error instanceof PlanUnrepresentableError)) throw error;
-      representable = false;
-    }
-    return { field, encoded, json, bytes: Buffer.byteLength(json), representable };
+    const json = JSON.stringify(enc(props[field]));
+    return { field, json, bytes: Buffer.byteLength(json), keep: true };
   });
-  let total = entries.reduce((sum, entry) => entry.representable ? sum + entry.bytes : sum, 0);
-  for (const entry of [...entries].filter(e => e.representable).sort((a, b) => b.bytes - a.bytes)) {
-    if (total <= OVERSIZED_SNAPSHOT_BYTES) break;
-    entry.representable = false;
-    total -= entry.bytes;
+  for (const entry of entries) entry.keep = representable(enc(props[entry.field]));
+  if (!representable(enc(props))) {
+    let total = entries.reduce((sum, entry) => entry.keep ? sum + entry.bytes : sum, 0);
+    for (const entry of entries.filter(e => e.keep).sort((a, b) => b.bytes - a.bytes)) {
+      if (total <= OVERSIZED_SNAPSHOT_BYTES) break;
+      entry.keep = false;
+      total -= entry.bytes;
+    }
   }
-  const snapshot: Record<string, Encoded> = {};
+  const bounded: Record<string, unknown> = {};
   const oversized: OversizedValue[] = [];
-  for (const { field, encoded, json, bytes, representable } of entries) {
-    if (representable) { snapshot[field] = encoded; continue; }
+  for (const { field, json, bytes, keep } of entries) {
+    if (keep) { bounded[field] = props[field]; continue; }
     const sha256 = createHash('sha256').update(json).digest('hex');
-    snapshot[field] = { [OVERSIZED_TAG]: 'oversized', bytes, sha256 };
+    bounded[field] = { [OVERSIZED_TAG]: 'oversized', bytes, sha256 };
     oversized.push({ field, bytes, sha256 });
   }
-  return { snapshot, oversized };
+  return { snapshot: enc(bounded), oversized };
 }

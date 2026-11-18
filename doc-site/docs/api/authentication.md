@@ -186,15 +186,19 @@ platform-admin claim, so revoking the flag takes effect on the next request. No 
 administrators yet: global TBM and connector controls still refuse every caller.
 
 **Portfolio import scope** (`portfolio:import`) is the dedicated scope that `POST /api/v1/portfolio/imports`
-requires. It is an entry of the user's stored `scopes` list, set only by two reviewed operator commands
-(the same identity-window step and `CMDB_ROTATE_*` connections as `grant-platform-admin`), never through the API:
+requires. It is an entry of the user's stored `scopes` list, set only by two reviewed operator commands (the same
+identity-window step and `CMDB_ROTATE_*` connections as `grant-platform-admin`; a third only records a change), never through the API:
 
 ```bash
 scripts/identity-window.ts grant-portfolio-import-scope  --user-id <id> --operator <name>
 scripts/identity-window.ts revoke-portfolio-import-scope --user-id <id> --operator <name>
+scripts/identity-window.ts record-portfolio-import-scope --grant|--revoke --user-id <id> --operator <name>
 ```
 
-Both require `--user-id` and `--operator` (1-200 printable characters after trimming; control, format (for example
+The third, `record-portfolio-import-scope`, is the recovery for a change whose audit row was not written (below); it
+changes no scope.
+
+Grant and revoke both require `--user-id` and `--operator` (1-200 printable characters after trimming; control, format (for example
 U+202E, U+200B) and line/paragraph separator characters are refused; anything else invalid exits 1 before
 any store opens). Grant adds only `portfolio:import` (no duplicate, other scopes kept); revoke removes only that
 entry. A change prints one JSON line
@@ -215,11 +219,43 @@ WHERE event LIKE 'portfolio_import_scope_%' ORDER BY occurred_at;
 
 The scope change in Neo4j is made first and the audit row second; the two stores cannot share a transaction. If the
 row cannot be written, the command exits 3 (`AuditWriteFailed`, fixed message: the change was applied but its audit
-row was not written) and the scope change stays applied, with the node properties as the only record. The message
-names the recovery for its own action: after a failed grant, revoke and re-grant to record it; after a failed revoke,
-grant and re-revoke to record it. Never re-grant after a failed revoke without re-revoking: that leaves the user
-holding the scope with no revoke row. An error while shaping the printed result after the row was written exits 1,
-never 3.
+row was not written) and the scope change stays applied, with the node properties as the only record.
+
+**Recovery after exit 3: `record-portfolio-import-scope`.** The exit-3 message prints the exact command for its own
+action, with the same flag as the failed run:
+
+```bash
+scripts/identity-window.ts record-portfolio-import-scope --grant  --user-id <id> --operator <name>   # after a failed grant
+scripts/identity-window.ts record-portfolio-import-scope --revoke --user-id <id> --operator <name>   # after a failed revoke
+```
+
+It writes the missing `portfolio_import_scope_granted` / `portfolio_import_scope_revoked` row and **makes no Neo4j
+write**: do not grant or revoke again (that would change the scope a second time and leave the first change
+unrecorded). Exactly one of `--grant` or `--revoke` is required, and `--operator` has the validation above; the
+operator who runs the record is the row's actor (`window-script:<operator>`) and the row's time is the time of the
+record, not of the original change. Before it writes, it reads the live scope and refuses, with exit 2
+(`GrantRefused`, `scope_state_mismatch`) and no row, unless the state matches the action: `--grant` only while the
+user holds `portfolio:import`, `--revoke` only while the user does not. It applies the identity refusals of grant and
+revoke below, and prints the same JSON line as a change, with `"recordOnly": true`. Run it once per exit 3: it does
+not look for an existing row, so a second run writes a second row. If the record's own insert fails it exits 1
+(`the audit row was not written and nothing else was changed`); run the same command again. An error while shaping the
+printed result after the row was written exits 1, never 3.
+
+**Per-user lock.** Grant, revoke and record each take a PostgreSQL transaction-scoped advisory lock keyed on the
+target user id, `pg_advisory_xact_lock(2129, hashtext(<user id>))`, as the first statement of the transaction that
+also holds the audit insert. It is held across the Neo4j read, the Neo4j change and the audit insert, and released at
+commit or rollback, so two runs on one user queue: the second reads the user only after the first has finished, and a
+user's audit rows, ordered by `occurred_at` (the time of the insert, not of the transaction's start), are in the order
+of the Neo4j changes. Different users do not wait for each other. The two-integer form with class 2129 is a different
+key space from every other advisory lock in the application (one-bigint keys, and the two-integer class 8271), so no
+existing lock is taken or blocked by a user id; a hash collision of two ids only makes their runs wait for each other.
+
+**PostgreSQL outage.** The lock is a precondition: when PostgreSQL cannot be connected to, grant, revoke and record
+now refuse up front, with exit 1 and a fixed message (`... refused: PostgreSQL is unavailable, so the per-user lock
+could not be taken; nothing was changed`), before any Neo4j read or write. Before HAP-2129 a PostgreSQL outage let the
+Neo4j change happen and ended in exit 3. Now exit 3 means only that PostgreSQL failed after the Neo4j change was made
+(the insert or the commit failed): recover it with the record command above. After an exit 1 refusal, re-run the
+same grant or revoke once PostgreSQL is back.
 
 Grant and revoke both refuse (exit 2, `GrantRefused`) an unknown or ambiguous identity, an identity held by another node
 (`identity_collision`), a seeded account, a default-password account, a `scopes` value that is not a list of

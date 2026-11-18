@@ -22,10 +22,10 @@ import {
   ASSIGN_ORGANIZATION_CYPHER, AuditWriteFailed, assignOrganization, main,
   GRANT_HOLDERS_CYPHER, GRANT_IDENTITY_CYPHER, GRANT_PLATFORM_ADMIN_CYPHER, GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER, GrantRefused,
   REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER, SCAN_MARK_CYPHER,
-  SCAN_USERS_CYPHER, grantPlatformAdmin, grantPortfolioImportScope, revokePortfolioImportScope, scanDefaultPasswords,
+  SCAN_USERS_CYPHER, grantPlatformAdmin, grantPortfolioImportScope, recordPortfolioImportScope, revokePortfolioImportScope, scanDefaultPasswords,
 } from '../identity-window';
 import { APPLY_CYPHER } from '../rotate-user-password';
-import type { RotationGraph, Row } from '../rotate-user-password';
+import type { RotationGraph, RotationSql, RotationSqlQuery, Row } from '../rotate-user-password';
 
 // main() opens its stores through openOperatorStores; the tests hand it the in-memory graph and PGlite instead, and
 // assert whether a store was opened at all. The default delegates to the real function (which needs CMDB_ROTATE_*).
@@ -62,7 +62,29 @@ async function resetEvents(): Promise<void> {
   await send('exec', migration('020_auth_credential_events.sql'));
   await send('exec', migration('055_auth_credential_events_scope_events.sql'));
 }
-const keysSql = { query: async (text: string, params: unknown[] = []) => ({ rows: await send('query', text, params) }) };
+/**
+ * A RotationSql over the one PGlite session: BEGIN/COMMIT on it is a real PostgreSQL transaction (the advisory lock
+ * statement and the audit insert run in it). Two transactions cannot overlap on one session, so concurrent runs are
+ * covered on a real server in tests/integration/database/hap2129-scope-lock.integration.test.ts.
+ */
+const sqlOver = (query: RotationSqlQuery['query']): RotationSql => {
+  const self: RotationSql = {
+    query,
+    transaction: async callback => {
+      await send('exec', 'BEGIN');
+      try {
+        const result = await callback(self);
+        await send('exec', 'COMMIT');
+        return result;
+      } catch (error) {
+        await send('exec', 'ROLLBACK').catch(() => undefined);
+        throw error;
+      }
+    },
+  };
+  return self;
+};
+const keysSql = sqlOver(async (text, params = []) => ({ rows: await send('query', text, params) }));
 beforeAll(async () => {
   const schema = migration('001_complete_schema.sql');
   const start = schema.indexOf('CREATE TABLE IF NOT EXISTS api_keys (');
@@ -461,46 +483,91 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     expect(await events()).toEqual([]);
   });
 
-  it('throws AuditWriteFailed with fixed text when the insert fails; the Neo4j change stays applied', async () => {
+  /** keysSql, except that the audit insert answers with `onInsert`. */
+  const insertting = (onInsert: () => { rows: Row[] }): RotationSql => sqlOver(async (text, params = []) =>
+    /INSERT INTO auth_credential_events/.test(text) ? onInsert() : { rows: await send('query', text, params) });
+  const RECORD = 'identity-window record-portfolio-import-scope';
+
+  it('throws AuditWriteFailed with fixed text naming the record-only command of its own action when the insert fails; the Neo4j change stays applied', async () => {
     const users = [user()];
-    const failing = { query: async () => { throw new Error('password=hunter2 connection refused'); } };
+    const failing = insertting(() => { throw new Error('password=hunter2 connection refused'); });
 
     const error = await grantPortfolioImportScope(fakeGraph(users), failing, 'p', 'alice').catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(AuditWriteFailed);
     expect((error as Error).message).toBe(
-      'portfolio-import scope grant: the change was applied but its audit row was not written; revoke and re-grant to record it');
+      `portfolio-import scope grant: the scope change is applied but its audit row was not written; record it with: ${RECORD} --grant --user-id <id> --operator <name>`);
     expect(JSON.stringify(error)).not.toContain('hunter2');
     expect(users[0]!.props).toMatchObject({ scopes: [SCOPE], portfolioImportScopeGrantedBy: 'alice' });
     await expect(revokePortfolioImportScope(fakeGraph(users), failing, 'p', 'alice')).rejects.toMatchObject({
       name: 'AuditWriteFailed',
-      message: 'portfolio-import scope revoke: the change was applied but its audit row was not written; grant and re-revoke to record it',
+      message: `portfolio-import scope revoke: the scope change is applied but its audit row was not written; record it with: ${RECORD} --revoke --user-id <id> --operator <name>`,
     });
     expect(users[0]!.props['scopes']).toEqual([]);
+    expect(await events()).toEqual([]);
   });
 
-  it('main exits 3 with the fixed message, naming the recovery of its own action, and prints no result when the audit table rejects the insert', async () => {
+  it('a commit that fails after the insert is also AuditWriteFailed: the row is not in the table, the Neo4j change stays', async () => {
+    const users = [user()];
+    const failingCommit: RotationSql = {
+      query: keysSql.query,
+      transaction: async callback => {
+        await send('exec', 'BEGIN');
+        try {
+          await callback(keysSql);
+        } finally {
+          await send('exec', 'ROLLBACK');
+        }
+        throw new Error('commit failed: password=hunter2');
+      },
+    };
+
+    const error = await grantPortfolioImportScope(fakeGraph(users), failingCommit, 'p', 'alice').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(AuditWriteFailed);
+    expect(JSON.stringify(error)).not.toContain('hunter2');
+    expect(users[0]!.props['scopes']).toEqual([SCOPE]);
+    expect(await events()).toEqual([]);
+  });
+
+  it('main exits 3 with the fixed message naming the record-only command of its own action, and following that command appends the row without changing the scope', async () => {
     const users = [user()];
     open.mockReturnValue(storesOf(users));
-    await send('exec', 'DROP TABLE auth_credential_events');
+    const recorded: Array<[string, string]> = [];
+    for (const [command, scopes] of [
+      ['grant-portfolio-import-scope', [SCOPE]],
+      ['revoke-portfolio-import-scope', []],
+    ] as const) {
+      await send('exec', 'DROP TABLE auth_credential_events');
 
-    const granted = await run(['grant-portfolio-import-scope', '--user-id', 'p', '--operator', 'alice']);
+      const failed = await run([command, '--user-id', 'p', '--operator', 'alice']);
 
-    expect([granted.code, granted.out]).toEqual([3, []]);
-    expect(granted.err).toEqual(['identity-window: portfolio-import scope grant: the change was applied but its audit row was not written; revoke and re-grant to record it']);
-    expect(users[0]!.props['scopes']).toEqual([SCOPE]);
+      const action = command === 'grant-portfolio-import-scope' ? 'grant' : 'revoke';
+      expect([failed.code, failed.out]).toEqual([3, []]);
+      expect(failed.err).toEqual([`identity-window: portfolio-import scope ${action}: the scope change is applied but its audit row was not written; record it with: ${RECORD} --${action} --user-id <id> --operator <name>`]);
+      expect(users[0]!.props['scopes']).toEqual(scopes);
+      expect(await send('query', `SELECT to_regclass('public.auth_credential_events')::text AS t`)).toEqual([{ t: null }]);
 
-    const revoked = await run(['revoke-portfolio-import-scope', '--user-id', 'p', '--operator', 'alice']);
+      // The operator follows the printed text once the audit store is writable again.
+      await resetEvents();
+      const [, printed] = /identity-window (record-portfolio-import-scope --(?:grant|revoke)) --user-id <id> --operator <name>$/.exec(failed.err[0]!)!;
+      const [recordCommand, flag] = printed!.split(' ') as [string, string];
+      const before = JSON.stringify(users);
+      const record = await run([recordCommand, flag, '--user-id', 'p', '--operator', 'alice']);
 
-    expect([revoked.code, revoked.out]).toEqual([3, []]);
-    expect(revoked.err).toEqual(['identity-window: portfolio-import scope revoke: the change was applied but its audit row was not written; grant and re-revoke to record it']);
-    expect(users[0]!.props['scopes']).toEqual([]);
-    expect(await send('query', `SELECT to_regclass('public.auth_credential_events')::text AS t`)).toEqual([{ t: null }]);
+      expect(record.code).toBe(0);
+      expect(JSON.stringify(users)).toBe(before);
+      recorded.push(...(await events()).map(r => [String(r['event']), String(r['actor'])] as [string, string]));
+    }
+    expect(recorded).toEqual([
+      ['portfolio_import_scope_granted', 'window-script:alice'],
+      ['portfolio_import_scope_revoked', 'window-script:alice'],
+    ]);
   });
 
   it('main does not claim the audit row was not written when the insert succeeded and shaping its result fails', async () => {
     const users = [user()];
-    open.mockReturnValue({ ...storesOf(users), sql: { query: async () => ({ rows: [null as never] }) } });
+    open.mockReturnValue({ ...storesOf(users), sql: insertting(() => ({ rows: [null as never] })) });
 
     const { code, out, err } = await run(['grant-portfolio-import-scope', '--user-id', 'p', '--operator', 'alice']);
 
@@ -545,9 +612,9 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a right-to-left override (format character)', 'ali\u202ece'],
     ['a zero-width space (format character)', 'ali\u200bce'],
   ])('main refuses an --operator with %s before any store opens, without echoing it', async (_label, operator) => {
-    for (const command of ['grant-portfolio-import-scope', 'revoke-portfolio-import-scope']) {
+    for (const command of ['grant-portfolio-import-scope', 'revoke-portfolio-import-scope', 'record-portfolio-import-scope']) {
       open.mockReturnValue(storesOf([user()]));
-      const { code, out, err } = await run([command, '--user-id', 'p', '--operator', operator]);
+      const { code, out, err } = await run([command, ...(command.startsWith('record') ? ['--grant'] : []), '--user-id', 'p', '--operator', operator]);
 
       expect([code, out, err]).toEqual([1, [], ['identity-window: --operator must be 1-200 printable characters']]);
       expect(open).not.toHaveBeenCalled();
@@ -562,6 +629,168 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
       await expect(send('exec', statement)).rejects.toMatchObject({ code: '55000' });
     }
     expect(await events()).toHaveLength(1);
+  });
+
+  // HAP-2129: record-only recovery and the per-user lock.
+  const RECORD_CMD = 'record-portfolio-import-scope';
+  /** The graph with every read and write counted, and optionally logged in `log`. */
+  const counted = (inner: RotationGraph, log: string[] = []) => {
+    const calls = { reads: 0, writes: 0 };
+    const graph: RotationGraph = {
+      read: async (cypher, params) => { calls.reads++; log.push('neo4j-read'); return inner.read(cypher, params); },
+      write: async (cypher, params) => { calls.writes++; log.push('neo4j-write'); return inner.write(cypher, params); },
+    };
+    return { calls, graph };
+  };
+
+  it.each([
+    ['--grant', [SCOPE], 'portfolio_import_scope_granted', 'granted'],
+    ['--revoke', [], 'portfolio_import_scope_revoked', 'revoked'],
+  ] as const)('%s record-only appends exactly one row for the applied change and makes zero Neo4j writes', async (flag, scopes, event, outcome) => {
+    const users = [user({ scopes: [...scopes] })];
+    const { calls, graph } = counted(fakeGraph(users));
+    open.mockReturnValue({ ...storesOf(users), graph });
+    const before = JSON.stringify(users);
+
+    const { code, out, err } = await run([RECORD_CMD, flag, '--user-id', 'p', '--operator', '  carol  ']);
+
+    const rows = await events();
+    expect([code, err]).toEqual([0, []]);
+    expect(rows.map(r => [r['event'], r['user_id'], r['actor']])).toEqual([[event, 'p', 'window-script:carol']]);
+    expect(JSON.parse(out[0]!)).toEqual({ userId: 'p', outcome, operator: 'carol', occurredAt: rows[0]!['occurred_text'], eventId: rows[0]!['id'], recordOnly: true });
+    expect(calls.reads).toBeGreaterThan(0);
+    expect(calls.writes).toBe(0);
+    expect(JSON.stringify(users)).toBe(before);
+  });
+
+  it.each([
+    ['--grant', 'the user does not hold portfolio:import', []],
+    ['--revoke', 'the user still holds portfolio:import', [SCOPE]],
+  ] as const)('%s record-only refuses when %s: exit 2, no row, no Neo4j write', async (flag, _why, scopes) => {
+    const users = [user({ scopes: [...scopes] })];
+    const { calls, graph } = counted(fakeGraph(users));
+    open.mockReturnValue({ ...storesOf(users), graph });
+
+    const { code, out, err } = await run([RECORD_CMD, flag, '--user-id', 'p', '--operator', 'carol']);
+
+    expect([code, out, err]).toEqual([2, [], ['identity-window: portfolio-import scope record refused: scope_state_mismatch']]);
+    expect(await events()).toEqual([]);
+    expect(calls.writes).toBe(0);
+    expect(users[0]!.props['scopes']).toEqual(scopes);
+  });
+
+  it('record-only applies the identity refusals of grant and revoke: no row for an unknown, ambiguous, seeded, flagged or malformed user', async () => {
+    const twin = [{ elementId: '4:a', props: { _id: 'x' } }, { elementId: '4:b', props: { id: 'x' } }];
+    const cases: Array<[string, Node[], string, string]> = [
+      ['unknown', [], 'p', 'unknown_identity'], ['ambiguous', twin, 'x', 'ambiguous_identity'],
+      ['seeded', [user({ scopes: [SCOPE], seedProvenance: 'pre-cutover-inventory' })], 'p', 'seeded_account'],
+      ['flagged', [user({ scopes: [SCOPE], defaultPasswordSuspect: true })], 'p', 'seeded_account'],
+      ['non-list scopes', [user({ scopes: SCOPE })], 'p', 'unsupported_value'],
+    ];
+    for (const [, users, id, reason] of cases) {
+      for (const grant of [true, false]) {
+        await expect(recordPortfolioImportScope(fakeGraph(users), keysSql, id, 'carol', grant)).rejects.toMatchObject({ name: 'GrantRefused', reason });
+      }
+    }
+    expect(await events()).toEqual([]);
+  });
+
+  it('record-only needs exactly one of --grant and --revoke, refused before any store opens', async () => {
+    for (const flags of [[], ['--grant', '--revoke']]) {
+      open.mockReturnValue(storesOf([user({ scopes: [SCOPE] })]));
+
+      const { code, out, err } = await run([RECORD_CMD, ...flags, '--user-id', 'p', '--operator', 'carol']);
+
+      expect([code, out, err]).toEqual([1, [], ['identity-window: exactly one of --grant or --revoke is required']]);
+      expect(open).not.toHaveBeenCalled();
+    }
+    expect(await events()).toEqual([]);
+  });
+
+  it('record-only that cannot write its row exits 1 with fixed text, never 3, and changed nothing', async () => {
+    const users = [user({ scopes: [SCOPE] })];
+    const before = JSON.stringify(users);
+    const { calls, graph } = counted(fakeGraph(users));
+    open.mockReturnValue({ ...storesOf(users), graph, sql: insertting(() => { throw new Error('password=hunter2 connection refused'); }) });
+
+    const { code, out, err } = await run([RECORD_CMD, '--grant', '--user-id', 'p', '--operator', 'carol']);
+
+    expect([code, out]).toEqual([1, []]);
+    expect(err).toEqual(['identity-window: portfolio-import scope record: the audit row was not written and nothing else was changed; run the same command again']);
+    expect(calls.writes).toBe(0);
+    expect(JSON.stringify(users)).toBe(before);
+    expect(await events()).toEqual([]);
+  });
+
+  it.each([
+    ['grant-portfolio-import-scope', [], 'portfolio-import scope grant'],
+    ['revoke-portfolio-import-scope', [], 'portfolio-import scope revoke'],
+    [RECORD_CMD, ['--grant'], 'portfolio-import scope record'],
+  ] as const)('%s refuses before any Neo4j access when PostgreSQL cannot be reached or refuses the lock, without echoing the cause', async (command, extra, action) => {
+    const unreachable: RotationSql = { query: keysSql.query, transaction: async () => { throw new Error('connect ECONNREFUSED 10.0.0.5:5432 password=hunter2'); } };
+    const refusesLock = sqlOver(async () => { throw new Error('canceling statement due to lock timeout password=hunter2'); });
+    for (const sql of [unreachable, refusesLock]) {
+      const users = [user({ scopes: command === RECORD_CMD ? [SCOPE] : [] })];
+      const before = JSON.stringify(users);
+      const { calls, graph } = counted(fakeGraph(users));
+      open.mockReturnValue({ ...storesOf(users), graph, sql });
+
+      const { code, out, err } = await run([command, ...extra, '--user-id', 'p', '--operator', 'carol']);
+
+      expect([code, out]).toEqual([1, []]);
+      expect(err).toEqual([`identity-window: ${action} refused: PostgreSQL is unavailable, so the per-user lock could not be taken; nothing was changed`]);
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+      expect(JSON.stringify(users)).toBe(before);
+    }
+    expect(await events()).toEqual([]);
+  });
+
+  it.each([
+    ['grant', (graph: RotationGraph, sql: RotationSql) => grantPortfolioImportScope(graph, sql, 'p', 'carol'), []],
+    ['revoke', (graph: RotationGraph, sql: RotationSql) => revokePortfolioImportScope(graph, sql, 'p', 'carol'), [SCOPE]],
+    ['record', (graph: RotationGraph, sql: RotationSql) => recordPortfolioImportScope(graph, sql, 'p', 'carol', true), [SCOPE]],
+  ] as const)('%s takes the user lock before the first Neo4j access and holds it, in one transaction, until after the audit insert', async (_name, act, scopes) => {
+    const log: string[] = [];
+    const { graph } = counted(fakeGraph([user({ scopes: [...scopes] })]), log);
+    const logged: RotationSql = {
+      query: keysSql.query,
+      transaction: callback => {
+        log.push('begin');
+        return keysSql.transaction(async tx => {
+          const result = await callback({
+            query: (text, params) => {
+              log.push(/pg_advisory_xact_lock/.test(text) ? `lock:${String(params?.[0])}` : /INSERT INTO auth_credential_events/.test(text) ? 'insert' : 'sql');
+              return tx.query(text, params);
+            },
+          });
+          log.push('commit');
+          return result;
+        });
+      },
+    };
+
+    await act(graph, logged);
+
+    expect(log.slice(0, 2)).toEqual(['begin', 'lock:p']);
+    expect(log.slice(-2)).toEqual(['insert', 'commit']);
+    expect(log.slice(2, -2).every(entry => entry.startsWith('neo4j-'))).toBe(true);
+    expect(log.slice(2, -2).length).toBeGreaterThan(0);
+  });
+
+  it('a node stored under both _id and id is locked under both spellings, so a run by the other spelling queues behind it', async () => {
+    const log: string[] = [];
+    const users = [user({ id: 'alias' })];
+    const logged: RotationSql = sqlOver(async (text, params = []) => {
+      if (/pg_advisory_xact_lock/.test(text)) log.push(`lock:${String(params[0])}`);
+      return { rows: await send('query', text, params) };
+    });
+
+    const granted = await grantPortfolioImportScope(fakeGraph(users), logged, 'alias', 'carol');
+    await revokePortfolioImportScope(fakeGraph(users), logged, 'p', 'carol');
+
+    expect(granted).toMatchObject({ userId: 'p', outcome: 'granted' });
+    expect(log).toEqual(['lock:alias', 'lock:p', 'lock:p']);
+    expect((await events()).map(r => r['user_id'])).toEqual(['p', 'p']);
   });
 });
 

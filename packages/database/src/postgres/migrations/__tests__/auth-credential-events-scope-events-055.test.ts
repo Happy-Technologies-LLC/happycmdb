@@ -51,11 +51,15 @@ const rest = async () => [
   await exec(`SELECT tgname FROM pg_trigger WHERE tgrelid = 'auth_credential_events'::regclass AND NOT tgisinternal ORDER BY tgname`),
 ];
 const SCOPE_EVENTS = ['portfolio_import_scope_granted', 'portfolio_import_scope_revoked'];
+const EXISTING_EVENTS = ['default_marker_set_scan', 'default_marker_set_login',
+  'password_rotation_intent', 'password_rotated_operator', 'password_rotation_not_applied'];
+const comment = async () => ((await exec(`SELECT obj_description('auth_credential_events'::regclass, 'pg_class') AS c`)) as Array<{ c: string }>)[0]!.c;
 const REFUSED = '055 down refused: auth_credential_events holds portfolio_import_scope_* rows';
 const rejectedByEventCheck = (event: string) => expect(insert(event)).rejects.toMatchObject({
   code: '23514', message: expect.stringContaining('auth_credential_events_event_check') });
 
 let before: unknown[];
+let commentBefore: string;
 
 beforeAll(async () => {
   const [{ db }] = await exec('SELECT current_database() AS db') as Array<{ db: string }>;
@@ -66,6 +70,7 @@ beforeAll(async () => {
   await up020();
   await exec(`INSERT INTO auth_credential_events (user_id, event, actor) VALUES ('legacy', 'default_marker_set_scan', 'window-script:old')`);
   before = await rest();
+  commentBefore = await comment();
 }, 30000);
 afterAll(() => host.kill());
 
@@ -78,6 +83,10 @@ it('applies over 020: the new events are rejected before it and accepted after, 
   expect(await exec('SELECT id, user_id, event, actor FROM auth_credential_events'))
     .toEqual([{ id, user_id: 'legacy', event: 'default_marker_set_scan', actor: 'window-script:old' }]);
   expect(await rest()).toEqual(before);
+  // The comment now names every event kind the table holds, including the scope events; 020's wording is gone.
+  const described = await comment();
+  for (const event of [...EXISTING_EVENTS, ...SCOPE_EVENTS]) expect(described).toContain(event);
+  expect(described).not.toBe(commentBefore);
   for (const event of SCOPE_EVENTS) await insert(event);
   expect(await exec(`SELECT event FROM auth_credential_events WHERE event LIKE 'portfolio_import_scope_%' ORDER BY event`))
     .toEqual(SCOPE_EVENTS.map(event => ({ event })));
@@ -127,6 +136,7 @@ it('with no scope row the rollback restores the narrow CHECK, keeps other rows, 
   for (const event of SCOPE_EVENTS) await rejectedByEventCheck(event);
   await insert('default_marker_set_login');
   expect(await rest()).toEqual(before);
+  expect(await comment()).toBe(commentBefore);
 
   await up();
   await record();

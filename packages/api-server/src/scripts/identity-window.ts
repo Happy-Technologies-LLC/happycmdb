@@ -118,7 +118,8 @@ INSERT INTO auth_credential_events (user_id, event, actor) VALUES ($1, 'default_
 
 /** HAP-2039: the audit row of one scope change; the event is one of SCOPE_EVENTS, never user input. */
 const SCOPE_EVENT_SQL = `
-INSERT INTO auth_credential_events (user_id, event, actor) VALUES ($1, $2, $3) RETURNING id, occurred_at`;
+INSERT INTO auth_credential_events (user_id, event, actor) VALUES ($1, $2, $3)
+RETURNING id, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS occurred_at`;
 const SCOPE_EVENTS = { granted: 'portfolio_import_scope_granted', revoked: 'portfolio_import_scope_revoked' } as const;
 /** The stored actor is `window-script:<operator>` in a VARCHAR(255). */
 const MAX_OPERATOR_LENGTH = 200;
@@ -284,8 +285,9 @@ export type ScopeChange =
 /** The Neo4j change committed and its auth_credential_events row was not written. Carries no cause: the
  * message is fixed text naming the action only, and the node properties stay as the fallback record. */
 export class AuditWriteFailed extends Error {
-  constructor(action: string) {
-    super(`${action}: the change was applied but its audit row was not written; revoke and re-grant to record it`);
+  /** The recovery names the action's own inverse pair: following it must end with the scope in the state the operator asked for. */
+  constructor(grant: boolean) {
+    super(`${grant ? GRANT_ACTION : REVOKE_ACTION}: the change was applied but its audit row was not written; ${grant ? 'revoke and re-grant' : 'grant and re-revoke'} to record it`);
     this.name = 'AuditWriteFailed';
   }
 }
@@ -307,12 +309,15 @@ async function changePortfolioImportScope(
     throw new GrantRefused('not_applied', action);
   }
   const outcome = grant ? 'granted' : 'revoked';
+  let inserted: { rows: Row[] };
   try {
-    const [event] = (await sql.query(SCOPE_EVENT_SQL, [mappedId, SCOPE_EVENTS[outcome], `window-script:${operator}`])).rows;
-    return { userId: mappedId, outcome, operator, occurredAt: new Date(event!['occurred_at'] as Date | string).toISOString(), eventId: String(event!['id']) };
+    inserted = await sql.query(SCOPE_EVENT_SQL, [mappedId, SCOPE_EVENTS[outcome], `window-script:${operator}`]);
   } catch {
-    throw new AuditWriteFailed(action);
+    throw new AuditWriteFailed(grant);
   }
+  // Shaping runs outside the try: the row is committed here, so a shaping error must not claim it was not written.
+  const [event] = inserted.rows;
+  return { userId: mappedId, outcome, operator, occurredAt: String(event!['occurred_at']), eventId: String(event!['id']) };
 }
 
 /** HAP-1632: adds `portfolio:import` to one eligible user's scopes, keeping every other entry; already held is `unchanged`. */
@@ -419,7 +424,7 @@ export async function main(
     // Scope commands only: the stored actor is `window-script:<operator>` (VARCHAR(255)), so an overlong value would
     // fail the audit insert AFTER the Neo4j change. The message never echoes the value.
     const scopeOperator = SCOPE_COMMANDS.includes(command ?? '') ? operator!.trim() : undefined;
-    if (scopeOperator !== undefined && ([...scopeOperator].length > MAX_OPERATOR_LENGTH || /[\p{Cc}\p{Zl}\p{Zp}]/u.test(scopeOperator))) {
+    if (scopeOperator !== undefined && ([...scopeOperator].length > MAX_OPERATOR_LENGTH || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(scopeOperator))) {
       throw new Error(OPERATOR_INVALID);
     }
     const assignment = command === 'assign-organization' ? assignmentArgs(argv) : undefined;

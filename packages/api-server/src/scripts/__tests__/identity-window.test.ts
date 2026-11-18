@@ -355,7 +355,9 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
   const SCOPE = 'portfolio:import';
   const user = (props: Row = {}): Node => ({ elementId: '4:p', props: { _id: 'p', _username: 'pat', _email: 'pat@example.com', ...props } });
   // Insertion order, not ORDER BY occurred_at: two statements can share a timestamp, and the table is append-only.
-  const events = () => send('query', 'SELECT id, user_id, event, actor, occurred_at, ref_event_id, target_epoch, reason, revoked_api_keys FROM auth_credential_events');
+  const events = () => send('query', `SELECT id, user_id, event, actor, occurred_at,
+    to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS occurred_text,
+    ref_event_id, target_epoch, reason, revoked_api_keys FROM auth_credential_events`);
   const storesOf = (users: Node[]) => ({ graph: fakeGraph(users), sql: keysSql, lock: { acquire: async () => undefined, release: async () => undefined }, close: async () => undefined });
   const open = operatorStores.openOperatorStores as jest.MockedFunction<typeof operatorStores.openOperatorStores>;
   const realOpen = open.getMockImplementation()!;
@@ -404,8 +406,13 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
 
     const [first, second] = await events();
     expect(Object.keys(granted)).toEqual(['userId', 'outcome', 'operator', 'occurredAt', 'eventId']);
-    expect(granted).toEqual({ userId: 'p', outcome: 'granted', operator: 'alice', occurredAt: (first!['occurred_at'] as Date).toISOString(), eventId: first!['id'] });
-    expect(revoked).toEqual({ userId: 'p', outcome: 'revoked', operator: 'alice', occurredAt: (second!['occurred_at'] as Date).toISOString(), eventId: second!['id'] });
+    expect(granted).toEqual({ userId: 'p', outcome: 'granted', operator: 'alice', occurredAt: first!['occurred_text'], eventId: first!['id'] });
+    expect(revoked).toEqual({ userId: 'p', outcome: 'revoked', operator: 'alice', occurredAt: second!['occurred_text'], eventId: second!['id'] });
+    // Full precision: the printed value selects exactly its own row.
+    for (const [printed, row] of [[granted, first], [revoked, second]] as const) {
+      expect(await send('query', 'SELECT id FROM auth_credential_events WHERE occurred_at = $1', [(printed as { occurredAt: string }).occurredAt]))
+        .toEqual([{ id: row!['id'] }]);
+    }
   });
 
   it('writes no row, and prints nothing more than the id and outcome, when the scope is already as asked', async () => {
@@ -467,22 +474,39 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     expect(users[0]!.props).toMatchObject({ scopes: [SCOPE], portfolioImportScopeGrantedBy: 'alice' });
     await expect(revokePortfolioImportScope(fakeGraph(users), failing, 'p', 'alice')).rejects.toMatchObject({
       name: 'AuditWriteFailed',
-      message: 'portfolio-import scope revoke: the change was applied but its audit row was not written; revoke and re-grant to record it',
+      message: 'portfolio-import scope revoke: the change was applied but its audit row was not written; grant and re-revoke to record it',
     });
     expect(users[0]!.props['scopes']).toEqual([]);
   });
 
-  it('main exits 3 with the fixed message and prints no result when the audit table rejects the insert', async () => {
+  it('main exits 3 with the fixed message, naming the recovery of its own action, and prints no result when the audit table rejects the insert', async () => {
     const users = [user()];
     open.mockReturnValue(storesOf(users));
     await send('exec', 'DROP TABLE auth_credential_events');
 
+    const granted = await run(['grant-portfolio-import-scope', '--user-id', 'p', '--operator', 'alice']);
+
+    expect([granted.code, granted.out]).toEqual([3, []]);
+    expect(granted.err).toEqual(['identity-window: portfolio-import scope grant: the change was applied but its audit row was not written; revoke and re-grant to record it']);
+    expect(users[0]!.props['scopes']).toEqual([SCOPE]);
+
+    const revoked = await run(['revoke-portfolio-import-scope', '--user-id', 'p', '--operator', 'alice']);
+
+    expect([revoked.code, revoked.out]).toEqual([3, []]);
+    expect(revoked.err).toEqual(['identity-window: portfolio-import scope revoke: the change was applied but its audit row was not written; grant and re-revoke to record it']);
+    expect(users[0]!.props['scopes']).toEqual([]);
+    expect(await send('query', `SELECT to_regclass('public.auth_credential_events')::text AS t`)).toEqual([{ t: null }]);
+  });
+
+  it('main does not claim the audit row was not written when the insert succeeded and shaping its result fails', async () => {
+    const users = [user()];
+    open.mockReturnValue({ ...storesOf(users), sql: { query: async () => ({ rows: [null as never] }) } });
+
     const { code, out, err } = await run(['grant-portfolio-import-scope', '--user-id', 'p', '--operator', 'alice']);
 
-    expect([code, out]).toEqual([3, []]);
-    expect(err).toEqual(['identity-window: portfolio-import scope grant: the change was applied but its audit row was not written; revoke and re-grant to record it']);
-    expect(users[0]!.props['scopes']).toEqual([SCOPE]);
-    expect(await send('query', `SELECT to_regclass('public.auth_credential_events')::text AS t`)).toEqual([{ t: null }]);
+    expect([code, out]).toEqual([1, []]);
+    expect(err).toHaveLength(1);
+    expect(err[0]).not.toContain('audit row was not written');
   });
 
   it('main stores the trimmed operator, prints the result line, and accepts exactly 200 characters', async () => {
@@ -495,7 +519,7 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
 
     const [first, second] = await events();
     expect(granted.code).toBe(0);
-    expect(JSON.parse(granted.out[0]!)).toEqual({ userId: 'p', outcome: 'granted', operator: 'alice', occurredAt: (first!['occurred_at'] as Date).toISOString(), eventId: first!['id'] });
+    expect(JSON.parse(granted.out[0]!)).toEqual({ userId: 'p', outcome: 'granted', operator: 'alice', occurredAt: first!['occurred_text'], eventId: first!['id'] });
     expect(first!['actor']).toBe('window-script:alice');
     expect(users[0]!.props['portfolioImportScopeGrantedBy']).toBe('alice');
     expect(revoked.code).toBe(0);
@@ -518,6 +542,8 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a DEL', 'ali\u007fce'],
     ['a C1 control', 'ali\u0085ce'],
     ['a line separator', 'ali\u2028ce'],
+    ['a right-to-left override (format character)', 'ali\u202ece'],
+    ['a zero-width space (format character)', 'ali\u200bce'],
   ])('main refuses an --operator with %s before any store opens, without echoing it', async (_label, operator) => {
     for (const command of ['grant-portfolio-import-scope', 'revoke-portfolio-import-scope']) {
       open.mockReturnValue(storesOf([user()]));

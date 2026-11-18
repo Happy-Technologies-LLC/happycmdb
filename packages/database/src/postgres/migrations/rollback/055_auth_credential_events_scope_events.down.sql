@@ -32,6 +32,8 @@ ALTER TABLE public.auth_credential_events
   ADD CONSTRAINT auth_credential_events_event_check CHECK (event IN (
     'default_marker_set_scan', 'default_marker_set_login',
     'password_rotation_intent', 'password_rotated_operator', 'password_rotation_not_applied'));
+COMMENT ON TABLE public.auth_credential_events IS
+  'HP1-S6 append-only credential lifecycle audit: default-password marker transitions and operator rotations (intent, then one outcome derived from the Neo4j decision node).';
 DELETE FROM cmdb.schema_migrations
  WHERE migration_name = '055_auth_credential_events_scope_events.sql';
 

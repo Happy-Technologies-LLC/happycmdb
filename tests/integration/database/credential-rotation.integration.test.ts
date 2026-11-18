@@ -1145,14 +1145,20 @@ describe('HAP-1632: portfolio:import scope grant and revoke compare-and-set on N
 
     // HAP-2039: each change left one append-only row on the real table; the printed line names it.
     const rows = (await pool.query(
-      "SELECT id, event, actor, occurred_at FROM auth_credential_events WHERE user_id = $1 AND event LIKE 'portfolio_import_scope_%' ORDER BY occurred_at, id", [ID])).rows;
+      `SELECT id, event, actor, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS occurred_text
+       FROM auth_credential_events WHERE user_id = $1 AND event LIKE 'portfolio_import_scope_%' ORDER BY occurred_at, id`, [ID])).rows;
     expect(rows.map(row => [row.event, row.actor])).toEqual([
       ['portfolio_import_scope_granted', 'window-script:ci'], ['portfolio_import_scope_revoked', 'window-script:ci'],
     ]);
     expect([granted, revoked].map(result => JSON.parse(result.out[0]!))).toEqual([
-      { userId: ID, outcome: 'granted', operator: 'ci', occurredAt: rows[0].occurred_at.toISOString(), eventId: rows[0].id },
-      { userId: ID, outcome: 'revoked', operator: 'ci', occurredAt: rows[1].occurred_at.toISOString(), eventId: rows[1].id },
+      { userId: ID, outcome: 'granted', operator: 'ci', occurredAt: rows[0].occurred_text, eventId: rows[0].id },
+      { userId: ID, outcome: 'revoked', operator: 'ci', occurredAt: rows[1].occurred_text, eventId: rows[1].id },
     ]);
+    // The printed time is the row's full-precision occurred_at: it selects that row.
+    for (const printed of [granted, revoked].map(result => JSON.parse(result.out[0]!))) {
+      expect((await pool.query('SELECT id FROM auth_credential_events WHERE occurred_at = $1', [printed.occurredAt])).rows)
+        .toEqual([{ id: printed.eventId }]);
+    }
 
     // USER (the suite fixture) carries the default-password marker.
     expect(await run('grant-portfolio-import-scope', USER)).toEqual({

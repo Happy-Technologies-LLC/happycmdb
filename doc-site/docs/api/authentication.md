@@ -207,14 +207,14 @@ a repeat is `unchanged`, prints `{"userId": "<id>", "outcome": "unchanged"}` and
 `revoked` change appends one row to the append-only `auth_credential_events` table (event
 `portfolio_import_scope_granted` / `portfolio_import_scope_revoked`, actor `window-script:<operator>`). `eventId` is
 that row's `id` (its primary key: look the row up by it); `occurredAt` is that row's `occurred_at` at full microsecond
-precision (`2026-11-18T09:30:00.123456Z`), so `WHERE occurred_at = '<occurredAt>'` matches it too. The history of every
-grant and revoke is kept. The node
+precision (`2026-11-18T09:30:00.123456Z`), so `WHERE occurred_at = '<occurredAt>'` matches it too. Every grant
+and revoke leaves a row (a change whose row failed is recovered with the record command below). The node
 properties `portfolioImportScopeGrantedBy/At` and `portfolioImportScopeRevokedBy/At` remain only as the latest-state
-cache; each new change overwrites them. Read the history with:
+cache; each new change overwrites them. Read the confirmed history (ambiguous rows excluded, see below) with:
 
 ```sql
 SELECT id, occurred_at, event, user_id, actor FROM auth_credential_events
-WHERE event LIKE 'portfolio_import_scope_%' ORDER BY occurred_at;
+WHERE event LIKE 'portfolio_import_scope_%' AND actor NOT LIKE 'window-script-ambiguous:%' ORDER BY occurred_at;
 ```
 
 The scope change in Neo4j is made first and the audit row second; the two stores cannot share a transaction. If the
@@ -255,15 +255,21 @@ the record is the actor, and the row's time is the time of the record, not of th
 writes, it reads the live scope and refuses, with exit 2
 (`GrantRefused`, `scope_state_mismatch`) and no row, unless the state matches the action: `--grant` only while the
 user holds `portfolio:import`, `--revoke` only while the user does not. It applies the identity refusals of grant and
-revoke below, and prints the same JSON line as a change, with `"recordOnly": true` and `"alreadyRecorded"`. The record
-is idempotent: under the lock it appends nothing when the user's latest scope row (any actor) is already a recovery
-row of the same event and is not older than the node's own marker of that change (`portfolioImportScopeGrantedAt`
-for `--grant`, `portfolioImportScopeRevokedAt` for `--revoke`), and prints that row with `"alreadyRecorded": true`
-(its `operator` is the earlier row's), so a retry after an ambiguous commit adds no duplicate. A later grant or
-revoke, real or recovered, makes the next record of the same event append again, and so does a later change whose
-recovery was skipped: it re-stamps the marker after the earlier recovery row, so the earlier row no longer covers
-it. The marker is Neo4j's clock and the row is PostgreSQL's: a skew can only make the marker look newer than a row
-that does cover it, which appends one extra recovery row, never hides a change. If the record's own insert fails it exits 1
+revoke below, and prints the same JSON line as a change, with `"recordOnly": true` and `"alreadyRecorded"`.
+
+Every grant and revoke writes a fresh operation id (a UUID) on the user node in the same statement as the scope change
+(`portfolioImportScopeGrantedOpId` / `portfolioImportScopeRevokedOpId`). The record reads the id of the change it
+records (`--grant` reads the granted id, `--revoke` the revoked id) and stores it as the last 33 characters of the
+recovery row's actor: `window-script-record:<operator>#<32 hex digits>`. The record is idempotent on that id alone:
+under the lock it appends nothing when a recovery row of the same event already carries the node's current id, and
+prints that row with `"alreadyRecorded": true` (its `operator` is the earlier row's), so a retry after an ambiguous
+commit adds no duplicate. Every later grant or revoke writes a new id, so a recovery row of an earlier operation never
+covers a later change, whether or not that change was recorded in between: a change whose recovery was skipped gets its
+own row on the next record. No clock of either store is compared. A node whose marker predates the id (granted or
+revoked by an older build) has none: its record always appends a row with no suffix, so a retry of such a record can
+append a second row, but a change is never left without a row. The invariant assumes every grant and revoke is made by
+a build that writes the id: an older build's change leaves the previous id on the node, and a record after it could be
+absorbed by that id's row, so do not run an older build's grant or revoke against a user the newer build has changed. If the record's own insert fails it exits 1
 (`the audit row was not written and nothing else was changed`); run the same command again. An error while shaping the
 printed result after the row was written exits 1, never 3. To list only the recovery rows:
 `WHERE event LIKE 'portfolio_import_scope_%' AND actor LIKE 'window-script-record:%'`.
@@ -272,8 +278,9 @@ printed result after the row was written exits 1, never 3. To list only the reco
 target user id, `pg_advisory_xact_lock(2129, hashtext(<user id>))`, as the first statement of the transaction that
 also holds the audit insert. It is held across the Neo4j read, the Neo4j change and the audit insert, and released at
 commit or rollback, so two runs on one user queue: the second reads the user only after the first has finished, and a
-user's audit rows, ordered by `occurred_at` (the time of the insert, not of the transaction's start), are in the order
-of the Neo4j changes. Different users do not wait for each other. The two-integer form with class 2129 is a different
+user's real change rows (actor `window-script:`), ordered by `occurred_at` (the time of the insert, not of the
+transaction's start), are in the order of the Neo4j changes. Recovery and ambiguous rows are not: a recovery row is
+dated when it is recorded, an ambiguous row may stand for a write that was refused or lands later. Different users do not wait for each other. The two-integer form with class 2129 is a different
 key space from every other advisory lock in the application (one-bigint keys, and the two-integer class 8271), so no
 existing lock is taken or blocked by a user id; a hash collision of two ids only makes their runs wait for each other.
 The lock wait is **unbounded**: there is no `lock_timeout`, and the Neo4j reads made while the lock is held have no

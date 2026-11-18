@@ -27,8 +27,9 @@
  * - `record-portfolio-import-scope --grant|--revoke` (HAP-2129): writes the audit row of a scope change that is
  *   already applied in Neo4j (the exit-3 recovery) and makes no Neo4j write; it refuses unless the live scope list
  *   matches the action being recorded.
- *   HAP-2136: an earlier recovery row of the same event absorbs a record only while it is not older than the node's own
- *   grantedAt/revokedAt marker; a Neo4j write error whose outcome is unknown (state unchanged or unreadable on re-read)
+ *   HAP-2136: every grant/revoke writes a fresh operation id on the node with the change, and a recovery row (which
+ *   stores that id) absorbs a record only on an exact id match (no clock is compared; a node without an id never
+ *   matches). A Neo4j write error whose outcome is unknown (state unchanged or unreadable on re-read)
  *   leaves a `window-script-ambiguous:<operator>` row and exits 1; exit-1 text is redacted (redactSecrets).
  * - `assign-organization`: sets the first organization (FD-5) of one such user
  *   that is not a platform admin and has none or a non-UUID one; never reassigns.
@@ -38,6 +39,7 @@
 
 import * as bcrypt from 'bcrypt';
 import neo4j from 'neo4j-driver';
+import { randomUUID } from 'crypto';
 
 import { DEFAULT_PLAINTEXTS } from '../auth/default-credentials';
 import { isSeededAccount } from '../auth/platform-admin';
@@ -151,25 +153,29 @@ const SCOPE_EVENTS = { granted: 'portfolio_import_scope_granted', revoked: 'port
 const ACTOR_PREFIX = 'window-script:';
 const RECORD_ACTOR_PREFIX = 'window-script-record:';
 const AMBIGUOUS_ACTOR_PREFIX = 'window-script-ambiguous:';
+/** HAP-2136: a scope change writes a fresh operation id (a UUID, 32 hex digits) on the node together with the change.
+ * The id is the only thing a recovery row is matched on; no clock of either store is compared. The recovery row stores
+ * it as the last OPERATION_SUFFIX_LENGTH characters of its actor (auth_credential_events has no spare column and this
+ * change adds no migration): 21 + 200 + 33 <= 255. */
+const OPERATION_ID_RE = /^[0-9a-f]{32}$/;
+const OPERATION_SUFFIX_MARK = '#';
+const OPERATION_SUFFIX_LENGTH = OPERATION_SUFFIX_MARK.length + 32;
+const OPERATION_SUFFIX_RE = /#[0-9a-f]{32}$/;
 /**
- * HAP-2131: the record-only insert. One statement, run under the per-user lock: it appends the recovery row unless the
- * user's latest scope row (any actor) is already a recovery row of this same event, in which case it appends nothing and
- * returns that row. So a retry after an ambiguous commit adds no duplicate. `inserted` tells the two apart.
- * HAP-2136: that earlier recovery row covers this record only when it is not older than the node's own marker of the
- * requested change ($4, epoch milliseconds of portfolioImportScopeGrantedAt / RevokedAt, null when absent). A later
- * grant/revoke cycle whose recovery was skipped re-stamps the marker after the earlier row, so it is not covered and
- * its own row is appended. A clock skew can only make the marker look newer than a row that does cover it, which
- * appends one extra, distinguishable recovery row; it never hides a change.
+ * HAP-2131: the record-only insert. One statement, run under the per-user lock: it appends the recovery row unless a
+ * recovery row of this event already carries the operation id `$4` (the id the node's marker of the requested change
+ * holds), in which case it appends nothing and returns that row. So a retry after an ambiguous commit adds no duplicate.
+ * HAP-2136: the match is the exact operation id and nothing else. A null `$4` (a node whose marker predates the id)
+ * matches nothing, so the record appends its own row. Every later change writes a new id, so a recovery row of an
+ * earlier operation never covers it. The invariant holds without any clock; the cost is that a record of a legacy
+ * marker, or a retry after an ambiguous commit of one, may append a second row, never fewer rows than changes.
  */
 const RECORD_EVENT_SQL = `
-WITH latest AS (
-  SELECT id, event, actor, occurred_at FROM auth_credential_events
-  WHERE user_id = $1 AND event IN ('${SCOPE_EVENTS.granted}', '${SCOPE_EVENTS.revoked}')
-  ORDER BY occurred_at DESC, id DESC LIMIT 1
-), existing AS (
-  SELECT id, actor, occurred_at FROM latest
-  WHERE event = $2 AND actor LIKE '${RECORD_ACTOR_PREFIX}%'
-    AND ($4::double precision IS NULL OR occurred_at >= to_timestamp($4::double precision / 1000))
+WITH existing AS (
+  SELECT id, actor, occurred_at FROM auth_credential_events
+  WHERE user_id = $1 AND event = $2 AND actor LIKE '${RECORD_ACTOR_PREFIX}%'
+    AND $4::text IS NOT NULL AND right(actor, ${OPERATION_SUFFIX_LENGTH}) = '${OPERATION_SUFFIX_MARK}' || $4::text
+  ORDER BY occurred_at, id LIMIT 1
 ), inserted AS (
   INSERT INTO auth_credential_events (user_id, event, actor, occurred_at)
   SELECT $1, $2, $3, clock_timestamp() WHERE NOT EXISTS (SELECT 1 FROM existing)
@@ -178,10 +184,10 @@ WITH latest AS (
 SELECT id, actor, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS occurred_at, true AS inserted FROM inserted
 UNION ALL
 SELECT id, actor, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS occurred_at, false AS inserted FROM existing`;
-/** HAP-2136: the node's own record of its latest scope changes, read by element id; the epoch is null while absent. */
+/** HAP-2136: the operation ids the node's latest grant and revoke carry, read by element id; null while absent. */
 export const SCOPE_MARKERS_CYPHER = `
 MATCH (u:User) WHERE elementId(u) = $eid
-RETURN u.portfolioImportScopeGrantedAt.epochMillis AS grantedMs, u.portfolioImportScopeRevokedAt.epochMillis AS revokedMs`;
+RETURN u.portfolioImportScopeGrantedOpId AS grantedOp, u.portfolioImportScopeRevokedOpId AS revokedOp`;
 const MAX_OPERATOR_LENGTH = 200;
 const OPERATOR_INVALID = '--operator must be 1-200 printable characters';
 
@@ -317,7 +323,8 @@ WHERE (u._id = $id OR u.id = $id)
   AND u.seedProvenance IS NULL
   AND NOT (coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaultPasswordSuspect, false))
   AND coalesce(u.scopes, []) = $observed
-SET u.scopes = $scopes, u.portfolioImportScopeGrantedBy = $operator, u.portfolioImportScopeGrantedAt = datetime()
+SET u.scopes = $scopes, u.portfolioImportScopeGrantedBy = $operator, u.portfolioImportScopeGrantedAt = datetime(),
+    u.portfolioImportScopeGrantedOpId = $operationId
 RETURN count(u) AS n`;
 
 export const REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER = `
@@ -328,7 +335,8 @@ WHERE (u._id = $id OR u.id = $id)
   AND u.seedProvenance IS NULL
   AND NOT (coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaultPasswordSuspect, false))
   AND coalesce(u.scopes, []) = $observed
-SET u.scopes = $scopes, u.portfolioImportScopeRevokedBy = $operator, u.portfolioImportScopeRevokedAt = datetime()
+SET u.scopes = $scopes, u.portfolioImportScopeRevokedBy = $operator, u.portfolioImportScopeRevokedAt = datetime(),
+    u.portfolioImportScopeRevokedOpId = $operationId
 RETURN count(u) AS n`;
 
 /** The stored scope list as the guarded write must see it: absent is empty; anything but a list of strings is refused. */
@@ -448,12 +456,24 @@ async function insertAmbiguousEvent(tx: RotationSqlQuery, mappedId: string, outc
   return { userId: mappedId, outcome, rows: (await tx.query(SCOPE_EVENT_SQL, [mappedId, SCOPE_EVENTS[outcome], `${AMBIGUOUS_ACTOR_PREFIX}${operator}`])).rows };
 }
 
-/** HAP-2131: the recovery row of an applied change, or the earlier recovery row that already covers it (`inserted` false).
- * `markerMs` is the node's own marker of this change (HAP-2136), null when the node has none. */
+/** HAP-2136: the operation id as the node stores it (a UUID without dashes), or null for an absent or foreign value. */
+function operationIdOf(value: unknown): string | null {
+  return typeof value === 'string' && OPERATION_ID_RE.test(value) ? value : null;
+}
+
+/** The operator a recovery row's actor names: the actor without its prefix and without the operation-id suffix. */
+function recordOperator(actor: string): string {
+  const named = actor.slice(RECORD_ACTOR_PREFIX.length);
+  return OPERATION_SUFFIX_RE.test(named) ? named.slice(0, -OPERATION_SUFFIX_LENGTH) : named;
+}
+
+/** HAP-2131: the recovery row of an applied change, or the earlier recovery row of the very same operation
+ * (`inserted` false). `operationId` is the one the node's marker carries (HAP-2136), null when it carries none. */
 async function insertRecordEvent(
-  tx: RotationSqlQuery, mappedId: string, outcome: 'granted' | 'revoked', operator: string, markerMs: number | null
+  tx: RotationSqlQuery, mappedId: string, outcome: 'granted' | 'revoked', operator: string, operationId: string | null
 ): Promise<ScopeEventRow> {
-  return { userId: mappedId, outcome, rows: (await tx.query(RECORD_EVENT_SQL, [mappedId, SCOPE_EVENTS[outcome], `${RECORD_ACTOR_PREFIX}${operator}`, markerMs])).rows };
+  const actor = `${RECORD_ACTOR_PREFIX}${operator}${operationId === null ? '' : `${OPERATION_SUFFIX_MARK}${operationId}`}`;
+  return { userId: mappedId, outcome, rows: (await tx.query(RECORD_EVENT_SQL, [mappedId, SCOPE_EVENTS[outcome], actor, operationId])).rows };
 }
 
 /** Shaping of the committed row; it runs after the transaction, so an error here never claims the row was not written. */
@@ -493,7 +513,7 @@ async function changePortfolioImportScope(
       try {
         [written] = await graph.write(
           grant ? GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER : REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER,
-          { eid: row['eid'], id: userId, observed, scopes, operator }
+          { eid: row['eid'], id: userId, observed, scopes, operator, operationId: randomUUID().replace(/-/g, '') }
         );
       } catch (error) {
         // HAP-2131: the write errored on the client, but Neo4j may have committed it (the lost-acknowledgement case).
@@ -559,18 +579,18 @@ export async function recordPortfolioImportScope(
       if (observedScopes(row, RECORD_ACTION).includes(PORTFOLIO_IMPORT_SCOPE) !== grant) {
         throw new GrantRefused('scope_state_mismatch', RECORD_ACTION);
       }
-      // HAP-2136: the node's marker of the change being recorded; an earlier recovery row covers this record only if
-      // it is not older than that marker. An unreadable marker fails the command before any row is written.
+      // HAP-2136: the id of the operation that wrote the node's marker of this change; the only key a recovery row is
+      // matched on. A node without one (written before this id existed) is never matched: its record appends a row.
       const [markers] = await graph.read(SCOPE_MARKERS_CYPHER, { eid: row['eid'] });
-      const marker = markers?.[grant ? 'grantedMs' : 'revokedMs'];
+      const operationId = operationIdOf(markers?.[grant ? 'grantedOp' : 'revokedOp']);
       attempted = true;
-      return insertRecordEvent(tx, mappedId, grant ? 'granted' : 'revoked', operator, marker === null || marker === undefined ? null : toNumber(marker));
+      return insertRecordEvent(tx, mappedId, grant ? 'granted' : 'revoked', operator, operationId);
     });
   } catch (error) {
     throw attempted ? new RecordWriteFailed() : error;
   }
   const [row] = event.rows;
-  return { ...shapeEvent(event, String(row!['actor']).slice(RECORD_ACTOR_PREFIX.length)), recordOnly: true, alreadyRecorded: row!['inserted'] === false };
+  return { ...shapeEvent(event, recordOperator(String(row!['actor']))), recordOnly: true, alreadyRecorded: row!['inserted'] === false };
 }
 
 /** FD-5: assigns a user's first organization; the same one again is `unchanged` with no write. */
@@ -704,8 +724,9 @@ export async function main(
     if (SCOPE_COMMANDS.includes(command ?? '') && flagValues(argv, '--user-id')[0] === undefined) {
       throw new Error('--user-id <id> is required');
     }
-    // Scope commands only: the stored actor is `window-script:<operator>` or `window-script-record:<operator>`
-    // (VARCHAR(255)), so an overlong value would fail the audit insert AFTER the Neo4j change. The message never echoes the value.
+    // Scope commands only: the stored actor is `window-script:<operator>`, `window-script-record:<operator>` plus the
+    // 33-character operation suffix, or `window-script-ambiguous:<operator>` (VARCHAR(255)), so an overlong value would
+    // fail the audit insert AFTER the Neo4j change. The message never echoes the value.
     const scopeOperator = SCOPE_COMMANDS.includes(command ?? '') ? operator!.trim() : undefined;
     if (scopeOperator !== undefined && ([...scopeOperator].length > MAX_OPERATOR_LENGTH || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(scopeOperator))) {
       throw new Error(OPERATOR_INVALID);

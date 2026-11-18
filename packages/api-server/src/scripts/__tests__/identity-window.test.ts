@@ -140,9 +140,8 @@ function fakeGraph(users: Node[]): RotationGraph {
         return [{ holders: neo4j.int(users.filter(u => keys.includes(u.props['_id']) || keys.includes(u.props['id'])).length) }];
       }
       if (q === norm(SCOPE_MARKERS_CYPHER)) {
-        const ms = (value: unknown) => (value instanceof Date ? neo4j.int(value.getTime()) : null);
         return users.filter(u => u.elementId === params['eid']).map(u => ({
-          grantedMs: ms(u.props['portfolioImportScopeGrantedAt']), revokedMs: ms(u.props['portfolioImportScopeRevokedAt']),
+          grantedOp: u.props['portfolioImportScopeGrantedOpId'] ?? null, revokedOp: u.props['portfolioImportScopeRevokedOpId'] ?? null,
         }));
       }
       if (q === norm(SCAN_USERS_CYPHER)) {
@@ -243,8 +242,8 @@ describe('portfolio-import scope grant and revoke (HAP-1632)', () => {
 
     await expect(grantPortfolioImportScope(fakeGraph(users), keysSql, 'p', 'nick')).resolves.toMatchObject({ userId: 'p', outcome: 'granted' });
     expect(users[0]!.props).toMatchObject({ scopes: [SCOPE], portfolioImportScopeGrantedBy: 'nick', _role: 'operator', platformAdmin: false });
-    expect(Object.keys(users[0]!.props).sort()).toEqual(
-      ['_email', '_id', '_role', '_username', 'platformAdmin', 'portfolioImportScopeGrantedAt', 'portfolioImportScopeGrantedBy', 'scopes']);
+    expect(Object.keys(users[0]!.props).sort()).toEqual(['_email', '_id', '_role', '_username', 'platformAdmin',
+      'portfolioImportScopeGrantedAt', 'portfolioImportScopeGrantedBy', 'portfolioImportScopeGrantedOpId', 'scopes']);
   });
 
   it('keeps the other scopes, is idempotent without a second write, and never duplicates the scope', async () => {
@@ -383,9 +382,12 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
   const SCOPE = 'portfolio:import';
   const user = (props: Row = {}): Node => ({ elementId: '4:p', props: { _id: 'p', _username: 'pat', _email: 'pat@example.com', ...props } });
   // Insertion order, not ORDER BY occurred_at: two statements can share a timestamp, and the table is append-only.
-  const events = () => send('query', `SELECT id, user_id, event, actor, occurred_at,
+  // The actor of a recovery row ends in `#<operation id>`; `actor` is the stored one without it, `operationId` the id.
+  const events = async () => (await send('query', `SELECT id, user_id, event, actor, occurred_at,
     to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS occurred_text,
-    ref_event_id, target_epoch, reason, revoked_api_keys FROM auth_credential_events`);
+    ref_event_id, target_epoch, reason, revoked_api_keys FROM auth_credential_events`)).map(row => ({
+    ...row, actor: String(row['actor']).replace(/#[0-9a-f]{32}$/, ''), operationId: /#([0-9a-f]{32})$/.exec(String(row['actor']))?.[1] ?? null,
+  }));
   const storesOf = (users: Node[]) => ({ graph: fakeGraph(users), sql: keysSql, lock: { acquire: async () => undefined, release: async () => undefined }, close: async () => undefined });
   const open = operatorStores.openOperatorStores as jest.MockedFunction<typeof operatorStores.openOperatorStores>;
   const realOpen = open.getMockImplementation()!;
@@ -916,28 +918,51 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     expect(await rowsOf()).toEqual([['portfolio_import_scope_granted', AMBIGUOUS_ACTOR], ['portfolio_import_scope_granted', RECORD_ACTOR]]);
   });
 
-  // HAP-2136 F1: an earlier recovery row of the same event covers a record only while no later change re-stamped the node.
-  it('a skipped recovery between two records of one event does not let the earlier recovery row absorb the second', async () => {
+  // HAP-2136 M1: whether a recovery row covers a record is decided by the operation id alone, never by a clock. The
+  // skew moves the Neo4j timestamp of each change 5 s behind, level with, or 5 s ahead of this host's clock (PostgreSQL's).
+  const skewed = (users: Node[], skewMs: number): RotationGraph => {
+    const inner = fakeGraph(users);
+    return {
+      read: inner.read,
+      write: async (cypher, params) => {
+        const result = await inner.write(cypher, params);
+        users.find(n => n.elementId === params['eid'])!.props[cypher.includes('GrantedAt') ? 'portfolioImportScopeGrantedAt' : 'portfolioImportScopeRevokedAt'] = new Date(Date.now() + skewMs);
+        return result;
+      },
+    };
+  };
+  it.each([[-5000], [0], [5000]])('a skipped recovery between two records of one event is not absorbed by the earlier recovery row, with the Neo4j clock %i ms off', async skewMs => {
     const users = [user()];
     const failing = insertting(() => { throw new Error('down'); });
-    open.mockReturnValue(storesOf(users));
+    const graph = skewed(users, skewMs);
+    open.mockReturnValue({ ...storesOf(users), graph });
     const record = (flag: string) => run([RECORD_CMD, flag, '--user-id', 'p', '--operator', 'alice']);
-    const pause = () => new Promise(resolve => setTimeout(resolve, 15));
+    const exit3 = (change: typeof grantPortfolioImportScope) => expect(change(graph, failing, 'p', 'alice')).rejects.toBeInstanceOf(AuditWriteFailed);
 
-    await grantPortfolioImportScope(fakeGraph(users), failing, 'p', 'alice').catch(() => undefined); // exit 3
-    await pause();
+    await exit3(grantPortfolioImportScope);
     const first = await record('--grant');
-    await pause();
-    await revokePortfolioImportScope(fakeGraph(users), failing, 'p', 'alice').catch(() => undefined); // exit 3, recovery skipped
-    await pause();
-    await grantPortfolioImportScope(fakeGraph(users), failing, 'p', 'alice').catch(() => undefined); // exit 3
-    await pause();
+    await exit3(revokePortfolioImportScope); // recovery skipped
+    await exit3(grantPortfolioImportScope);
     const second = await record('--grant');
     const retry = await record('--grant');
 
-    expect([first, second, retry].map(r => JSON.parse(r.out[0]!).alreadyRecorded)).toEqual([false, false, true]);
+    expect([first, second, retry].map(r => [r.code, JSON.parse(r.out[0]!).alreadyRecorded])).toEqual([[0, false], [0, false], [0, true]]);
     expect(await rowsOf()).toEqual([['portfolio_import_scope_granted', RECORD_ACTOR], ['portfolio_import_scope_granted', RECORD_ACTOR]]);
-    expect(JSON.parse(retry.out[0]!).eventId).toBe((await events())[1]!['id']);
+    const rows = await events();
+    expect(rows[0]!['operationId']).toMatch(/^[0-9a-f]{32}$/);
+    expect(rows[1]!['operationId']).toBe(users[0]!.props['portfolioImportScopeGrantedOpId']);
+    expect(rows[1]!['operationId']).not.toBe(rows[0]!['operationId']);
+    expect(JSON.parse(retry.out[0]!).eventId).toBe(rows[1]!['id']);
+  });
+
+  it('a node whose marker has no operation id is never absorbed: each record appends its own row, without a suffix', async () => {
+    const users = [user({ scopes: [SCOPE] })];
+    open.mockReturnValue(storesOf(users));
+
+    const results = [await run([RECORD_CMD, '--grant', '--user-id', 'p', '--operator', 'alice']), await run([RECORD_CMD, '--grant', '--user-id', 'p', '--operator', 'alice'])];
+
+    expect(results.map(r => JSON.parse(r.out[0]!).alreadyRecorded)).toEqual([false, false]);
+    expect((await events()).map(r => [r['actor'], r['operationId']])).toEqual([[RECORD_ACTOR, null], [RECORD_ACTOR, null]]);
   });
 
   // HAP-2136 F3

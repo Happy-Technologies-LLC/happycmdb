@@ -162,6 +162,16 @@ describe('GET /cis/{id}/stored-properties (HAP-797)', () => {
     expect([...observed].map(String).sort()).toEqual(declared('/cis/{id}/stored-properties', 'get'));
     expect(operation('/cis/{id}/stored-properties', 'get').description).toMatch(/Admin role only/);
   });
+
+  it('is admin only: unauthenticated is 401, an operator, a viewer and an org-less admin are each 403 and never reach the read; admin passes the gate', async () => {
+    const getProperties = jest.fn(async () => ({ name: 'ci' }));
+    mockScenario.properties = getProperties;
+    expect(await Promise.all([null, 'operator', 'viewer', 'noOrg'].map(user => storedProperties(user).then(res => res.status)))).toEqual([401, 403, 403, 403]);
+    expect(getProperties).not.toHaveBeenCalled();
+    const admin = await storedProperties('admin');
+    expect([admin.status, admin.body]).toEqual([200, { success: true, data: { id: 'ci-1', properties: enc({ name: 'ci' }) } }]);
+    expect(getProperties).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('estate feeds and dashboard health', () => {

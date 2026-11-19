@@ -708,18 +708,29 @@ const REDACTED = '***';
  * (`DB_URL.postgres://`, `_postgres://`, `x_postgres://`) is still found; it is the whole run that is printed back, only
  * its userinfo is replaced.
  * A scheme token whose "userinfo" (the text between `://` and the `@` the pass stops at) itself starts with a secret-named
- * key and `=` or `:` (`x_a://api_key=abc@def`, `.a://password=p@ss`, `postgres://password=p@ss`, `x_a://token="a@b c"`) is
- * not userinfo: the scheme pass leaves it, and the key pass masks the value like any key=value (to whitespace, `,`, `;`
- * or `&`, quoted values included), so the text after the raw `@` is not printed (`x_a://api_key=***`). This
- * over-redacts the host of `https://token:pw@host` (a user named like a key), which is the ambiguous case.
+ * key and `=` or `:` (`x_a://api_key=abc@def`, `.a://password=p@ss`, `postgres://password=p@ss`, `x_a://token="a@b c"`,
+ * `postgres://app_secret:pa;ss@db`) is a key=value as much as userinfo: the scheme pass prints the scheme and the key
+ * head (`api_key=`) and masks the rest of the userinfo through the `@` it stopped at, whatever `,`, `;`, `&` or quote it
+ * holds, so no byte that was masked as userinfo is printed. The key pass then masks the text after the `@` as the key's
+ * value (to whitespace, `,`, `;` or `&`; a value that opened with a quote reads to its closing quote), so the host is
+ * not printed either (`x_a://api_key=***`, `postgres://app_secret:***`). This over-redacts the host of
+ * `https://token:pw@host` (a user named like a key), which is the ambiguous case.
  * The passes run in this order on purpose: the Basic value is replaced before the key pass, because a key pass first
  * would consume `Authorization:` as the value of an earlier key (`password: Authorization: Basic abc`) and leave `abc`.
  * Not covered: `Authorization=Basic%20...` (URL-encoded).
  */
 export function redactSecrets(text: string): string {
   return text
-    .replace(SCHEME_USERINFO, (match: string, prefix: string, userinfo: string) =>
-      SECRET_KEY_HEAD.test(userinfo) ? match : `${prefix}${REDACTED}@`)
+    .replace(SCHEME_USERINFO, (_match: string, prefix: string, userinfo: string) => {
+      const head = SECRET_KEY_HEAD.exec(userinfo)?.[0];
+      if (head === undefined) {
+        return `${prefix}${REDACTED}@`;
+      }
+      // Everything up to the `@` is consumed here, never handed to the key pass's `[^\s,;&]` stop set. A value that opens
+      // with a quote keeps that quote so the key pass reads the rest of the quoted value (`"a@b c"`) as one value.
+      const quote = userinfo.charAt(head.length);
+      return `${prefix}${head}${quote === '"' || quote === "'" ? quote : ''}${REDACTED}`;
+    })
     .replace(/\bBearer\s+[^\s,;]+/gi, `Bearer ${REDACTED}`)
     .replace(/(\bauthorization["']?\s*[=:]\s*["']?basic\s+)[^\s,;"']+/gi, `$1${REDACTED}`)
     .replace(SECRET_KEY_VALUE, `$1${REDACTED}`);

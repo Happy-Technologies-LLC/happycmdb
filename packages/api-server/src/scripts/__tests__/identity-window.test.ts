@@ -1061,7 +1061,14 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a key=value with a raw at sign after a dot scheme', '.a://password=p@ss', '.a://password=***'],
     ['a quoted key=value with an at sign and a space', 'x_a://token="a@b c"', 'x_a://token=***'],
     ['a key=value with a raw at sign after a word scheme', 'postgres://password=p@ss', 'postgres://password=***'],
-    ['a key=value with a raw at sign and a following parameter', 'x_a://api_key=abc@def&other=1', 'x_a://api_key=***&other=1'],
+    ['a key=value with a parameter after the at sign', 'x_a://api_key=abc@def&other=1', 'x_a://api_key=***&other=1'],
+    ['a glued key=value with an ampersand before the at sign', 'x_a://api_key=abc&other=1@def', 'x_a://api_key=***'],
+    ['a key user with a semicolon in the password', 'postgres://app_secret:pa;ss@db:5432/x', 'postgres://app_secret:***'],
+    ['a key user with a comma in the password', 'postgres://token_user:pa,ss@db/x', 'postgres://token_user:***'],
+    ['a key user with an ampersand in the password', 'redis://apikey:a&b@cache:6379', 'redis://apikey:***'],
+    ['a key=value with an ampersand before the at sign', 'postgres://password=p&ss@host', 'postgres://password=***'],
+    ['a key user with a slash and a semicolon in the password', 'x://token:p/w;q@host', 'x://token:***'],
+    ['a key user with text after a quoted password', 'postgres://pwd:"a"bc@db', 'postgres://pwd:***'],
     ['a key with a colon in a glued scheme', 'x_a://secret:s3@cret failed', 'x_a://secret:*** failed'],
     ['a user named like a key is over-redacted with its host', 'https://token:pw@h/x', 'https://token:***'],
     ['plain user:pass userinfo after a glued scheme', 'x_a://user:pass@host', 'x_a://***@host'],
@@ -1150,6 +1157,11 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
       ['"Vq9x@Tz4l w3"', ['Vq9x', 'Tz4l', 'w3']],
       ["'Vq9x@Tz4l w3'", ['Vq9x', 'Tz4l', 'w3']],
       ['Vq9x@Tz4l@Uy8k', ['Vq9x', 'Tz4l', 'Uy8k']],
+      ['Vq9x&Tz4l@Uy8k', ['Vq9x', 'Tz4l', 'Uy8k']],
+      ['Vq9x,Tz4l@Uy8k', ['Vq9x', 'Tz4l', 'Uy8k']],
+      ['Vq9x;Tz4l@Uy8k', ['Vq9x', 'Tz4l', 'Uy8k']],
+      ['"Vq9x"Tz4l@Uy8k', ['Vq9x', 'Tz4l', 'Uy8k']],
+      ["'Vq9x'Tz4l@Uy8k", ['Vq9x', 'Tz4l', 'Uy8k']],
     ];
     let redactedBefore = 0;
     for (const prefix of prefixes) {

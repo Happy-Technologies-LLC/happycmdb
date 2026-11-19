@@ -88,6 +88,8 @@ services:
       # HAP-1562: the API is the NOSUPERUSER, non-owner app login (app-login below); rollback: deploy/BUILD01-STAGING.md.
       POSTGRES_USER: ${POSTGRES_APP_USER:-cmdb_app}
       POSTGRES_PASSWORD: ${POSTGRES_APP_PASSWORD:?POSTGRES_APP_PASSWORD is required}
+      # HAP-1575: "true" makes the API refuse to start on a superuser/BYPASSRLS login; keep false while the rollback login is in use.
+      REQUIRE_NON_SUPERUSER_DB: ${REQUIRE_NON_SUPERUSER_DB:-false}
       POSTGRES_SSL_ENABLED: "off"
       POSTGRES_SSL_MODE: disable
       REDIS_HOST: redis

@@ -13,7 +13,8 @@ export { ReconciliationController } from './rest/controllers/reconciliation.cont
 // Start server when executed as main module
 import { RestAPIServer, listenTargetFromEnv } from './rest/server';
 import { logger } from '@cmdb/common';
-import { startJournalSweeper } from '@cmdb/database';
+import { getPostgresClient, startJournalSweeper } from '@cmdb/database';
+import { checkDbRole } from './db-role-guard';
 import { getDiscoveryOrchestrator, startAISyncC4 } from '@cmdb/discovery-engine';
 import { getAnomalyDetectionEngine } from '@cmdb/ai-ml-engine';
 import { loadConnectorsAtStartup } from './utils/connector-loader';
@@ -25,6 +26,10 @@ const { port: PORT, host: HOST } = listenTargetFromEnv(process.env);
 async function startServer() {
   try {
     logger.info('Starting HappyCMDB API Server', { port: PORT, host: HOST });
+
+    // HAP-1575: flag (or, with REQUIRE_NON_SUPERUSER_DB=true, refuse) a superuser/BYPASSRLS login before any
+    // startup write or listen.
+    await checkDbRole(getPostgresClient().pool);
 
     // Load built-in connectors into database
     logger.info('Loading built-in connectors...');

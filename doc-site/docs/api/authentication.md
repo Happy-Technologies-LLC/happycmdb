@@ -288,10 +288,16 @@ timeout (each Neo4j write transaction is bounded at 30 seconds), so a stalled ru
 same user until it ends or its PostgreSQL session is terminated. This is acceptable for an interactive operator command;
 stop the stalled process. A holder stalled in a Neo4j read is idle in its transaction, so `pg_cancel_backend` does
 nothing to it; if the lock must be freed from the database side, run `pg_terminate_backend` on the `pid` of the
-`pg_locks` row of that user's lock: `locktype = 'advisory'`, `classid = 2129`, `objsubid = 2`, `granted` and
+`pg_locks` row of that user's lock: `locktype = 'advisory'`, `classid = 2129`, `objsubid = 2`, `granted`,
+`database = (SELECT oid FROM pg_database WHERE datname = current_database())` and
 `objid = (hashtext('<user id>')::bigint & 4294967295)::oid` (the `--user-id` value of the stalled run, as the run passes
 it to `pg_advisory_xact_lock(2129, hashtext(...))`). Without the `objid` term the filter also selects the lock of every other user's
-concurrent run, and terminating that `pid` stops the wrong run. The lock is then released and a waiting run
+concurrent run, and terminating that `pid` stops the wrong run. The `granted` term alone does not tell the holder from a
+waiting run: a run that came in by another spelling of the same node holds a granted lock on its own argument too (it
+takes the argument's lock first and the resolved id's lock second), so that filter can return the waiter's `pid`. Add
+the proof that the lock is the one being waited for: `EXISTS (SELECT 1 FROM pg_locks w WHERE w.locktype = 'advisory' AND
+w.classid = 2129 AND w.objsubid = 2 AND w.database = l.database AND w.objid = l.objid AND NOT w.granted)`, with `l` the
+alias of the filtered row. The waiter's own granted lock fails it (nothing waits on that id); the stalled run's passes. The lock is then released and a waiting run
 proceeds, but the terminated process is still alive and can reach its Neo4j write. That write is guarded by
 `coalesce(u.scopes, []) = $observed`, so it changes nothing when the waiting run changed the scopes first: the stalled
 run exits 2 (`refused: not_applied`). If the write still applies (the scopes were unchanged), its audit insert fails on

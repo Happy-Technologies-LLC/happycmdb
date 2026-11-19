@@ -1042,6 +1042,14 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a scheme led by a digit and a dot', 'x 1.postgres://u:p@h/db failed', 'x 1.postgres://***@h/db failed'],
     ['a scheme led by a digit then letters', '2x-postgres://u:p@h/db failed', '2x-postgres://***@h/db failed'],
     ['a scheme after a colon and a dash', 'error:-postgres://u:p@h failed', 'error:-postgres://***@h failed'],
+    // Review of #415 (F1, N2): an underscore earlier in the run must not hide a scheme that follows `.`, `-` or `+`.
+    ['a scheme after an underscored word and a dot', 'DB_URL.postgres://u:p@h failed', 'DB_URL.postgres://***@h failed'],
+    ['a scheme after an underscored word, a dot and a port', 'my_app.redis://:pw@h:6379 failed', 'my_app.redis://***@h:6379 failed'],
+    ['a scheme after an underscored word and a dash', 'foo_bar-postgres://u:p@h/db failed', 'foo_bar-postgres://***@h/db failed'],
+    ['a scheme after an underscored word and a plus', 'app_v2+postgres://u:p@h failed', 'app_v2+postgres://***@h failed'],
+    ['a scheme after an underscore', 'x_postgres://u:p@h failed', 'x_postgres://***@h failed'],
+    ['a scheme led by an underscore', '_postgres://u:p@h failed', '_postgres://***@h failed'],
+    ['a scheme led by an underscore and a dash', '-_postgres://u:p@h failed', '-_postgres://***@h failed'],
     // Follow-up to HAP-2136 / #407 (L2): a key-looking token inside, or around, the Basic credentials.
     ['a key after Basic credentials', 'Authorization: Basic abc password=x', 'Authorization: Basic *** password=***'],
     ['a key as the Basic credentials', 'Authorization: Basic password=x', 'Authorization: Basic ***'],
@@ -1076,6 +1084,10 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a repeated key with a long suffix', 'password_'.repeat(4500)],
     ['a repeated key and equals signs', 'password=x'.repeat(4000)],
     ['repeated empty-username schemes', 'a://:'.repeat(8000)],
+    ['underscores between letters', 'a_'.repeat(100000)],
+    ['underscores between dots', 'a._'.repeat(70000)],
+    ['underscores between dashes', '_-a://:'.repeat(30000)],
+    ['dotted digits between underscores', '1_.'.repeat(70000)],
     ['a long input without a scheme', 'a.'.repeat(100000)],
     ['a long run of leading punctuation', '.-+'.repeat(70000)],
     ['dotted digits then a scheme', `${'1.'.repeat(70000)}x://u:p@h`],
@@ -1083,6 +1095,31 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     const started = performance.now();
     redactSecrets(input);
     expect(performance.now() - started).toBeLessThan(250);
+  });
+
+  // Review of #415 (F1): nothing the scheme pass redacted before #407 (`\b` + scheme + userinfo) may leak now. The
+  // reference is that pass, kept here only to generate the expectation; the cases are prefixes x schemes x userinfo.
+  it('redactSecrets leaves no userinfo where the pre-#407 scheme pass redacted it', () => {
+    const before = (text: string): string => text.replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/]*@/gi, '$1***@');
+    const prefixes = ['', ' ', '(', '"', 'x', 'x_', '_', 'DB_URL.', 'my_app.', 'foo_bar-', 'app_v2+', '1_', '1.', '-', '.', '+',
+      'a.b-c+', '_.', '_-', '-_', 'é', 'url=', 'error:', 'é-', 'A_B.C-'];
+    const schemes = ['postgres', 'redis', 'HTTPS', 'a', 'x.y', 'a-b', 'a+b', 'a1', 'amqp'];
+    const userinfos = ['u:p@h', ':pw@h:6379', 'user@h', 'a:b:c@h/x'];
+    let redactedBefore = 0;
+    for (const prefix of prefixes) {
+      for (const scheme of schemes) {
+        for (const userinfo of userinfos) {
+          const input = `${prefix}${scheme}://${userinfo}`;
+          if (before(input) === input) {
+            continue;
+          }
+          redactedBefore++;
+          const secret = userinfo.slice(0, userinfo.indexOf('@'));
+          expect({ input, output: redactSecrets(input) }).toEqual({ input, output: expect.not.stringContaining(`://${secret}@`) });
+        }
+      }
+    }
+    expect(redactedBefore).toBeGreaterThan(500);
   });
 
   // HAP-2136 F4

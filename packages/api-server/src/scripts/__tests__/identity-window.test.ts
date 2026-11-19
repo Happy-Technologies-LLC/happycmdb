@@ -1401,3 +1401,85 @@ describe('fakeGraph SET evaluation', () => {
     expect(() => applySet(node, 'MATCH (u:User) SET u.e = TRUE RETURN count(u) AS n', {})).toThrow(/cannot evaluate/);
   });
 });
+
+// Review of #415 (F1): the pg_locks recipe in the operator doc, executed as written. pg_locks cannot be populated
+// (PGlite has one session, so no run can wait), so a TEMP table named pg_locks shadows the catalog view for the
+// session (pg_temp is searched first); the doc's SQL text is run unchanged but for its two id placeholders.
+describe('identity-window doc: pg_locks recipe for a stalled run', () => {
+  const DOC = join(__dirname, '../../../../../doc-site/docs/api/authentication.md');
+  const recipe = (): string => {
+    const blocks = [...readFileSync(DOC, 'utf8').matchAll(/```sql\n([\s\S]*?)```/g)].map(m => m[1]!).filter(b => b.includes('pg_locks l'));
+    expect(blocks).toHaveLength(1);
+    return blocks[0]!.trim().replace(/;$/, '');
+  };
+  const addLock = (pid: number, userId: string, granted: boolean) =>
+    send('query',
+      `INSERT INTO pg_temp.pg_locks (locktype, database, classid, objid, objsubid, pid, granted)
+       VALUES ('advisory', (SELECT oid FROM pg_database WHERE datname = current_database()), 2129,
+               (hashtext($1)::bigint & 4294967295)::oid, 2, $2, $3)`,
+      [userId, pid, granted]);
+  /** The pids the doc's recipe returns for the two ids the operator supplies. */
+  const pids = async (userId: string, resolvedId: string): Promise<number[]> =>
+    (await send('query', recipe().replace('<user id>', userId).replace('<resolved id>', resolvedId)))
+      .map(row => Number(row['pid'])).sort((x, y) => x - y);
+
+  beforeAll(async () => {
+    await send('exec', `CREATE TEMP TABLE pg_locks (locktype text, database oid, classid oid, objid oid, objsubid smallint, pid int, granted boolean)`);
+  });
+  beforeEach(() => send('exec', 'TRUNCATE pg_temp.pg_locks'));
+  afterAll(() => send('exec', 'DROP TABLE IF EXISTS pg_temp.pg_locks'));
+
+  // The holder is pid 100, a waiter is pid 200. `a` and `m` are the two spellings of one node (a run takes the
+  // argument's lock, then the resolved id's lock when that differs).
+  it('selects the holder that came in by the mapped spelling while the waiter came in by the other (A)', async () => {
+    await addLock(100, 'm', true);
+    await addLock(200, 'a', true);
+    await addLock(200, 'm', false);
+    expect(await pids('m', 'm')).toEqual([100]);
+    expect(await pids('m', 'a')).toEqual([100]);
+  });
+
+  it('selects the holder that came in by the other spelling and holds both locks while the waiter waits on the mapped one (B)', async () => {
+    await addLock(100, 'a', true);
+    await addLock(100, 'm', true);
+    await addLock(200, 'm', false);
+    expect(await pids('a', 'm')).toEqual([100]);
+  });
+
+  it('selects the holder that holds both locks while the waiter waits on the same spelling it came in by (B\')', async () => {
+    await addLock(100, 'a', true);
+    await addLock(100, 'm', true);
+    await addLock(200, 'a', false);
+    expect(await pids('a', 'm')).toEqual([100]);
+  });
+
+  it('selects the head of the queue, not a waiter that holds the first lock another run queues behind (C)', async () => {
+    await addLock(100, 'm', true);
+    await addLock(200, 'a', true);
+    await addLock(200, 'm', false);
+    await addLock(300, 'a', false);
+    expect(await pids('a', 'm')).toEqual([100]);
+  });
+
+  it('selects nothing for a waiter whose own lock nobody waits on', async () => {
+    await addLock(100, 'm', true);
+    await addLock(200, 'a', true);
+    await addLock(200, 'm', false);
+    expect(await pids('a', 'a')).toEqual([]);
+  });
+
+  it('selects nothing for ids that are not the stalled run\'s, and does not take another user\'s stall', async () => {
+    await addLock(100, 'm', true);
+    await addLock(200, 'm', false);
+    await addLock(500, 'other', true);
+    await addLock(600, 'other', false);
+    expect(await pids('x', 'y')).toEqual([]);
+    expect(await pids('m', 'm')).toEqual([100]);
+    expect(await pids('other', 'other')).toEqual([500]);
+  });
+
+  it('selects nothing for a lock held with no waiter', async () => {
+    await addLock(100, 'm', true);
+    expect(await pids('m', 'a')).toEqual([]);
+  });
+});

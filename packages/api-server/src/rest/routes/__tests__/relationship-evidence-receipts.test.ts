@@ -462,6 +462,24 @@ describe('GET /relationships/evidence', () => {
         expect([res.status, res.body]).toEqual([status, body]);
         expect(JSON.stringify(res.body)).not.toContain('secret-fragment');
       });
+
+    it.each(['42P01', '42501'])('SQLSTATE %s from the CI lookup is the generic 500, not "receipts unavailable"', async (code) => {
+      const [from, to] = [seed(A), seed(A)];
+      await create('a', from, to);
+      jest.spyOn(getNeo4jClient(), 'getCI').mockRejectedValue(Object.assign(new Error(THROWN), { code }));
+      const res = await read('a', from, to);
+      expect([res.status, res.body]).toEqual([500, FAILED]);
+    });
+
+    it.each(['42P01', '42501'])('SQLSTATE %s from the count statement (the second receipt query) is still the 503', async (code) => {
+      const [from, to] = [seed(A), seed(A)];
+      await create('a', from, to);
+      const query = getPostgresClient().query.bind(getPostgresClient());
+      jest.spyOn(getPostgresClient(), 'query').mockImplementation(((text: string, params?: unknown[]) =>
+        /count\(\*\)/.test(text) ? Promise.reject(Object.assign(new Error(THROWN), { code })) : query(text, params)) as never);
+      const res = await read('a', from, to);
+      expect([res.status, res.body]).toEqual([503, UNAVAILABLE]);
+    });
   });
 });
 

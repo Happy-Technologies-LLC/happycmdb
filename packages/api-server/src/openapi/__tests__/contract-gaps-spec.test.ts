@@ -111,7 +111,14 @@ describe('POST /cis/{id}/oversized-delete (HAP-797)', () => {
       expect(await send('admin')).toBe(status);
     }
     expect([...observed].map(String).sort()).toEqual(declared('/cis/{id}/oversized-delete', 'post'));
-    expect([await recover(EVIDENCE, 'operator').then(res => res.status), operation('/cis/{id}/oversized-delete', 'post').description]).toEqual([403, expect.stringMatching(/Admin role only/)]);
+    // The role gate itself: operator and viewer are each 403 and never reach the delete; admin passes the gate.
+    const deleteCI = jest.fn(async () => true);
+    mockScenario.delete = deleteCI;
+    expect(await Promise.all(['operator', 'viewer'].map(user => recover(EVIDENCE, user).then(res => res.status)))).toEqual([403, 403]);
+    expect(deleteCI).not.toHaveBeenCalled();
+    expect((await recover(EVIDENCE, 'admin')).status).toBe(204);
+    expect(deleteCI).toHaveBeenCalledTimes(1);
+    expect(operation('/cis/{id}/oversized-delete', 'post').description).toMatch(/Admin role only/);
   });
 
   it('declares the evidence_ref bounds the route enforces: one below the minimum and one above the maximum are 400', async () => {

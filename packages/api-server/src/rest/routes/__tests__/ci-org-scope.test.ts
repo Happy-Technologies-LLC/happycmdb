@@ -1207,7 +1207,7 @@ describe('/api/v1/cis tenant scoping', () => {
       const preview = (value: unknown = predicted()) => jest.spyOn(getImpactPredictionEngine(), 'previewChangeImpact')
         .mockResolvedValue(value as never);
 
-      it('streams the impact answer for a CI of the caller as happy-ui/v1 JSON Lines, failover by default, storing nothing', async () => {
+      it('streams the impact answer for a CI of the caller as happy-ui/v1 JSON Lines, failover by default, via the preview method and without storing a prediction', async () => {
         const previewed = preview();
         const stored = jest.spyOn(getImpactPredictionEngine(), 'predictChangeImpact');
         await ciRow('ci-a-db', ORG_A);

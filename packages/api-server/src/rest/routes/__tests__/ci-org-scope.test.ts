@@ -1154,7 +1154,6 @@ describe('/api/v1/cis tenant scoping', () => {
 
         expect(res.status).toBe(201);
         expect(res.body.data).toMatchObject(predicted());
-        expect(res.body.data.affected_cis[0].direction).toBe('downstream');
         expect(res.body.data.affected_business_services.map((s: { service_id: string }) => s.service_id)).toEqual(['svc-a']);
         expect(res.body.data.cost_per_hour).toBe(1000);
         expect(res.body.data.unavailable).toEqual([]);

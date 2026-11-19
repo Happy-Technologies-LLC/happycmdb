@@ -14,7 +14,7 @@ import {
   assertNoCIGap, CIGapError, CI_GAP_RESPONSE, CIListUnavailableError, CI_LIST_UNAVAILABLE_RESPONSE, readCIList, readSingleCI,
 } from '../../read-admission';
 import { criticalTiersParam } from '../../services/critical-ci';
-import { readEstateKpis } from '../../services/estate-kpi.service';
+import { readEstateKpis, readEstateKpiHistory, recordEstateKpiSnapshot } from '../../services/estate-kpi.service';
 import { parseRecentChangesOptions, readRecentChanges } from '../../services/recent-changes.service';
 
 /** readCIList's 10 s budget plus its snapshot and recheck round trips. */
@@ -656,8 +656,19 @@ export class AnalyticsController {
 
       // BW1/BW4/BW5/BW6: definitions live in services/estate-kpi.service.ts. A figure that cannot be computed is null
       // and named in `unavailable`; it never fails the dashboard and is never a placeholder 0.
-      const totalCis = ciCountsResult.records[0]?.get('total_cis')?.toNumber() || 0;
+      const totalCis = (ciCountsResult.records[0]?.get('total_cis')?.toNumber() || 0) as number;
       const estateKpis = await readEstateKpis(session, this.postgresClient, organizationId, totalCis);
+
+      // BW7: today's snapshot, then the series and deltas. Fail-open: a history failure never fails the dashboard; it
+      // leaves `kpi_history` and `kpi_delta` null and names `kpi_history` in `unavailable`. The organization is the
+      // verified caller's (never query, header or body). A day with no dashboard read has no point (sparse series).
+      let history: Awaited<ReturnType<typeof readEstateKpiHistory>> | null = null;
+      try {
+        await recordEstateKpiSnapshot(this.postgresClient, organizationId, estateKpis, totalCis);
+        history = await readEstateKpiHistory(this.postgresClient, organizationId);
+      } catch (error) {
+        logger.warn('Estate KPI history unavailable', error);
+      }
 
       res.json({
         total_cis: totalCis,
@@ -670,7 +681,9 @@ export class AnalyticsController {
         critical_relationships: criticalRelationshipResult.records[0]?.get('critical_relationships')?.toNumber() || 0,
         open_drift_count: estateKpis.open_drift_count,
         configuration_coverage: estateKpis.configuration_coverage,
-        unavailable: estateKpis.unavailable,
+        unavailable: history === null ? [...estateKpis.unavailable, 'kpi_history'] : estateKpis.unavailable,
+        kpi_history: history?.kpi_history ?? null,
+        kpi_delta: history?.kpi_delta ?? null,
       });
     } catch (error) {
       logger.error('Error getting dashboard stats', error);

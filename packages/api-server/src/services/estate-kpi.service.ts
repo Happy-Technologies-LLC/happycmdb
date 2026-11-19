@@ -29,6 +29,20 @@
  *   system has reported it (the same notion as the impact envelope's `unreported_ci_ids`). A CI created by hand has
  *   none. Lineage is matched on organization and `ci_id` (lineage rows carry no incarnation).
  * - `ratio` is `with_owner_and_source / total`, `null` when `total` is 0 (never 0 or NaN).
+ *
+ * ## BW7: `kpi_history` and `kpi_delta`
+ * Four figures are snapshotted once per UTC day into `public.estate_kpi_snapshots` (migration 056): `health_score`,
+ * `open_drift_count`, `configuration_coverage_ratio` and `total_cis`. The writer is the dashboard read itself
+ * (`recordEstateKpiSnapshot`, `INSERT ... ON CONFLICT DO NOTHING`): the first snapshot of a day is the day's value and is
+ * never rewritten, and a figure that is null (unavailable) is not recorded, never written as 0. There is no scheduler, so
+ * a day on which nobody read the dashboard has no point: the series is the dates actually recorded (sparse), never a
+ * filled calendar, and a delta compares the two newest RECORDED days however far apart they are.
+ * `readEstateKpiHistory` returns up to the newest 10 recorded points per metric, ascending by date, and the delta
+ * (latest minus the previous recorded value, null with fewer than 2 points).
+ * Tenancy: every statement carries `WHERE organization_id = $1` AND runs in a transaction whose transaction-local
+ * `cmdb.organization_id` setting satisfies the table's row level security policy (`withOrganizationScope`). The
+ * organization is the verified caller's only; a missing setting matches no row. RLS is defence in depth: the setting is
+ * settable by any session, so it is not a sole control.
  */
 
 import neo4j, { type Session } from 'neo4j-driver';
@@ -71,6 +85,9 @@ export interface EstateKpis {
 
 type Graph = Pick<Session, 'run'>;
 type Sql = Pick<PostgresClient, 'query'>;
+/** The history needs a dedicated connection for its organization-scoped transaction. */
+type HistorySql = Pick<PostgresClient, 'getClient'>;
+type HistoryClient = Awaited<ReturnType<PostgresClient['getClient']>>;
 
 /** The figure cannot be computed (bound exceeded or no backing data); it is reported as unavailable, not as an error. */
 class EstateKpiUnavailableError extends Error {}
@@ -176,4 +193,118 @@ export async function readEstateKpis(
   const open_drift_count = await attempt('open_drift_count', () => openDriftCount(graph, sql, organizationId));
   const configuration_coverage = await attempt('configuration_coverage', () => configurationCoverage(graph, sql, organizationId));
   return { health_score, ci_health, open_drift_count, configuration_coverage, unavailable };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// BW7: daily snapshots, sparkline series and deltas
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** The closed metric list of estate_kpi_snapshots.metric (CHECK in migration 056). */
+export const KPI_HISTORY_METRICS = ['health_score', 'open_drift_count', 'configuration_coverage_ratio', 'total_cis'] as const;
+export type KpiHistoryMetric = (typeof KPI_HISTORY_METRICS)[number];
+/** Newest recorded points returned per metric. */
+export const KPI_HISTORY_POINTS = 10;
+
+export interface KpiHistoryPoint {
+  /** UTC day, YYYY-MM-DD. */
+  date: string;
+  value: number;
+}
+export type KpiHistory = Record<KpiHistoryMetric, KpiHistoryPoint[]>;
+export type KpiDelta = Record<KpiHistoryMetric, number | null>;
+
+/**
+ * Runs `work` in a transaction on its own connection with the transaction-local `cmdb.organization_id` set, the key of
+ * the row level security policy of estate_kpi_snapshots. The connection is always released (evicted when the rollback
+ * itself failed). `organizationId` must be the verified caller's.
+ */
+async function withOrganizationScope<T>(
+  pg: HistorySql, organizationId: string, work: (client: HistoryClient) => Promise<T>,
+): Promise<T> {
+  const client = await pg.getClient();
+  let broken = false;
+  try {
+    await client.query('BEGIN');
+    try {
+      await client.query("SELECT set_config('cmdb.organization_id', $1, true)", [organizationId]);
+      const result = await work(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        broken = true;
+      }
+      throw error;
+    }
+  } finally {
+    client.release(broken ? true : undefined);
+  }
+}
+
+/** The figures that are recorded: only non-null, finite, non-negative ones (a null is unknown, never 0). */
+function snapshotFigures(kpis: EstateKpis, totalCis: number): Array<[KpiHistoryMetric, number]> {
+  const figures: Array<[KpiHistoryMetric, number | null]> = [
+    ['health_score', kpis.health_score],
+    ['open_drift_count', kpis.open_drift_count],
+    ['configuration_coverage_ratio', kpis.configuration_coverage?.ratio ?? null],
+    ['total_cis', totalCis],
+  ];
+  return figures.filter((figure): figure is [KpiHistoryMetric, number] =>
+    figure[1] !== null && Number.isFinite(figure[1]) && figure[1] >= 0);
+}
+
+/**
+ * Records today's (UTC) value of each available figure for the organization. The first write of a UTC day wins
+ * (ON CONFLICT DO NOTHING): later reads the same day change nothing. Returns when the transaction committed.
+ */
+export async function recordEstateKpiSnapshot(
+  sql: HistorySql, organizationId: string, kpis: EstateKpis, totalCis: number,
+): Promise<void> {
+  const figures = snapshotFigures(kpis, totalCis);
+  if (figures.length === 0) {
+    return;
+  }
+  const snapshotDate = new Date().toISOString().slice(0, 10);
+  await withOrganizationScope(sql, organizationId, client => client.query(
+    `INSERT INTO public.estate_kpi_snapshots (organization_id, snapshot_date, metric, value)
+     SELECT $1::uuid, $2::date, f.metric, f.value FROM unnest($3::text[], $4::numeric[]) AS f(metric, value)
+     ON CONFLICT (organization_id, snapshot_date, metric) DO NOTHING`,
+    [organizationId, snapshotDate, figures.map(([metric]) => metric), figures.map(([, value]) => value)]));
+}
+
+/** Newest KPI_HISTORY_POINTS recorded rows per metric of the organization. */
+const HISTORY_SQL = `
+  SELECT to_char(s.snapshot_date, 'YYYY-MM-DD') AS date, s.metric, s.value::float8 AS value
+  FROM (
+    SELECT snapshot_date, metric, value,
+           row_number() OVER (PARTITION BY metric ORDER BY snapshot_date DESC) AS recency
+    FROM public.estate_kpi_snapshots
+    WHERE organization_id = $1::uuid
+  ) s
+  WHERE s.recency <= $2
+  ORDER BY s.metric, s.snapshot_date`;
+
+/** Float noise (87.5 - 87.3) is not a delta: round to 10 decimals. */
+const roundDelta = (delta: number): number => Math.round(delta * 1e10) / 1e10;
+
+/**
+ * Up to KPI_HISTORY_POINTS recorded points per metric, ascending by date (a metric with none is `[]`), and the delta of
+ * each metric: latest recorded value minus the previous recorded value, null with fewer than 2 points.
+ */
+export async function readEstateKpiHistory(
+  sql: HistorySql, organizationId: string,
+): Promise<{ kpi_history: KpiHistory; kpi_delta: KpiDelta }> {
+  const result = await withOrganizationScope(sql, organizationId, client =>
+    client.query(HISTORY_SQL, [organizationId, KPI_HISTORY_POINTS]));
+  const kpi_history = Object.fromEntries(KPI_HISTORY_METRICS.map(metric => [metric, [] as KpiHistoryPoint[]])) as KpiHistory;
+  for (const row of result.rows as Array<{ date: string; metric: KpiHistoryMetric; value: number }>) {
+    kpi_history[row.metric]?.push({ date: row.date, value: Number(row.value) });
+  }
+  const kpi_delta = Object.fromEntries(KPI_HISTORY_METRICS.map(metric => {
+    const points = kpi_history[metric];
+    return [metric, points.length < 2 ? null : roundDelta(points[points.length - 1].value - points[points.length - 2].value)];
+  })) as KpiDelta;
+  return { kpi_history, kpi_delta };
 }

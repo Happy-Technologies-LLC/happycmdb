@@ -216,7 +216,7 @@ compose run --rm migrator
 assert_fresh_end_state 'down + re-up'
 echo 'Disposable generation-94 upgrade and 045 rollback + re-up passed'
 
-# HAP-2126: a cmdb_app dropped and re-created by app-login (045 plus the per-table grants of 046-048 and 054, re-applied
+# HAP-2126: a cmdb_app dropped and re-created by app-login (045 plus the per-table grants of 046-048, 054 and 056, re-applied
 # because the migrator never re-runs a recorded migration) must hold exactly what it holds after a fresh migration. The
 # matrix is every privilege of cmdb_app on every relation, schema and function of public and cmdb.
 grant_matrix() {
@@ -238,10 +238,10 @@ grant_matrix() {
       FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace WHERE n.nspname IN ('public', 'cmdb')" | LC_ALL=C sort
 }
 grant_matrix > "$scratch/matrix_baseline"
-# Non-empty and carrying the five per-table grants of the app-login block, so an empty diff cannot pass.
+# Non-empty and carrying the six per-table grants of the app-login block, so an empty diff cannot pass.
 [ "$(wc -l < "$scratch/matrix_baseline")" -gt 100 ] || { echo 'cmdb_app grant matrix is unexpectedly small' >&2; exit 1; }
 for entry in service_offerings:SELECT,INSERT,UPDATE ai_sync_cursors:SELECT,INSERT,UPDATE portfolio_imports:SELECT,INSERT \
-  portfolio_import_map:SELECT,INSERT relationship_evidence_receipts:SELECT,INSERT; do
+  portfolio_import_map:SELECT,INSERT relationship_evidence_receipts:SELECT,INSERT estate_kpi_snapshots:SELECT,INSERT; do
   for privilege in SELECT INSERT UPDATE DELETE TRUNCATE REFERENCES TRIGGER; do
     expected=f
     case ",${entry#*:}," in *",$privilege,"*) expected=t ;; esac

@@ -692,8 +692,8 @@
  },
  "packages/api-server/src/rest/controllers/analytics.controller.ts": {
   "@typescript-eslint/no-explicit-any": 4,
-  "@typescript-eslint/no-unsafe-argument": 6,
-  "@typescript-eslint/no-unsafe-assignment": 21,
+  "@typescript-eslint/no-unsafe-argument": 5,
+  "@typescript-eslint/no-unsafe-assignment": 19,
   "@typescript-eslint/no-unsafe-call": 19,
   "@typescript-eslint/no-unsafe-member-access": 29,
   "@typescript-eslint/prefer-nullish-coalescing": 1,

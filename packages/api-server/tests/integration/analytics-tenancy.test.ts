@@ -126,8 +126,23 @@ it('counts critical_relationships once per own relationship with at least one ti
     expect(forA.status).toBe(200);
     expect(forA.body.critical_relationships).toBe(3);
     expect((await rest('b', '/dashboard')).body.critical_relationships).toBe(1);
-    expect(forA.body.health_score).toBeNull();
+    // BW1/BW4 on the real stores: no open incident yet, so every own CI is healthy and the score is measured, not null.
+    expect(forA.body.ci_health).toEqual({ healthy: 6, degraded: 0, critical: 0, total: 6 });
+    expect(forA.body.health_score).toBe(100);
+    expect(forA.body.unavailable ?? []).not.toContain('health_score');
+    await sql.query(`INSERT INTO itil_incidents (incident_number, title, impact, urgency, priority, affected_ci_id, status,
+        reported_by, organization_id) VALUES
+      ('INC-AT-1', 't', 'high', 'high', 1, 'analytics-crit-c1', 'in_progress', 'x', $1),
+      ('INC-AT-2', 't', 'high', 'high', 3, 'analytics-crit-n1', 'new', 'x', $1),
+      ('INC-AT-3', 't', 'high', 'high', 1, 'analytics-crit-n2', 'resolved', 'x', $1),
+      ('INC-AT-4', 't', 'high', 'high', 1, 'analytics-crit-n1', 'new', 'x', $2),
+      ('INC-AT-5', 't', 'high', 'high', 2, 'analytics-crit-bc', 'new', 'x', $2)`, [A, B]);
+    const withIncidents = await rest('a', '/dashboard');
+    expect(withIncidents.body.ci_health).toEqual({ healthy: 4, degraded: 1, critical: 1, total: 6 });
+    expect(withIncidents.body.health_score).toBe(66.7);
+    expect((await rest('b', '/dashboard')).body.ci_health).toEqual({ healthy: 2, degraded: 0, critical: 1, total: 3 });
   } finally {
+    await sql.query("DELETE FROM itil_incidents WHERE incident_number LIKE 'INC-AT-%'");
     await cypher("MATCH (ci:CI) WHERE ci.id STARTS WITH 'analytics-crit-' DETACH DELETE ci");
   }
 });

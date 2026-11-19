@@ -91,7 +91,7 @@ describe('tenant reconciliation routes', () => {
     for (const org of ['org-a', 'org-b']) {
       const response = await call(route, `${org}:viewer`);
       expect([org, response.status, response.body]).toEqual([
-        org, 403, { _error: 'Forbidden', _message: "Permission 'write' required" },
+        org, 403, expect.objectContaining({ _error: 'Forbidden', _message: "Permission 'write' required", code: 'PERMISSION_REQUIRED' }),
       ]);
     }
     expect(handler).not.toHaveBeenCalled();

@@ -3,6 +3,7 @@
 
 import axios from 'axios';
 import { attachSession } from '../lib/session';
+import type { AffectedBusinessService } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
@@ -24,6 +25,8 @@ export interface CI {
   provider?: string | null;
   ip_address?: string | string[] | null;
   tier?: string | null;
+  /** Derived by the server from open incidents (services/ci-health.ts); null: the signal is unavailable. */
+  health?: CIHealth | null;
   tags: string[];
   discovered_by?: string;
   last_discovered?: string;
@@ -43,6 +46,9 @@ export type CIType =
   | 'storage'
   | 'load-balancer'
   | 'cloud-resource';
+
+/** Derived CI health (BW1): critical = open incident of priority 1 or 2, degraded = priority 3 to 5, healthy = none. */
+export type CIHealth = 'healthy' | 'degraded' | 'critical';
 
 export type CIStatus = 'active' | 'inactive' | 'maintenance' | 'decommissioned';
 
@@ -94,8 +100,10 @@ export interface DashboardStats {
   by_status: Record<CIStatus, number>;
   by_environment: Record<Environment, number>;
   recent_discoveries: CI[];
-  /** null: unavailable (no CI health state yet, BW1); never a placeholder 0. */
+  /** Percentage of CIs with health `healthy`; null: unavailable (BW1), never a placeholder 0. */
   health_score: number | null;
+  /** CIs by derived health state; null when the signal is unavailable. Optional: older servers omit it. */
+  ci_health?: { healthy: number; degraded: number; critical: number; total: number } | null;
   /** Relationships with at least one endpoint that is a critical CI (bsm_business_criticality tier_1 or tier_2). */
   critical_relationships: number;
 }
@@ -107,6 +115,13 @@ export interface ImpactAnalysis {
   /** GET /cis/:id/impact: min(upstream + downstream count / 10, 1), a 0-1 ratio. Multiply by 100 to show a percentage. */
   impact_score: number;
   affected_environments: Environment[];
+  /** HAP-1927 BW11: business services mapped to this CI or its downstream CIs, with derived cost per hour. */
+  affected_business_services?: AffectedBusinessService[];
+  /** annual revenue / 8760 summed over the affected services that have revenue; null (listed in `unavailable`) when none does. */
+  cost_per_hour?: number | null;
+  cost_per_hour_services_priced?: number;
+  /** Fields that have no backing data on this response. */
+  unavailable?: string[];
 }
 
 export interface CreateCIRequest {

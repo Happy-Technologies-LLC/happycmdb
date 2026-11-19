@@ -492,7 +492,7 @@ describe('fail closed without an organization claim', () => {
       const req = request(app)[method as 'get'](path).set(headers);
       const res = await (body === null ? req : req.send(body));
       expect(res.status).toBe(403);
-      expect(res.body).toEqual({ _error: 'Forbidden', _message: 'Organization claim required' });
+      expect(res.body).toMatchObject({ _error: 'Forbidden', _message: 'Organization claim required', code: 'ORGANIZATION_REQUIRED' });
     }
     expect(queryCount).toBe(0);
     expect(await count('dim_business_services')).toBe(5);

@@ -261,10 +261,10 @@ describe('getDashboardStats: configuration_coverage (BW6)', () => {
 });
 
 describe('getDashboardStats: payload compatibility', () => {
-  it('keeps every earlier key and adds only open_drift_count, configuration_coverage and unavailable', async () => {
+  it('keeps every earlier key and adds only ci_health, open_drift_count, configuration_coverage and unavailable', async () => {
     const body = await dashboard();
     expect(Object.keys(body).sort()).toEqual([
-      'by_environment', 'by_status', 'by_type', 'configuration_coverage', 'critical_relationships', 'health_score',
+      'by_environment', 'by_status', 'by_type', 'ci_health', 'configuration_coverage', 'critical_relationships', 'health_score',
       'open_drift_count', 'recent_discoveries', 'total_cis', 'unavailable',
     ]);
     expect(body['health_score']).toBeNull();

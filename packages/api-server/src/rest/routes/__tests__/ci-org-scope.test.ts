@@ -32,7 +32,7 @@ import * as journalModule from '../../../../../database/src/journal/journal';
 import type { JournaledWrite } from '../../../../../database/src/journal/journal';
 import { dec } from '../../../../../database/src/journal/encoding';
 import {
-  APP_GRANTS_SQL, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql, journalReadAclSql,
+  APP_GRANTS_SQL, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql, impactBusinessTablesSql, journalReadAclSql,
   lineageReadAclSql, lineageTableSql, receiptTableSql,
 } from './fixtures/app-login';
 
@@ -434,6 +434,7 @@ beforeAll(async () => {
   // and 053 verbatim (053 is the column grant the impact envelope's lineage read depends on).
   // The derived tables and journal tables the routes also touch get table grants here; this suite does not
   // prove their privilege sets.
+  await sql(impactBusinessTablesSql()); // HAP-1927: the business-service tables the impact reads join
   await sql(`${lineageTableSql()}\n${APP_GRANTS_SQL}\n${journalReadAclSql()}\n${lineageReadAclSql()}\n`
     + `GRANT SELECT, INSERT, UPDATE, DELETE ON ${[...derivedTables, 'ci_reconciliation_operations', 'ci_reconciliation_epochs'].join(', ')} TO cmdb_user;`);
   // HAP-2030: 054 verbatim (the edge-evidence read of the impact reads; SELECT, INSERT only for the app login).
@@ -1004,6 +1005,180 @@ describe('/api/v1/cis tenant scoping', () => {
     });
   });
 
+  // HAP-1927 (BW11, BW12): affected business services, cost per hour and recommendations, organization-scoped.
+  describe('impact business context (HAP-1927)', () => {
+    const service = (id: string, org: string, criticality: string, metadata: Record<string, unknown>, lifecycle = 'live') => sql(
+      `INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower, business_criticality,
+         operational_status, lifecycle, organization_id, metadata)
+       VALUES ($1, $2, 'application', 'application', $3, 'active', $4, $5, $6::jsonb)`,
+      [id, `${id} name`, criticality, lifecycle, org, JSON.stringify(metadata)]);
+    const ciRow = (id: string, org: string) => sql(
+      `INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, is_current, organization_id)
+       VALUES ($1, $1, 'server', 'active', TRUE, $2)`, [id, org]);
+    const map = (ciId: string, serviceId: string) => sql(
+      `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type) VALUES ($1, $2, 'supports')`, [ciId, serviceId]);
+    afterEach(async () => {
+      await sql('DELETE FROM ci_business_service_mappings; DELETE FROM dim_business_services; DELETE FROM cmdb.dim_ci; '
+        + 'DELETE FROM ci_reconciliation_operations');
+    });
+    const impact = () => request(app).get('/api/v1/cis/ci-a-db/impact').set(AS_A);
+
+    it('lists the services mapped to the CI or anything downstream, sums cost per hour as revenue / 8760 rounded to cents, and keeps the pre-change members', async () => {
+      await ciRow('ci-a-db', ORG_A);
+      await ciRow('ci-a-app', ORG_A);
+      await service('svc-a', ORG_A, 'critical', { annual_revenue_supported: 8_760_000, user_count: 250 });
+      await service('svc-a-low', ORG_A, 'low', { annual_revenue_supported: '1000000' });
+      await map('ci-a-db', 'svc-a');
+      await map('ci-a-app', 'svc-a');
+      await map('ci-a-app', 'svc-a-low');
+
+      const res = await impact();
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.affected_business_services).toEqual([
+        { service_id: 'svc-a', name: 'svc-a name', business_criticality: 'critical', lifecycle: 'live', users: 250,
+          annual_revenue: 8_760_000, cost_per_hour: 1000, affected_ci_ids: ['ci-a-app', 'ci-a-db'] },
+        { service_id: 'svc-a-low', name: 'svc-a-low name', business_criticality: 'low', lifecycle: 'live', users: null,
+          annual_revenue: 1_000_000, cost_per_hour: 114.16, affected_ci_ids: ['ci-a-app'] },
+      ]);
+      expect(res.body.data.cost_per_hour).toBe(1114.16);
+      expect(res.body.data.cost_per_hour_services_priced).toBe(2);
+      expect(res.body.data.unavailable).toEqual(['affected_business_services[].users']);
+      // Backward compatible: every pre-change member keeps its value.
+      expect(res.body.data.downstream.map((ci: { id: string }) => ci.id)).toEqual(['ci-a-app']);
+      expect(res.body.data.upstream).toEqual([]);
+      expect(res.body.data.impact_score).toBe(0.1);
+      expect(res.body.totalImpacted).toBe(1);
+    });
+
+    it("never counts or returns another organization's service, even one mapped to this organization's CI", async () => {
+      await ciRow('ci-a-db', ORG_A);
+      await service('svc-a', ORG_A, 'high', { annual_revenue_supported: 8_760_000 });
+      await service('svc-b', ORG_B, 'critical', { annual_revenue_supported: 87_600_000, user_count: 9999 });
+      await map('ci-a-db', 'svc-a');
+      await map('ci-a-db', 'svc-b');
+
+      const res = await impact();
+
+      expect(res.body.data.affected_business_services.map((s: { service_id: string }) => s.service_id)).toEqual(['svc-a']);
+      expect(res.body.data.cost_per_hour).toBe(1000);
+      expect(JSON.stringify(res.body)).not.toContain('svc-b');
+    });
+
+    it("skips a mapping whose CI row belongs to another organization, so a stale cross-organization mapping is not counted", async () => {
+      await ciRow('ci-a-db', ORG_A);
+      await ciRow('ci-a-app', ORG_B); // the reporting row of this CI id is another organization's
+      await service('svc-a', ORG_A, 'high', { annual_revenue_supported: 8_760_000 });
+      await map('ci-a-app', 'svc-a');
+
+      const res = await impact();
+
+      expect(res.body.data.affected_business_services).toEqual([]);
+      expect(res.body.data.cost_per_hour).toBeNull();
+    });
+
+    it('hides cost per hour (null, listed as unavailable), never 0, when no revenue is recorded or it is not a positive number', async () => {
+      await ciRow('ci-a-db', ORG_A);
+      for (const [id, metadata] of [['svc-none', {}], ['svc-zero', { annual_revenue_supported: 0 }],
+        ['svc-text', { annual_revenue_supported: 'lots', user_count: 'many' }],
+        ['svc-negative', { annual_revenue_supported: -5 }]] as const) {
+        await service(id, ORG_A, 'medium', metadata);
+        await map('ci-a-db', id);
+      }
+
+      const res = await impact();
+
+      expect(res.body.data.cost_per_hour).toBeNull();
+      expect(res.body.data.cost_per_hour_services_priced).toBe(0);
+      expect(res.body.data.affected_business_services).toHaveLength(4);
+      for (const affected of res.body.data.affected_business_services) {
+        expect([affected.annual_revenue, affected.cost_per_hour, affected.users]).toEqual([null, null, null]);
+      }
+      expect(res.body.data.unavailable).toEqual(
+        ['cost_per_hour', 'affected_business_services[].cost_per_hour', 'affected_business_services[].users']);
+    });
+
+    it('with no mapped service the lists are empty and only the total is unavailable', async () => {
+      await ciRow('ci-a-db', ORG_A);
+
+      const res = await impact();
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.affected_business_services).toEqual([]);
+      expect(res.body.data.cost_per_hour).toBeNull();
+      expect(res.body.data.cost_per_hour_services_priced).toBe(0);
+      expect(res.body.data.unavailable).toEqual(['cost_per_hour']);
+    });
+
+    it('skips a retired service and a CI with a pending or failed reconciliation operation', async () => {
+      await ciRow('ci-a-db', ORG_A);
+      await ciRow('ci-a-app', ORG_A);
+      await service('svc-live', ORG_A, 'high', { annual_revenue_supported: 8_760_000 });
+      await service('svc-retired', ORG_A, 'critical', { annual_revenue_supported: 87_600_000 }, 'retired');
+      await service('svc-pending', ORG_A, 'critical', { annual_revenue_supported: 87_600_000 });
+      await map('ci-a-db', 'svc-live');
+      await map('ci-a-db', 'svc-retired');
+      await map('ci-a-app', 'svc-pending');
+      await sql(`INSERT INTO ci_reconciliation_operations (id, group_id, organization_id, ci_id, origin, operation, graph_effect,
+          state, actor, epoch, lease_expires_at)
+        VALUES ($1, $2, $3, 'ci-a-app', 'api', 'update', TRUE, 'pending', 'tess', 1, now() + interval '1 hour')`,
+        [randomUUID(), randomUUID(), ORG_A]);
+
+      const res = await impact();
+
+      expect(res.body.data.affected_business_services.map((s: { service_id: string }) => s.service_id)).toEqual(['svc-live']);
+      expect(res.body.data.cost_per_hour).toBe(1000);
+    });
+
+    describe('POST /impact/predict', () => {
+      const predicted = (overrides: Record<string, unknown> = {}) => ({
+        id: 'impact-1', source_ci_id: 'ci-a-db', source_ci_name: 'a-database', change_type: 'failover', impact_score: 50,
+        affected_cis: [{ ci_id: 'ci-a-app', ci_name: 'ci-a-app', ci_type: 'server', impact_type: 'direct',
+          dependency_path: ['ci-a-db', 'ci-a-app'], hop_count: 1, impact_probability: 90, estimated_impact: 'direct',
+          direction: 'downstream' }],
+        blast_radius: 1, critical_path: ['ci-a-db', 'ci-a-app'], risk_level: 'high', analyzed_at: '2026-01-01T00:00:00.000Z',
+        estimated_downtime_minutes: 18, ...overrides,
+      });
+      const predict = (changeType = 'failover') => request(app).post('/api/v1/impact/predict').set(AS_A)
+        .send({ ci_id: 'ci-a-db', change_type: changeType });
+
+      it('accepts failover and adds services, cost per hour and deterministic recommendations without touching the engine result', async () => {
+        jest.spyOn(getImpactPredictionEngine(), 'predictChangeImpact').mockResolvedValue(predicted() as never);
+        await ciRow('ci-a-db', ORG_A);
+        await ciRow('ci-a-app', ORG_A);
+        await service('svc-a', ORG_A, 'critical', { annual_revenue_supported: 8_760_000, user_count: 10 });
+        await map('ci-a-app', 'svc-a');
+
+        const res = await predict('FAILOVER');
+
+        expect(res.status).toBe(201);
+        expect(res.body.data).toMatchObject(predicted());
+        expect(res.body.data.affected_cis[0].direction).toBe('downstream');
+        expect(res.body.data.affected_business_services.map((s: { service_id: string }) => s.service_id)).toEqual(['svc-a']);
+        expect(res.body.data.cost_per_hour).toBe(1000);
+        expect(res.body.data.unavailable).toEqual([]);
+        expect(res.body.data.recommendations.map((r: { id: string }) => r.id)).toEqual(
+          ['maintenance_window', 'notify_dependents', 'notify_service_owners', 'verify_standby']);
+      });
+
+      it("does not count another organization's service mapped to the affected CI", async () => {
+        jest.spyOn(getImpactPredictionEngine(), 'predictChangeImpact').mockResolvedValue(predicted() as never);
+        await ciRow('ci-a-db', ORG_A);
+        await ciRow('ci-a-app', ORG_A);
+        await service('svc-b', ORG_B, 'critical', { annual_revenue_supported: 87_600_000 });
+        await map('ci-a-app', 'svc-b');
+
+        const res = await predict();
+
+        expect(res.status).toBe(201);
+        expect(res.body.data.affected_business_services).toEqual([]);
+        expect(res.body.data.cost_per_hour).toBeNull();
+        expect(res.body.data.unavailable).toEqual(['cost_per_hour']);
+        expect(res.body.data.recommendations.map((r: { id: string }) => r.id)).not.toContain('notify_service_owners');
+      });
+    });
+  });
+
   // HAP-2033: impact_score is min(totalImpacted / 10, 1) on a 0-1 scale, and openapi.yaml
   // must declare that same range for the response the controller sends.
   describe('GET /cis/:id/impact impact_score contract (HAP-2033)', () => {
@@ -1118,12 +1293,103 @@ describe('/api/v1/cis tenant scoping', () => {
       const req = request(app)[method as 'get'](path).set(NO_ORG);
       const res = await (body === null ? req : req.send(body));
       expect([method, path, res.status, res.body]).toEqual([
-        method, path, 403, { _error: 'Forbidden', _message: 'Organization claim required' },
+        method, path, 403, expect.objectContaining({ _error: 'Forbidden', _message: 'Organization claim required', code: 'ORGANIZATION_REQUIRED' }),
       ]);
     }
     expect(queryCount).toBe(0);
     expect(auditHistoryReads).toBe(0);
     expect(graph.nodes.has('ci-legacy')).toBe(true);
+  });
+});
+
+describe('CI health on GET /cis and GET /cis/:id (HAP-1923 BW1)', () => {
+  const healthOf = (body: { data: Array<{ id: string; health: unknown }> }) =>
+    Object.fromEntries(body.data.map(ci => [ci.id, ci.health]));
+  const incident = (n: number, ci: string, priority: number, status: string, org: string | null) => sql(
+    `INSERT INTO itil_incidents (id, incident_number, title, impact, urgency, priority, affected_ci_id, status,
+       reported_by, organization_id) VALUES (gen_random_uuid(), $1, 't', 'high', 'high', $2, $3, $4, 'x', $5)`,
+    [`INC-H${n}`, priority, ci, status, org]);
+  const seedHealthCIs = () => {
+    for (const id of ['ci-h-ok', 'ci-h-p1', 'ci-h-p2', 'ci-h-p3', 'ci-h-mixed', 'ci-h-closed', 'ci-h-legacy']) seedCI(id, ORG_A);
+    seedCI('ci-h-b', ORG_B);
+  };
+
+  it('is null, never healthy, while the ITIL record tables do not exist', async () => {
+    seedHealthCIs();
+    const list = await request(app).get('/api/v1/cis').set(AS_A);
+    expect(list.status).toBe(200);
+    expect(Object.values(healthOf(list.body))).not.toHaveLength(0);
+    expect(new Set(Object.values(healthOf(list.body)))).toEqual(new Set([null]));
+    const detail = await request(app).get('/api/v1/cis/ci-h-ok').set(AS_A);
+    expect(detail.body.data).toMatchObject({ id: 'ci-h-ok', health: null });
+  });
+
+  describe('with the ITIL tables', () => {
+    beforeAll(async () => {
+      const ddl = readFileSync(join(__dirname, '../../../../../database/src/postgres/migrations/001_complete_schema.sql'), 'utf8');
+      await sql(ddl.match(/CREATE TABLE IF NOT EXISTS itil_incidents \([\s\S]*?\n\);/)![0]);
+      await sql('ALTER TABLE itil_incidents ADD COLUMN organization_id uuid');
+      await sql(`GRANT SELECT ON itil_incidents TO cmdb_user`);
+    });
+    afterAll(() => sql('DROP TABLE itil_incidents'));
+    beforeEach(async () => {
+      await sql('DELETE FROM itil_incidents');
+      await incident(1, 'ci-h-p1', 1, 'in_progress', ORG_A);
+      await incident(2, 'ci-h-p2', 2, 'new', ORG_A);
+      await incident(3, 'ci-h-p3', 3, 'new', ORG_A);
+      await incident(4, 'ci-h-mixed', 5, 'new', ORG_A);
+      await incident(5, 'ci-h-mixed', 2, 'new', ORG_A);
+      await incident(6, 'ci-h-closed', 1, 'resolved', ORG_A);
+      await incident(7, 'ci-h-closed', 1, 'closed', ORG_A);
+      await incident(8, 'ci-h-closed', 1, 'cancelled', ORG_A);
+      await incident(9, 'ci-h-legacy', 1, 'new', null); // pre-cutover row with no organization: inert
+    });
+
+    it('derives healthy, degraded and critical from open incidents of the caller organization', async () => {
+      seedHealthCIs();
+      const list = await request(app).get('/api/v1/cis').set(AS_A);
+      expect(healthOf(list.body)).toMatchObject({
+        'ci-h-ok': 'healthy', 'ci-h-p1': 'critical', 'ci-h-p2': 'critical', 'ci-h-p3': 'degraded',
+        'ci-h-mixed': 'critical', 'ci-h-closed': 'healthy', 'ci-h-legacy': 'healthy',
+      });
+      for (const [id, health] of [['ci-h-p1', 'critical'], ['ci-h-p3', 'degraded'], ['ci-h-closed', 'healthy']]) {
+        const detail = await request(app).get(`/api/v1/cis/${id}`).set(AS_A);
+        expect(detail.body.data).toMatchObject({ id, health });
+      }
+    });
+
+    it("never reads another organization's incidents, and A's incidents never mark B's CIs", async () => {
+      seedHealthCIs();
+      await incident(20, 'ci-h-ok', 1, 'new', ORG_B); // B names A's CI id
+      await incident(21, 'ci-h-b', 3, 'new', ORG_A); // A names B's CI id
+      const own = await request(app).get('/api/v1/cis').set(AS_A);
+      expect(healthOf(own.body)['ci-h-ok']).toBe('healthy');
+      expect(own.body.data.map((ci: { id: string }) => ci.id)).not.toContain('ci-h-b');
+      const theirs = await request(app).get('/api/v1/cis').set(AS_B);
+      const seen = healthOf(theirs.body);
+      expect(Object.keys(seen).filter(id => id.startsWith('ci-h-'))).toEqual(['ci-h-b']);
+      expect(seen['ci-h-b']).toBe('healthy'); // A's P3 incident on ci-h-b is not B's
+      expect((await request(app).get('/api/v1/cis/ci-h-b').set(AS_A)).body).toEqual(NOT_FOUND);
+    });
+
+    it('keeps every earlier CI key next to health', async () => {
+      seedCI('ci-h-keys', ORG_A);
+      const detail = await request(app).get('/api/v1/cis/ci-h-keys').set(AS_A);
+      expect(Object.keys(detail.body.data)).toEqual(expect.arrayContaining(
+        ['id', 'name', 'type', 'status', 'environment', 'owner', 'provider', 'ip_address', 'tier', 'health']));
+    });
+
+    it('answers health null, not a failed CI read, when the incident read fails', async () => {
+      seedHealthCIs();
+      await sql('ALTER TABLE itil_incidents RENAME COLUMN priority TO priority_x');
+      try {
+        const list = await request(app).get('/api/v1/cis').set(AS_A);
+        expect(list.status).toBe(200);
+        expect(new Set(Object.values(healthOf(list.body)))).toEqual(new Set([null]));
+      } finally {
+        await sql('ALTER TABLE itil_incidents RENAME COLUMN priority_x TO priority');
+      }
+    });
   });
 });
 

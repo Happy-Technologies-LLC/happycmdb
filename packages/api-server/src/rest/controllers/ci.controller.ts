@@ -16,8 +16,10 @@ import {
   readSingleCI, CI_LIST_UNAVAILABLE_RESPONSE,
 } from '../../read-admission';
 import { withNormalizedCIFields } from '../../services/ci-normalized-fields';
+import { withCIHealth } from '../../services/ci-health';
 import { sendTraversalFailure } from './traversal-failure';
-import { impactEnvelope } from '../impact-envelope';
+import { impactEnvelope, impactLineageTimeoutMs } from '../impact-envelope';
+import { loadImpactBusinessContext } from '../../services/impact-business-context';
 import { loadEdgeEvidence, qualifyEdges } from '../edge-evidence';
 
 /**
@@ -31,6 +33,11 @@ function sendCINotFound(res: Response): void {
     error: 'Not Found',
     message: 'CI not found'
   });
+}
+
+/** BW1: a failed health read leaves `health` null; it never fails the CI read. */
+function healthReadFailed(error: unknown): void {
+  logger.warn('CI health unavailable', error);
 }
 
 // Helper function to convert Neo4j types to JavaScript types and transform field names
@@ -177,7 +184,7 @@ export class CIController {
         });
         res.json({
           success: true,
-          data: cis,
+          data: await withCIHealth(getPostgresClient(), organizationId, cis, healthReadFailed),
           pagination: {
             total, count: cis.length, offset: finalOffset, limit: finalLimit,
             page: finalPage, pageSize: finalLimit, totalPages: Math.ceil(total / finalLimit),
@@ -226,10 +233,9 @@ export class CIController {
         sendCINotFound(res);
         return;
       }
-      res.json({
-        success: true,
-        data: withNormalizedCIFields(convertNeo4jTypes(read.ci), convertNeo4jTypes(read.stored)),
-      });
+      const [detail] = await withCIHealth(getPostgresClient(), organizationId,
+        [withNormalizedCIFields(convertNeo4jTypes(read.ci), convertNeo4jTypes(read.stored))], healthReadFailed);
+      res.json({ success: true, data: detail });
     } catch (error) {
       if (error instanceof CIGapError) {
         res.status(409).json(CI_GAP_RESPONSE);
@@ -563,13 +569,19 @@ export class CIController {
         new Set(allCIs.map((ci: any) => ci.environment).filter(Boolean))
       );
 
+      // HAP-1927 BW11: the services this CI or anything downstream of it is mapped to (upstream CIs are not affected).
+      const businessContext = await loadImpactBusinessContext(
+        organizationId, [id, ...downstreamCIs.map((downstreamCI: any) => downstreamCI.id)],
+        { timeoutMs: impactLineageTimeoutMs() });
+
       // Construct the impact analysis response
       const impactAnalysis = {
         ci: convertNeo4jTypes(ci),
         upstream: upstreamCIs,
         downstream: downstreamCIs,
         impact_score,
-        affected_environments
+        affected_environments,
+        ...businessContext
       };
 
       const envelope = await impactEnvelope(organizationId, [

@@ -344,6 +344,51 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /auth/me:
+    get:
+      tags: [Authentication]
+      summary: Current user, server role and the grants of that role
+      description: >-
+        The caller's own record. `role` is one of the four server roles and
+        `permissions` is what the server's role table grants it (HAP-1930), so a
+        client need not mirror the table. Display only: the server checks every
+        request itself and answers a refusal with the `Forbidden` body. Also the
+        `data` of `PUT /auth/profile`.
+      operationId: getCurrentUser
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      responses:
+        '200':
+          description: The caller's own record
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    enum: [true]
+                  data:
+                    $ref: '#/components/schemas/User'
+              example:
+                success: true
+                data:
+                  userId: user-1
+                  username: alice
+                  email: alice@example.com
+                  name: Alice
+                  role: viewer
+                  permissions: [read]
+                  createdAt: '2025-01-01T00:00:00.000Z'
+                  platformAdmin: false
+                  organizationId: 11111111-1111-4111-8111-111111111111
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /auth/profile:
     put:
       tags: [Authentication]
@@ -954,6 +999,14 @@ paths:
                         type: array
                         items:
                           type: string
+                      affected_business_services:
+                        $ref: '#/components/schemas/ImpactBusinessContext/properties/affected_business_services'
+                      cost_per_hour:
+                        $ref: '#/components/schemas/ImpactBusinessContext/properties/cost_per_hour'
+                      cost_per_hour_services_priced:
+                        $ref: '#/components/schemas/ImpactBusinessContext/properties/cost_per_hour_services_priced'
+                      unavailable:
+                        $ref: '#/components/schemas/ImpactBusinessContext/properties/unavailable'
                   totalImpacted:
                     type: integer
                     minimum: 0
@@ -987,6 +1040,89 @@ paths:
           $ref: '#/components/responses/CITraversalLimit'
         '504':
           $ref: '#/components/responses/CITraversalTimeout'
+
+  /impact/predict:
+    post:
+      tags: [Impact]
+      summary: Predict the impact of a change to a CI
+      description: >-
+        Walks the CI's dependents over declared graph edges, scores the change and persists the analysis
+        (`impact_analyses`). The response adds three things computed at read time and never persisted
+        (HAP-1927, BW11 and BW12): `affected_business_services` with `cost_per_hour` (the business services mapped to the
+        CI or to any affected CI, in the caller's organization; see `ImpactBusinessContext`), a `direction` on every affected CI
+        (`downstream`: the prediction follows dependents only), and `recommendations`, a deterministic rule list (no model,
+        no randomness: the same response fields always give the same list, in this order):
+
+        - `maintenance_window`: `risk_level` is `critical` or `high`, or `estimated_downtime_minutes` is 30 or more.
+
+        - `notify_dependents`: `blast_radius` is above 0.
+
+        - `notify_service_owners`: an affected business service has criticality `critical` or `high`.
+
+        - `rollback_plan`: `change_type` is `configuration_change`, `version_upgrade`, `network_change`, `security_change`
+        or `decommission`, and `risk_level` is not `minimal`.
+
+        - `verify_standby`: `change_type` is `failover`.
+
+        - `clear_dependents_first`: `change_type` is `decommission` and `blast_radius` is above 0.
+
+        - `review_dependency_chain`: `critical_path` spans 3 or more hops.
+
+        - `no_recorded_dependents`: `blast_radius` is 0 (declared edges only; not proof that nothing depends on the CI).
+
+        `failover` is weighted 1.2 and its `estimated_downtime_minutes` is the heuristic `15 + blast_radius * 3`; it is an
+        estimate from the dependent count, not a measured switchover time.
+      operationId: predictImpact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ci_id, change_type]
+              properties:
+                ci_id:
+                  type: string
+                change_type:
+                  type: string
+                  enum: [configuration_change, version_upgrade, restart, decommission, network_change, security_change, performance_tuning, failover]
+      responses:
+        '201':
+          description: The predicted impact
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/ImpactAnalysis'
+                      - $ref: '#/components/schemas/ImpactBusinessContext'
+                      - type: object
+                        required: [recommendations]
+                        properties:
+                          recommendations:
+                            type: array
+                            description: Rule-based recommendations; each `id` is stable, the `message` is for display.
+                            items:
+                              $ref: '#/components/schemas/ImpactRecommendation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          description: A resource limit was exceeded, or the business-service read was refused. Nothing is returned partially.
+        '504':
+          description: The analysis, including the business-service read, exceeded its deadline.
 
   /impact/graph/{rootCiId}:
     get:
@@ -3213,7 +3349,26 @@ paths:
                     type: number
                     nullable: true
                     description: >-
-                      Always null today (unavailable): there is no CI health state yet. Never 0 as a placeholder.
+                      Percentage (0 to 100, one decimal) of the caller's CIs whose `health` is `healthy`
+                      (`ci_health.healthy / ci_health.total * 100`). Null, and named in `unavailable`, when the health
+                      signal is unavailable (the ITIL incident tables do not exist, or more than 5000 CIs have an open
+                      incident) or the organization has no CIs. A measured 0 means every CI is degraded or critical;
+                      it is never a placeholder.
+                  ci_health:
+                    type: object
+                    nullable: true
+                    description: >-
+                      The caller's CIs by derived `health` state (see the CI schema). The three states add up to
+                      `total`. Null when the health signal is unavailable.
+                    properties:
+                      healthy:
+                        type: integer
+                      degraded:
+                        type: integer
+                      critical:
+                        type: integer
+                      total:
+                        type: integer
                   critical_relationships:
                     type: integer
                     description: >-
@@ -3255,8 +3410,9 @@ paths:
                       type: string
                     description: >-
                       Names of fields in this payload that are `null` because no backing data exists or it could not
-                      be computed (`health_score` always; `open_drift_count` or `configuration_coverage` when their
-                      source fails or the organization exceeds the bounded scan).
+                      be computed (`health_score` when the health signal is unavailable or the organization has no CIs;
+                      `open_drift_count` or `configuration_coverage` when their source fails or the organization
+                      exceeds the bounded scan).
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -5347,11 +5503,35 @@ components:
             _message: Authentication failed
 
     Forbidden:
-      description: Insufficient permissions
+      description: >-
+        Refused by the role contract (HAP-1930): one body for a missing
+        permission, role, organization claim, JWT session, platform
+        administrator or scope. Read `code`; `message` is the text to show.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Error'
+            $ref: '#/components/schemas/ForbiddenError'
+          examples:
+            viewerWrite:
+              summary: A viewer calls a write route
+              value:
+                success: false
+                error: Forbidden
+                message: Permission 'write' required
+                _error: Forbidden
+                _message: Permission 'write' required
+                code: PERMISSION_REQUIRED
+                required: { permission: write }
+                role: viewer
+            noOrganization:
+              summary: The caller has no organization
+              value:
+                success: false
+                error: Forbidden
+                message: Organization claim required
+                _error: Forbidden
+                _message: Organization claim required
+                code: ORGANIZATION_REQUIRED
 
     NotFound:
       description: Resource not found
@@ -5679,6 +5859,18 @@ components:
           description: >-
             Same rules as `owner`; the stored top-level `tier`, else `metadata` keys `tier`, `service_tier`,
             `criticality_tier`.
+        health:
+          type: string
+          nullable: true
+          enum: [healthy, degraded, critical]
+          description: >-
+            Health state (HAP-1923 BW1), derived at read time from the caller organization's open incidents and never
+            stored. `critical`: an open incident of priority 1 or 2 names this CI in `affected_ci_id`; `degraded`: the
+            most severe open incident is priority 3 to 5; `healthy`: no open incident. An incident is open while its
+            status is not `resolved`, `closed` or `cancelled`. Incidents of another organization, or with no
+            organization, never count. Null (never `healthy`) when the signal is unavailable: the ITIL incident tables
+            do not exist, or the incident read failed. Anomalies and health metrics are not used: they carry no
+            tenant provenance. See services/ci-health.ts.
 
     CIInput:
       type: object
@@ -5882,23 +6074,46 @@ components:
     # =========================================================================
     User:
       type: object
+      description: >-
+        GET /auth/me and the `data` of PUT /auth/profile (the caller's own record
+        only). `role` and `permissions` are the server's role contract.
+      required: [userId, username, role, permissions, platformAdmin, organizationId]
       properties:
-        _id:
+        userId:
           type: string
-          format: uuid
-        _username:
+        username:
           type: string
-        _email:
+        email:
           type: string
-          format: email
-        _role:
+        name:
           type: string
-          enum: [admin, user, readonly]
-        _enabled:
-          type: boolean
-        _createdAt:
+        avatar:
+          type: string
+        role:
+          type: string
+          enum: [admin, operator, viewer, agent]
+        permissions:
+          type: array
+          description: >-
+            What the server's role table grants `role`: admin read, write,
+            discover, admin; operator read, write, discover; viewer read; agent
+            discover, write. Empty for a stored role the table does not know.
+          items:
+            type: string
+            enum: [read, write, discover, admin]
+        createdAt:
           type: string
           format: date-time
+        lastLoginAt:
+          type: string
+          format: date-time
+        platformAdmin:
+          type: boolean
+          description: Effective platform-administrator status as the server decided it; independent of role
+        organizationId:
+          type: string
+          nullable: true
+          description: The caller's organization; null when the user has none
 
     ApiKey:
       type: object
@@ -6589,6 +6804,59 @@ components:
               error:
                 type: string
 
+    ForbiddenError:
+      type: object
+      description: >-
+        The 403 body of every role-contract refusal (HAP-1930). Carries both key
+        families the server has always sent (`_error`/`_message` from the auth
+        middleware, `success`/`error`/`message` from the platform-administrator and
+        organization guards), so existing readers keep working. `role` and
+        `required` appear only where they apply and describe the caller's own
+        role and the route's fixed requirement.
+      required: [success, error, message, _error, _message, code]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          enum: [Forbidden]
+        message:
+          type: string
+          example: Permission 'write' required
+        _error:
+          type: string
+          enum: [Forbidden]
+        _message:
+          type: string
+        code:
+          type: string
+          enum:
+            - PERMISSION_REQUIRED
+            - ROLE_REQUIRED
+            - ORGANIZATION_REQUIRED
+            - JWT_SESSION_REQUIRED
+            - PLATFORM_ADMIN_REQUIRED
+            - SCOPE_REQUIRED
+        required:
+          type: object
+          description: What was missing; present for permission, role and scope refusals
+          properties:
+            permission:
+              type: string
+              enum: [read, write, discover, admin]
+            roles:
+              type: array
+              items:
+                type: string
+                enum: [admin, operator, viewer, agent]
+            scope:
+              type: string
+        role:
+          type: string
+          enum: [admin, operator, viewer, agent]
+          description: The caller's own server role; present for permission and role refusals
+
     MiddlewareError:
       type: object
       description: >-
@@ -7024,6 +7292,143 @@ components:
           $ref: '#/components/schemas/C1Lifecycle'
         service_level:
           $ref: '#/components/schemas/ServiceOfferingLevel'
+
+    ImpactAnalysis:
+      type: object
+      required: [id, source_ci_id, source_ci_name, change_type, impact_score, affected_cis, blast_radius, critical_path, risk_level, analyzed_at]
+      properties:
+        id:
+          type: string
+        source_ci_id:
+          type: string
+        source_ci_name:
+          type: string
+        change_type:
+          type: string
+          enum: [configuration_change, version_upgrade, restart, decommission, network_change, security_change, performance_tuning, failover]
+        impact_score:
+          type: number
+          description: 0-100
+        affected_cis:
+          type: array
+          items:
+            type: object
+            required: [ci_id, ci_name, ci_type, impact_type, dependency_path, hop_count, impact_probability, estimated_impact]
+            properties:
+              ci_id:
+                type: string
+              ci_name:
+                type: string
+              ci_type:
+                type: string
+              impact_type:
+                type: string
+                enum: [direct, indirect, cascading, performance, availability]
+              dependency_path:
+                type: array
+                items:
+                  type: string
+              hop_count:
+                type: integer
+              impact_probability:
+                type: number
+                description: 0-100
+              estimated_impact:
+                type: string
+              direction:
+                type: string
+                enum: [upstream, downstream]
+                description: >-
+                  Which side of the source CI this one is on. `downstream` depends on the source and is affected when it
+                  changes. The prediction follows dependents only, so it always returns `downstream`. Analyses stored before
+                  HAP-1927 carry no `direction`.
+        blast_radius:
+          type: integer
+        critical_path:
+          type: array
+          items:
+            type: string
+        risk_level:
+          type: string
+          enum: [critical, high, medium, low, minimal]
+        analyzed_at:
+          type: string
+          format: date-time
+        estimated_downtime_minutes:
+          type: integer
+          description: Absent for change types without an estimate (for example `configuration_change`).
+
+    AffectedBusinessService:
+      type: object
+      required: [service_id, name, business_criticality, lifecycle, users, annual_revenue, cost_per_hour, affected_ci_ids]
+      properties:
+        service_id:
+          type: string
+        name:
+          type: string
+        business_criticality:
+          type: string
+          enum: [critical, high, medium, low]
+        lifecycle:
+          type: string
+        users:
+          type: integer
+          nullable: true
+          description: Positive `user_count` in the service's metadata; null when not recorded.
+        annual_revenue:
+          type: number
+          nullable: true
+          description: Positive `annual_revenue_supported` in the service's metadata; null when not recorded.
+        cost_per_hour:
+          type: number
+          nullable: true
+          description: '`annual_revenue / 8760`, rounded to cents; null (never 0) when there is no revenue.'
+        affected_ci_ids:
+          type: array
+          description: The CIs of this impact (the source CI or one downstream of it) the service is mapped to.
+          items:
+            type: string
+
+    ImpactBusinessContext:
+      type: object
+      description: >-
+        HAP-1927 (BW11). Business services mapped (`ci_business_service_mappings`) to the source CI or to any CI downstream of it,
+        read in the caller's organization only: the service, the mapped CI and a reconciliation-pending CI are all
+        organization-checked, and retired services are skipped. Upstream CIs are not affected, so their services are not
+        listed. Service-to-service dependencies are not followed.
+      required: [affected_business_services, cost_per_hour, cost_per_hour_services_priced, unavailable]
+      properties:
+        affected_business_services:
+          type: array
+          description: Sorted by criticality (critical first), then name.
+          items:
+            $ref: '#/components/schemas/AffectedBusinessService'
+        cost_per_hour:
+          type: number
+          nullable: true
+          description: >-
+            Sum of the services' `cost_per_hour`, rounded to cents (N3: annual revenue / 8760 per service). Null, never 0,
+            when no affected service has revenue. When only some do, it is a lower bound: see `cost_per_hour_services_priced`.
+        cost_per_hour_services_priced:
+          type: integer
+          description: How many of `affected_business_services` carry revenue and so contribute to `cost_per_hour`.
+        unavailable:
+          type: array
+          description: >-
+            Fields with no backing data: `cost_per_hour` (no service has revenue),
+            `affected_business_services[].cost_per_hour` and `affected_business_services[].users` (at least one service lacks it).
+          items:
+            type: string
+
+    ImpactRecommendation:
+      type: object
+      required: [id, message]
+      properties:
+        id:
+          type: string
+          enum: [maintenance_window, notify_dependents, notify_service_owners, rollback_plan, verify_standby, clear_dependents_first, review_dependency_chain, no_recorded_dependents]
+        message:
+          type: string
 
     ImpactBasis:
       type: string

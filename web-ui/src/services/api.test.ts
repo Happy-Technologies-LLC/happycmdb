@@ -121,6 +121,17 @@ describe('ApiService user mapping (HAP-1911)', () => {
     expect(await api.getCurrentUser()).toMatchObject({ platform_admin: false, organization_id: null });
   });
 
+  it('HAP-1930: carries the server permissions, keeps only known ones, and reads an older server as none', async () => {
+    request.get.mockResolvedValue({ data: { data: { ...base, permissions: ['read', 'write', 'root', 7] } } });
+    expect(await api.getCurrentUser()).toMatchObject({ role: 'operator', permissions: ['read', 'write'] });
+
+    request.get.mockResolvedValue({ data: { data: base } });
+    expect((await api.getCurrentUser()).permissions).toEqual([]);
+
+    request.get.mockResolvedValue({ data: { data: { ...base, permissions: 'read' } } });
+    expect((await api.getCurrentUser()).permissions).toEqual([]);
+  });
+
   it('only a literal true is platform authority; a null organization stays null', async () => {
     for (const platformAdmin of ['true', 1, 'yes', null]) {
       request.get.mockResolvedValue({ data: { data: { ...base, platformAdmin, organizationId: null } } });

@@ -214,8 +214,9 @@ The view is the `?view=orbit|graph|list` search parameter. The Stage draws a cap
 
 Health, config drift, coverage, live changes and top services render a "Not available yet" state that names the missing
 backend capability instead of a number: the UI does not read the tenant-wide change feed or per-service availability yet
-(the server has them, below) and the server has no CI health state or KPI history. The dashboard's `health_score` is `null` (unavailable)
-until a CI health state exists (BW1); the Health card shows "Not available yet" for `null` and a percentage only for a
+(the server has them, below) and the server has no CI health state or KPI history. The dashboard's `health_score` is the
+percentage of CIs without an open incident (BW1/BW4, definition in `services/ci-health.ts`; `ci_health` carries the
+counts) and is `null` (unavailable) when that signal does not exist; the Health card shows "Not available yet" for `null` and a percentage only for a
 number, never `0%` as a placeholder. `GET /analytics/dashboard` now also carries `open_drift_count` (BW5) and
 `configuration_coverage` (BW6, `{with_owner_and_source, total, ratio}`; definitions in the OpenAPI schema), each `null`
 and listed in `unavailable` when it cannot be computed; the drift and coverage cards do not read them yet. Do not wire a

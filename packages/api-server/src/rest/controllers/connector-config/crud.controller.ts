@@ -13,6 +13,7 @@ import { validateConfiguration, buildUpdateQuery } from './validation';
 import { buildListQuery } from './queries';
 import { CONFIG_NOT_FOUND, PUBLIC_CONFIG } from '../../../auth/connector-scope';
 import { ownedConfig, requestScopeValues } from './ownership';
+import { sendForbidden } from '../../../middleware/forbidden-response';
 import { ConnectorJsonPatchBudget, ConnectorJsonPatchError, isConnectorJsonResultLimit, CONNECTOR_JSON_LIMIT_MESSAGE } from '../../../services/connector-json-merge';
 
 export class ConnectorConfigCRUDController {
@@ -90,7 +91,7 @@ export class ConnectorConfigCRUDController {
   async createConfiguration(req: Request, res: Response): Promise<void> {
     const [organizationId] = requestScopeValues(req);
     if (organizationId === null) {
-      res.status(403).json({ error: 'Forbidden', message: 'Organization claim required' });
+      sendForbidden(res, 'ORGANIZATION_REQUIRED', 'Organization claim required');
       return;
     }
     try {

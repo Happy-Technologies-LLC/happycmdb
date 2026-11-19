@@ -258,7 +258,7 @@ it('HAP-514: a viewer owner cannot validate a credential or select a set before 
   try {
     const beforeSql = serial;
     const refused = await callAs('viewer');
-    const denied = { _error: 'Forbidden', _message: "Permission 'write' required" };
+    const denied = expect.objectContaining({ _error: 'Forbidden', _message: "Permission 'write' required", code: 'PERMISSION_REQUIRED' });
     expect([refused.validate.status, refused.validate.body, refused.select.status, refused.select.body]).toEqual([403, denied, 403, denied]);
     expect(serial).toBe(beforeSql);
     expect(await stamp()).toEqual([{ validation_status: null, last_validated_at: null }]);
@@ -319,7 +319,7 @@ it('every credential route returns 401 anonymously; a viewer owner gets 403 on e
       const before = serial;
       const asViewer = await call(row, as('viewer'));
       if (row.kind === 'write') {
-        expect([label, asViewer.status, asViewer.body, serial]).toEqual([label, 403, { _error: 'Forbidden', _message: "Permission 'write' required" }, before]);
+        expect([label, asViewer.status, asViewer.body, serial]).toEqual([label, 403, expect.objectContaining({ _error: 'Forbidden', _message: "Permission 'write' required", code: 'PERMISSION_REQUIRED' }), before]);
       } else if (row.kind === 'oauth') {
         expect([label, asViewer.status, asViewer.body.message, serial]).toEqual([label, 403, 'Credential OAuth is unavailable', before]);
       } else {

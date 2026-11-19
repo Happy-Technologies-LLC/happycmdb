@@ -377,16 +377,32 @@ describe('controls', () => {
 
 describe('health and genuine zeros', () => {
   /**
-   * The design-system Badge shows its variant only through its colour classes. The expected
-   * classes are read off a real Badge of that variant, so the assertion follows the package.
+   * The design-system Badge shows its variant only through its colour classes (`bg-`/`text-`/`border-`
+   * utilities over `--hh-*` tokens). The expected classes are read off a real Badge of that variant, so the
+   * assertion follows the package. The base geometry classes (`rounded-[var(--hh-radius-pill)]`) also carry
+   * `--hh-` but are the same for every variant, so only the colour utilities count.
    */
-  const badgeToneClasses = (variant: 'neutral' | 'success' | 'warning' | 'danger') => {
+  const TONES = ['neutral', 'success', 'warning', 'danger'] as const;
+  const toneClassCache = new Map<(typeof TONES)[number], string[]>();
+  const badgeToneClasses = (variant: (typeof TONES)[number]) => {
+    const cached = toneClassCache.get(variant);
+    if (cached) return cached;
     const { unmount } = render(<Badge variant={variant}>reference</Badge>);
-    const classes = screen.getByText('reference').className.split(/\s+/).filter(c => c.includes('--hh-'));
+    const classes = screen
+      .getByText('reference')
+      .className.split(/\s+/)
+      .filter(c => /^(bg|text|border)-/.test(c) && c.includes('--hh-'));
     unmount();
     expect(classes.length).toBeGreaterThan(0);
+    toneClassCache.set(variant, classes);
     return classes;
   };
+
+  it('the design-system Badge renders a distinct colour class set per tone', () => {
+    const sets = TONES.map(tone => badgeToneClasses(tone).slice().sort().join(' '));
+    expect(new Set(sets).size).toBe(TONES.length);
+  });
+
   const expectTileBadgeTone = (
     tile: HTMLElement,
     text: string,
@@ -395,7 +411,7 @@ describe('health and genuine zeros', () => {
     const badge = within(tile).getByText(text);
     const expected = badgeToneClasses(tone);
     expect(badge).toHaveClass(...expected);
-    for (const other of ['neutral', 'success', 'warning', 'danger'] as const) {
+    for (const other of TONES) {
       if (other === tone) continue;
       for (const c of badgeToneClasses(other).filter(c => !expected.includes(c))) expect(badge).not.toHaveClass(c);
     }

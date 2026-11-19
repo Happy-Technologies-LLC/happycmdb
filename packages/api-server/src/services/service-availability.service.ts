@@ -27,6 +27,21 @@
  * low, other), then name, then service id; `limit` 1..50 (default 5).
  */
 
+/*
+ * Known limits. `has_mapped_cis` counts mappings (`ci_business_service_mappings`) to CIs that no longer exist in the
+ * graph: a service whose only CIs were deleted still reads 100 % (no P1/P2 incident recorded), not `null`. The read
+ * cannot tell, because it never consults Neo4j.
+ *
+ * Unavailable schema: where `itil_incidents` has no `organization_id` (or does not exist: V2/V3 schemas), no signal
+ * path exists, so every listed service reads like an unmapped one (three `null` figures, all three names in
+ * `unavailable`), never 100 %. The check is `itilRecordTablesAvailable`, the one CI health uses.
+ *
+ * Bounded: the controller runs every statement in one transaction under a PostgreSQL `statement_timeout`
+ * (`ESTATE_FEED_TIMEOUT_MS`, default 5000 ms; services/bounded-pg-read.ts); a timeout answers 503, never a partial figure.
+ */
+
+import { itilRecordTablesAvailable } from './itil-record-schema';
+
 /** The one pg method these reads need; both the pool and a pooled client satisfy it. */
 interface Sql {
   query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
@@ -35,6 +50,16 @@ interface Sql {
 /** When an incident stopped counting as down: resolved_at, else closed_at, else updated_at for a finished one, else now. */
 const INCIDENT_END = `COALESCE(i.resolved_at, i.closed_at,
                 CASE WHEN i.status IN ('resolved', 'closed') THEN i.updated_at ELSE now() END)`;
+
+/**
+ * `INCIDENT_END > cut`, written column by column: the first non-NULL of resolved_at, closed_at and the status arm is
+ * the one compared, exactly as COALESCE picks it. A COALESCE over three columns is one opaque expression no index can
+ * serve; this form lets the planner use a per-column index on each arm. `cut` is a SQL expression. Both forms select
+ * the same rows (hap1926.estate-feeds.test.ts checks every NULL / status / cutoff combination against the COALESCE).
+ */
+export const incidentEndsAfter = (cut: string): string =>
+  `(i.resolved_at > ${cut} OR (i.resolved_at IS NULL AND (i.closed_at > ${cut} OR (i.closed_at IS NULL AND ` +
+  `(CASE WHEN i.status IN ('resolved', 'closed') THEN i.updated_at ELSE now() END) > ${cut}))))`;
 
 export const AVAILABILITY_WINDOW_HOURS = 24;
 export const AVAILABILITY_DEFAULT_LIMIT = 5;
@@ -96,7 +121,9 @@ export async function readServiceAvailability(sql: Sql, organizationId: string, 
      LIMIT $2`,
     [organizationId, limit]);
 
-  const mapped: string[] = services.rows.filter((row: { has_mapped_cis: boolean }) => row.has_mapped_cis)
+  // Without the incident table there is no signal path for any service: same state as an unmapped one.
+  const signal = await itilRecordTablesAvailable((text, params) => sql.query(text, params), 'itil_incidents');
+  const mapped: string[] = !signal ? [] : services.rows.filter((row: { has_mapped_cis: boolean }) => row.has_mapped_cis)
     .map((row: { service_id: string }) => row.service_id);
   const byService = new Map<string, Array<{ id: string; start: number; end: number }>>();
   if (mapped.length > 0) {
@@ -110,7 +137,7 @@ export async function readServiceAvailability(sql: Sql, organizationId: string, 
        WHERE i.organization_id = $1 AND m.service_id = ANY($2::text[])
          AND i.priority <= $4 AND i.status <> 'cancelled'
          AND i.reported_at < now()
-         AND ${INCIDENT_END} > now() - ($3::int * interval '1 hour')`,
+         AND ${incidentEndsAfter(`now() - ($3::int * interval '1 hour')`)}`,
       [organizationId, mapped, AVAILABILITY_WINDOW_HOURS, SERVICE_AFFECTING_MAX_PRIORITY]);
     for (const row of incidents.rows as Array<{ service_id: string; id: string; start_at: Date; end_at: Date }>) {
       const start = new Date(row.start_at).getTime();
@@ -127,7 +154,7 @@ export async function readServiceAvailability(sql: Sql, organizationId: string, 
     basis: 'incident_derived',
     services: services.rows.map((row: Record<string, any>): ServiceAvailability => {
       const base = { service_id: row.service_id, name: row.name, criticality: row.business_criticality };
-      if (!row.has_mapped_cis) {
+      if (!signal || !row.has_mapped_cis) {
         return { ...base, availability_24h_pct: null, downtime_minutes_24h: null, service_affecting_incidents_24h: null,
           unavailable: ['availability_24h_pct', 'downtime_minutes_24h', 'service_affecting_incidents_24h'] };
       }

@@ -34,6 +34,7 @@ jest.mock('../../../read-admission', () => ({
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { ITILController } from '../itil.controller';
 import { AnalyticsController } from '../analytics.controller';
+import { incidentEndsAfter } from '../../../services/service-availability.service';
 import { BusinessServiceController } from '../business-service.controller';
 
 const ORG_A = '11111111-1111-4111-8111-111111111111';
@@ -88,8 +89,36 @@ function res() {
 function call(org: string | undefined, query: Record<string, unknown> = {}, body: Record<string, unknown> = {}) {
   return { user: { _organizationId: org, _userId: 'u-1' }, query, body, params: {} } as unknown as Request;
 }
+/**
+ * Every transaction the bounded feeds open, as the connection saw it: BEGIN, each statement (text + params), then
+ * COMMIT or ROLLBACK. PGlite does not enforce statement_timeout, so a statement that must "time out" is made to fail
+ * with the SQLSTATE the server would raise (`failStatement`), the way `ci-org-scope.test.ts` does.
+ */
+let trace: Array<{ text: string; params?: unknown[] }> = [];
+let failStatement: { when: (text: string) => boolean; error: Error & { code?: string } } | null = null;
+const txClient = {
+  query: async (text: string, params: unknown[] = []) => {
+    trace.push({ text, params });
+    if (failStatement?.when(text)) throw failStatement.error;
+    return pgQuery(text, params);
+  },
+};
+const transaction = async <T>(callback: (client: typeof txClient) => Promise<T>): Promise<T> => {
+  trace.push({ text: 'BEGIN' });
+  await pgQuery('BEGIN');
+  try {
+    const result = await callback(txClient);
+    trace.push({ text: 'COMMIT' });
+    await pgQuery('COMMIT');
+    return result;
+  } catch (error) {
+    trace.push({ text: 'ROLLBACK' });
+    await pgQuery('ROLLBACK');
+    throw error;
+  }
+};
 function wire() {
-  (getPostgresClient as jest.Mock).mockReturnValue({ query: pgQuery, pool: { query: pgQuery } });
+  (getPostgresClient as jest.Mock).mockReturnValue({ query: pgQuery, pool: { query: pgQuery }, transaction });
   (getNeo4jClient as jest.Mock).mockReturnValue({
     getSession: () => session,
     getCI: async (id: string, org: string) => graph.get(id)?.organization_id === org ? { id, type: 'server', environment: 'staging' } : null,
@@ -172,6 +201,8 @@ beforeAll(async () => {
 afterAll(() => { host.kill(); });
 beforeEach(async () => {
   graph.clear();
+  trace = [];
+  failStatement = null;
   await sql('TRUNCATE itil_incidents, ci_business_service_mappings, dim_business_services CASCADE; TRUNCATE ci_change_history', [], 'exec');
 });
 
@@ -418,5 +449,127 @@ describe('BW10: 24 h service availability', () => {
 
   it('rejects a limit outside 1..50 with 400 instead of clamping it', async () => {
     for (const limit of ['0', '51', 'abc']) expect((await availability(ORG_A, { limit })).statusCode).toBe(400);
+  });
+});
+
+describe('bounded estate reads: statement timeout, 503 mapping, absent ITIL table, end-time predicate', () => {
+  const timeoutError = () => Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+  /** Both feeds; each seeds what it needs so that its incident statement actually runs. */
+  const feeds: Array<{ name: string; seed: () => Promise<unknown>; run: () => Promise<ReturnType<typeof res>>;
+    incidentStatement: (text: string) => boolean }> = [
+    { name: 'open-incident ribbon', seed: () => addIncident(ORG_A, 'ci-1', { priority: 1 }), run: () => ribbon(ORG_A),
+      incidentStatement: text => text.includes('FROM itil_incidents WHERE') },
+    { name: 'service availability', seed: () => addService(ORG_A, 'Checkout', { ciIds: ['ci-1'] }), run: () => availability(ORG_A),
+      incidentStatement: text => text.includes('FROM itil_incidents i') },
+  ];
+  const setConfigs = () => trace.filter(entry => entry.text.startsWith(`SELECT set_config('statement_timeout'`));
+  const withEnv = async (value: string | undefined, run: () => Promise<void>) => {
+    const before = process.env['ESTATE_FEED_TIMEOUT_MS'];
+    if (value === undefined) delete process.env['ESTATE_FEED_TIMEOUT_MS']; else process.env['ESTATE_FEED_TIMEOUT_MS'] = value;
+    try { await run(); } finally {
+      if (before === undefined) delete process.env['ESTATE_FEED_TIMEOUT_MS']; else process.env['ESTATE_FEED_TIMEOUT_MS'] = before;
+    }
+  };
+
+  for (const feed of feeds) {
+    describe(feed.name, () => {
+      it('sets a transaction-local statement_timeout before any incident statement, and commits', async () => {
+        await feed.seed();
+        trace = [];
+        const out = await feed.run();
+        expect(out.statusCode).toBe(200);
+        expect(trace[0]).toEqual({ text: 'BEGIN' });
+        expect(trace.at(-1)).toEqual({ text: 'COMMIT' });
+        expect(setConfigs()).toHaveLength(1);
+        expect(trace[1]!.text).toBe(`SELECT set_config('statement_timeout', $1, true)`);
+        expect(trace[1]!.params).toEqual(['5000']);
+        expect(trace.some(entry => feed.incidentStatement(entry.text))).toBe(true);
+      });
+
+      it('takes the timeout from ESTATE_FEED_TIMEOUT_MS, and falls back to 5000 for an invalid value', async () => {
+        await feed.seed();
+        await withEnv('1234', async () => {
+          trace = [];
+          await feed.run();
+          expect(setConfigs().map(entry => entry.params)).toEqual([['1234']]);
+        });
+        for (const invalid of ['abc', '0', '-5', '2.5', '2147483648', '']) {
+          await withEnv(invalid, async () => {
+            trace = [];
+            await feed.run();
+            expect(setConfigs().map(entry => entry.params)).toEqual([['5000']]);
+          });
+        }
+      });
+
+      it('answers 503 Analytics resource limit exceeded when a statement hits the statement timeout (57014), and rolls back', async () => {
+        await feed.seed();
+        failStatement = { when: feed.incidentStatement, error: timeoutError() };
+        const out = await feed.run();
+        expect(out.statusCode).toBe(503);
+        expect(out.body).toEqual({ success: false, error: 'Analytics resource limit exceeded' });
+        expect(trace.at(-1)).toEqual({ text: 'ROLLBACK' });
+      });
+
+      it('keeps a 500 for any other failure, SQLSTATE or not', async () => {
+        await feed.seed();
+        for (const error of [Object.assign(new Error('deadlock detected'), { code: '40P01' }), new Error('boom')]) {
+          failStatement = { when: feed.incidentStatement, error };
+          const out = await feed.run();
+          expect(out.statusCode).toBe(500);
+          expect(out.body.success).toBe(false);
+          expect(out.body.error).not.toBe('Analytics resource limit exceeded');
+        }
+      });
+    });
+  }
+
+  describe('service availability without the ITIL incident table', () => {
+    const NONE = ['availability_24h_pct', 'downtime_minutes_24h', 'service_affecting_incidents_24h'];
+    for (const [what, hide, restore] of [
+      ['no itil_incidents table', 'ALTER TABLE itil_incidents RENAME TO itil_incidents_x', 'ALTER TABLE itil_incidents_x RENAME TO itil_incidents'],
+      ['no itil_incidents.organization_id', 'ALTER TABLE itil_incidents RENAME COLUMN organization_id TO organization_id_x',
+        'ALTER TABLE itil_incidents RENAME COLUMN organization_id_x TO organization_id'],
+    ] as const) {
+      it(`lists every service with three null figures and all three names unavailable, HTTP 200, for ${what}`, async () => {
+        await addService(ORG_A, 'Mapped', { criticality: 'critical', ciIds: ['ci-1'] });
+        await addService(ORG_A, 'Unmapped', { criticality: 'high' });
+        await sql(hide, [], 'exec');
+        try {
+          const out = await availability(ORG_A);
+          expect(out.statusCode).toBe(200);
+          expect(out.body.data.services.map((s: any) => [s.name, s.availability_24h_pct, s.downtime_minutes_24h,
+            s.service_affecting_incidents_24h, s.unavailable])).toEqual([
+            ['Mapped', null, null, null, NONE], ['Unmapped', null, null, null, NONE]]);
+          expect(trace.some(entry => entry.text.includes('FROM itil_incidents i'))).toBe(false);
+        } finally {
+          await sql(restore, [], 'exec');
+        }
+      });
+    }
+  });
+
+  describe('availability end-time predicate', () => {
+    // The pre-rewrite condition, kept here as the oracle.
+    const OLD_END = `COALESCE(i.resolved_at, i.closed_at, CASE WHEN i.status IN ('resolved', 'closed') THEN i.updated_at ELSE now() END)`;
+    const CUT = `now() - interval '24 hours'`;
+
+    it('selects exactly the rows the COALESCE condition selects, for every NULL / status / cutoff combination', async () => {
+      // Each timestamp column: NULL, before the cutoff, after the cutoff. updated_at too (it is the finished-status arm).
+      const rows = await sql(
+        `WITH ts(v) AS (VALUES (NULL::timestamptz), (now() - interval '48 hours'), (now() - interval '1 hour')),
+              combo AS (SELECT r.v AS resolved_at, c.v AS closed_at, u.v AS updated_at, s.status
+                        FROM ts r, ts c, ts u, (VALUES ('resolved'), ('closed'), ('in_progress')) AS s(status))
+         SELECT i.resolved_at IS NULL AS r_null, i.closed_at IS NULL AS c_null, i.status,
+                (${OLD_END} > ${CUT}) IS TRUE AS old_selects,
+                (${incidentEndsAfter(CUT)}) IS TRUE AS new_selects
+         FROM combo i`);
+      expect(rows).toHaveLength(81);
+      expect(rows.filter(row => row['old_selects'] !== row['new_selects'])).toEqual([]);
+      // Not vacuous: the combinations are split between selected and not.
+      const selected = rows.filter(row => row['old_selects']).length;
+      expect(selected).toBeGreaterThan(0);
+      expect(selected).toBeLessThan(81);
+    });
   });
 });

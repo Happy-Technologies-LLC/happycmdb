@@ -12,7 +12,7 @@ const SENTINEL = 'sentinel-password-p4ss';
 
 /**
  * `version` is the server_version_num the fake server reports. A fake PG15 or older rejects the bare `system_user`
- * token with a syntax error, as the real server does.
+ * token with 42703 (undefined column), as the real server does.
  */
 function fakePool(outcome: { row?: Record<string, unknown>; rows?: unknown[]; error?: Error & { code?: string }; version?: string }) {
   const statements: string[] = [];
@@ -23,7 +23,7 @@ function fakePool(outcome: { row?: Record<string, unknown>; rows?: unknown[]; er
       if (text === 'SHOW server_version_num') return { rows: [{ server_version_num: outcome.version ?? '170000' }] };
       if (text.startsWith('SELECT')) {
         if (Number(outcome.version ?? '170000') < 160000 && /\bsystem_user\b/.test(text)) {
-          throw Object.assign(new Error('syntax error'), { code: '42601' });
+          throw Object.assign(new Error('column "system_user" does not exist'), { code: '42703' });
         }
         if (outcome.error) throw outcome.error;
         return { rows: outcome.rows ?? (outcome.row ? [outcome.row] : []) };
@@ -188,7 +188,7 @@ describe('checkDbRole', () => {
     expect(logger.info).not.toHaveBeenCalled();
   });
 
-  test('PG15 and older never send system_user (a syntax error there); PG16 and newer do not fail', async () => {
+  test('PG15 and older never send system_user (undefined column there); PG16 and newer do not fail', async () => {
     await expect(checkDbRole(fakePool({ ...role(false, false), version: '150004' }).pool, ON)).resolves.toBeUndefined();
     await expect(checkDbRole(fakePool({ ...role(false, false), version: '160000' }).pool, ON)).resolves.toBeUndefined();
     expect(logger.warn).not.toHaveBeenCalled();
@@ -295,7 +295,10 @@ describe('probeDbRole against PostgreSQL', () => {
       CREATE ROLE g_prog_child LOGIN NOSUPERUSER NOBYPASSRLS IN ROLE g_prog_parent;
       CREATE ROLE g_createrole LOGIN NOSUPERUSER NOBYPASSRLS CREATEROLE;
       CREATE ROLE g_cr_parent NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
-      CREATE ROLE g_cr_member LOGIN NOSUPERUSER NOBYPASSRLS CREATEROLE IN ROLE g_cr_parent;`);
+      CREATE ROLE g_cr_member LOGIN NOSUPERUSER NOBYPASSRLS CREATEROLE IN ROLE g_cr_parent;
+      CREATE ROLE g_cr_holder NOLOGIN NOSUPERUSER NOBYPASSRLS CREATEROLE;
+      CREATE ROLE g_cr_via_holder LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE IN ROLE g_cr_holder;
+      CREATE ROLE g_cr_grandchild LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE IN ROLE g_cr_via_holder;`);
   }, 30000);
   afterAll(() => host.kill());
 
@@ -342,15 +345,21 @@ describe('probeDbRole against PostgreSQL', () => {
   test.each([
     ['CREATEROLE', 'g_createrole', true],
     ['plain', 'g_plain', false],
-    ['superuser (CREATEROLE is not implied; flagged by rolsuper instead)', 'g_super', false],
-  ])('statement for a PG15 server, %s: createrole_escalation=%s, system_user is not read', async (_name, sessionRole, expected) => {
+    ['superuser (a member of every role, so of every CREATEROLE role; also flagged by rolsuper)', 'g_super', true],
+  ])('statement for a PG15 server, %s: system_user is not read', async (_name, sessionRole, expected) => {
     const row = await probe(sessionRole, undefined, { version: '150000' });
     expect([row.createrole_escalation, row.session_authorization_masked]).toEqual([expected, false]);
   });
 
-  test('CREATEROLE is an attribute of current_user and is not inherited: SET ROLE to its NOCREATEROLE parent is not flagged', async () => {
-    expect((await probe('g_cr_member', undefined, { version: '150000' })).createrole_escalation).toBe(true);
-    expect((await probe('g_cr_member', 'g_cr_parent', { version: '150000' })).createrole_escalation).toBe(false);
+  // Below PG16 CREATEROLE lets a role grant itself any role. The attribute is not inherited, but a member can SET ROLE to
+  // the holder, and a CREATEROLE session login can RESET ROLE back after SET ROLE to a NOCREATEROLE parent.
+  test.each([
+    ['CREATEROLE session login, no SET ROLE', 'g_cr_member', undefined],
+    ['CREATEROLE session login after SET ROLE to its NOCREATEROLE parent (RESET ROLE undoes it)', 'g_cr_member', 'g_cr_parent'],
+    ['NOCREATEROLE login that is a member of a NOLOGIN CREATEROLE role', 'g_cr_via_holder', undefined],
+    ['indirect member of a CREATEROLE role', 'g_cr_grandchild', undefined],
+  ])('PG15 statement, %s: createrole_escalation is true', async (_name, sessionRole, setRole) => {
+    expect((await probe(sessionRole, setRole, { version: '150000' })).createrole_escalation).toBe(true);
   });
 
   // PGlite has no authentication step, so system_user is replaced with a literal standing in for PG16+.

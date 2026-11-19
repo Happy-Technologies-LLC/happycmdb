@@ -27,11 +27,16 @@ export interface DbRoleRow {
   session_authorization_masked: boolean;
   /**
    * current_user or session_user is a member of pg_execute_server_program, pg_write_server_files,
-   * pg_read_server_files or pg_write_all_data (those that exist on this server): it reads or writes outside RLS,
-   * or runs programs on the database host.
+   * pg_read_server_files or pg_write_all_data (those that exist on this server): the first three reach the database
+   * host (programs, files); pg_write_all_data skips the table grant checks for writes on every table, which voids
+   * the login's least-privilege grants. It does not bypass RLS. pg_read_all_data is not flagged: read-only, and it
+   * does not bypass RLS either.
    */
   dangerous_builtin_role_member: boolean;
-  /** current_user has CREATEROLE on PostgreSQL 15 or older, where it can grant itself any role. Always false on 16+. */
+  /**
+   * PostgreSQL 15 or older: current_user or session_user is a member (itself included) of a CREATEROLE role, so it
+   * holds or can SET ROLE to a role that can grant itself any role. Always false on 16+.
+   */
   createrole_escalation: boolean;
 }
 
@@ -71,8 +76,8 @@ export function bypassesRowSecurity(row: GuardFlags): boolean {
 
 /**
  * The statement is built from the server version (read first with SHOW server_version_num, a read-only command):
- * a bare `system_user` token is a syntax error on PostgreSQL 15 and older, so it is only emitted from 16 on, and no
- * single statement text parses on both. Each version still runs exactly one probe SELECT.
+ * a bare `system_user` token is not a keyword on PostgreSQL 15 and older (it resolves as a column reference and fails
+ * with 42703, undefined column), so it is only emitted from 16 on, and no single statement text works on both. Each version still runs exactly one probe SELECT.
  *
  * One row, or none when current_user has no pg_roles row (a probe failure).
  * - pg_has_role(..., 'MEMBER') is true for direct and indirect membership whether or not the role inherits
@@ -82,19 +87,22 @@ export function bypassesRowSecurity(row: GuardFlags): boolean {
  *   Methods that map the identity (peer, cert, gss, ...) can report an identity that differs from the role name;
  *   that is flagged too (fail closed). A NULL system_user (trust) cannot be compared and reports false. Below 16
  *   the masking cannot be detected: an explicit false, a documented limitation, not an all clear.
- * - createrole_escalation (below 16): CREATEROLE lets a role grant itself any role. On 16+ CREATEROLE alone only
- *   grants roles the creator holds with ADMIN OPTION, so it is not flagged there.
+ * - createrole_escalation (below 16): CREATEROLE lets a role grant itself any role. The attribute is not inherited,
+ *   but a member can SET ROLE to the holder (pg_has_role on a role's own oid is true), so any CREATEROLE role that
+ *   current_user or session_user is a member of is flagged. On 16+ CREATEROLE alone only grants roles the creator
+ *   holds with ADMIN OPTION, so it is not flagged there.
  * - The four built-in roles are looked up by name in pg_roles, so a server that lacks one (pg_write_all_data is 14+)
  *   simply does not match it.
  */
-export function probeSql(serverVersionNum: number): string {
+function probeSql(serverVersionNum: number): string {
   const hasSystemUser = serverVersionNum >= SYSTEM_USER_MIN_VERSION;
   const masked = hasSystemUser
     ? "system_user IS NOT NULL AND substr(system_user, strpos(system_user, ':') + 1) <> session_user::text"
     : 'false';
   const createrole = hasSystemUser
     ? 'false'
-    : "COALESCE(bool_or(rolcreaterole) FILTER (WHERE rolname = current_user), true)";
+    : "EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolcreaterole " +
+      "AND (pg_has_role(current_user, r.oid, 'MEMBER') OR pg_has_role(session_user, r.oid, 'MEMBER')))";
   return (
     'SELECT current_user::text AS current_user, session_user::text AS session_user, ' +
     'COALESCE(bool_or(rolsuper) FILTER (WHERE rolname = current_user), false) AS rolsuper, ' +
@@ -189,7 +197,7 @@ export async function checkDbRole(pool: DbRolePool, env: NodeJS.ProcessEnv = pro
     'a session login that is one (session_user_privileged), a role it can SET ROLE to that is one (can_set_privileged_role), ' +
     'a session login masked by SET SESSION AUTHORIZATION (session_authorization_masked), ' +
     'a member of pg_execute_server_program, pg_write_server_files, pg_read_server_files or pg_write_all_data (dangerous_builtin_role_member), ' +
-    'or a CREATEROLE role on PostgreSQL 15 or older, which can grant itself any role (createrole_escalation)';
+    'or a member of a CREATEROLE role on PostgreSQL 15 or older, which can grant itself any role (createrole_escalation)';
   if (enforce) {
     throw new Error(
       `REQUIRE_NON_SUPERUSER_DB=true: PostgreSQL login role "${row.current_user}" (session login "${row.session_user}"; ${detail}) ` +

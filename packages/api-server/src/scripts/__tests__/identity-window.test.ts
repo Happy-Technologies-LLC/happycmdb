@@ -1056,6 +1056,17 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a key with a colon as the Basic credentials', 'Authorization: Basic token:abc', 'Authorization: Basic ***'],
     ['two keys after Basic credentials', 'Authorization: Basic secret=abc,pwd=2', 'Authorization: Basic ***,pwd=***'],
     ['a key naming the header as its value', 'password: Authorization: Basic abc', 'password: *** Basic ***'],
+    // Follow-up to #415 (L-1): a key=value glued into a URL-shaped token is masked by the key pass, not cut at its `@`.
+    ['a key=value with a raw at sign after a glued scheme', 'x_a://api_key=abc@def', 'x_a://api_key=***'],
+    ['a key=value with a raw at sign after a dot scheme', '.a://password=p@ss', '.a://password=***'],
+    ['a quoted key=value with an at sign and a space', 'x_a://token="a@b c"', 'x_a://token=***'],
+    ['a key=value with a raw at sign after a word scheme', 'postgres://password=p@ss', 'postgres://password=***'],
+    ['a key=value with a raw at sign and a following parameter', 'x_a://api_key=abc@def&other=1', 'x_a://api_key=***&other=1'],
+    ['a key with a colon in a glued scheme', 'x_a://secret:s3@cret failed', 'x_a://secret:*** failed'],
+    ['a user named like a key is over-redacted with its host', 'https://token:pw@h/x', 'https://token:***'],
+    ['plain user:pass userinfo after a glued scheme', 'x_a://user:pass@host', 'x_a://***@host'],
+    ['an empty user and a path after a glued scheme', 'x_a://:pass@host/', 'x_a://***@host/'],
+    ['an empty user, a raw at sign and a slash in the password', 'x_a://:p@ss/w@host/', 'x_a://***@ss/w@host/'],
     ['a quoted Basic value before a key', 'Authorization: "Basic abc" token=1', 'Authorization: "Basic ***" token=***'],
     // Unchanged text.
     ['a URL without userinfo', 'GET http://host/path@seg failed', 'GET http://host/path@seg failed'],
@@ -1091,6 +1102,9 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a long input without a scheme', 'a.'.repeat(100000)],
     ['a long run of leading punctuation', '.-+'.repeat(70000)],
     ['dotted digits then a scheme', `${'1.'.repeat(70000)}x://u:p@h`],
+    ['repeated key=value userinfo (100 KB)', 'x_a://password=a@'.repeat(6000)],
+    ['a long key name in a scheme userinfo (100 KB)', `x_a://${'password_'.repeat(11000)}=v@h`],
+    ['a long key-free name in a scheme userinfo (100 KB)', `x_a://${'a'.repeat(100000)}@h`],
   ])('redactSecrets stays linear on long input: %s', (_label, input) => {
     const started = performance.now();
     redactSecrets(input);
@@ -1120,6 +1134,45 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
       }
     }
     expect(redactedBefore).toBeGreaterThan(500);
+  });
+
+  // Follow-up to #415 (L-1): a scheme token whose "userinfo" is a secret-named key=value must not print the part of the
+  // value after a raw `@`. The old pass masked everything up to the `@`; now the key pass masks the whole value, so no
+  // character of the value, nor of the text after the `@`, may be printed. The key text and the scheme are kept.
+  it('redactSecrets prints no value of a key=value that the pre-#407 scheme pass redacted as userinfo', () => {
+    const before = (text: string): string => text.replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/]*@/gi, '$1***@');
+    const prefixes = ['', ' ', '(', 'x', 'x_', '_', 'DB_URL.', 'foo_bar-', '1_', '.', '-', '+', 'url='];
+    const schemes = ['postgres', 'HTTPS', 'a', 'a_b', 'x.y'];
+    const keys = ['api_key', 'password', 'PASSWD', 'pwd', 'token', 'client_secret', 'x-api-key', 'apikey'];
+    // [value-and-tail text, pieces that must not appear]
+    const forms: Array<[string, string[]]> = [
+      ['Vq9x@Tz4l', ['Vq9x', 'Tz4l']],
+      ['"Vq9x@Tz4l w3"', ['Vq9x', 'Tz4l', 'w3']],
+      ["'Vq9x@Tz4l w3'", ['Vq9x', 'Tz4l', 'w3']],
+      ['Vq9x@Tz4l@Uy8k', ['Vq9x', 'Tz4l', 'Uy8k']],
+    ];
+    let redactedBefore = 0;
+    for (const prefix of prefixes) {
+      for (const scheme of schemes) {
+        for (const key of keys) {
+          for (const separator of ['=', ':']) {
+            for (const [value, secrets] of forms) {
+              const input = `${prefix}${scheme}://${key}${separator}${value}`;
+              if (before(input) === input) {
+                continue;
+              }
+              redactedBefore++;
+              const output = redactSecrets(input);
+              expect({ input, output }).toEqual({ input, output: expect.stringContaining(`${scheme}://${key}${separator}***`) });
+              for (const secret of secrets) {
+                expect({ input, output }).toEqual({ input, output: expect.not.stringContaining(secret) });
+              }
+            }
+          }
+        }
+      }
+    }
+    expect(redactedBefore).toBeGreaterThan(2000);
   });
 
   // HAP-2136 F4

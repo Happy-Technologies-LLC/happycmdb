@@ -291,7 +291,8 @@ nothing to it; if the lock must be freed from the database side, run `pg_termina
 that stores both `_id` and `id` answers to either, and a run that came in by one spelling and resolved to the other
 holds both locks (the argument's first, the resolved id's second), so the filter must cover both. The operator supplies
 two values: the stalled run's `--user-id` as `<user id>`, and the id the run resolved to as `<resolved id>` (the node's
-other spelling: read the node's `_id` and `id` in Neo4j; write the same value twice when the node has one id).
+other spelling: read the node's `_id` and `id` in Neo4j; write the same value twice when the node has one id). Both
+placeholders sit inside SQL string literals, so an embedded `'` in a pasted id must be doubled (`''`).
 
 ```sql
 SELECT DISTINCT l.pid

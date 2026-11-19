@@ -672,6 +672,17 @@ function assertFlagValues(argv: readonly string[]): void {
   }
 }
 
+/** The secret-naming keywords, shared by the key pass and by the scheme pass's key=value guard (one list, no copy). */
+const SECRET_KEYWORDS = 'password|passwd|pwd|token|secret|api[_-]?key';
+/** A key name (a run of name characters that contains a keyword) and its `=` or `:`, from the run start; lookahead is one lazy scan of the run. */
+const SECRET_KEY_NAME = `(?=[\\w.-]*?(?:${SECRET_KEYWORDS}))[\\w.-]+["']?\\s*[=:]\\s*`;
+/** URL userinfo: group 1 the scheme (kept), group 2 the userinfo with the `@` it stops at. */
+const SCHEME_USERINFO = /((?<![a-z0-9+.-])[\d+.-]*[a-z][a-z0-9+.-]*:\/\/)([^\s/]*@|[^\s/?#@:[]*:(?!\d+(?:[/?#\s]|$))(?:(?!\/\/)[^\s@])*@)/gi;
+/** The userinfo of a scheme token that is itself a secret-named key=value (`x_a://api_key=abc@def`). */
+const SECRET_KEY_HEAD = new RegExp(`^${SECRET_KEY_NAME}`, 'i');
+/** The key pass: group 1 the key and its `=`/`:`, group 2 the value (quoted values included). */
+const SECRET_KEY_VALUE = new RegExp(`((?<![\\w.-])${SECRET_KEY_NAME})("[^"]*"|'[^']*'|[^\\s,;&]+)`, 'gi');
+
 const REDACTED = '***';
 /**
  * HAP-2136: credential-like content of an error text, replaced before it is printed. Best effort for driver and network
@@ -696,16 +707,22 @@ const REDACTED = '***';
  * follows), so a scheme glued after them (`.postgres://`, `-redis://`, `2x-postgres://`) or after an underscore
  * (`DB_URL.postgres://`, `_postgres://`, `x_postgres://`) is still found; it is the whole run that is printed back, only
  * its userinfo is replaced.
+ * A scheme token whose "userinfo" (the text between `://` and the `@` the pass stops at) itself starts with a secret-named
+ * key and `=` or `:` (`x_a://api_key=abc@def`, `.a://password=p@ss`, `postgres://password=p@ss`, `x_a://token="a@b c"`) is
+ * not userinfo: the scheme pass leaves it, and the key pass masks the value like any key=value (to whitespace, `,`, `;`
+ * or `&`, quoted values included), so the text after the raw `@` is not printed (`x_a://api_key=***`). This
+ * over-redacts the host of `https://token:pw@host` (a user named like a key), which is the ambiguous case.
  * The passes run in this order on purpose: the Basic value is replaced before the key pass, because a key pass first
  * would consume `Authorization:` as the value of an earlier key (`password: Authorization: Basic abc`) and leave `abc`.
  * Not covered: `Authorization=Basic%20...` (URL-encoded).
  */
 export function redactSecrets(text: string): string {
   return text
-    .replace(/((?<![a-z0-9+.-])[\d+.-]*[a-z][a-z0-9+.-]*:\/\/)(?:[^\s/]*@|[^\s/?#@:[]*:(?!\d+(?:[/?#\s]|$))(?:(?!\/\/)[^\s@])*@)/gi, `$1${REDACTED}@`)
+    .replace(SCHEME_USERINFO, (match: string, prefix: string, userinfo: string) =>
+      SECRET_KEY_HEAD.test(userinfo) ? match : `${prefix}${REDACTED}@`)
     .replace(/\bBearer\s+[^\s,;]+/gi, `Bearer ${REDACTED}`)
     .replace(/(\bauthorization["']?\s*[=:]\s*["']?basic\s+)[^\s,;"']+/gi, `$1${REDACTED}`)
-    .replace(/((?<![\w.-])(?=[\w.-]*?(?:password|passwd|pwd|token|secret|api[_-]?key))[\w.-]+["']?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi, `$1${REDACTED}`);
+    .replace(SECRET_KEY_VALUE, `$1${REDACTED}`);
 }
 /** HAP-2131: a bare flag (`--grant`, `--revoke`), matched only where it is a flag: the token after a value flag is that flag's value. */
 function hasFlag(argv: readonly string[], flag: string): boolean {

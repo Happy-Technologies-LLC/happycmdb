@@ -313,12 +313,15 @@ EOF
   #    054 replays only its grants (SELECT, INSERT on relationship_evidence_receipts for cmdb_user and cmdb_app), never the
   #    file: it replaces functions and triggers. A --no-acl restore drops ACLs, but the append-only trigger comes back
   #    with the dump.
-  for m in 032_secret_table_public_grants.sql 033_public_business_service_audit_acl.sql 034_history_sequence_discovery_acl.sql 039_recent_audit_activity_acl.sql 044_business_service_journal_read_acl.sql 045_staging_app_login_acl.sql 046_service_offerings.sql 047_ai_sync_cursors.sql 048_portfolio_import.sql 050_bi_cost_view_grants.sql 051_bi_view_security_barrier.sql 054_relationship_evidence_receipts.sql; do
+  #    056 (estate_kpi_snapshots) is replayed the same way: grants only. Its row level security policy and append-only
+  #    triggers come back with the dump.
+  for m in 032_secret_table_public_grants.sql 033_public_business_service_audit_acl.sql 034_history_sequence_discovery_acl.sql 039_recent_audit_activity_acl.sql 044_business_service_journal_read_acl.sql 045_staging_app_login_acl.sql 046_service_offerings.sql 047_ai_sync_cursors.sql 048_portfolio_import.sql 050_bi_cost_view_grants.sql 051_bi_view_security_barrier.sql 054_relationship_evidence_receipts.sql 056_estate_kpi_snapshots.sql; do
     if ! grep -qxF "$m" <<< "$recorded"; then echo "grant step: $m is not in the restored ledger - skipped"; continue; fi
     case "$m" in
       033_*) run "$m" -c "DO \$g\$ BEGIN IF to_regprocedure('cmdb.fn_business_service_health(uuid)') IS NOT NULL THEN ALTER FUNCTION cmdb.fn_business_service_health(uuid) SECURITY INVOKER; END IF; END \$g\$" -f "$mig/$m" ;;
       034_*) run "$m (grants replayed)" -c "DO \$g\$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cmdb_user') THEN GRANT SELECT, INSERT ON public.ci_change_history TO cmdb_user; GRANT USAGE ON ALL SEQUENCES IN SCHEMA cmdb TO cmdb_user; GRANT SELECT, INSERT ON cmdb.dim_ci, cmdb.dim_location, cmdb.dim_owner, cmdb.fact_discovery, cmdb.fact_ci_changes, cmdb.fact_ci_relationships TO cmdb_user; GRANT SELECT, INSERT, UPDATE, DELETE ON public.discovery_agents TO cmdb_user; GRANT SELECT ON public.active_discovery_agents, public.agent_network_coverage TO cmdb_user; END IF; END \$g\$" ;;
       054_*) run "$m (grants replayed)" -c "DO \$g\$ DECLARE r text; BEGIN IF to_regclass('public.relationship_evidence_receipts') IS NOT NULL THEN FOREACH r IN ARRAY ARRAY['cmdb_user','cmdb_app'] LOOP IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('GRANT SELECT, INSERT ON public.relationship_evidence_receipts TO %I', r); END IF; END LOOP; END IF; END \$g\$" ;;
+      056_*) run "$m (grants replayed)" -c "DO \$g\$ DECLARE r text; BEGIN IF to_regclass('public.estate_kpi_snapshots') IS NOT NULL THEN FOREACH r IN ARRAY ARRAY['cmdb_user','cmdb_app'] LOOP IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN EXECUTE format('GRANT SELECT, INSERT ON public.estate_kpi_snapshots TO %I', r); END IF; END LOOP; END IF; END \$g\$" ;;
       032_*) run "$m" -f "$mig/$m" -c "DO \$g\$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'metabase_readonly') THEN REVOKE SELECT ON public.v_business_service_health, public.v_tbm_tower_summary FROM metabase_readonly; END IF; END \$g\$" ;;
       *) run "$m" -f "$mig/$m" ;;
     esac

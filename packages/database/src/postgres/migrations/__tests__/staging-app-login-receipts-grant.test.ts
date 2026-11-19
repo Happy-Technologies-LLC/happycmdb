@@ -1,13 +1,13 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-// HAP-2126 L1a: deploy/build01-staging-app-login.sql re-applies 045 when it is recorded, but 046, 047, 048 and 054 grant their
+// HAP-2126 L1a: deploy/build01-staging-app-login.sql re-applies 045 when it is recorded, but 046, 047, 048, 054 and 056 grant their
 // own tables to cmdb_app and the migrator never re-runs a recorded migration, so a dropped and re-created cmdb_app lacked
 // those grants (relationship writes then failed in T2 with 42501). The script's `$hap2126$` block restores exactly them.
 //
-// The block runs on PGlite against the real 046, 047, 048 and 054 files. The whole ordered migration set cannot run on PGlite
+// The block runs on PGlite against the real 046, 047, 048, 054 and 056 files. The whole ordered migration set cannot run on PGlite
 // (001 needs TimescaleDB), so the whole-grant matrix test builds each database from stand-in tables for every relation that 045
-// grants (read from 045 itself), then runs 045 to 048 and 054 verbatim. The same matrix is proven on a real server, over the
+// grants (read from 045 itself), then runs 045 to 048, 054 and 056 verbatim. The same matrix is proven on a real server, over the
 // full migration set, by the "role re-creation" step of deploy/test-staging-migrations.sh (hosted CI job `staging-migrations`).
 import { fork } from 'child_process';
 import { readFileSync } from 'fs';
@@ -41,7 +41,7 @@ const MIGRATIONS = join(__dirname, '..');
 const migration = (name: string) => readFileSync(join(MIGRATIONS, name), 'utf8');
 const APP_LOGIN_SCRIPT = readFileSync(join(__dirname, '../../../../../../deploy/build01-staging-app-login.sql'), 'utf8');
 const TABLE_MIGRATIONS = ['046_service_offerings.sql', '047_ai_sync_cursors.sql', '048_portfolio_import.sql',
-  '054_relationship_evidence_receipts.sql'];
+  '054_relationship_evidence_receipts.sql', '056_estate_kpi_snapshots.sql'];
 
 /** The `$hap2126$` DO block of the script, exactly as psql would send it. */
 function grantBlock(): string {
@@ -51,18 +51,19 @@ function grantBlock(): string {
 }
 
 const PRIVILEGES = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'];
-/** What the migrations 046, 047, 048 and 054 give the app logins, table by table (never UPDATE on an append-only table). */
+/** What the migrations 046, 047, 048, 054 and 056 give the app logins, table by table (never UPDATE on an append-only table). */
 const EXPECTED: Record<string, string[]> = {
   'public.service_offerings': ['SELECT', 'INSERT', 'UPDATE'],
   'public.ai_sync_cursors': ['SELECT', 'INSERT', 'UPDATE'],
   'public.portfolio_imports': ['SELECT', 'INSERT'],
   'public.portfolio_import_map': ['SELECT', 'INSERT'],
   'public.relationship_evidence_receipts': ['SELECT', 'INSERT'],
+  'public.estate_kpi_snapshots': ['SELECT', 'INSERT'],
 };
 
 /**
  * 046 and 048 need the business-service table and the audit enum of 001 (with 008 and 043 on top), as service-offerings-046.test.ts
- * builds them; 047 and 054 stand alone. `app` creates cmdb_app first (a fresh staging install) or not (it is re-created later).
+ * builds them; 047, 054 and 056 stand alone. `app` creates cmdb_app first (a fresh staging install) or not (it is re-created later).
  */
 async function prepare(query: (sql: string) => Promise<Array<Record<string, any>>>, app: boolean, extra = ''): Promise<void> {
   const schema = migration('001_complete_schema.sql');
@@ -107,6 +108,7 @@ describe('the $hap2126$ block in the app-login script', () => {
     await query(grantBlock());
     expect(await held(query, 'cmdb_app', 'public.portfolio_imports_away')).toEqual([]);
     expect(await held(query, 'cmdb_app', 'public.relationship_evidence_receipts')).toEqual(['SELECT', 'INSERT']);
+    expect(await held(query, 'cmdb_app', 'public.estate_kpi_snapshots')).toEqual(['SELECT', 'INSERT']);
     expect(await held(query, 'cmdb_app', 'public.service_offerings')).toEqual(['SELECT', 'INSERT', 'UPDATE']);
   }, 60000);
 });
@@ -141,9 +143,9 @@ describe('whole-grant matrix: a re-created cmdb_app equals a freshly migrated on
     return tables.map(table => `CREATE TABLE ${table} (id serial PRIMARY KEY);`).join('\n');
   };
 
-  it('has an empty difference, over a matrix that carries the five per-table grants', async () => {
+  it('has an empty difference, over a matrix that carries the six per-table grants', async () => {
     const [baseline, recreated] = [open(), open()];
-    // Baseline, as a fresh staging install: app-login creates cmdb_app before the migrator, which then runs 045 to 054 in order.
+    // Baseline, as a fresh staging install: app-login creates cmdb_app before the migrator, which then runs 045 to 056 in order.
     await prepare(baseline, true, standIns());
     for (const name of ['045_staging_app_login_acl.sql', ...TABLE_MIGRATIONS]) await migrate(baseline, name);
     // Re-creation: the migrations ran without cmdb_app, then app-login created it and re-applied 045 and the block.

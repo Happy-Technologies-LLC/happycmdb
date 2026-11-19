@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // HAP-1575: the manual 045 rollback on PGlite. After it the staging API login cmdb_app is NOLOGIN with no privilege of its
-// own (PUBLIC's stay), 045-048 and 054 are un-recorded, other roles and ledger rows are untouched, and re-running is a no-op. The
+// own (PUBLIC's stay), 045-048, 054 and 056 are un-recorded, other roles and ledger rows are untouched, and re-running is a no-op. The
 // forward direction (app-login re-asserting LOGIN, the migrator re-granting) needs psql and a real server:
 // deploy/test-staging-migrations.sh.
 import { fork } from 'child_process';
@@ -43,7 +43,7 @@ beforeAll(async () => {
     CREATE TABLE cmdb.schema_migrations (migration_name text PRIMARY KEY);
     INSERT INTO cmdb.schema_migrations VALUES ('044_business_service_journal_read_acl.sql'), ('045_staging_app_login_acl.sql'),
       ('046_service_offerings.sql'), ('047_ai_sync_cursors.sql'), ('048_portfolio_import.sql'), ('049_audit_entity_user.sql'),
-      ('054_relationship_evidence_receipts.sql');
+      ('054_relationship_evidence_receipts.sql'), ('056_estate_kpi_snapshots.sql');
     CREATE TABLE public.audit_log (id serial PRIMARY KEY, note text);
     CREATE TABLE cmdb.dim_ci (id int PRIMARY KEY);
     CREATE ROLE cmdb_user LOGIN;

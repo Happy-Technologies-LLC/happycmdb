@@ -30,6 +30,13 @@ export interface DashboardStats {
   configuration_coverage?: ConfigurationCoverage | null;
   /** Fields of this payload that are null because they could not be computed. */
   unavailable?: string[];
+  /**
+   * BW7: up to the newest 10 RECORDED daily values per metric, ascending by date (sparse: a day without a dashboard
+   * read has no point). null when the history is unavailable (`kpi_history` is then listed in `unavailable`).
+   */
+  kpi_history?: KpiHistory | null;
+  /** BW7: latest recorded value minus the previous recorded value per metric; null with fewer than 2 points. */
+  kpi_delta?: KpiDelta | null;
 }
 
 export interface ConfigurationCoverage {
@@ -37,6 +44,15 @@ export interface ConfigurationCoverage {
   total: number;
   ratio: number | null;
 }
+
+export type KpiHistoryMetric = 'health_score' | 'open_drift_count' | 'configuration_coverage_ratio' | 'total_cis';
+export interface KpiHistoryPoint {
+  /** UTC day, YYYY-MM-DD. */
+  date: string;
+  value: number;
+}
+export type KpiHistory = Record<KpiHistoryMetric, KpiHistoryPoint[]>;
+export type KpiDelta = Record<KpiHistoryMetric, number | null>;
 
 export interface DashboardRecentDiscovery {
   id: string;

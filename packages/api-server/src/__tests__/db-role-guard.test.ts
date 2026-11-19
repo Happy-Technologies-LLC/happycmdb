@@ -6,17 +6,25 @@ jest.mock('@cmdb/common', () => ({ logger }));
 
 import { fork } from 'child_process';
 import { join } from 'path';
-import { checkDbRole, probeDbRole, requireNonSuperuser, type DbRolePool } from '../db-role-guard';
+import { bypassesRowSecurity, checkDbRole, probeDbRole, requireNonSuperuser, type DbRolePool } from '../db-role-guard';
 
 const SENTINEL = 'sentinel-password-p4ss';
 
-function fakePool(outcome: { row?: Record<string, unknown>; rows?: unknown[]; error?: Error & { code?: string } }) {
+/**
+ * `version` is the server_version_num the fake server reports. A fake PG15 or older rejects the bare `system_user`
+ * token with a syntax error, as the real server does.
+ */
+function fakePool(outcome: { row?: Record<string, unknown>; rows?: unknown[]; error?: Error & { code?: string }; version?: string }) {
   const statements: string[] = [];
   const release = jest.fn();
   const client = {
     query: jest.fn(async (text: string) => {
       statements.push(text);
+      if (text === 'SHOW server_version_num') return { rows: [{ server_version_num: outcome.version ?? '170000' }] };
       if (text.startsWith('SELECT')) {
+        if (Number(outcome.version ?? '170000') < 160000 && /\bsystem_user\b/.test(text)) {
+          throw Object.assign(new Error('syntax error'), { code: '42601' });
+        }
         if (outcome.error) throw outcome.error;
         return { rows: outcome.rows ?? (outcome.row ? [outcome.row] : []) };
       }
@@ -31,10 +39,15 @@ function fakePool(outcome: { row?: Record<string, unknown>; rows?: unknown[]; er
 const role = (rolsuper: boolean, rolbypassrls: boolean, extra: Record<string, unknown> = {}) =>
   ({ row: {
     current_user: 'cmdb_x', session_user: 'cmdb_x', rolsuper, rolbypassrls,
-    session_user_privileged: false, can_set_privileged_role: false, ...extra,
+    session_user_privileged: false, can_set_privileged_role: false, session_authorization_masked: false,
+    dangerous_builtin_role_member: false, createrole_escalation: false, ...extra,
   } });
 const FLAGS = { current_user: 'cmdb_x', session_user: 'cmdb_x', rolsuper: false, rolbypassrls: false,
-  session_user_privileged: false, can_set_privileged_role: false };
+  session_user_privileged: false, can_set_privileged_role: false, session_authorization_masked: false,
+  dangerous_builtin_role_member: false, createrole_escalation: false };
+const FLAG_NAMES = ['rolsuper', 'rolbypassrls', 'session_user_privileged', 'can_set_privileged_role',
+  'session_authorization_masked', 'dangerous_builtin_role_member', 'createrole_escalation'] as const;
+const detailOf = (flags: Record<string, unknown>) => FLAG_NAMES.map(name => `${name}=${flags[name]}`).join(', ');
 const logged = () => JSON.stringify([logger.info.mock.calls, logger.warn.mock.calls, logger.error.mock.calls]);
 const OFF = {} as NodeJS.ProcessEnv;
 const ON = { REQUIRE_NON_SUPERUSER_DB: 'true' } as NodeJS.ProcessEnv;
@@ -70,14 +83,16 @@ describe('checkDbRole', () => {
     'rolsuper=%s rolbypassrls=%s with REQUIRE_NON_SUPERUSER_DB=true: refuses, naming the role and flags',
     async (rolsuper, rolbypassrls) => {
       await expect(checkDbRole(fakePool(role(rolsuper, rolbypassrls)).pool, ON))
-        .rejects.toThrow(`"cmdb_x" (session login "cmdb_x"; rolsuper=${rolsuper}, rolbypassrls=${rolbypassrls}, ` +
-          'session_user_privileged=false, can_set_privileged_role=false)');
+        .rejects.toThrow(`"cmdb_x" (session login "cmdb_x"; ${detailOf({ ...FLAGS, rolsuper, rolbypassrls })})`);
       expect(logger.info).not.toHaveBeenCalled();
     });
 
   const escalations: Array<[string, Record<string, unknown>]> = [
     ['a NOSUPERUSER NOBYPASSRLS login that can SET ROLE to a privileged role', { can_set_privileged_role: true }],
     ['a plain current_user under a privileged session_user', { session_user: 'cmdb_login', session_user_privileged: true }],
+    ['a session login masked by SET SESSION AUTHORIZATION', { session_authorization_masked: true }],
+    ['a member of a dangerous built-in role', { dangerous_builtin_role_member: true }],
+    ['a CREATEROLE login below PostgreSQL 16', { createrole_escalation: true }],
   ];
 
   test.each(escalations)('%s: logs error with enforcement off, refuses with it on, naming roles and flags', async (_name, extra) => {
@@ -88,14 +103,34 @@ describe('checkDbRole', () => {
     expect(logger.info).not.toHaveBeenCalled();
 
     const refusal = await checkDbRole(fakePool(role(false, false, extra)).pool, ON).then(() => undefined, (e: Error) => e);
-    expect(refusal?.message).toContain(`"cmdb_x" (session login "${flags.session_user}"; rolsuper=false, rolbypassrls=false, ` +
-      `session_user_privileged=${flags.session_user_privileged}, can_set_privileged_role=${flags.can_set_privileged_role})`);
+    expect(refusal?.message).toContain(`"cmdb_x" (session login "${flags.session_user}"; ${detailOf(flags)})`);
     expect(logger.info).not.toHaveBeenCalled();
     expect(logged() + refusal?.message).not.toContain(SENTINEL);
   });
 
-  test('a flag that is not an explicit false (null) counts as a violation', async () => {
-    await expect(checkDbRole(fakePool(role(false, false, { can_set_privileged_role: null })).pool, ON)).rejects.toThrow(/refusing to start/);
+  test.each(FLAG_NAMES)('%s that is not an explicit false (null or missing) counts as a violation', async (name) => {
+    await expect(checkDbRole(fakePool(role(false, false, { [name]: null })).pool, ON)).rejects.toThrow(/refusing to start/);
+    const { [name]: _dropped, ...rest } = role(false, false).row;
+    await expect(checkDbRole(fakePool({ row: rest }).pool, ON)).rejects.toThrow(/refusing to start/);
+  });
+
+  test('the refusal and the error line name each new reason', async () => {
+    const refusal = await checkDbRole(fakePool(role(false, false, { dangerous_builtin_role_member: true })).pool, ON)
+      .then(() => undefined, (e: Error) => e);
+    await checkDbRole(fakePool(role(false, false, { dangerous_builtin_role_member: true })).pool, OFF);
+    for (const text of [refusal?.message, logger.error.mock.calls[0][0] as string]) {
+      expect(text).toContain('session_authorization_masked');
+      expect(text).toContain('dangerous_builtin_role_member');
+      expect(text).toContain('createrole_escalation');
+      expect(text).toContain('pg_execute_server_program');
+    }
+  });
+
+  test('a probe row whose session login has no pg_roles row (session_user_privileged = true, the SQL default) is a violation', async () => {
+    const row = { ...role(false, false).row, session_user: 'vanished_login', session_user_privileged: true };
+    await expect(checkDbRole(fakePool({ row }).pool, ON)).rejects.toThrow(/session login "vanished_login".*session_user_privileged=true/);
+    await expect(checkDbRole(fakePool({ row }).pool, OFF)).resolves.toBeUndefined();
+    expect(logger.error).toHaveBeenCalledTimes(1);
   });
 
   test('probe failure with enforcement off: warn with the SQLSTATE only, continues; the message never reaches a log', async () => {
@@ -129,16 +164,34 @@ describe('checkDbRole', () => {
     await expect(checkDbRole(fakePool({ rows: [] }).pool, ON)).rejects.toThrow(/probe failed/);
   });
 
-  test('the probe runs BEGIN READ ONLY, a statement_timeout, one SELECT, ROLLBACK, then releases the client', async () => {
-    const { pool, statements, release } = fakePool(role(false, false));
-    await checkDbRole(pool, OFF);
-    expect(statements).toEqual([
-      'BEGIN READ ONLY',
-      expect.stringMatching(/^SET LOCAL statement_timeout = [1-9]\d*$/),
-      expect.stringMatching(/^SELECT current_user::text AS current_user, session_user::text AS session_user, .+ AS can_set_privileged_role FROM pg_roles WHERE rolname IN \(current_user, session_user\) HAVING bool_or\(rolname = current_user\)$/),
-      'ROLLBACK',
-    ]);
-    expect(release).toHaveBeenCalledWith(undefined);
+  test.each(['150000', '160000', '170000'])(
+    'PG %s: the probe runs in a read-only transaction with a 5 s statement_timeout, one probe SELECT, then ROLLBACK, and releases the client',
+    async (version) => {
+      const { pool, statements, release } = fakePool({ ...role(false, false), version });
+      await checkDbRole(pool, OFF);
+      expect(statements[0]).toBe('BEGIN READ ONLY');
+      expect(statements[1]).toBe('SET LOCAL statement_timeout = 5000');
+      expect(statements.at(-1)).toBe('ROLLBACK');
+      const selects = statements.filter(text => /^SELECT\b/.test(text));
+      expect(selects).toHaveLength(1);
+      expect(selects[0]).not.toContain(';');
+      expect(statements.filter(text => !/^SELECT\b/.test(text))).toEqual([
+        'BEGIN READ ONLY', 'SET LOCAL statement_timeout = 5000', 'SHOW server_version_num', 'ROLLBACK',
+      ]);
+      expect(release).toHaveBeenCalledWith(undefined);
+    });
+
+  test.each(['', 'abc', '0', '-1', '16.0'])('an unreadable server_version_num (%j) is a probe failure, not a pass', async (version) => {
+    await expect(checkDbRole(fakePool({ ...role(false, false), version }).pool, ON)).rejects.toThrow(/probe failed/);
+    await expect(checkDbRole(fakePool({ ...role(false, false), version }).pool, OFF)).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.info).not.toHaveBeenCalled();
+  });
+
+  test('PG15 and older never send system_user (a syntax error there); PG16 and newer do not fail', async () => {
+    await expect(checkDbRole(fakePool({ ...role(false, false), version: '150004' }).pool, ON)).resolves.toBeUndefined();
+    await expect(checkDbRole(fakePool({ ...role(false, false), version: '160000' }).pool, ON)).resolves.toBeUndefined();
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 
   test('the transaction is rolled back and the client released even when the SELECT fails; a failed ROLLBACK destroys the client', async () => {
@@ -151,6 +204,7 @@ describe('checkDbRole', () => {
     const client = {
       query: jest.fn(async (text: string) => {
         if (text === 'ROLLBACK') throw rollbackError;
+        if (text === 'SHOW server_version_num') return { rows: [{ server_version_num: '170000' }] };
         return { rows: [role(false, false).row] };
       }),
       release: jest.fn(),
@@ -158,6 +212,16 @@ describe('checkDbRole', () => {
     await checkDbRole({ connect: async () => client as never }, OFF);
     expect(client.release).toHaveBeenCalledWith(rollbackError);
   });
+});
+
+describe('bypassesRowSecurity', () => {
+  const combos = Array.from({ length: 2 ** FLAG_NAMES.length }, (_, mask) =>
+    Object.fromEntries(FLAG_NAMES.map((name, bit) => [name, Boolean(mask & (1 << bit))])) as Record<(typeof FLAG_NAMES)[number], boolean>);
+
+  test.each(combos.map(combo => [FLAG_NAMES.filter(name => combo[name]).join('+') || 'none', combo] as const))(
+    'flags set: %s', (_name, combo) => {
+      expect(bypassesRowSecurity(combo)).toBe(FLAG_NAMES.some(name => combo[name]));
+    });
 });
 
 describe('requireNonSuperuser', () => {
@@ -189,12 +253,22 @@ describe('probeDbRole against PostgreSQL', () => {
     host.send({ id, op: /^\s*SELECT/i.test(sql) ? 'query' : 'exec', sql, params: [] });
     return promise;
   }
-  const poolFor = (sessionRole: string, setRole?: string): DbRolePool => ({
+  /**
+   * `version` overrides what SHOW server_version_num reports (PGlite is PG18), so the older-server statement runs
+   * on a server that also accepts it. `systemUser` replaces the `system_user` token with a literal, standing in for
+   * PG16+'s authenticated identity (PGlite's system_user is always NULL: no authentication step).
+   */
+  const poolFor = (sessionRole: string, setRole?: string, opts: { version?: string; systemUser?: string } = {}): DbRolePool => ({
     connect: async () => {
       await exec('RESET SESSION AUTHORIZATION; RESET ROLE');
       await exec(`SET SESSION AUTHORIZATION ${sessionRole}`);
       if (setRole) await exec(`SET ROLE ${setRole}`);
-      return { query: (async (text: string) => ({ rows: await exec(text) })) as never, release: () => undefined };
+      const query = async (text: string) => {
+        if (opts.version && text === 'SHOW server_version_num') return { rows: [{ server_version_num: opts.version }] };
+        const sql = opts.systemUser === undefined ? text : text.replace(/\bsystem_user\b/g, `'${opts.systemUser}'::text`);
+        return { rows: await exec(sql) };
+      };
+      return { query: query as never, release: () => undefined };
     },
   });
 
@@ -210,13 +284,27 @@ describe('probeDbRole against PostgreSQL', () => {
       CREATE ROLE g_member_bypass LOGIN NOSUPERUSER NOBYPASSRLS IN ROLE g_priv_parent;
       CREATE ROLE g_member_noinherit LOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT IN ROLE g_super_parent;
       CREATE ROLE g_dual LOGIN NOSUPERUSER NOBYPASSRLS IN ROLE g_plain_parent, g_super_parent;
-      CREATE ROLE g_grandchild LOGIN NOSUPERUSER NOBYPASSRLS IN ROLE g_member_bypass;`);
+      CREATE ROLE g_grandchild LOGIN NOSUPERUSER NOBYPASSRLS IN ROLE g_member_bypass;
+      CREATE ROLE g_prog LOGIN NOSUPERUSER NOBYPASSRLS IN ROLE pg_execute_server_program;
+      CREATE ROLE g_wfiles LOGIN NOSUPERUSER NOBYPASSRLS IN ROLE pg_write_server_files;
+      CREATE ROLE g_rfiles LOGIN NOSUPERUSER NOBYPASSRLS IN ROLE pg_read_server_files;
+      CREATE ROLE g_wall LOGIN NOSUPERUSER NOBYPASSRLS IN ROLE pg_write_all_data;
+      CREATE ROLE g_rall LOGIN NOSUPERUSER NOBYPASSRLS IN ROLE pg_read_all_data;
+      CREATE ROLE g_noinherit_prog LOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT IN ROLE pg_execute_server_program;
+      CREATE ROLE g_prog_parent NOLOGIN NOSUPERUSER NOBYPASSRLS IN ROLE pg_read_server_files;
+      CREATE ROLE g_prog_child LOGIN NOSUPERUSER NOBYPASSRLS IN ROLE g_prog_parent;
+      CREATE ROLE g_createrole LOGIN NOSUPERUSER NOBYPASSRLS CREATEROLE;
+      CREATE ROLE g_cr_parent NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
+      CREATE ROLE g_cr_member LOGIN NOSUPERUSER NOBYPASSRLS CREATEROLE IN ROLE g_cr_parent;`);
   }, 30000);
   afterAll(() => host.kill());
 
-  const probe = (sessionRole: string, setRole?: string) => probeDbRole(poolFor(sessionRole, setRole));
+  const probe = (sessionRole: string, setRole?: string, opts?: { version?: string; systemUser?: string }) =>
+    probeDbRole(poolFor(sessionRole, setRole, opts));
   const pick = (r: Awaited<ReturnType<typeof probeDbRole>>) =>
     [r.current_user, r.session_user, r.rolsuper, r.rolbypassrls, r.session_user_privileged, r.can_set_privileged_role];
+  const escalation = (r: Awaited<ReturnType<typeof probeDbRole>>) =>
+    [r.session_authorization_masked, r.dangerous_builtin_role_member, r.createrole_escalation];
 
   test.each([
     // A superuser is a member of every role, so it also reports can_set_privileged_role (already flagged by rolsuper).
@@ -230,8 +318,53 @@ describe('probeDbRole against PostgreSQL', () => {
     ['plain current_user under a superuser session login', 'g_super', 'g_plain', ['g_plain', 'g_super', false, false, true, true]],
     ['plain current_user under a plain session login that is a member of a superuser role', 'g_dual', 'g_plain_parent',
       ['g_plain_parent', 'g_dual', false, false, false, true]],
+    ['member of a dangerous built-in role is not a privileged-role member', 'g_prog', undefined, ['g_prog', 'g_prog', false, false, false, false]],
   ])('%s', async (_name, sessionRole, setRole, expected) => {
     expect(pick(await probe(sessionRole, setRole))).toEqual(expected);
+  });
+
+  // Escalation flags: [session_authorization_masked, dangerous_builtin_role_member, createrole_escalation].
+  test.each([
+    ['plain', 'g_plain', undefined, [false, false, false]],
+    ['pg_execute_server_program member', 'g_prog', undefined, [false, true, false]],
+    ['pg_write_server_files member', 'g_wfiles', undefined, [false, true, false]],
+    ['pg_read_server_files member', 'g_rfiles', undefined, [false, true, false]],
+    ['pg_write_all_data member', 'g_wall', undefined, [false, true, false]],
+    ['pg_read_all_data member only (grant posture, not flagged)', 'g_rall', undefined, [false, false, false]],
+    ['NOINHERIT member (SET ROLE still works)', 'g_noinherit_prog', undefined, [false, true, false]],
+    ['indirect member through a plain parent', 'g_prog_child', undefined, [false, true, false]],
+    ['member current_user under a superuser session login', 'g_super', 'g_prog', [false, true, false]],
+    ['CREATEROLE on the real (PG18) server: not flagged', 'g_createrole', undefined, [false, false, false]],
+  ])('%s', async (_name, sessionRole, setRole, expected) => {
+    expect(escalation(await probe(sessionRole, setRole))).toEqual(expected);
+  });
+
+  test.each([
+    ['CREATEROLE', 'g_createrole', true],
+    ['plain', 'g_plain', false],
+    ['superuser (CREATEROLE is not implied; flagged by rolsuper instead)', 'g_super', false],
+  ])('statement for a PG15 server, %s: createrole_escalation=%s, system_user is not read', async (_name, sessionRole, expected) => {
+    const row = await probe(sessionRole, undefined, { version: '150000' });
+    expect([row.createrole_escalation, row.session_authorization_masked]).toEqual([expected, false]);
+  });
+
+  test('CREATEROLE is an attribute of current_user and is not inherited: SET ROLE to its NOCREATEROLE parent is not flagged', async () => {
+    expect((await probe('g_cr_member', undefined, { version: '150000' })).createrole_escalation).toBe(true);
+    expect((await probe('g_cr_member', 'g_cr_parent', { version: '150000' })).createrole_escalation).toBe(false);
+  });
+
+  // PGlite has no authentication step, so system_user is replaced with a literal standing in for PG16+.
+  test.each([
+    ['session login equals the authenticated login', 'g_plain', undefined, 'scram-sha-256:g_plain', false],
+    ['the method prefix is whatever precedes the first colon', 'g_plain', undefined, 'password:g_plain', false],
+    ['SET SESSION AUTHORIZATION masks the authenticated login', 'g_plain', undefined, 'scram-sha-256:g_super', true],
+    ['SET ROLE does not mask: session_user stays the login', 'g_super', 'g_plain', 'scram-sha-256:g_super', false],
+    ['no authenticated identity (system_user NULL) cannot be compared', 'g_plain', undefined, undefined, false],
+  ])('PG16+ statement: %s', async (_name, sessionRole, setRole, systemUser, expected) => {
+    const row = systemUser === undefined
+      ? await probe(sessionRole, setRole)
+      : await probe(sessionRole, setRole, { systemUser });
+    expect(row.session_authorization_masked).toBe(expected);
   });
 
   test('is a read-only probe: the transaction is rolled back and the session is usable afterwards', async () => {

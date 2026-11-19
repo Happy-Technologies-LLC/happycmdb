@@ -8,20 +8,15 @@
  */
 
 import React, { useState } from 'react';
-import { Icon } from '@happy-technologies/design-system';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Card } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  SelectGroup,
-  SelectLabel,
-} from '@/components/ui/select';
+  Banner,
+  Breadcrumbs,
+  Button,
+  NativeSelect,
+  PageHeader,
+  Tabs,
+} from '@happy-technologies/design-system';
+import { QueryState } from '../components/estate/SurfaceState';
 import { useJobs } from '../hooks/useJobs';
 import { Job, JobFilters } from '../services/jobs.service';
 import { JobMonitor } from '../components/jobs/JobMonitor';
@@ -149,165 +144,115 @@ export const Jobs: React.FC = () => {
 
   return (
     <div>
-      {/* Breadcrumbs */}
-      <nav className="flex mb-4" aria-label="Breadcrumb">
-        <ol className="inline-flex items-center space-x-1 md:space-x-3">
-          <li className="inline-flex items-center">
-            <a href="/" className="inline-flex items-center text-sm font-medium text-muted-foreground hover:text-foreground">
-              <Icon name="house" size={16} className="mr-2" />
-              Home
-            </a>
-          </li>
-          <li>
-            <div className="flex items-center">
-              <span className="mx-2 text-muted-foreground">/</span>
-              <span className="text-sm font-medium">Jobs</span>
-            </div>
-          </li>
-        </ol>
-      </nav>
+      <Breadcrumbs className="mb-4" items={[{ label: 'Home', href: '/' }, { label: 'Jobs' }]} />
 
-      {/* Page Header */}
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-3xl font-bold tracking-tight">
-          Job Monitoring
-        </h1>
-        <div className="flex gap-2 items-center">
-          <Select value={queueFilter} onValueChange={setQueueFilter}>
-            <SelectTrigger className="w-[200px]">
-              <SelectValue placeholder="Select queue" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectLabel>Discovery Queues</SelectLabel>
+      <PageHeader
+        className="mb-6"
+        eyebrow="Operations"
+        title="Job Monitoring"
+        actions={
+          <>
+            <NativeSelect
+              size="sm"
+              aria-label="Queue"
+              value={queueFilter}
+              onChange={(e) => setQueueFilter(e.target.value)}
+              containerClassName="w-[200px]"
+            >
+              <optgroup label="Discovery Queues">
                 {QUEUE_NAMES.filter((q) => q.startsWith('discovery-')).map((queue) => (
-                  <SelectItem key={queue} value={queue}>
+                  <option key={queue} value={queue}>
                     {queue}
-                  </SelectItem>
+                  </option>
                 ))}
-              </SelectGroup>
-              <SelectGroup>
-                <SelectLabel>ETL Queues</SelectLabel>
+              </optgroup>
+              <optgroup label="ETL Queues">
                 {QUEUE_NAMES.filter((q) => q.startsWith('etl-')).map((queue) => (
-                  <SelectItem key={queue} value={queue}>
+                  <option key={queue} value={queue}>
                     {queue}
-                  </SelectItem>
+                  </option>
                 ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-          {(activeTab === 'completed' || activeTab === 'failed') && (
-            <Button variant="outline" onClick={handleRefresh}>
-              <Icon name="arrows-clockwise" size={16} className="mr-2" />
-              Refresh
-            </Button>
-          )}
-        </div>
-      </div>
+              </optgroup>
+            </NativeSelect>
+            {(activeTab === 'completed' || activeTab === 'failed') && (
+              <Button variant="secondary" icon="arrows-clockwise" onClick={handleRefresh}>
+                Refresh
+              </Button>
+            )}
+          </>
+        }
+      />
 
+      <Tabs
+        aria-label="Job views"
+        className="mb-6"
+        value={activeTab}
+        onChange={setActiveTab}
+        options={[
+          { value: 'monitor', label: 'Monitor' },
+          { value: 'completed', label: 'Completed' },
+          { value: 'failed', label: 'Failed' },
+          { value: 'schedules', label: 'Schedules' },
+          { value: 'workers', label: 'Worker Status' },
+          { value: 'dead-letter', label: 'Dead Letter' },
+        ]}
+      />
 
-      {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TabValue)} className="w-full">
-        <Card className="mb-6">
-          <TabsList className="w-full justify-start overflow-x-auto flex-nowrap">
-            <TabsTrigger value="monitor" className="gap-2">
-              Monitor
-            </TabsTrigger>
-            <TabsTrigger value="completed" className="gap-2">
-              Completed
-            </TabsTrigger>
-            <TabsTrigger value="failed" className="gap-2">
-              Failed
-            </TabsTrigger>
-            <TabsTrigger value="schedules" className="gap-2">
-              Schedules
-            </TabsTrigger>
-            <TabsTrigger value="workers">Worker Status</TabsTrigger>
-            <TabsTrigger value="dead-letter">Dead Letter</TabsTrigger>
-          </TabsList>
-        </Card>
+      {activeTab === 'monitor' && <JobMonitor autoRefresh={true} refreshInterval={5000} />}
 
-        {/* Tab Content */}
-        <TabsContent value="monitor" className="mt-0">
-          <JobMonitor autoRefresh={true} refreshInterval={5000} />
-        </TabsContent>
-
-        <TabsContent value="completed" className="mt-0">
-          {completedError ? (
-            <Alert variant="destructive">
-              <AlertDescription>
-                Failed to load completed jobs: {completedError.message}
-              </AlertDescription>
-            </Alert>
-          ) : completedLoading && completedJobs.length === 0 ? (
-            <div className="flex justify-center py-8">
-              <Icon name="arrows-clockwise" size={32} className="animate-spin text-muted-foreground" />
-            </div>
-          ) : (
-            <JobList
-              jobs={completedJobs}
-              hasMore={completedHasMore}
-              page={page}
-              rowsPerPage={rowsPerPage}
-              onPageChange={handlePageChange}
-              onRowsPerPageChange={handleRowsPerPageChange}
-              onViewDetails={handleViewDetails}
-              onRetry={handleRetry}
-              onCancel={handleCancel}
-              loading={completedLoading}
-            />
-          )}
-        </TabsContent>
-
-        <TabsContent value="failed" className="mt-0">
-          {failedError ? (
-            <Alert variant="destructive">
-              <AlertDescription>
-                Failed to load failed jobs: {failedError.message}
-              </AlertDescription>
-            </Alert>
-          ) : failedLoading && failedJobs.length === 0 ? (
-            <div className="flex justify-center py-8">
-              <Icon name="arrows-clockwise" size={32} className="animate-spin text-muted-foreground" />
-            </div>
-          ) : (
-            <JobList
-              jobs={failedJobs}
-              hasMore={failedHasMore}
-              page={page}
-              rowsPerPage={rowsPerPage}
-              onPageChange={handlePageChange}
-              onRowsPerPageChange={handleRowsPerPageChange}
-              onViewDetails={handleViewDetails}
-              onRetry={handleRetry}
-              onCancel={handleCancel}
-              loading={failedLoading}
-            />
-          )}
-        </TabsContent>
-
-        <TabsContent value="schedules" className="mt-0">
-          <Alert>
-            <AlertDescription>
-              Global queue and schedule controls are unavailable (platform operations only).
-            </AlertDescription>
-          </Alert>
-        </TabsContent>
-
-        <TabsContent value="workers" className="mt-0">
-          <Alert>
-            <AlertDescription>
-              Global queue and schedule controls are unavailable (platform operations only).
-            </AlertDescription>
-          </Alert>
-        </TabsContent>
-
-        <TabsContent value="dead-letter" className="mt-0">
-          <DeadLetterQueue
-            queueName={queueFilter}
+      {activeTab === 'completed' &&
+        (completedError || (completedLoading && completedJobs.length === 0) ? (
+          <QueryState
+            what="completed jobs"
+            loading={!completedError}
+            error={completedError}
+            onRetry={refetchCompleted}
           />
-        </TabsContent>
-      </Tabs>
+        ) : (
+          <JobList
+            jobs={completedJobs}
+            hasMore={completedHasMore}
+            page={page}
+            rowsPerPage={rowsPerPage}
+            onPageChange={handlePageChange}
+            onRowsPerPageChange={handleRowsPerPageChange}
+            onViewDetails={handleViewDetails}
+            onRetry={handleRetry}
+            onCancel={handleCancel}
+            loading={completedLoading}
+          />
+        ))}
+
+      {activeTab === 'failed' &&
+        (failedError || (failedLoading && failedJobs.length === 0) ? (
+          <QueryState
+            what="failed jobs"
+            loading={!failedError}
+            error={failedError}
+            onRetry={refetchFailed}
+          />
+        ) : (
+          <JobList
+            jobs={failedJobs}
+            hasMore={failedHasMore}
+            page={page}
+            rowsPerPage={rowsPerPage}
+            onPageChange={handlePageChange}
+            onRowsPerPageChange={handleRowsPerPageChange}
+            onViewDetails={handleViewDetails}
+            onRetry={handleRetry}
+            onCancel={handleCancel}
+            loading={failedLoading}
+          />
+        ))}
+
+      {(activeTab === 'schedules' || activeTab === 'workers') && (
+        <Banner tone="neutral">
+          Global queue and schedule controls are unavailable (platform operations only).
+        </Banner>
+      )}
+
+      {activeTab === 'dead-letter' && <DeadLetterQueue queueName={queueFilter} />}
 
       {/* Job Detail Modal */}
       <JobDetail

@@ -8,13 +8,18 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Icon } from '@happy-technologies/design-system';
+import {
+  Badge,
+  Banner,
+  Button,
+  Card,
+  Disclosure,
+  EmptyState,
+  Eyebrow,
+  Icon,
+} from '@happy-technologies/design-system';
 import { format } from 'date-fns';
-import { Card, CardContent } from '../ui/card';
-import { Alert, AlertDescription } from '../ui/alert';
-import { Button } from '../ui/button';
-import { Badge } from '../ui/badge';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
+import { QueryState } from '../estate/SurfaceState';
 import { Job, jobsService } from '../../services/jobs.service';
 
 interface DeadLetterQueueProps {
@@ -24,7 +29,7 @@ interface DeadLetterQueueProps {
 export const DeadLetterQueue: React.FC<DeadLetterQueueProps> = ({ queueName }) => {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
 
   const fetchDeadLetterJobs = async () => {
     try {
@@ -33,7 +38,7 @@ export const DeadLetterQueue: React.FC<DeadLetterQueueProps> = ({ queueName }) =
       const deadJobs = await jobsService.getDeadLetterJobs(queueName);
       setJobs(deadJobs);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch dead letter jobs');
+      setError(err ?? new Error('Failed to fetch dead letter jobs'));
     } finally {
       setLoading(false);
     }
@@ -47,96 +52,65 @@ export const DeadLetterQueue: React.FC<DeadLetterQueueProps> = ({ queueName }) =
     return format(new Date(timestamp), 'yyyy-MM-dd HH:mm:ss');
   };
 
-  if (loading) {
+  if (loading || error) {
     return (
-      <div className="flex justify-center py-8">
-        <Icon name="spinner-gap" size={32} className="animate-spin" />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <Alert variant="destructive" className="mb-4">
-        <AlertDescription>{error}</AlertDescription>
-      </Alert>
+      <QueryState
+        what="dead letter jobs"
+        loading={loading}
+        error={error}
+        onRetry={fetchDeadLetterJobs}
+      />
     );
   }
 
   if (jobs.length === 0) {
     return (
       <Card>
-        <CardContent className="p-6">
-          <div className="text-center">
-            <h3 className="text-lg font-semibold text-muted-foreground">
-              No dead letter jobs
-            </h3>
-            <p className="text-sm text-muted-foreground mt-2">
-              All failed jobs have been processed or retried successfully
-            </p>
-          </div>
-        </CardContent>
+        <EmptyState
+          title="No dead letter jobs"
+          description="All failed jobs have been processed or retried successfully"
+        />
       </Card>
     );
   }
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-between items-center gap-4">
-        <Alert className="flex-grow">
-          <AlertDescription>
-            Dead letter queue contains {jobs.length} job{jobs.length !== 1 ? 's' : ''} that have
-            exhausted all retry attempts. These jobs require manual intervention.
-          </AlertDescription>
-        </Alert>
-        <Button
-          variant="outline"
-          onClick={fetchDeadLetterJobs}
-          className="gap-1"
-        >
-          <Icon name="arrow-clockwise" size={16} />
+      <div className="flex items-center justify-between gap-4">
+        <Banner tone="neutral" className="flex-grow">
+          Dead letter queue contains {jobs.length} job{jobs.length !== 1 ? 's' : ''} that have
+          exhausted all retry attempts. These jobs require manual intervention.
+        </Banner>
+        <Button variant="secondary" icon="arrow-clockwise" onClick={fetchDeadLetterJobs}>
           Refresh
         </Button>
       </div>
 
       <div className="space-y-2">
         {jobs.map((job) => (
-          <Collapsible key={job.id}>
-            <Card>
-              <CollapsibleTrigger className="w-full">
-                <CardContent className="p-4">
-                  <div className="flex items-center w-full">
-                    <Icon name="x-circle" size={20} className="text-destructive mr-3" />
-                    <div className="flex-grow text-left">
-                      <div className="font-medium text-sm">{job.name}</div>
-                      <div className="text-xs text-muted-foreground">
-                        Failed at: {formatTimestamp(job.finishedOn || job.timestamp)}
-                      </div>
-                    </div>
-                    <Badge variant="destructive" className="mr-3">
-                      {job.attempts}/{job.maxAttempts} attempts
-                    </Badge>
-                    <Icon name="caret-down" size={16} className="text-muted-foreground" />
-                  </div>
-                </CardContent>
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <CardContent className="px-4 pb-4 pt-0 space-y-4">
-                  <div>
-                    <h4 className="text-sm font-semibold mb-2">Error Message</h4>
-                    <Card className="bg-red-50 border-red-200">
-                      <CardContent className="p-3">
-                        <p className="text-sm text-red-900">
-                          {job.failedReason || 'No error message available'}
-                        </p>
-                      </CardContent>
-                    </Card>
-                  </div>
-
-                </CardContent>
-              </CollapsibleContent>
-            </Card>
-          </Collapsible>
+          <Card key={job.id} inset="none" className="px-4">
+            <Disclosure
+              title={
+                <span className="flex items-center gap-3">
+                  <Icon name="x-circle" size={20} className="flex-none text-[var(--hh-error-text)]" />
+                  <span className="min-w-0 flex-grow">
+                    <span className="block text-sm font-medium">{job.name}</span>
+                    <span className="block text-xs font-normal text-[var(--hh-text-muted)]">
+                      Failed at: {formatTimestamp(job.finishedOn || job.timestamp)}
+                    </span>
+                  </span>
+                  <Badge variant="danger">
+                    {job.attempts}/{job.maxAttempts} attempts
+                  </Badge>
+                </span>
+              }
+            >
+              <div className="space-y-2">
+                <Eyebrow tone="danger">Error Message</Eyebrow>
+                <Banner tone="danger">{job.failedReason || 'No error message available'}</Banner>
+              </div>
+            </Disclosure>
+          </Card>
         ))}
       </div>
     </div>

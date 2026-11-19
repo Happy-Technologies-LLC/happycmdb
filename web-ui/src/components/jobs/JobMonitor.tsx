@@ -8,18 +8,8 @@
  */
 
 import React, { useState } from 'react';
-import { Icon } from '@happy-technologies/design-system';
-import { Tabs, TabsList, TabsTrigger } from '../ui/tabs';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../ui/select';
-import { Label } from '../ui/label';
-import { Alert, AlertDescription } from '../ui/alert';
-import { Card, CardContent } from '../ui/card';
+import { Banner, Card, NativeSelect, Tabs } from '@happy-technologies/design-system';
+import { QueryState } from '../estate/SurfaceState';
 import { useJobs } from '../../hooks/useJobs';
 import { Job, JobFilters } from '../../services/jobs.service';
 import { JobList } from './JobList';
@@ -111,71 +101,59 @@ export const JobMonitor: React.FC<JobMonitorProps> = ({
 
   return (
     <div className="space-y-6">
-      <Alert>
-        <AlertDescription>
-          Global queue and schedule controls are unavailable (platform operations only).
-        </AlertDescription>
-      </Alert>
+      <Banner tone="neutral">
+        Global queue and schedule controls are unavailable (platform operations only).
+      </Banner>
       {/* Job Filters */}
-      <Card>
-        <CardContent className="p-4">
-          <div className="flex gap-4 items-center">
-            <div className="flex-grow">
-              <Tabs value={statusTab} onValueChange={(v) => {
-                setStatusTab(v as typeof statusTab);
+      <Card inset="none" className="p-4">
+        <div className="flex items-center gap-4">
+          <div className="flex-grow">
+            <Tabs
+              aria-label="Job status"
+              value={statusTab}
+              onChange={(v) => {
+                setStatusTab(v);
                 setPage(0);
-              }}>
-                <TabsList>
-                  <TabsTrigger value="active">Active Jobs</TabsTrigger>
-                  <TabsTrigger value="waiting">Waiting Jobs</TabsTrigger>
-                  <TabsTrigger value="delayed">Delayed Jobs</TabsTrigger>
-                </TabsList>
-              </Tabs>
-            </div>
-            <div className="w-64">
-              <Label htmlFor="queue-filter" className="sr-only">Queue Filter</Label>
-              <Select value={queueFilter} onValueChange={(v) => {
-                setQueueFilter(v);
-                setPage(0);
-              }}>
-                <SelectTrigger id="queue-filter">
-                  <SelectValue placeholder="Select queue" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="discovery-header" disabled>
-                    <em>Discovery Queues</em>
-                  </SelectItem>
-                  {QUEUE_NAMES.filter((q) => q.startsWith('discovery-')).map((queue) => (
-                    <SelectItem key={queue} value={queue}>
-                      {queue}
-                    </SelectItem>
-                  ))}
-                  <SelectItem value="etl-header" disabled>
-                    <em>ETL Queues</em>
-                  </SelectItem>
-                  {QUEUE_NAMES.filter((q) => q.startsWith('etl-')).map((queue) => (
-                    <SelectItem key={queue} value={queue}>
-                      {queue}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+              }}
+              options={[
+                { value: 'active', label: 'Active Jobs' },
+                { value: 'waiting', label: 'Waiting Jobs' },
+                { value: 'delayed', label: 'Delayed Jobs' },
+              ]}
+            />
           </div>
-        </CardContent>
+          <div className="w-64">
+            <NativeSelect
+              size="sm"
+              aria-label="Queue Filter"
+              value={queueFilter}
+              onChange={(e) => {
+                setQueueFilter(e.target.value);
+                setPage(0);
+              }}
+            >
+              <optgroup label="Discovery Queues">
+                {QUEUE_NAMES.filter((q) => q.startsWith('discovery-')).map((queue) => (
+                  <option key={queue} value={queue}>
+                    {queue}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="ETL Queues">
+                {QUEUE_NAMES.filter((q) => q.startsWith('etl-')).map((queue) => (
+                  <option key={queue} value={queue}>
+                    {queue}
+                  </option>
+                ))}
+              </optgroup>
+            </NativeSelect>
+          </div>
+        </div>
       </Card>
 
       {/* Job List */}
-      {jobsError ? (
-        <Alert variant="destructive">
-          <AlertDescription>
-            Failed to load jobs: {jobsError.message}
-          </AlertDescription>
-        </Alert>
-      ) : jobsLoading && jobs.length === 0 ? (
-        <div className="flex justify-center py-16">
-          <Icon name="spinner-gap" size={32} className="animate-spin" />
-        </div>
+      {jobsError || (jobsLoading && jobs.length === 0) ? (
+        <QueryState what="jobs" loading={!jobsError} error={jobsError} onRetry={refetchJobs} />
       ) : (
         <JobList
           jobs={jobs}
@@ -202,8 +180,8 @@ export const JobMonitor: React.FC<JobMonitorProps> = ({
 
       {/* Auto-refresh indicator */}
       {autoRefresh && (
-        <div className="text-center mt-4">
-          <p className="text-xs text-muted-foreground">
+        <div className="mt-4 text-center">
+          <p className="text-xs text-[var(--hh-text-muted)]">
             Auto-refreshing every {refreshInterval / 1000} seconds
           </p>
         </div>

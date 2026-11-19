@@ -3184,7 +3184,26 @@ paths:
                     type: number
                     nullable: true
                     description: >-
-                      Always null today (unavailable): there is no CI health state yet. Never 0 as a placeholder.
+                      Percentage (0 to 100, one decimal) of the caller's CIs whose `health` is `healthy`
+                      (`ci_health.healthy / ci_health.total * 100`). Null, and named in `unavailable`, when the health
+                      signal is unavailable (the ITIL incident tables do not exist, or more than 5000 CIs have an open
+                      incident) or the organization has no CIs. A measured 0 means every CI is degraded or critical;
+                      it is never a placeholder.
+                  ci_health:
+                    type: object
+                    nullable: true
+                    description: >-
+                      The caller's CIs by derived `health` state (see the CI schema). The three states add up to
+                      `total`. Null when the health signal is unavailable.
+                    properties:
+                      healthy:
+                        type: integer
+                      degraded:
+                        type: integer
+                      critical:
+                        type: integer
+                      total:
+                        type: integer
                   critical_relationships:
                     type: integer
                     description: >-
@@ -3226,8 +3245,9 @@ paths:
                       type: string
                     description: >-
                       Names of fields in this payload that are `null` because no backing data exists or it could not
-                      be computed (`health_score` always; `open_drift_count` or `configuration_coverage` when their
-                      source fails or the organization exceeds the bounded scan).
+                      be computed (`health_score` when the health signal is unavailable or the organization has no CIs;
+                      `open_drift_count` or `configuration_coverage` when their source fails or the organization
+                      exceeds the bounded scan).
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -5548,6 +5568,18 @@ components:
           description: >-
             Same rules as `owner`; the stored top-level `tier`, else `metadata` keys `tier`, `service_tier`,
             `criticality_tier`.
+        health:
+          type: string
+          nullable: true
+          enum: [healthy, degraded, critical]
+          description: >-
+            Health state (HAP-1923 BW1), derived at read time from the caller organization's open incidents and never
+            stored. `critical`: an open incident of priority 1 or 2 names this CI in `affected_ci_id`; `degraded`: the
+            most severe open incident is priority 3 to 5; `healthy`: no open incident. An incident is open while its
+            status is not `resolved`, `closed` or `cancelled`. Incidents of another organization, or with no
+            organization, never count. Null (never `healthy`) when the signal is unavailable: the ITIL incident tables
+            do not exist, or the incident read failed. Anomalies and health metrics are not used: they carry no
+            tenant provenance. See services/ci-health.ts.
 
     CIInput:
       type: object

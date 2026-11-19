@@ -34,7 +34,7 @@ import { architectureRoutes } from './routes/architecture.routes';
 import { createMetricsRoutes } from '../metrics/metrics.routes';
 import { tbmRoutes } from './routes/tbm.routes';
 import { settingsRoutes } from './routes/settings.routes';
-import { driftRoutes, impactRoutes } from './routes/drift-impact.routes';
+import { driftRoutes, impactRoutes, askRoutes } from './routes/drift-impact.routes';
 import { createRateLimitMetricsRoutes } from './routes/rate-limit-metrics.routes';
 import { RateLimitMiddleware } from '../middleware/rate-limit.middleware';
 import { getRedisClient } from '@cmdb/database';
@@ -181,6 +181,7 @@ export class RestAPIServer {
     this.app.use('/api/v1/settings', settingsRoutes);
     this.app.use('/api/v1/drift', driftRoutes);
     this.app.use('/api/v1/impact', impactRoutes);
+    this.app.use('/api/v1/ask', askRoutes);
     this.app.use('/api/v1/ai', aiPatternRoutes);
     // Prometheus metrics (root /metrics): METRICS_SCRAPE_TOKEN bearer only; 404 when unset/short
     this.app.use('/', createMetricsRoutes(process.env['METRICS_SCRAPE_TOKEN']));

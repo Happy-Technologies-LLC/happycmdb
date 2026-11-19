@@ -597,6 +597,45 @@ describe('ImpactPredictionEngine', () => {
     });
   });
 
+  // HAP-1928 (BW13): the ask endpoint needs the prediction without the impact_analyses and criticality-cache writes.
+  describe('previewChangeImpact', () => {
+    const insertStatements = () => mockPgClient.query.mock.calls
+      .map(([text]: [string]) => String(text)).filter((text: string) => /INSERT/i.test(text));
+    const arrange = () => setupPredictImpactMocks({
+      ciData: { id: mockCIs.database.id, name: mockCIs.database.name, ci_type: mockCIs.database.ci_type },
+      affectedRecords: [{
+        ci_id: 'ci-0', ci_name: 'server-0', ci_type: 'server', hop_count: 1, path_ids: [mockCIs.database.id, 'ci-0'],
+      }],
+      criticalPath: [mockCIs.database.id, 'ci-0'],
+      criticalityScore: 80,
+      ciId: mockCIs.database.id,
+    });
+
+    it('stores nothing, where predictChangeImpact stores the analysis', async () => {
+      arrange();
+      await engine.predictChangeImpact(mockCIs.database.id, ChangeType.FAILOVER, 'org-a');
+      expect(insertStatements().some((text: string) => /impact_analyses/.test(text))).toBe(true);
+
+      mockPgClient.query.mockClear();
+      arrange();
+      await engine.previewChangeImpact(mockCIs.database.id, ChangeType.FAILOVER, 'org-a');
+      expect(insertStatements()).toEqual([]);
+    });
+
+    it('returns the prediction predictChangeImpact would store', async () => {
+      arrange();
+      const stored = await engine.predictChangeImpact(mockCIs.database.id, ChangeType.FAILOVER, 'org-a');
+      arrange();
+      const previewed = await engine.previewChangeImpact(mockCIs.database.id, ChangeType.FAILOVER, 'org-a');
+      expect({ ...previewed, analyzed_at: undefined }).toEqual({ ...stored, analyzed_at: undefined });
+    });
+
+    it('refuses a CI the organization does not own, as predictChangeImpact does', async () => {
+      mockNeo4jClient.getSession.mockReturnValue(createMockNeo4jSession([]));
+      await expect(engine.previewChangeImpact('ci-nonexistent', ChangeType.RESTART, 'org-a')).rejects.toThrow('CI not found');
+    });
+  });
+
   describe('change type weight', () => {
     it('should apply highest weight to DECOMMISSION', async () => {
       // Run decommission

@@ -28,6 +28,7 @@ import { sendJournalError } from '../../journal-http';
 import { impactEnvelope } from '../impact-envelope';
 import { loadEdgeEvidence, qualificationOf } from '../edge-evidence';
 import { deriveImpactRecommendations, loadImpactBusinessContext } from '../../services/impact-business-context';
+import { composeImpactAnswer, toJsonLines } from '../../services/ask-impact-answer';
 
 type SnapshotType = 'configuration' | 'performance' | 'relationships';
 
@@ -359,6 +360,39 @@ export class DriftImpactController {
         message: 'Internal error',
       });
     }
+  }
+
+  /**
+   * HAP-1928 (BW13): the deterministic `happy-ui/v1` answer to the impact question on one CI.
+   * POST /ask. Read-only: `previewChangeImpact` stores nothing, so no write admission or write permission is involved.
+   * The CI is resolved in the caller's organization first (another organization's CI is a 404), and the business context
+   * is the organization-scoped BW11 read. The body of a 200 is the JSON Lines text; every other status is a JSON error.
+   */
+  async askImpactResult(req: AuthenticatedRequest): Promise<{ status: number; body: unknown }> {
+    const organizationId = requestOrganizationId(req);
+    const { ci_id, change_type = ChangeType.FAILOVER } = req.body;
+    const normalizedChangeType = String(change_type).toLowerCase();
+    if (!isChangeType(normalizedChangeType)) {
+      return { status: 400, body: {
+        success: false, error: 'Bad Request',
+        message: `change_type must be one of: ${Object.values(ChangeType).join(', ')}`,
+      } };
+    }
+    const ci = await this.neo4jClient.getCI(ci_id, organizationId, architectureRemainingMs());
+    await assertNoCIGap(organizationId, ci_id);
+    if (!ci) {
+      return { status: 404, body: {
+        success: false, error: 'Not Found', message: `CI with ID '${ci_id}' not found`,
+      } };
+    }
+    architectureRemainingMs();
+    const impact = await this.impactEngine.previewChangeImpact(ci_id, normalizedChangeType, organizationId);
+    const context = await loadImpactBusinessContext(
+      organizationId, [ci_id, ...impact.affected_cis.map(affected => affected.ci_id)],
+      { timeoutMs: architectureRemainingMs() });
+    architectureRemainingMs();
+    const recommendations = deriveImpactRecommendations(impact, context.affected_business_services);
+    return { status: 200, body: toJsonLines(composeImpactAnswer({ impact, context, recommendations })) };
   }
 
   /**

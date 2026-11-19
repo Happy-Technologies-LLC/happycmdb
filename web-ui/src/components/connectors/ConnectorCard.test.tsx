@@ -89,6 +89,17 @@ describe('connector card', () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  it.each(['javascript:alert(1)', 'data:text/html,x', ' JaVaScRiPt:alert(1)'])(
+    'has no homepage control and never opens a window for the unsafe homepage %j',
+    (homepage) => {
+      const open = vi.spyOn(window, 'open').mockReturnValue(null);
+      render(<ConnectorCard connector={{ ...CONNECTOR, homepage }} />);
+
+      expect(screen.queryByRole('button', { name: /homepage/ })).not.toBeInTheDocument();
+      expect(open).not.toHaveBeenCalled();
+    },
+  );
+
   it('has no homepage control when the connector has no homepage', () => {
     render(<ConnectorCard connector={{ ...CONNECTOR, homepage: '' }} />);
 

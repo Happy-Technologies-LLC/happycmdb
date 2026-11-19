@@ -31,19 +31,19 @@ const CONNECTOR = {
   metadata: { requirements: 'ServiceNow Tokyo or later', supported_platforms: ['linux', 'windows'] },
 } as unknown as ConnectorRegistry;
 
-function Harness({ installedVersion }: { installedVersion?: string }) {
+function Harness({ installedVersion, connector = CONNECTOR }: { installedVersion?: string; connector?: ConnectorRegistry }) {
   const [open, setOpen] = useState(false);
   return (
     <>
       <button onClick={() => setOpen(true)}>Open details</button>
-      {open && <ConnectorDetailModal connector={CONNECTOR} installedVersion={installedVersion} onClose={() => setOpen(false)} />}
+      {open && <ConnectorDetailModal connector={connector} installedVersion={installedVersion} onClose={() => setOpen(false)} />}
     </>
   );
 }
 
-async function openModal(installedVersion?: string) {
+async function openModal(installedVersion?: string, connector?: ConnectorRegistry) {
   const user = userEvent.setup();
-  render(<Harness installedVersion={installedVersion} />);
+  render(<Harness installedVersion={installedVersion} connector={connector} />);
   await user.click(screen.getByRole('button', { name: 'Open details' }));
   return { user, dialog: await screen.findByRole('dialog', { name: 'ServiceNow' }) };
 }
@@ -67,6 +67,22 @@ describe('connector detail modal', () => {
     expect(view.getByText('linux, windows')).toBeVisible();
     expect(view.getByText('Install and update connector code through deployment packaging.')).toBeVisible();
     expect(view.queryByText(/Installed \(v/)).not.toBeInTheDocument();
+  });
+
+  it('renders no homepage link for an unsafe homepage and keeps the safe repository link', async () => {
+    const { dialog } = await openModal(undefined, { ...CONNECTOR, homepage: 'javascript:alert(1)' } as ConnectorRegistry);
+    const view = within(dialog);
+
+    expect(view.queryByRole('link', { name: 'Homepage' })).not.toBeInTheDocument();
+    expect(view.getByRole('link', { name: 'Repository' })).toHaveAttribute('href', 'https://example.test/servicenow.git');
+  });
+
+  it('renders no repository link for an unsafe repository and keeps the safe homepage link', async () => {
+    const { dialog } = await openModal(undefined, { ...CONNECTOR, repository: 'data:text/html,x' } as ConnectorRegistry);
+    const view = within(dialog);
+
+    expect(view.queryByRole('link', { name: 'Repository' })).not.toBeInTheDocument();
+    expect(view.getByRole('link', { name: 'Homepage' })).toHaveAttribute('href', 'https://example.test/servicenow');
   });
 
   it('marks the installed version, and an available update when it is not the latest', async () => {

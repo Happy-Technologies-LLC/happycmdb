@@ -2,6 +2,7 @@ import React from 'react';
 import { Badge, Button, Card, Icon } from '@happy-technologies/design-system';
 import { ConnectorRegistry } from '@/services/connector.service';
 import { getConnectorIcon, getCategoryLabel } from '@/lib/connector-icons';
+import { safeExternalUrl } from '@/lib/safe-external-url';
 
 interface ConnectorCardProps {
   connector: ConnectorRegistry;
@@ -89,6 +90,9 @@ export function ConnectorCard({
   // Determine display category (with intelligent fallback)
   const displayCategory = connectorCategory || inferCategoryFromType(connector.connectorType);
 
+  // The homepage is third-party manifest data: only an http(s) value becomes a button.
+  const homepageUrl = safeExternalUrl(connector.homepage);
+
   return (
     <Card className={onSelect ? 'cursor-pointer' : undefined} onClick={onSelect}>
       {/* Header */}
@@ -172,14 +176,14 @@ export function ConnectorCard({
             Available for deployment
           </Badge>
         )}
-        {connector.homepage && (
+        {homepageUrl && (
           <Button
             size="sm"
             variant="ghost"
             icon="arrow-square-out"
             onClick={(e) => {
               e.stopPropagation();
-              window.open(connector.homepage, '_blank', 'noopener,noreferrer');
+              window.open(homepageUrl, '_blank', 'noopener,noreferrer');
             }}
           >
             <span className="sr-only">{connector.name} homepage</span>

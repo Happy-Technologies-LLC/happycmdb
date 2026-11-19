@@ -115,6 +115,22 @@ describe('EdgeEvidenceDrawer', () => {
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
+  it('shows a receipt once when page 2 repeats the last receipt of page 1 after a new write shifted the offset', async () => {
+    const first = Array.from({ length: 20 }, (_, i) => receiptFixture(i + 1));
+    request.get
+      .mockResolvedValueOnce(evidencePage(first, { total: 22, offset: 0 }))
+      .mockResolvedValueOnce(evidencePage([receiptFixture(20), receiptFixture(21)], { total: 22, offset: 20 }));
+    const user = userEvent.setup();
+    renderDrawer();
+
+    await screen.findByText('source-1 1.2.0');
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+
+    await screen.findByText('source-21 1.2.0');
+    expect(screen.getAllByText('source-20 1.2.0')).toHaveLength(1);
+    expect(screen.getAllByRole('row')).toHaveLength(1 + 21);
+  });
+
   it('keeps the loaded rows and shows the error when a later page fails', async () => {
     const first = Array.from({ length: 20 }, (_, i) => receiptFixture(i + 1));
     request.get

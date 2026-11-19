@@ -64,10 +64,14 @@ const edges = [
   edgeFixture(FOCAL, 'ci-d', 'unsupported'),
 ];
 
-function serve(envelope: ReturnType<typeof envelopeFixture> | null, evidence?: (params: Record<string, unknown>) => unknown) {
+function serve(
+  envelope: ReturnType<typeof envelopeFixture> | null,
+  evidence?: (params: Record<string, unknown>) => unknown,
+  relationshipRows: CIRelationship[] = relationships
+) {
   request.get.mockImplementation(async (url: string, config?: { params?: Record<string, unknown> }) => {
     if (url === `/cis/${FOCAL}`) return { data: { success: true, data: focal } };
-    if (url === `/cis/${FOCAL}/relationships`) return { data: { success: true, data: relationships } };
+    if (url === `/cis/${FOCAL}/relationships`) return { data: { success: true, data: relationshipRows } };
     if (url === `/cis/${FOCAL}/impact`) {
       return {
         data: {
@@ -82,7 +86,7 @@ function serve(envelope: ReturnType<typeof envelopeFixture> | null, evidence?: (
   });
 }
 
-async function renderRelationshipsTab() {
+async function renderRelationshipsTab(waitForTopology = true) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   const user = userEvent.setup();
   render(
@@ -93,7 +97,7 @@ async function renderRelationshipsTab() {
     </MemoryRouter>
   );
   await user.click(await screen.findByRole('button', { name: 'Relationships' }));
-  await screen.findByText('Dependency topology');
+  if (waitForTopology) await screen.findByText('Dependency topology');
   return user;
 }
 
@@ -114,6 +118,40 @@ describe('CIDetail relationships evidence', () => {
     const banner = screen.getByRole('note', { name: 'Impact basis' });
     const topology = screen.getByText('Dependency topology');
     expect(banner.compareDocumentPosition(topology) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('isolated CI the server lists as unreported: shows the banner and the focal marker, not an absence claim', async () => {
+    serve(envelopeFixture([], [FOCAL], 1), undefined, []);
+    await renderRelationshipsTab(false);
+
+    const marker = await screen.findByRole('note', { name: /^Unreported\./ });
+    expect(marker).toHaveTextContent('Unreported');
+    expect(screen.getByRole('note', { name: 'Impact basis' })).toBeInTheDocument();
+    expect(screen.getByText('1 CI in scope, 1 unreported.')).toBeInTheDocument();
+    expect(screen.getByText(/No relationships reported for this CI; coverage is incomplete\./)).toBeInTheDocument();
+    expect(screen.queryByText('No relationships found for this CI.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Dependency topology')).not.toBeInTheDocument();
+  });
+
+  it('isolated CI the server reports: plain empty text, no unreported marker, basis banner kept', async () => {
+    serve(envelopeFixture([], [], 1), undefined, []);
+    await renderRelationshipsTab(false);
+
+    expect(await screen.findByText('No relationships found for this CI.')).toBeInTheDocument();
+    expect(screen.getByRole('note', { name: 'Impact basis' })).toBeInTheDocument();
+    expect(screen.getByText('1 CI in scope, 0 unreported.')).toBeInTheDocument();
+    expect(screen.queryByText('Unreported')).not.toBeInTheDocument();
+    expect(screen.queryByText(/coverage is incomplete/)).not.toBeInTheDocument();
+  });
+
+  it('isolated CI against a server that sends no envelope: plain empty text, no banner, no marker', async () => {
+    serve(null, undefined, []);
+    await renderRelationshipsTab(false);
+
+    expect(await screen.findByText('No relationships found for this CI.')).toBeInTheDocument();
+    await waitFor(() => expect(request.get).toHaveBeenCalledWith(`/cis/${FOCAL}/impact`));
+    expect(screen.queryByRole('note', { name: 'Impact basis' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Unreported')).not.toBeInTheDocument();
   });
 
   it('renders nothing new and no error against a server that sends no envelope', async () => {

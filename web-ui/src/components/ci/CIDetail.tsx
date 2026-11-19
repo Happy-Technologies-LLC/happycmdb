@@ -47,7 +47,7 @@ export const CIDetail: React.FC<CIDetailProps> = ({
     true,  // Always load for stats
     relationshipDepth
   );
-  const { data: impact } = useImpactEnvelope(
+  const { data: impact, isPending: impactPending } = useImpactEnvelope(
     ciId,
     true  // Always load for stats
   );
@@ -72,6 +72,7 @@ export const CIDetail: React.FC<CIDetailProps> = ({
     () => new Set(envelope?.coverage.unreported_ci_ids ?? []),
     [envelope]
   );
+  const focalUnreported = unreportedIds.has(ciId);
   const ciNames = useMemo(() => {
     const names: Record<string, string> = {};
     for (const r of relationships ?? []) {
@@ -383,7 +384,7 @@ export const CIDetail: React.FC<CIDetailProps> = ({
 
           {activeTab === 1 && (
             <div>
-              {relationshipsLoading ? (
+              {relationshipsLoading || (impactPending && !(relationships && relationships.length > 0)) ? (
                 <div className="flex justify-center py-8">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-sky"></div>
                 </div>
@@ -445,7 +446,7 @@ export const CIDetail: React.FC<CIDetailProps> = ({
                           <span className="h-[7px] w-[7px] rounded-full" style={{ background: statusColors[ci.status] }} />
                           {ci.status}
                         </div>
-                        {unreportedIds.has(ciId) && (
+                        {focalUnreported && (
                           <div className="mt-2">
                             <UnreportedCiMarker variant="on-dark" />
                           </div>
@@ -490,8 +491,20 @@ export const CIDetail: React.FC<CIDetailProps> = ({
                   />
                 </div>
               ) : (
-                <div className="bg-sky-soft border border-sky rounded-lg p-4 text-sky-text">
-                  No relationships found for this CI.
+                <div className="space-y-4">
+                  {envelope && <ImpactBasisBanner envelope={envelope} />}
+                  <div className="bg-sky-soft border border-sky rounded-lg p-4 text-sky-text">
+                    {focalUnreported ? (
+                      <>
+                        <span className="mr-2">
+                          <UnreportedCiMarker />
+                        </span>
+                        No relationships reported for this CI; coverage is incomplete.
+                      </>
+                    ) : (
+                      'No relationships found for this CI.'
+                    )}
+                  </div>
                 </div>
               )}
             </div>

@@ -53,6 +53,18 @@ export function useRelationshipEvidence(fromId: string, toId: string, type: stri
       const next = last.pagination.offset + last.pagination.count;
       return last.pagination.count > 0 && next < last.pagination.total ? next : undefined;
     },
+    // Offset paging over a newest-first list: a receipt written while the drawer is open shifts later pages by one
+    // and repeats the previous page's last receipt. Keep the first occurrence of each receipt_id.
+    select: (data) => {
+      const seen = new Set<string>();
+      return {
+        ...data,
+        pages: data.pages.map((page) => ({
+          ...page,
+          receipts: page.receipts.filter((r) => !seen.has(r.receipt_id) && !!seen.add(r.receipt_id)),
+        })),
+      };
+    },
     enabled: enabled && !!fromId && !!toId && !!type,
     retry: false,
     staleTime: 0,

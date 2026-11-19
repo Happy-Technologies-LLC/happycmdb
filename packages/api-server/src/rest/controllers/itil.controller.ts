@@ -273,7 +273,7 @@ export class ITILController {
       try {
         impact = deriveImpact(await readMappedServices(
           { query: (text, params) => this.postgresClient.pool.query(text, params) },
-          requestOrganizationId(req), [affectedCIId]));
+          requestOrganizationId(req), [affectedCIId as string]));
       } catch (error) {
         logger.warn('Incident business impact unavailable', error);
       }

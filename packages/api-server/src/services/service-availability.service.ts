@@ -29,7 +29,7 @@
 
 /** The one pg method these reads need; both the pool and a pooled client satisfy it. */
 interface Sql {
-  query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
+  query<R = Record<string, unknown>>(text: string, params?: unknown[]): Promise<{ rows: R[] }>;
 }
 
 /** When an incident stopped counting as down: resolved_at, else closed_at, else updated_at for a finished one, else now. */
@@ -79,14 +79,16 @@ export function mergedDowntimeMs(intervals: Array<{ start: number; end: number }
   let cursor = -Infinity;
   for (const { start, end } of ordered) {
     const from = Math.max(start, cursor);
-    if (end > from) total += end - from;
+    if (end > from) {
+      total += end - from;
+    }
     cursor = Math.max(cursor, end);
   }
   return total;
 }
 
 export async function readServiceAvailability(sql: Sql, organizationId: string, limit: number): Promise<AvailabilityReport> {
-  const services = await sql.query(
+  const services = await sql.query<{ service_id: string; name: string; business_criticality: string; has_mapped_cis: boolean }>(
     `SELECT s.service_id, s.name, s.business_criticality,
             EXISTS (SELECT 1 FROM ci_business_service_mappings m WHERE m.service_id = s.service_id) AS has_mapped_cis
      FROM dim_business_services s
@@ -96,12 +98,11 @@ export async function readServiceAvailability(sql: Sql, organizationId: string, 
      LIMIT $2`,
     [organizationId, limit]);
 
-  const mapped: string[] = services.rows.filter((row: { has_mapped_cis: boolean }) => row.has_mapped_cis)
-    .map((row: { service_id: string }) => row.service_id);
+  const mapped: string[] = services.rows.filter(row => row.has_mapped_cis).map(row => row.service_id);
   const byService = new Map<string, Array<{ id: string; start: number; end: number }>>();
   if (mapped.length > 0) {
     // DISTINCT: one incident reaches a service through every mapping_type row of the same CI.
-    const incidents = await sql.query(
+    const incidents = await sql.query<{ service_id: string; id: string; start_at: Date; end_at: Date }>(
       `SELECT DISTINCT m.service_id, i.id,
               GREATEST(i.reported_at, now() - ($3::int * interval '1 hour')) AS start_at,
               LEAST(${INCIDENT_END}, now()) AS end_at
@@ -112,10 +113,12 @@ export async function readServiceAvailability(sql: Sql, organizationId: string, 
          AND i.reported_at < now()
          AND ${INCIDENT_END} > now() - ($3::int * interval '1 hour')`,
       [organizationId, mapped, AVAILABILITY_WINDOW_HOURS, SERVICE_AFFECTING_MAX_PRIORITY]);
-    for (const row of incidents.rows as Array<{ service_id: string; id: string; start_at: Date; end_at: Date }>) {
+    for (const row of incidents.rows) {
       const start = new Date(row.start_at).getTime();
       const end = new Date(row.end_at).getTime();
-      if (!(end > start)) continue;
+      if (!(end > start)) {
+        continue;
+      }
       const list = byService.get(row.service_id) ?? [];
       list.push({ id: row.id, start, end });
       byService.set(row.service_id, list);
@@ -125,7 +128,7 @@ export async function readServiceAvailability(sql: Sql, organizationId: string, 
   return {
     window_hours: AVAILABILITY_WINDOW_HOURS,
     basis: 'incident_derived',
-    services: services.rows.map((row: Record<string, any>): ServiceAvailability => {
+    services: services.rows.map((row): ServiceAvailability => {
       const base = { service_id: row.service_id, name: row.name, criticality: row.business_criticality };
       if (!row.has_mapped_cis) {
         return { ...base, availability_24h_pct: null, downtime_minutes_24h: null, service_affecting_incidents_24h: null,

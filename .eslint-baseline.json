@@ -1067,7 +1067,7 @@
   "import/order": 2
  },
  "packages/api-server/src/rest/routes/analytics.routes.ts": {
-  "@typescript-eslint/no-unsafe-argument": 14,
+  "@typescript-eslint/no-unsafe-argument": 15,
   "@typescript-eslint/prefer-nullish-coalescing": 1,
   "@typescript-eslint/strict-boolean-expressions": 1,
   "import/order": 5
@@ -1095,7 +1095,7 @@
   "import/order": 7
  },
  "packages/api-server/src/rest/routes/business-service.routes.ts": {
-  "@typescript-eslint/no-unsafe-argument": 16,
+  "@typescript-eslint/no-unsafe-argument": 17,
   "@typescript-eslint/prefer-nullish-coalescing": 1,
   "@typescript-eslint/strict-boolean-expressions": 2,
   "import/order": 8,
@@ -1154,8 +1154,8 @@
   "import/order": 6
  },
  "packages/api-server/src/rest/routes/itil.routes.ts": {
-  "@typescript-eslint/no-misused-promises": 7,
-  "@typescript-eslint/no-unsafe-argument": 33,
+  "@typescript-eslint/no-misused-promises": 8,
+  "@typescript-eslint/no-unsafe-argument": 34,
   "@typescript-eslint/prefer-nullish-coalescing": 1,
   "@typescript-eslint/strict-boolean-expressions": 1,
   "import/order": 7
@@ -1357,6 +1357,10 @@
   "@typescript-eslint/strict-boolean-expressions": 3,
   "curly": 4
  },
+ "packages/api-server/src/services/incident-business-impact.ts": {
+  "@typescript-eslint/prefer-nullish-coalescing": 1,
+  "@typescript-eslint/strict-boolean-expressions": 1
+ },
  "packages/api-server/src/services/itil-record-schema.ts": {
   "@typescript-eslint/prefer-nullish-coalescing": 1,
   "@typescript-eslint/strict-boolean-expressions": 1
@@ -1376,6 +1380,14 @@
   "@typescript-eslint/prefer-nullish-coalescing": 1,
   "@typescript-eslint/strict-boolean-expressions": 8,
   "curly": 4
+ },
+ "packages/api-server/src/services/recent-changes.service.ts": {
+  "@typescript-eslint/prefer-nullish-coalescing": 1,
+  "@typescript-eslint/strict-boolean-expressions": 1
+ },
+ "packages/api-server/src/services/service-availability.service.ts": {
+  "@typescript-eslint/prefer-nullish-coalescing": 1,
+  "@typescript-eslint/strict-boolean-expressions": 1
  },
  "packages/api-server/src/services/topology-summary.service.ts": {
   "@typescript-eslint/no-unsafe-argument": 3,

@@ -14,8 +14,8 @@ import {
   assertNoCIGap, CIGapError, CI_GAP_RESPONSE, CIListUnavailableError, CI_LIST_UNAVAILABLE_RESPONSE, readCIList, readSingleCI,
 } from '../../read-admission';
 import { criticalTiersParam } from '../../services/critical-ci';
-import { parseRecentChangesOptions, readRecentChanges } from '../../services/recent-changes.service';
 import { readEstateKpis } from '../../services/estate-kpi.service';
+import { parseRecentChangesOptions, readRecentChanges } from '../../services/recent-changes.service';
 
 /** readCIList's 10 s budget plus its snapshot and recheck round trips. */
 const TOPOLOGY_DEADLINE_MS = 12_000;

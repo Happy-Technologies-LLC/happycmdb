@@ -23,7 +23,7 @@
     "test:coverage": "jest --config jest.config.unit.js --coverage --coverageDirectory=coverage",
     "lint": "node scripts/lint-ratchet.mjs",
     "lint:baseline": "node scripts/lint-ratchet.mjs --update",
-    "lint:fix": "eslint . --ext .ts,.tsx --fix",
+    "lint:fix": "node scripts/lint-ratchet.mjs --fix",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,json,md}\"",
     "clean": "npm run clean --workspaces && rm -rf node_modules",

@@ -18,8 +18,10 @@
 // is not in it. Fixing findings never fails. `--update` (npm run lint:baseline) writes min(baseline, current) per
 // pair, so it only ever lowers counts; `--update --allow-raise` writes the current counts as they are (for a
 // renamed or moved file, reviewed like any other raise).
+// `--fix` (npm run lint:fix) applies ESLint's autofixes per package in the same child processes, then compares what
+// is left with the baseline as usual; run `npm run lint:baseline` afterwards to lock in the lower counts.
 //
-// Usage: node scripts/lint-ratchet.mjs [--update [--allow-raise]] [--package <dir-name>]...
+// Usage: node scripts/lint-ratchet.mjs [--update [--allow-raise]] [--fix] [--package <dir-name>]...
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -40,7 +42,7 @@ function listPackages() {
 }
 
 // Worker: lint one package, print its { file: { rule: count } } map as the last stdout line.
-async function lintPackage(name) {
+async function lintPackage(name, fix) {
   const ts = require('typescript');
   const { ESLint } = require('eslint');
   const pkgDir = dir(name);
@@ -50,15 +52,24 @@ async function lintPackage(name) {
     throw new Error(ts.flattenDiagnosticMessageText(read.error.messageText, '\n'));
   }
   const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, pkgDir);
-  const files = parsed.fileNames.filter(
+  const allFiles = parsed.fileNames.filter(
     (f) => /\.tsx?$/.test(f) && !f.endsWith('.d.ts') && f.startsWith(pkgDir + path.sep) && !f.includes(`${path.sep}node_modules${path.sep}`)
   );
   const eslint = new ESLint({
     cwd: root,
+    fix,
     overrideConfig: { parserOptions: { project: tsconfigPath, tsconfigRootDir: root } },
   });
+  // A file the tsconfig includes but ESLint's ignorePatterns exclude (e.g. `src/build/**`) is not linted: passed
+  // explicitly, ESLint would report it as a null-ruleId warning, which would read as a parse error.
+  const ignored = await Promise.all(allFiles.map((f) => eslint.isPathIgnored(f)));
+  const files = allFiles.filter((_, i) => !ignored[i]);
   const counts = {};
-  for (const result of await eslint.lintFiles(files)) {
+  const results = await eslint.lintFiles(files);
+  if (fix) {
+    await ESLint.outputFixes(results);
+  }
+  for (const result of results) {
     const rel = path.relative(root, result.filePath).split(path.sep).join('/');
     for (const m of result.messages) {
       const rule = m.ruleId ?? PARSE_ERROR;
@@ -73,12 +84,12 @@ function dir(name) {
   return path.join(root, 'packages', name);
 }
 
-function runWorker(name) {
+function runWorker(name, fix) {
   const heap = process.env.LINT_HEAP_MB ?? '6144';
   const started = Date.now();
   const res = spawnSync(
     process.execPath,
-    [`--max-old-space-size=${heap}`, fileURLToPath(import.meta.url), '--worker', name],
+    [`--max-old-space-size=${heap}`, fileURLToPath(import.meta.url), '--worker', name, ...(fix ? ['--fix'] : [])],
     { cwd: root, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'inherit'] }
   );
   if (res.status !== 0) {
@@ -194,11 +205,12 @@ function sortedBaseline(counts) {
 async function main() {
   const argv = process.argv.slice(2);
   if (argv[0] === '--worker') {
-    await lintPackage(argv[1]);
+    await lintPackage(argv[1], argv.includes('--fix'));
     return;
   }
   const update = argv.includes('--update');
   const allowRaise = argv.includes('--allow-raise');
+  const fix = argv.includes('--fix');
   const only = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--package') {
@@ -219,11 +231,15 @@ async function main() {
     throw new Error('--allow-raise only applies to --update');
   }
 
+  if (fix && update) {
+    throw new Error('--fix and --update are separate runs: fix first, then update the baseline');
+  }
+
   buildDependencies(names, all);
-  console.log(`eslint ratchet: ${names.length} packages`);
+  console.log(`eslint ratchet: ${names.length} packages${fix ? ' (fixing)' : ''}`);
   const current = {};
   for (const n of names) {
-    Object.assign(current, runWorker(n));
+    Object.assign(current, runWorker(n, fix));
   }
 
   if (update) {

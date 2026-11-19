@@ -4,6 +4,17 @@
 import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
+  Badge,
+  Button,
+  Card,
+  DataTable,
+  EmptyState,
+  FieldList,
+  Icon,
+  NativeSelect,
+  type Column,
+} from '@happy-technologies/design-system';
+import {
   allRunsQuery,
   connectorsApi,
   formatRunCount,
@@ -12,15 +23,42 @@ import {
   RUN_STATUSES,
   runStatusDisplay,
   UNKNOWN_VALUE,
+  type ConnectorRun,
 } from '../../api/connectors';
-import { LiquidGlass } from '../ui/liquid-glass';
-import { Badge } from '../ui/badge';
-import { Icon } from '@happy-technologies/design-system';
+import { QueryState } from '@/components/estate/SurfaceState';
+import { classifyError } from '@/lib/estate';
 
-const COLUMN_COUNT = 7;
+/** The DS tone for each of `runStatusDisplay`'s variants; the status text always travels with it. */
+const RUN_BADGE_TONE = { default: 'info', secondary: 'success', destructive: 'danger', outline: 'neutral' } as const;
+
+/** A run's status as a DS badge: a tone plus the text label, never colour alone. */
+export const RunStatusBadge: React.FC<{ status: string }> = ({ status }) => {
+  const { variant, label } = runStatusDisplay(status);
+  return (
+    <Badge variant={RUN_BADGE_TONE[variant]} dot>
+      {label}
+    </Badge>
+  );
+};
+
+/** A refused run read names the refusal (the shell shows the server's reason); any other failure is fixed text, never the server message. */
+export const RunsReadFailure: React.FC<{ error: unknown; onRetry: () => void }> = ({ error, onRetry }) =>
+  classifyError(error).kind === 'forbidden' ? (
+    <QueryState what="connector runs" error={error} />
+  ) : (
+    <EmptyState
+      tone="danger"
+      icon="warning-circle"
+      title="Failed to load connector runs"
+      action={
+        <Button size="sm" variant="secondary" onClick={onRetry}>
+          Try again
+        </Button>
+      }
+    />
+  );
 
 export const ConnectorJobList: React.FC = () => {
-  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
   const [filterType, setFilterType] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
 
@@ -42,29 +80,38 @@ export const ConnectorJobList: React.FC = () => {
   ].sort();
   const statuses = RUN_STATUSES;
 
-  const handleRowClick = (jobId: string) => {
-    setExpandedJobId(expandedJobId === jobId ? null : jobId);
-  };
-
-  const messageRow = (text: string, className: string) => (
-    <tr>
-      <td colSpan={COLUMN_COUNT} className={`px-4 py-8 text-center text-sm ${className}`}>
-        {text}
-      </td>
-    </tr>
-  );
+  const columns: Array<Column<ConnectorRun>> = [
+    { header: 'Run ID', render: (run) => <span className="font-mono text-sm break-all">{run.id}</span> },
+    { header: 'Connector', render: (run) => <span className="text-sm font-medium">{run.configName}</span> },
+    {
+      header: 'Type',
+      render: (run) => (
+        <Badge variant="neutral" className="capitalize">
+          {run.connectorType.replace('_', ' ')}
+        </Badge>
+      ),
+    },
+    { header: 'Status', render: (run) => <RunStatusBadge status={run.status} /> },
+    { header: 'Records Loaded', render: (run) => <span className="text-sm font-medium">{formatRunCount(run.recordsLoaded)}</span> },
+    { header: 'Started', render: (run) => <span className="text-sm">{formatRunTimestamp(run.startedAt)}</span> },
+  ];
 
   return (
-    <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
+    <div className="space-y-4">
       {/* Filters */}
-      <div className="p-4 flex flex-wrap gap-3 items-center border-b border-border/50">
-        <div className="relative min-w-[150px]">
-          <Icon name="funnel" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <select
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative min-w-[190px]">
+          <Icon
+            name="funnel"
+            size={16}
+            className="pointer-events-none absolute top-1/2 left-3 z-10 -translate-y-1/2 text-[var(--hh-text-muted)]"
+          />
+          <NativeSelect
             aria-label="Filter by connector type"
+            size="sm"
+            className="pl-9"
             value={filterType}
             onChange={(e) => setFilterType(e.target.value)}
-            className="w-full pl-10 pr-8 py-2 border border-input rounded-md text-sm appearance-none bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
           >
             <option value="all">All Connector Types</option>
             {connectorTypes.map((type) => (
@@ -72,14 +119,15 @@ export const ConnectorJobList: React.FC = () => {
                 {type.replace('_', ' ').toUpperCase()}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </div>
 
-        <select
+        <NativeSelect
           aria-label="Filter by status"
+          size="sm"
+          containerClassName="min-w-[170px]"
           value={filterStatus}
           onChange={(e) => setFilterStatus(e.target.value)}
-          className="min-w-[150px] px-3 py-2 border border-input rounded-md text-sm appearance-none bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
         >
           <option value="all">All Statuses</option>
           {statuses.map((status) => (
@@ -87,106 +135,49 @@ export const ConnectorJobList: React.FC = () => {
               {runStatusDisplay(status).label}
             </option>
           ))}
-        </select>
+        </NativeSelect>
 
         {!runsQuery.isError && total !== null && total > filteredRuns.length && (
-          <p role="status" className="text-sm text-muted-foreground">
+          <p role="status" className="text-sm text-[var(--hh-text-muted)]">
             Showing newest {filteredRuns.length} of {total} {filtered ? 'matching ' : ''}runs
           </p>
         )}
       </div>
 
-      {/* Table */}
-      <div className="overflow-x-auto">
-        <table className="w-full">
-          <thead className="bg-muted/30 border-b border-border/50">
-            <tr>
-              <th className="px-4 py-3 text-left w-[50px]"></th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Run ID</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Connector</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Type</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Status</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Records Loaded</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Started</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border/30">
-            {runsQuery.isPending ? (
-              messageRow('Loading connector runs…', 'text-muted-foreground')
-            ) : runsQuery.isError ? (
-              messageRow('Failed to load connector runs', 'text-danger')
-            ) : filteredRuns.length === 0 && !filtered ? (
-              messageRow('No connector runs recorded', 'text-muted-foreground')
-            ) : filteredRuns.length === 0 ? (
-              messageRow('No runs match the selected filters', 'text-muted-foreground')
-            ) : (
-              filteredRuns.map((run) => {
-                const status = runStatusDisplay(run.status);
-                return (
-                  <React.Fragment key={run.id}>
-                    <tr
-                      className="hover:bg-muted/50 cursor-pointer transition-colors"
-                      onClick={() => handleRowClick(run.id)}
-                    >
-                      <td className="px-4 py-3">
-                        <Icon
-                          name="caret-down"
-                          size={16}
-                          className={`text-muted-foreground transition-transform ${
-                            expandedJobId === run.id ? 'rotate-180' : ''
-                          }`}
-                        />
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="font-mono text-sm text-foreground break-all">{run.id}</span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="text-sm font-medium text-foreground">{run.configName}</span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <Badge variant="outline" className="capitalize">{run.connectorType.replace('_', ' ')}</Badge>
-                      </td>
-                      <td className="px-4 py-3">
-                        <Badge variant={status.variant}>{status.label}</Badge>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="text-sm font-medium text-foreground">{formatRunCount(run.recordsLoaded)}</span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="text-sm text-muted-foreground">{formatRunTimestamp(run.startedAt)}</span>
-                      </td>
-                    </tr>
-                    {expandedJobId === run.id && (
-                      <tr className="animate-in fade-in-0 slide-in-from-top-2 duration-200">
-                        <td colSpan={COLUMN_COUNT} className="p-0 bg-muted/30">
-                          <div data-testid="run-detail" className="p-6 grid grid-cols-1 md:grid-cols-4 gap-4">
-                            {([
-                              ['Records Extracted', formatRunCount(run.recordsExtracted)],
-                              ['Records Transformed', formatRunCount(run.recordsTransformed)],
-                              ['Records Loaded', formatRunCount(run.recordsLoaded)],
-                              ['Records Failed', formatRunCount(run.recordsFailed)],
-                              ['Duration', formatRunDuration(run.durationMs)],
-                              ['Completed', formatRunTimestamp(run.completedAt)],
-                              ['Triggered By', run.triggeredBy ?? UNKNOWN_VALUE],
-                              ['Resource', run.resourceId ?? UNKNOWN_VALUE],
-                            ] as const).map(([label, value]) => (
-                              <div key={label}>
-                                <p className="text-xs text-muted-foreground mb-1">{label}</p>
-                                <p className="text-lg font-semibold break-all">{value}</p>
-                              </div>
-                            ))}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
-    </LiquidGlass>
+      {runsQuery.isPending ? (
+        <Card>
+          <EmptyState loading label="Loading connector runs…" />
+        </Card>
+      ) : runsQuery.isError ? (
+        <Card>
+          <RunsReadFailure error={runsQuery.error} onRetry={() => void runsQuery.refetch()} />
+        </Card>
+      ) : (
+        <DataTable
+          caption="Connector runs"
+          rows={filteredRuns}
+          columns={columns}
+          rowKey={(run) => run.id}
+          emptyLabel={filtered ? 'No runs match the selected filters' : 'No connector runs recorded'}
+          renderExpanded={(run) => (
+            <div data-testid="run-detail">
+              <FieldList
+                fields={[
+                  ['Records Extracted', formatRunCount(run.recordsExtracted)],
+                  ['Records Transformed', formatRunCount(run.recordsTransformed)],
+                  ['Records Loaded', formatRunCount(run.recordsLoaded)],
+                  ['Records Failed', formatRunCount(run.recordsFailed)],
+                  ['Duration', formatRunDuration(run.durationMs)],
+                  ['Completed', formatRunTimestamp(run.completedAt)],
+                  ['Triggered By', run.triggeredBy ?? UNKNOWN_VALUE],
+                  ['Resource', run.resourceId ?? UNKNOWN_VALUE],
+                ]}
+              />
+            </div>
+          )}
+        />
+      )}
+    </div>
   );
 };
 

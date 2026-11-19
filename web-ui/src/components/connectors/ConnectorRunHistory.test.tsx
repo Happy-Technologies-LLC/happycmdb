@@ -8,7 +8,10 @@ import { MemoryRouter } from 'react-router-dom';
 
 const { apiClient } = vi.hoisted(() => ({ apiClient: { get: vi.fn(), post: vi.fn() } }));
 vi.mock('@/lib/api-client', () => ({ apiClient }));
-vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null }));
+vi.mock('@happy-technologies/design-system', async (importActual) => ({
+  ...(await importActual<typeof import('@happy-technologies/design-system')>()),
+  Icon: () => null,
+}));
 
 import { ConnectorDashboard } from './ConnectorDashboard';
 import { ConnectorJobList } from './ConnectorJobList';
@@ -70,8 +73,12 @@ function mount(Component: React.ComponentType) {
   return render(<QueryClientProvider client={queryClient}><MemoryRouter><Component /></MemoryRouter></QueryClientProvider>);
 }
 
-/** Run rows are the table rows that carry a run identifier; header, empty and detail rows do not. */
-const runRows = () => screen.queryAllByRole('row').filter((row) => /run-id-\d+/.test(row.textContent ?? ''));
+/**
+ * Run rows are the table rows that carry a run identifier; header, empty and detail rows do not. The jobs
+ * table's expandable rows are exposed as buttons, the dashboard's clickable rows as rows.
+ */
+const runRows = () =>
+  [...screen.queryAllByRole('row'), ...screen.queryAllByRole('button')].filter((row) => /run-id-\d+/.test(row.textContent ?? ''));
 const rowIds = () => runRows().map((row) => /run-id-\d+/.exec(row.textContent ?? '')![0]);
 
 beforeEach(() => {

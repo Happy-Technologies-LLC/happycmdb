@@ -438,8 +438,17 @@ export class ITILController {
       let paramIndex = 1;
 
       if (status) {
+        const next = String(status).toLowerCase();
         updates.push(`status = $${paramIndex++}`);
-        params.push(String(status).toLowerCase());
+        params.push(next);
+        // Stamp once, atomically: COALESCE keeps an existing value, so a repeat or a later PATCH never moves the
+        // downtime end that service availability reads from resolved_at / closed_at.
+        if (next === 'resolved') {
+          updates.push('resolved_at = COALESCE(resolved_at, NOW())');
+        }
+        if (next === 'closed') {
+          updates.push('closed_at = COALESCE(closed_at, NOW())');
+        }
       }
       if (assignedTo) {
         updates.push(`assigned_to = $${paramIndex++}`);

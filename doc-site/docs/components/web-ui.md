@@ -213,8 +213,10 @@ The view is the `?view=orbit|graph|list` search parameter. The Stage draws a cap
 ("Showing N of M CIs"); the category counts on the chips are the full-estate `by_type` counts.
 
 Config drift, coverage, live changes and top services render a "Not available yet" state instead of a number, and so
-does Health while its `health_score` is `null`. The server returns all of these (below), but the hub reads only
-`health_score` of the dashboard response: it does not read `ci_health`, `open_drift_count`, `configuration_coverage`,
+does Health while its `health_score` is `null`. Of the figures the server returns for the Health, drift, coverage,
+change and service cards (below), the hub reads only `health_score` of the dashboard response (the KPI stack also
+reads `total_cis` and `by_status.active`, the chips `by_type`): it does not read `ci_health`, `open_drift_count`,
+`configuration_coverage`,
 `kpi_history` / `kpi_delta`, the tenant-wide change feed or per-service availability yet. The dashboard's `health_score`
 is the percentage of CIs without an open incident (BW1/BW4, definition in `services/ci-health.ts`; `ci_health` carries
 the counts) and is `null` (unavailable) when that signal does not exist (the incident tables are absent, more than 5000

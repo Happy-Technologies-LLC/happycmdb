@@ -5,7 +5,8 @@
 import { expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import axios from 'axios';
-vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null, Eyebrow: () => null }));
+// The views now render real design-system components; only the icon glyphs are stubbed.
+vi.mock('@happy-technologies/design-system', async (importOriginal) => ({ ...(await importOriginal<typeof import('@happy-technologies/design-system')>()), Icon: () => null }));
 vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
 // No real network: the dashboard's stats and list requests end here with an empty fleet.
 axios.defaults.adapter = async (config) => ({ data: { success: true, data: [] }, status: 200, statusText: 'OK', headers: {}, config });
@@ -14,7 +15,7 @@ const { AgentDashboard } = await import('./AgentDashboard');
 
 it('the Setup Guide advertises no nmap capability in the shell or docker snippet (HAP-1826)', () => {
   render(<AgentDashboard />);
-  fireEvent.mouseDown(screen.getByRole('tab', { name: /Setup Guide/ }), { button: 0 });
+  fireEvent.click(screen.getByRole('tab', { name: /Setup Guide/ }));
   const advertised = screen.getAllByText(/CMDB_CAPABILITIES=/).map((el) => /CMDB_CAPABILITIES=([^\s\\]*)/.exec(el.textContent ?? '')![1]);
   expect(advertised).toHaveLength(2); // the shell export and the docker run flag
   for (const value of advertised) {

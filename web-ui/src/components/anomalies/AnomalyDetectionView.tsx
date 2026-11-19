@@ -10,26 +10,42 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { anomaliesApi } from '../../api/anomalies';
 import { Anomaly } from '../../types';
-import { Icon } from '@happy-technologies/design-system';
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Icon,
+  MetricCard,
+  PageHeader,
+  type BadgeVariant,
+} from '@happy-technologies/design-system';
 import { toast } from 'sonner';
 import { formatDistanceToNow } from 'date-fns';
-import { Button } from '@/components/ui/button';
-import { LiquidGlass } from '@/components/ui/liquid-glass';
-import { Badge } from '@/components/ui/badge';
 import { RequirePermission } from '@/components/common/RequirePermission';
+import { QueryState } from '@/components/estate/SurfaceState';
 
 export const AnomalyDetectionView: React.FC = () => {
   const [selectedSeverity, setSelectedSeverity] = useState<string>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('detected');
   const queryClient = useQueryClient();
 
-  const { data: anomalies, isLoading } = useQuery({
+  const {
+    data: anomalies,
+    isLoading,
+    error: anomaliesError,
+    refetch: refetchAnomalies,
+  } = useQuery({
     queryKey: ['anomalies', 'recent'],
     queryFn: () => anomaliesApi.getRecent(24, 100),
     refetchInterval: 30000, // Auto-refresh every 30s
   });
 
-  const { data: stats } = useQuery({
+  const {
+    data: stats,
+    error: statsError,
+    refetch: refetchStats,
+  } = useQuery({
     queryKey: ['anomalies', 'stats'],
     queryFn: anomaliesApi.getStats,
   });
@@ -44,20 +60,17 @@ export const AnomalyDetectionView: React.FC = () => {
     onError: () => toast.error('Failed to update anomaly status'),
   });
 
-  const getSeverityColor = (severity: string) => {
+  const getSeverityColor = (severity: string): BadgeVariant => {
     switch (severity) {
       case 'critical':
-        return 'destructive';
       case 'high':
-        return 'destructive';
+        return 'danger';
       case 'medium':
         return 'warning';
       case 'low':
-        return 'default';
-      case 'info':
-        return 'secondary';
+        return 'info';
       default:
-        return 'secondary';
+        return 'neutral';
     }
   };
 
@@ -81,98 +94,96 @@ export const AnomalyDetectionView: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h2 className="text-3xl font-bold tracking-tight">Anomaly Detection</h2>
-        <p className="text-muted-foreground mt-1">
-          AI-powered detection of unusual patterns and configuration issues
-        </p>
-      </div>
+      <PageHeader
+        eyebrow="AI insights"
+        title="Anomaly Detection"
+        lede="AI-powered detection of unusual patterns and configuration issues"
+      />
 
       {/* Statistics */}
-      {stats && (
+      {stats ? (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <LiquidGlass variant="default" rounded="xl">
-            <div className="text-sm font-medium text-muted-foreground">Total Anomalies</div>
-            <div className="text-2xl font-bold mt-1">{stats.total}</div>
-          </LiquidGlass>
-          <LiquidGlass variant="default" rounded="xl">
-            <div className="text-sm font-medium text-muted-foreground">Critical</div>
-            <div className="text-2xl font-bold mt-1 text-danger">
-              {stats.by_severity.critical || 0}
-            </div>
-          </LiquidGlass>
-          <LiquidGlass variant="default" rounded="xl">
-            <div className="text-sm font-medium text-muted-foreground">High</div>
-            <div className="text-2xl font-bold mt-1 text-warning">
-              {stats.by_severity.high || 0}
-            </div>
-          </LiquidGlass>
-          <LiquidGlass variant="default" rounded="xl">
-            <div className="text-sm font-medium text-muted-foreground">Unresolved</div>
-            <div className="text-2xl font-bold mt-1">
-              {(stats.by_status.detected || 0) + (stats.by_status.investigating || 0)}
-            </div>
-          </LiquidGlass>
+          <MetricCard layout="compact" label="Total Anomalies" value={stats.total} />
+          <MetricCard
+            layout="compact"
+            label="Critical"
+            value={stats.by_severity.critical || 0}
+            valueClass="text-[var(--hh-error-text)]"
+          />
+          <MetricCard
+            layout="compact"
+            label="High"
+            value={stats.by_severity.high || 0}
+            valueClass="text-[var(--hh-warning-text)]"
+          />
+          <MetricCard
+            layout="compact"
+            label="Unresolved"
+            value={(stats.by_status.detected || 0) + (stats.by_status.investigating || 0)}
+          />
         </div>
+      ) : (
+        statsError && (
+          <Card as="section" aria-label="Anomaly statistics">
+            <QueryState what="anomaly statistics" error={statsError} onRetry={() => void refetchStats()} />
+          </Card>
+        )
       )}
 
       {/* Filters */}
-      <LiquidGlass variant="default" rounded="xl">
+      <Card>
         <div className="flex items-center gap-4 flex-wrap">
-          <Icon name="funnel" size={20} className="text-muted-foreground" />
-          <div className="flex gap-2 flex-wrap">
+          <Icon name="funnel" size={20} className="text-[var(--hh-text-muted)]" />
+          <div className="flex gap-2 flex-wrap items-center" role="group" aria-label="Severity">
             <span className="text-sm font-medium">Severity:</span>
             {['all', 'critical', 'high', 'medium', 'low', 'info'].map((severity) => (
               <Button
                 key={severity}
                 onClick={() => setSelectedSeverity(severity)}
-                variant={selectedSeverity === severity ? 'default' : 'outline'}
-                size="sm"
+                variant={selectedSeverity === severity ? 'primary' : 'secondary'}
+                aria-pressed={selectedSeverity === severity}
               >
                 {severity.charAt(0).toUpperCase() + severity.slice(1)}
               </Button>
             ))}
           </div>
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-wrap items-center" role="group" aria-label="Status">
             <span className="text-sm font-medium">Status:</span>
             {['all', 'detected', 'investigating', 'resolved', 'false_positive'].map((status) => (
               <Button
                 key={status}
                 onClick={() => setSelectedStatus(status)}
-                variant={selectedStatus === status ? 'default' : 'outline'}
-                size="sm"
+                variant={selectedStatus === status ? 'primary' : 'secondary'}
+                aria-pressed={selectedStatus === status}
               >
                 {status.replace('_', ' ').charAt(0).toUpperCase() + status.slice(1).replace('_', ' ')}
               </Button>
             ))}
           </div>
         </div>
-      </LiquidGlass>
+      </Card>
 
       {/* Anomalies List */}
       <div className="space-y-3">
-        {isLoading ? (
-          <LiquidGlass variant="default" rounded="xl">
-            <div className="text-center py-8 text-muted-foreground">Loading anomalies...</div>
-          </LiquidGlass>
+        {isLoading || anomaliesError ? (
+          <Card>
+            <QueryState
+              what="anomalies"
+              loading={isLoading}
+              error={anomaliesError}
+              onRetry={() => void refetchAnomalies()}
+            />
+          </Card>
         ) : filteredAnomalies && filteredAnomalies.length > 0 ? (
           filteredAnomalies.map((anomaly) => (
-            <LiquidGlass
-              key={anomaly.id}
-              variant="default"
-              rounded="xl"
-              className="hover:bg-accent/50 transition-colors"
-            >
+            <Card key={anomaly.id} as="article">
               <div className="flex items-start justify-between mb-3">
                 <div className="flex items-start gap-3 flex-1">
-                  <div className={`p-2 rounded`}>
-                    {getSeverityIcon(anomaly.severity)}
-                  </div>
+                  <div className="p-2 rounded">{getSeverityIcon(anomaly.severity)}</div>
                   <div className="flex-1">
                     <h4 className="font-semibold text-lg">{anomaly.anomaly_type.replace(/_/g, ' ').toUpperCase()}</h4>
-                    <p className="text-muted-foreground mt-1">{anomaly.description}</p>
-                    <div className="flex items-center gap-3 mt-2 text-sm text-muted-foreground flex-wrap">
+                    <p className="text-[var(--hh-text-muted)] mt-1">{anomaly.description}</p>
+                    <div className="flex items-center gap-3 mt-2 text-sm text-[var(--hh-text-muted)] flex-wrap">
                       <span>CI: {anomaly.ci_name}</span>
                       <span>•</span>
                       <span>
@@ -190,12 +201,12 @@ export const AnomalyDetectionView: React.FC = () => {
 
               {/* Metrics */}
               {anomaly.metrics && Object.keys(anomaly.metrics).length > 0 && (
-                <div className="bg-accent/30 rounded p-3 mb-3">
+                <div className="bg-[var(--hh-bg-elevated)] rounded p-3 mb-3">
                   <div className="text-sm font-medium mb-2">Metrics:</div>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
                     {Object.entries(anomaly.metrics).map(([key, value]) => (
                       <div key={key}>
-                        <span className="text-muted-foreground">{key.replace(/_/g, ' ')}:</span>{' '}
+                        <span className="text-[var(--hh-text-muted)]">{key.replace(/_/g, ' ')}:</span>{' '}
                         <span className="font-medium">
                           {typeof value === 'number' ? value.toFixed(2) : String(value)}
                         </span>
@@ -214,7 +225,6 @@ export const AnomalyDetectionView: React.FC = () => {
                       onClick={() =>
                         updateStatusMutation.mutate({ id: anomaly.id, status: 'investigating' })
                       }
-                      size="sm"
                       disabled={updateStatusMutation.isPending}
                     >
                       Investigate
@@ -226,8 +236,6 @@ export const AnomalyDetectionView: React.FC = () => {
                         onClick={() =>
                           updateStatusMutation.mutate({ id: anomaly.id, status: 'resolved' })
                         }
-                        size="sm"
-                        variant="default"
                         disabled={updateStatusMutation.isPending}
                       >
                         Resolve
@@ -236,7 +244,6 @@ export const AnomalyDetectionView: React.FC = () => {
                         onClick={() =>
                           updateStatusMutation.mutate({ id: anomaly.id, status: 'false_positive' })
                         }
-                        size="sm"
                         variant="outline"
                         disabled={updateStatusMutation.isPending}
                       >
@@ -246,22 +253,19 @@ export const AnomalyDetectionView: React.FC = () => {
                   )}
                 </RequirePermission>
                 {anomaly.status === 'resolved' && (
-                  <div className="flex items-center gap-2 text-success text-sm">
-                    <Icon name="check-circle" size={16} />
+                  <Badge variant="success" dot>
                     Resolved
                     {anomaly.resolved_at &&
                       ` ${formatDistanceToNow(new Date(anomaly.resolved_at))} ago`}
-                  </div>
+                  </Badge>
                 )}
               </div>
-            </LiquidGlass>
+            </Card>
           ))
         ) : (
-          <LiquidGlass variant="default" rounded="xl">
-            <div className="text-center py-8 text-muted-foreground">
-              No anomalies found matching the selected filters
-            </div>
-          </LiquidGlass>
+          <Card>
+            <EmptyState label="No anomalies found matching the selected filters" />
+          </Card>
         )}
       </div>
     </div>

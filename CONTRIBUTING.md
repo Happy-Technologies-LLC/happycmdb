@@ -62,7 +62,7 @@ This is a TypeScript monorepo using npm workspaces. Packages are layered:
 ## Coding Standards
 
 - **TypeScript strict mode** is enforced via `tsconfig.base.json`
-- **ESLint** with `@typescript-eslint` rules: `npm run lint` lints each backend package against `.eslint-baseline.json` (CI job `backend-lint`). Existing findings are recorded per file and rule; a PR may not add any. After fixing some, `npm run lint:baseline` writes the lower counts down. `web-ui` has its own config: `npm run lint --workspace=web-ui`
+- **ESLint** with `@typescript-eslint` rules: `npm run lint` lints each backend package against `.eslint-baseline.json` (CI job `backend-lint`). Existing findings are recorded per file and rule; a PR may not add any. The script first runs `tsc -b` on the sibling packages the linted ones depend on, so the result is the same with or without a prior `npm run build`. After fixing some, `npm run lint:baseline` writes the lower counts down (per file and rule it keeps `min(baseline, current)`; it never raises a count or adds a file or rule). For a renamed or moved file, `node scripts/lint-ratchet.mjs --update --allow-raise` writes the new path's counts; review that diff like any other raise. `web-ui` has its own config: `npm run lint --workspace=web-ui`
 - **Prettier** for formatting: `npm run format`
 - **No `any` types** unless absolutely necessary
 - **Async/await** everywhere (no callbacks)

@@ -674,15 +674,26 @@ function assertFlagValues(argv: readonly string[]): void {
 
 const REDACTED = '***';
 /**
- * HAP-2136: credential-like content of an error text, replaced before it is printed: URL userinfo, `Bearer <token>`, and
- * the value of any `password`/`passwd`/`token`/`secret` key (also inside a longer name such as `access_token`) after
- * `=` or `:`. Best effort for driver and network error text; the scope and rotation paths print fixed text instead.
+ * HAP-2136: credential-like content of an error text, replaced before it is printed. Best effort for driver and network
+ * error text, NOT a security boundary: an unlisted form passes through, and an ambiguous one is over-redacted. The scope
+ * and rotation paths print fixed text instead; no secret is meant to reach an error in the first place. Covered:
+ *  - URL userinfo (`scheme://user:pass@host`). The `@` must sit in the authority position: the text from `://` up to the
+ *    first `/`, `?` or `#`. A password with a raw `/`, `?` or `#` puts that `@` after the delimiter, so a second form is
+ *    accepted only when the authority starts `user:` and what follows the `:` up to the delimiter is not all digits (a
+ *    port); it reads to the next `@`, and never across `//` or whitespace. `http://host/path@seg`, `http://host:80/a@b`
+ *    and `http://[::1]/a@b` keep their text; `http://u:x/path@y` is over-redacted, and `u:123/x@h` is left (a port).
+ *  - `Bearer <token>` and the `Basic <credentials>` value of an `Authorization` header (also `Proxy-Authorization`).
+ *  - the value of a `password`, `passwd`, `pwd`, `token`, `secret`, `api_key`/`api-key`/`apikey` key, also inside a longer
+ *    name such as `access_token` or `x-api-key`, after `=` or `:` (quoted values included).
+ * Every pattern is linear on any input: a URL scheme and a key are matched only where they start (lookbehind, no
+ * unanchored prefix quantifier) and the key suffix is bounded, so no quantifier nests over another.
  */
 export function redactSecrets(text: string): string {
   return text
-    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/]*@/gi, `$1${REDACTED}@`)
+    .replace(/((?<![\w+.-])[a-z][a-z0-9+.-]*:\/\/)(?:[^\s/?#]*@|[^\s/?#@:[]+:(?!\d+(?:[/?#\s]|$))(?:(?!\/\/)[^\s@])*@)/gi, `$1${REDACTED}@`)
     .replace(/\bBearer\s+[^\s,;]+/gi, `Bearer ${REDACTED}`)
-    .replace(/(\b[\w.-]*(?:password|passwd|token|secret)[\w.-]*["']?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi, `$1${REDACTED}`);
+    .replace(/(\bauthorization["']?\s*[=:]\s*["']?basic\s+)[^\s,;"']+/gi, `$1${REDACTED}`)
+    .replace(/((?:password|passwd|pwd|token|secret|api[_-]?key)[\w.-]{0,32}["']?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi, `$1${REDACTED}`);
 }
 /** HAP-2131: a bare flag (`--grant`, `--revoke`), matched only where it is a flag: the token after a value flag is that flag's value. */
 function hasFlag(argv: readonly string[], flag: string): boolean {

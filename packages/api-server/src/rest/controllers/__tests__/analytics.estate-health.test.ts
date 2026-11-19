@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * HAP-1923 (BW1, BW4): `health_score` and `ci_health` on GET /analytics/dashboard.
+ * HAP-1923 (BW1, BW4): `health_score` and `ci_health` on GET /analytics/dashboard (and, HAP-1925 BW7, the daily snapshot of
+ * `health_score` that feeds `kpi_history`).
  *
  * The open-incident statement runs on real PostgreSQL (PGlite, hosted in a forked child by
  * ../../routes/__tests__/fixtures/pglite-host.cjs) over the itil_incidents DDL of 001_complete_schema.sql plus the
@@ -77,7 +78,11 @@ const incident = (ci: string, priority: number, status: string, org: string | nu
   [`INC-${incidentSerial++}`, priority, ci, status, org]);
 
 async function dashboard(org = ORG_A): Promise<Record<string, any>> {
-  (getPostgresClient as jest.Mock).mockReturnValue({ query: async (text: string, params: unknown[] = []) => ({ rows: await sql(text, params) }) });
+  (getPostgresClient as jest.Mock).mockReturnValue({
+    query: async (text: string, params: unknown[] = []) => ({ rows: await sql(text, params) }),
+    // The BW7 history transaction (migration 056's table, on this PGlite as its owner).
+    getClient: async () => ({ query: async (text: string, params: unknown[] = []) => ({ rows: await sql(text, params) }), release: () => undefined }),
+  });
   (getNeo4jClient as jest.Mock).mockReturnValue({ getSession: () => session });
   const out = { status: jest.fn().mockReturnThis(), json: jest.fn(), body: undefined as unknown };
   out.json.mockImplementation((body: unknown) => { out.body = body; return out; });
@@ -94,13 +99,29 @@ beforeAll(async () => {
   await sql([table('itil_incidents'), table('baseline_snapshots'), table('drift_detection_results'), table('ci_source_lineage'),
     'ALTER TABLE itil_incidents ADD COLUMN organization_id uuid;',
     'ALTER TABLE drift_detection_results ADD COLUMN organization_id UUID, ADD COLUMN ci_incarnation_id UUID;',
-    'ALTER TABLE ci_source_lineage ADD COLUMN organization_id UUID, ADD COLUMN last_correlation_id UUID;'].join('\n'), [], 'exec');
+    'ALTER TABLE ci_source_lineage ADD COLUMN organization_id UUID, ADD COLUMN last_correlation_id UUID;',
+    `BEGIN;\n${readFileSync(join(__dirname, '../../../../../database/src/postgres/migrations/056_estate_kpi_snapshots.sql'), 'utf8')}\nCOMMIT;`,
+  ].join('\n'), [], 'exec');
 }, 60_000);
 afterAll(() => { host.kill(); });
 beforeEach(async () => {
   graph.clear();
   graphRuns = [];
   await sql('DELETE FROM itil_incidents', [], 'exec');
+});
+
+describe('getDashboardStats: health_score history (BW7)', () => {
+  it('records the day\'s health_score and returns it as the series point, with no delta from one point', async () => {
+    const org = '33333333-3333-4333-8333-333333333333';
+    addCI('ci-h1', org);
+    addCI('ci-h2', org);
+    await incident('ci-h1', 1, 'new', org);
+    const body = await dashboard(org);
+    expect(body['health_score']).toBe(50);
+    expect(body['kpi_history'].health_score).toEqual([{ date: new Date().toISOString().slice(0, 10), value: 50 }]);
+    expect(body['kpi_delta'].health_score).toBeNull();
+    expect(body['unavailable']).toEqual([]);
+  });
 });
 
 describe('getDashboardStats: health_score and ci_health (BW1, BW4)', () => {

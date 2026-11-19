@@ -7,9 +7,9 @@
 -- Effect: cmdb_app holds no privilege in the public or cmdb schemas beyond PUBLIC's and is set NOLOGIN (HAP-1575), so
 -- a leftover cmdb_app password cannot open a session after the rollback. 045, 046
 -- (service_offerings), 047 (ai_sync_cursors), 048 (portfolio_imports, portfolio_import_map), 054
--- (relationship_evidence_receipts) and the staging app-login provisioning are the only grantors to cmdb_app, so
--- revoking everything reverses 045, 046, 047, 048 and 054's cmdb_app grants. All five are un-recorded so the migrator
--- re-grants on the way back (046, 047, 048 and 054 are idempotent and keep their tables and data). LOGIN comes back on
+-- (relationship_evidence_receipts), 056 (estate_kpi_snapshots) and the staging app-login provisioning are the only grantors to cmdb_app, so
+-- revoking everything reverses 045, 046, 047, 048, 054 and 056's cmdb_app grants. All six are un-recorded so the migrator
+-- re-grants on the way back (046, 047, 048, 054 and 056 are idempotent and keep their tables and data). LOGIN comes back on
 -- the way forward: deploy/build01-staging-app-login.sql (the app-login
 -- service, before every migrator run) re-asserts ALTER ROLE cmdb_app WITH LOGIN ... PASSWORD.
 -- NOLOGIN is cluster-wide (pg_authid), the REVOKEs are per database: the guard counts open cmdb_app sessions in every
@@ -37,5 +37,5 @@ END
 $acl$;
 DELETE FROM cmdb.schema_migrations
   WHERE migration_name IN ('045_staging_app_login_acl.sql', '046_service_offerings.sql', '047_ai_sync_cursors.sql',
-    '048_portfolio_import.sql', '054_relationship_evidence_receipts.sql');
+    '048_portfolio_import.sql', '054_relationship_evidence_receipts.sql', '056_estate_kpi_snapshots.sql');
 COMMIT;

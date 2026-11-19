@@ -62,7 +62,7 @@ export const DiscoveryDashboard: React.FC = () => {
             rowKey={(job) => job.id}
             emptyLabel="No recent jobs"
             caption="Recent discovery jobs"
-            onRowClick={(job) => navigate('/discovery?tab=jobs&jobId=' + job.id)}
+            onRowClick={(job) => navigate('/discovery?tab=jobs&jobId=' + encodeURIComponent(job.id))}
           />
         )}
       </div>

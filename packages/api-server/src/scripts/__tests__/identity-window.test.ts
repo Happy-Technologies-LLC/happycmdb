@@ -1032,9 +1032,36 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a key suffix longer than 32 characters', 'password_for_the_production_database_primary_user=hunter2 refused',
       'password_for_the_production_database_primary_user=*** refused'],
     ['a key keyword before a very long prefix', `${'x'.repeat(100)}_token=abc`, `${'x'.repeat(100)}_token=***`],
+    // Follow-up to HAP-2136 / #407 (L1): a scheme glued after `.`, `-` or `+` text, or led by one of them or a digit.
+    ['a scheme after a dot', 'conn.redis://:pw@h:6379 refused', 'conn.redis://***@h:6379 refused'],
+    ['a scheme after a dash', 'error-postgres://u:p@h/db failed', 'error-postgres://***@h/db failed'],
+    ['a scheme after a plus', 'a+postgres://u:p@h/db failed', 'a+postgres://***@h/db failed'],
+    ['a scheme led by a dot', 'at (.postgres://u:p@h/db) failed', 'at (.postgres://***@h/db) failed'],
+    ['a scheme led by a dash', 'x -postgres://u:p@h/db failed', 'x -postgres://***@h/db failed'],
+    ['a scheme led by a plus', 'x +postgres://u:p@h/db failed', 'x +postgres://***@h/db failed'],
+    ['a scheme led by a digit and a dot', 'x 1.postgres://u:p@h/db failed', 'x 1.postgres://***@h/db failed'],
+    ['a scheme led by a digit then letters', '2x-postgres://u:p@h/db failed', '2x-postgres://***@h/db failed'],
+    ['a scheme after a colon and a dash', 'error:-postgres://u:p@h failed', 'error:-postgres://***@h failed'],
+    // Review of #415 (F1, N2): an underscore earlier in the run must not hide a scheme that follows `.`, `-` or `+`.
+    ['a scheme after an underscored word and a dot', 'DB_URL.postgres://u:p@h failed', 'DB_URL.postgres://***@h failed'],
+    ['a scheme after an underscored word, a dot and a port', 'my_app.redis://:pw@h:6379 failed', 'my_app.redis://***@h:6379 failed'],
+    ['a scheme after an underscored word and a dash', 'foo_bar-postgres://u:p@h/db failed', 'foo_bar-postgres://***@h/db failed'],
+    ['a scheme after an underscored word and a plus', 'app_v2+postgres://u:p@h failed', 'app_v2+postgres://***@h failed'],
+    ['a scheme after an underscore', 'x_postgres://u:p@h failed', 'x_postgres://***@h failed'],
+    ['a scheme led by an underscore', '_postgres://u:p@h failed', '_postgres://***@h failed'],
+    ['a scheme led by an underscore and a dash', '-_postgres://u:p@h failed', '-_postgres://***@h failed'],
+    // Follow-up to HAP-2136 / #407 (L2): a key-looking token inside, or around, the Basic credentials.
+    ['a key after Basic credentials', 'Authorization: Basic abc password=x', 'Authorization: Basic *** password=***'],
+    ['a key as the Basic credentials', 'Authorization: Basic password=x', 'Authorization: Basic ***'],
+    ['a key with a colon as the Basic credentials', 'Authorization: Basic token:abc', 'Authorization: Basic ***'],
+    ['two keys after Basic credentials', 'Authorization: Basic secret=abc,pwd=2', 'Authorization: Basic ***,pwd=***'],
+    ['a key naming the header as its value', 'password: Authorization: Basic abc', 'password: *** Basic ***'],
+    ['a quoted Basic value before a key', 'Authorization: "Basic abc" token=1', 'Authorization: "Basic ***" token=***'],
     // Unchanged text.
     ['a URL without userinfo', 'GET http://host/path@seg failed', 'GET http://host/path@seg failed'],
     ['a URL with a port and an at sign in the path', 'GET https://host:8443/x/@scope/pkg', 'GET https://host:8443/x/@scope/pkg'],
+    ['a URL with a port and an at sign in a short path', 'GET http://host:80/a@b', 'GET http://host:80/a@b'],
+    ['a dotted scheme prefix on a URL without userinfo', 'GET a.b-c+http://host/path@seg', 'GET a.b-c+http://host/path@seg'],
     ['a bracketed IPv6 URL', 'GET http://[::1]:8080/a@b', 'GET http://[::1]:8080/a@b'],
     ['a socket error', 'connect ECONNREFUSED 10.0.0.5:5432', 'connect ECONNREFUSED 10.0.0.5:5432'],
     ['the word token without a value', 'the token expired, request a new one', 'the token expired, request a new one'],
@@ -1057,10 +1084,42 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a repeated key with a long suffix', 'password_'.repeat(4500)],
     ['a repeated key and equals signs', 'password=x'.repeat(4000)],
     ['repeated empty-username schemes', 'a://:'.repeat(8000)],
-  ])('redactSecrets stays linear on 40,000 characters of %s', (_label, input) => {
+    ['underscores between letters', 'a_'.repeat(100000)],
+    ['underscores between dots', 'a._'.repeat(70000)],
+    ['underscores between dashes', '_-a://:'.repeat(30000)],
+    ['dotted digits between underscores', '1_.'.repeat(70000)],
+    ['a long input without a scheme', 'a.'.repeat(100000)],
+    ['a long run of leading punctuation', '.-+'.repeat(70000)],
+    ['dotted digits then a scheme', `${'1.'.repeat(70000)}x://u:p@h`],
+  ])('redactSecrets stays linear on long input: %s', (_label, input) => {
     const started = performance.now();
     redactSecrets(input);
     expect(performance.now() - started).toBeLessThan(250);
+  });
+
+  // Review of #415 (F1): nothing the scheme pass redacted before #407 (`\b` + scheme + userinfo) may leak now. The
+  // reference is that pass, kept here only to generate the expectation; the cases are prefixes x schemes x userinfo.
+  it('redactSecrets leaves no userinfo where the pre-#407 scheme pass redacted it', () => {
+    const before = (text: string): string => text.replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/]*@/gi, '$1***@');
+    const prefixes = ['', ' ', '(', '"', 'x', 'x_', '_', 'DB_URL.', 'my_app.', 'foo_bar-', 'app_v2+', '1_', '1.', '-', '.', '+',
+      'a.b-c+', '_.', '_-', '-_', 'é', 'url=', 'error:', 'é-', 'A_B.C-'];
+    const schemes = ['postgres', 'redis', 'HTTPS', 'a', 'x.y', 'a-b', 'a+b', 'a1', 'amqp'];
+    const userinfos = ['u:p@h', ':pw@h:6379', 'user@h', 'a:b:c@h/x'];
+    let redactedBefore = 0;
+    for (const prefix of prefixes) {
+      for (const scheme of schemes) {
+        for (const userinfo of userinfos) {
+          const input = `${prefix}${scheme}://${userinfo}`;
+          if (before(input) === input) {
+            continue;
+          }
+          redactedBefore++;
+          const secret = userinfo.slice(0, userinfo.indexOf('@'));
+          expect({ input, output: redactSecrets(input) }).toEqual({ input, output: expect.not.stringContaining(`://${secret}@`) });
+        }
+      }
+    }
+    expect(redactedBefore).toBeGreaterThan(500);
   });
 
   // HAP-2136 F4
@@ -1340,5 +1399,87 @@ describe('fakeGraph SET evaluation', () => {
     expect(node.props['d']).toBeInstanceOf(Date);
 
     expect(() => applySet(node, 'MATCH (u:User) SET u.e = TRUE RETURN count(u) AS n', {})).toThrow(/cannot evaluate/);
+  });
+});
+
+// Review of #415 (F1): the pg_locks recipe in the operator doc, executed as written. pg_locks cannot be populated
+// (PGlite has one session, so no run can wait), so a TEMP table named pg_locks shadows the catalog view for the
+// session (pg_temp is searched first); the doc's SQL text is run unchanged but for its two id placeholders.
+describe('identity-window doc: pg_locks recipe for a stalled run', () => {
+  const DOC = join(__dirname, '../../../../../doc-site/docs/api/authentication.md');
+  const recipe = (): string => {
+    const blocks = [...readFileSync(DOC, 'utf8').matchAll(/```sql\n([\s\S]*?)```/g)].map(m => m[1]!).filter(b => b.includes('pg_locks l'));
+    expect(blocks).toHaveLength(1);
+    return blocks[0]!.trim().replace(/;$/, '');
+  };
+  const addLock = (pid: number, userId: string, granted: boolean) =>
+    send('query',
+      `INSERT INTO pg_temp.pg_locks (locktype, database, classid, objid, objsubid, pid, granted)
+       VALUES ('advisory', (SELECT oid FROM pg_database WHERE datname = current_database()), 2129,
+               (hashtext($1)::bigint & 4294967295)::oid, 2, $2, $3)`,
+      [userId, pid, granted]);
+  /** The pids the doc's recipe returns for the two ids the operator supplies. */
+  const pids = async (userId: string, resolvedId: string): Promise<number[]> =>
+    (await send('query', recipe().replace('<user id>', userId).replace('<resolved id>', resolvedId)))
+      .map(row => Number(row['pid'])).sort((x, y) => x - y);
+
+  beforeAll(async () => {
+    await send('exec', `CREATE TEMP TABLE pg_locks (locktype text, database oid, classid oid, objid oid, objsubid smallint, pid int, granted boolean)`);
+  });
+  beforeEach(() => send('exec', 'TRUNCATE pg_temp.pg_locks'));
+  afterAll(() => send('exec', 'DROP TABLE IF EXISTS pg_temp.pg_locks'));
+
+  // The holder is pid 100, a waiter is pid 200. `a` and `m` are the two spellings of one node (a run takes the
+  // argument's lock, then the resolved id's lock when that differs).
+  it('selects the holder that came in by the mapped spelling while the waiter came in by the other (A)', async () => {
+    await addLock(100, 'm', true);
+    await addLock(200, 'a', true);
+    await addLock(200, 'm', false);
+    expect(await pids('m', 'm')).toEqual([100]);
+    expect(await pids('m', 'a')).toEqual([100]);
+  });
+
+  it('selects the holder that came in by the other spelling and holds both locks while the waiter waits on the mapped one (B)', async () => {
+    await addLock(100, 'a', true);
+    await addLock(100, 'm', true);
+    await addLock(200, 'm', false);
+    expect(await pids('a', 'm')).toEqual([100]);
+  });
+
+  it('selects the holder that holds both locks while the waiter waits on the same spelling it came in by (B\')', async () => {
+    await addLock(100, 'a', true);
+    await addLock(100, 'm', true);
+    await addLock(200, 'a', false);
+    expect(await pids('a', 'm')).toEqual([100]);
+  });
+
+  it('selects the head of the queue, not a waiter that holds the first lock another run queues behind (C)', async () => {
+    await addLock(100, 'm', true);
+    await addLock(200, 'a', true);
+    await addLock(200, 'm', false);
+    await addLock(300, 'a', false);
+    expect(await pids('a', 'm')).toEqual([100]);
+  });
+
+  it('selects nothing for a waiter whose own lock nobody waits on', async () => {
+    await addLock(100, 'm', true);
+    await addLock(200, 'a', true);
+    await addLock(200, 'm', false);
+    expect(await pids('a', 'a')).toEqual([]);
+  });
+
+  it('selects nothing for ids that are not the stalled run\'s, and does not take another user\'s stall', async () => {
+    await addLock(100, 'm', true);
+    await addLock(200, 'm', false);
+    await addLock(500, 'other', true);
+    await addLock(600, 'other', false);
+    expect(await pids('x', 'y')).toEqual([]);
+    expect(await pids('m', 'm')).toEqual([100]);
+    expect(await pids('other', 'other')).toEqual([500]);
+  });
+
+  it('selects nothing for a lock held with no waiter', async () => {
+    await addLock(100, 'm', true);
+    expect(await pids('m', 'a')).toEqual([]);
   });
 });

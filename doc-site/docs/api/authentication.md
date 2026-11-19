@@ -287,8 +287,32 @@ The lock wait is **unbounded**: there is no `lock_timeout`, and the Neo4j reads 
 timeout (each Neo4j write transaction is bounded at 30 seconds), so a stalled run holds up every other run on the
 same user until it ends or its PostgreSQL session is terminated. This is acceptable for an interactive operator command;
 stop the stalled process. A holder stalled in a Neo4j read is idle in its transaction, so `pg_cancel_backend` does
-nothing to it; if the lock must be freed from the database side, run `pg_terminate_backend` on the `pid` of the
-`pg_locks` row with `locktype = 'advisory'`, `classid = 2129`, `objsubid = 2` and `granted`. The lock is then released and a waiting run
+nothing to it; if the lock must be freed from the database side, run `pg_terminate_backend` on the `pid` this query returns. A node
+that stores both `_id` and `id` answers to either, and a run that came in by one spelling and resolved to the other
+holds both locks (the argument's first, the resolved id's second), so the filter must cover both. The operator supplies
+two values: the stalled run's `--user-id` as `<user id>`, and the id the run resolved to as `<resolved id>` (the node's
+other spelling: read the node's `_id` and `id` in Neo4j; write the same value twice when the node has one id).
+
+```sql
+SELECT DISTINCT l.pid
+FROM pg_locks l
+WHERE l.locktype = 'advisory' AND l.classid = 2129 AND l.objsubid = 2 AND l.granted
+  AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+  AND l.objid IN ((hashtext('<user id>')::bigint & 4294967295)::oid, (hashtext('<resolved id>')::bigint & 4294967295)::oid)
+  AND EXISTS (SELECT 1 FROM pg_locks w WHERE w.locktype = 'advisory' AND w.classid = 2129 AND w.objsubid = 2
+    AND w.database = l.database AND w.objid = l.objid AND NOT w.granted)
+  AND NOT EXISTS (SELECT 1 FROM pg_locks x WHERE x.pid = l.pid AND x.locktype = 'advisory' AND x.classid = 2129
+    AND x.objsubid = 2 AND NOT x.granted);
+```
+
+The `objid` terms are the key `pg_advisory_xact_lock(2129, hashtext(...))` takes; without them the filter also selects
+the lock of every other user's concurrent run, and terminating that `pid` stops the wrong run. The `EXISTS` term keeps
+only a lock some other session is waiting for, and the `NOT EXISTS` term drops a session that is itself waiting: a
+run that came in by one spelling, holds that spelling's lock and waits on the other can have a third run queued behind
+it, and it is a waiter, not the stalled run. The result is the `pid` of the session at the head of the queue, one row
+for one stalled run. It is empty when no run waits on either id, or when the ids supplied are not the stalled run's (a
+different user's id, or a waiting run's spelling that the holder does not hold): check both values before concluding
+that no run is stalled. The lock is then released and a waiting run
 proceeds, but the terminated process is still alive and can reach its Neo4j write. That write is guarded by
 `coalesce(u.scopes, []) = $observed`, so it changes nothing when the waiting run changed the scopes first: the stalled
 run exits 2 (`refused: not_applied`). If the write still applies (the scopes were unchanged), its audit insert fails on

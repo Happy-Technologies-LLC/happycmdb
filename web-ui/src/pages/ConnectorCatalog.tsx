@@ -259,7 +259,7 @@ export const ConnectorCatalog: React.FC = () => {
 
         {/* Active Filters Display */}
         {filterCount > 0 && (
-          <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--hh-border-default)] pt-4">
+          <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--hh-border)] pt-4">
             {selectedCategories.map(category => (
               <Chip
                 key={category}

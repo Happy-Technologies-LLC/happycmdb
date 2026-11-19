@@ -103,6 +103,7 @@ jest.mock('../../controllers/itil.controller', () => ({
     restoreFromBaseline: mockRouteHandler,
     getConfigurationAccuracy: mockRouteHandler,
     getIncidentSummary: mockRouteHandler,
+    getOpenIncidentRibbon: mockRouteHandler,
     getChangeSuccessRate: mockRouteHandler,
     getMeanTimeToResolve: mockRouteHandler,
     getMeanTimeBetweenFailures: mockRouteHandler,

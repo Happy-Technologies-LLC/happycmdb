@@ -36,6 +36,7 @@ itilRoutes.use('/incidents', recordTable('itil_incidents'));
 itilRoutes.use('/changes', recordTable('itil_changes'));
 itilRoutes.use('/baselines', recordTable('itil_baselines'));
 itilRoutes.use('/metrics/incident-summary', recordTable('itil_incidents'));
+itilRoutes.use('/metrics/open-incidents', recordTable('itil_incidents'));
 itilRoutes.use('/metrics/change-success-rate', recordTable('itil_changes'));
 itilRoutes.use('/metrics/mttr', recordTable('itil_incidents'));
 itilRoutes.use('/metrics/mtbf', recordTable('itil_incidents'));
@@ -381,6 +382,11 @@ itilRoutes.get(
 itilRoutes.get(
   '/metrics/incident-summary',
   controller.getIncidentSummary.bind(controller)
+);
+
+itilRoutes.get(
+  '/metrics/open-incidents',
+  controller.getOpenIncidentRibbon.bind(controller)
 );
 
 itilRoutes.get(

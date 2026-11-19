@@ -178,7 +178,8 @@ describe('ITSM dashboard states', () => {
     expect(screen.getAllByText(/Permission 'read' required/)).toHaveLength(2);
     expect(await screen.findByRole('alert')).toHaveTextContent("Access denied. Permission 'read' required");
     expect(await screen.findByTestId('kpi-open-incidents')).toHaveTextContent('7');
-    expect(screen.queryByRole('status', { name: /loading/i })).not.toBeInTheDocument();
+    // Not queryByRole('status'): the SLA note on this page is a legitimate status too.
+    expect(screen.queryByText(/Loading ITIL records/)).not.toBeInTheDocument();
     expect(screen.queryByText('ITIL records unavailable. No incident or change totals can be shown.')).not.toBeInTheDocument();
   });
 });

@@ -1032,9 +1032,28 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a key suffix longer than 32 characters', 'password_for_the_production_database_primary_user=hunter2 refused',
       'password_for_the_production_database_primary_user=*** refused'],
     ['a key keyword before a very long prefix', `${'x'.repeat(100)}_token=abc`, `${'x'.repeat(100)}_token=***`],
+    // Follow-up to HAP-2136 / #407 (L1): a scheme glued after `.`, `-` or `+` text, or led by one of them or a digit.
+    ['a scheme after a dot', 'conn.redis://:pw@h:6379 refused', 'conn.redis://***@h:6379 refused'],
+    ['a scheme after a dash', 'error-postgres://u:p@h/db failed', 'error-postgres://***@h/db failed'],
+    ['a scheme after a plus', 'a+postgres://u:p@h/db failed', 'a+postgres://***@h/db failed'],
+    ['a scheme led by a dot', 'at (.postgres://u:p@h/db) failed', 'at (.postgres://***@h/db) failed'],
+    ['a scheme led by a dash', 'x -postgres://u:p@h/db failed', 'x -postgres://***@h/db failed'],
+    ['a scheme led by a plus', 'x +postgres://u:p@h/db failed', 'x +postgres://***@h/db failed'],
+    ['a scheme led by a digit and a dot', 'x 1.postgres://u:p@h/db failed', 'x 1.postgres://***@h/db failed'],
+    ['a scheme led by a digit then letters', '2x-postgres://u:p@h/db failed', '2x-postgres://***@h/db failed'],
+    ['a scheme after a colon and a dash', 'error:-postgres://u:p@h failed', 'error:-postgres://***@h failed'],
+    // Follow-up to HAP-2136 / #407 (L2): a key-looking token inside, or around, the Basic credentials.
+    ['a key after Basic credentials', 'Authorization: Basic abc password=x', 'Authorization: Basic *** password=***'],
+    ['a key as the Basic credentials', 'Authorization: Basic password=x', 'Authorization: Basic ***'],
+    ['a key with a colon as the Basic credentials', 'Authorization: Basic token:abc', 'Authorization: Basic ***'],
+    ['two keys after Basic credentials', 'Authorization: Basic secret=abc,pwd=2', 'Authorization: Basic ***,pwd=***'],
+    ['a key naming the header as its value', 'password: Authorization: Basic abc', 'password: *** Basic ***'],
+    ['a quoted Basic value before a key', 'Authorization: "Basic abc" token=1', 'Authorization: "Basic ***" token=***'],
     // Unchanged text.
     ['a URL without userinfo', 'GET http://host/path@seg failed', 'GET http://host/path@seg failed'],
     ['a URL with a port and an at sign in the path', 'GET https://host:8443/x/@scope/pkg', 'GET https://host:8443/x/@scope/pkg'],
+    ['a URL with a port and an at sign in a short path', 'GET http://host:80/a@b', 'GET http://host:80/a@b'],
+    ['a dotted scheme prefix on a URL without userinfo', 'GET a.b-c+http://host/path@seg', 'GET a.b-c+http://host/path@seg'],
     ['a bracketed IPv6 URL', 'GET http://[::1]:8080/a@b', 'GET http://[::1]:8080/a@b'],
     ['a socket error', 'connect ECONNREFUSED 10.0.0.5:5432', 'connect ECONNREFUSED 10.0.0.5:5432'],
     ['the word token without a value', 'the token expired, request a new one', 'the token expired, request a new one'],
@@ -1057,7 +1076,10 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a repeated key with a long suffix', 'password_'.repeat(4500)],
     ['a repeated key and equals signs', 'password=x'.repeat(4000)],
     ['repeated empty-username schemes', 'a://:'.repeat(8000)],
-  ])('redactSecrets stays linear on 40,000 characters of %s', (_label, input) => {
+    ['a long input without a scheme', 'a.'.repeat(100000)],
+    ['a long run of leading punctuation', '.-+'.repeat(70000)],
+    ['dotted digits then a scheme', `${'1.'.repeat(70000)}x://u:p@h`],
+  ])('redactSecrets stays linear on long input: %s', (_label, input) => {
     const started = performance.now();
     redactSecrets(input);
     expect(performance.now() - started).toBeLessThan(250);

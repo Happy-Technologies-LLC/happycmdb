@@ -690,11 +690,16 @@ const REDACTED = '***';
  *    (quoted values included).
  * Every pattern is linear on any input: a URL scheme and a key name are matched only where they start (lookbehind, so
  * one attempt per run of name characters), the keyword is found by one lookahead inside that run, and no quantifier
- * nests over another. Not covered: `Authorization=Basic%20...` (URL-encoded), a scheme glued to a word (`x_postgres://`).
+ * nests over another. The scheme attempt starts at the run's first character and skips leading digits, `+`, `.` and `-`
+ * (`[\d+.-]*`, disjoint from the letter that follows) so a scheme glued after them (`.postgres://`, `-redis://`,
+ * `2x-postgres://`) is still found; it is the whole run that is printed back, only its userinfo is replaced.
+ * The passes run in this order on purpose: the Basic value is replaced before the key pass, because a key pass first
+ * would consume `Authorization:` as the value of an earlier key (`password: Authorization: Basic abc`) and leave `abc`.
+ * Not covered: `Authorization=Basic%20...` (URL-encoded), a scheme glued to a word (`x_postgres://`).
  */
 export function redactSecrets(text: string): string {
   return text
-    .replace(/((?<![\w+.-])[a-z][a-z0-9+.-]*:\/\/)(?:[^\s/]*@|[^\s/?#@:[]*:(?!\d+(?:[/?#\s]|$))(?:(?!\/\/)[^\s@])*@)/gi, `$1${REDACTED}@`)
+    .replace(/((?<![\w+.-])[\d+.-]*[a-z][a-z0-9+.-]*:\/\/)(?:[^\s/]*@|[^\s/?#@:[]*:(?!\d+(?:[/?#\s]|$))(?:(?!\/\/)[^\s@])*@)/gi, `$1${REDACTED}@`)
     .replace(/\bBearer\s+[^\s,;]+/gi, `Bearer ${REDACTED}`)
     .replace(/(\bauthorization["']?\s*[=:]\s*["']?basic\s+)[^\s,;"']+/gi, `$1${REDACTED}`)
     .replace(/((?<![\w.-])(?=[\w.-]*?(?:password|passwd|pwd|token|secret|api[_-]?key))[\w.-]+["']?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi, `$1${REDACTED}`);

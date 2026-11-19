@@ -25,10 +25,10 @@ import {
 import { AuthenticatedRequest, requestOrganizationId } from '../../middleware/auth.middleware';
 import { assertNoCIGap, writeReferencedCIs } from '../../read-admission';
 import { sendJournalError } from '../../journal-http';
+import { composeImpactAnswer, toJsonLines } from '../../services/ask-impact-answer';
 import { impactEnvelope } from '../impact-envelope';
 import { loadEdgeEvidence, qualificationOf } from '../edge-evidence';
 import { deriveImpactRecommendations, loadImpactBusinessContext } from '../../services/impact-business-context';
-import { composeImpactAnswer, toJsonLines } from '../../services/ask-impact-answer';
 
 type SnapshotType = 'configuration' | 'performance' | 'relationships';
 
@@ -370,7 +370,7 @@ export class DriftImpactController {
    */
   async askImpactResult(req: AuthenticatedRequest): Promise<{ status: number; body: unknown }> {
     const organizationId = requestOrganizationId(req);
-    const { ci_id, change_type = ChangeType.FAILOVER } = req.body;
+    const { ci_id, change_type = ChangeType.FAILOVER } = req.body as { ci_id: string; change_type?: unknown };
     const normalizedChangeType = String(change_type).toLowerCase();
     if (!isChangeType(normalizedChangeType)) {
       return { status: 400, body: {
@@ -380,7 +380,7 @@ export class DriftImpactController {
     }
     const ci = await this.neo4jClient.getCI(ci_id, organizationId, architectureRemainingMs());
     await assertNoCIGap(organizationId, ci_id);
-    if (!ci) {
+    if (ci === null) {
       return { status: 404, body: {
         success: false, error: 'Not Found', message: `CI with ID '${ci_id}' not found`,
       } };

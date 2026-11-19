@@ -1259,6 +1259,10 @@
   "curly": 9,
   "import/order": 2
  },
+ "packages/api-server/src/services/ask-impact-answer.ts": {
+  "@typescript-eslint/prefer-nullish-coalescing": 1,
+  "@typescript-eslint/strict-boolean-expressions": 1
+ },
  "packages/api-server/src/services/business-service-ownership.ts": {
   "@typescript-eslint/prefer-nullish-coalescing": 1,
   "@typescript-eslint/strict-boolean-expressions": 1

@@ -6,15 +6,21 @@
 // eslint-disable-next-line no-control-regex -- the point is to reject control characters
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 
-/** The trimmed value when it parses as an absolute http: or https: URL, otherwise null. */
+/**
+ * The normalised absolute URL when the trimmed value parses as an http: or https: URL, otherwise null.
+ *
+ * The returned string is the validated URL's `href`, not the raw input: a value such as `https:/api/v1/x`
+ * parses without a base as host `api`, but a browser resolving the raw string against an https page would
+ * navigate same-origin. The `href` is absolute, so resolving it against any base yields the same string.
+ */
 export function safeExternalUrl(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   // URL parsing drops tabs and newlines inside the string, so reject them up front.
   if (trimmed === '' || CONTROL_CHARS.test(trimmed)) return null;
   try {
-    const { protocol } = new URL(trimmed);
-    return protocol === 'http:' || protocol === 'https:' ? trimmed : null;
+    const url = new URL(trimmed);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
   } catch {
     return null;
   }

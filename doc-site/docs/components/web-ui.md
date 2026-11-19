@@ -207,16 +207,19 @@ Dashboard now opens on the estate hub, `web-ui/src/components/estate/EstateHub.t
 | Stage: Orbit | `OrbitMap` (SVG) | `GET /api/v1/cis` (first 150 by name) plus the endpoints of `GET /api/v1/relationships` |
 | Stage: Graph | `GraphMap` (Cytoscape) | the same sample |
 | Stage: List | DS `DataTable` | the same CI records, filtered by category |
-| KPI stack | `EstateKpis` | `total_cis` and `by_status.active` of `GET /api/v1/analytics/dashboard` |
+| KPI stack | `EstateKpis` | `total_cis`, `by_status.active` and `health_score` of `GET /api/v1/analytics/dashboard` |
 
 The view is the `?view=orbit|graph|list` search parameter. The Stage draws a capped sample and labels it
 ("Showing N of M CIs"); the category counts on the chips are the full-estate `by_type` counts.
 
-Health, config drift, coverage, live changes and top services render a "Not available yet" state that names the missing
-backend capability instead of a number: the UI does not read the tenant-wide change feed or per-service availability yet
-(the server has them, below) and the server has no CI health state or KPI history. The dashboard's `health_score` is the
-percentage of CIs without an open incident (BW1/BW4, definition in `services/ci-health.ts`; `ci_health` carries the
-counts) and is `null` (unavailable) when that signal does not exist; the Health card shows "Not available yet" for `null` and a percentage only for a
+Config drift, coverage, live changes and top services render a "Not available yet" state instead of a number, and so
+does Health while its `health_score` is `null`. The server returns all of these (below), but the hub reads only
+`health_score` of the dashboard response: it does not read `ci_health`, `open_drift_count`, `configuration_coverage`,
+`kpi_history` / `kpi_delta`, the tenant-wide change feed or per-service availability yet. The dashboard's `health_score`
+is the percentage of CIs without an open incident (BW1/BW4, definition in `services/ci-health.ts`; `ci_health` carries
+the counts) and is `null` (unavailable) when that signal does not exist (the incident tables are absent, more than 5000
+CIs have an open incident, the organization has no CIs, or the incident read failed or timed out);
+the Health card shows "Not available yet" for `null` and a percentage only for a
 number, never `0%` as a placeholder. `GET /analytics/dashboard` now also carries `open_drift_count` (BW5) and
 `configuration_coverage` (BW6, `{with_owner_and_source, total, ratio}`; definitions in the OpenAPI schema), each `null`
 and listed in `unavailable` when it cannot be computed; the drift and coverage cards do not read them yet. Do not wire a

@@ -442,12 +442,15 @@ export class ITILController {
         updates.push(`status = $${paramIndex++}`);
         params.push(next);
         // Stamp once, atomically: COALESCE keeps an existing value, so a repeat or a later PATCH never moves the
-        // downtime end that service availability reads from resolved_at / closed_at.
+        // downtime end that service availability reads from resolved_at / closed_at. A move back to an open status
+        // (reopen) clears both stamps in the same UPDATE, so the outage counts as live again and a later re-resolve
+        // stamps a fresh value; MTTR then measures to the latest resolution.
         if (next === 'resolved') {
           updates.push('resolved_at = COALESCE(resolved_at, NOW())');
-        }
-        if (next === 'closed') {
+        } else if (next === 'closed') {
           updates.push('closed_at = COALESCE(closed_at, NOW())');
+        } else if (['new', 'assigned', 'in_progress'].includes(next)) {
+          updates.push('resolved_at = NULL', 'closed_at = NULL');
         }
       }
       if (assignedTo) {

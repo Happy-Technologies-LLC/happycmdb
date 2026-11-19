@@ -18,6 +18,9 @@ vi.mock('axios', () => ({ default: { create: () => ({
 vi.mock('../../hooks/useCredentials', () => ({
   useCredentials: () => ({ credentials: saved, loading: false, error: null, loadCredentials: vi.fn() }),
 }));
+// CI also runs this file under vitest.connector-wizard.config.ts, which aliases the design system to an Icon-only stub.
+// The form renders DS inputs, selects and buttons, so load the installed package's real source whichever config runs.
+vi.mock('@happy-technologies/design-system', () => import('../../../../node_modules/@happy-technologies/design-system/src/index'));
 
 import DiscoveryDefinitionForm from './DiscoveryDefinitionForm';
 import { discoveryService, type DiscoveryDefinitionInput } from '../../services/discovery.service';

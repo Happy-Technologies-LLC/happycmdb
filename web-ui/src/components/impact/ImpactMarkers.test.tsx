@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import CurrentnessBadge from './CurrentnessBadge';
+import CurrentnessBadge, { currentnessLabel } from './CurrentnessBadge';
 import ImpactBasisBanner from './ImpactBasisBanner';
 import UnreportedCiMarker from './UnreportedCiMarker';
 import { envelopeFixture } from '../../tests/fixtures/impactEvidence';
@@ -38,6 +38,53 @@ describe('CurrentnessBadge', () => {
     render(<CurrentnessBadge currentness={currentness} />);
 
     expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
+  it('renders each known value with its own variant, and "No evidence" as the neutral one', () => {
+    const classOf = (currentness: 'current' | 'stale' | 'contradicted' | 'unsupported', label: string) => {
+      const { unmount } = render(<CurrentnessBadge currentness={currentness} />);
+      const cls = screen.getByText(label).className;
+      unmount();
+      return cls;
+    };
+    const classes = [
+      classOf('current', 'Current'),
+      classOf('stale', 'Stale'),
+      classOf('contradicted', 'Contradicted'),
+      classOf('unsupported', 'No evidence'),
+    ];
+
+    expect(new Set(classes).size).toBe(4);
+  });
+
+  it('renders an unknown value as a neutral badge carrying the raw value, without throwing', () => {
+    const { unmount } = render(<CurrentnessBadge currentness="unsupported" />);
+    const neutralClass = screen.getByText('No evidence').className;
+    unmount();
+
+    render(<CurrentnessBadge currentness={'archived' as never} />);
+
+    expect(screen.getByText('archived').className).toBe(neutralClass);
+    expect(currentnessLabel('archived' as never)).toBe('archived');
+  });
+
+  it('does not resolve inherited object keys as known values', () => {
+    render(<CurrentnessBadge currentness={'toString' as never} />);
+
+    expect(screen.getByText('toString')).toBeInTheDocument();
+    expect(currentnessLabel('constructor' as never)).toBe('constructor');
+  });
+
+  it.each([
+    ['an empty string', ''],
+    ['undefined', undefined],
+    ['null', null],
+    ['a number', 7],
+  ])('renders %s as "Unknown"', (_name, value) => {
+    render(<CurrentnessBadge currentness={value as never} />);
+
+    expect(screen.getByText('Unknown')).toBeInTheDocument();
+    expect(currentnessLabel(value as never)).toBe('Unknown');
   });
 });
 

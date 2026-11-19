@@ -1022,6 +1022,16 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a JSON password', '{"password":"hunter2","user":"u"}', '{"password":***,"user":"u"}'],
     ['a quoted value', "token='a b' secret=\"c d\"", 'token=*** secret=***'],
     ['userinfo with a raw at sign', 'neo4j+s://u:p@ss@h:7687/x', 'neo4j+s://***@h:7687/x'],
+    ['userinfo with an empty username', 'redis://:hunter2@cache:6379', 'redis://***@cache:6379'],
+    ['an empty username and a raw ?', 'redis://:pa?ss@cache:6379 refused', 'redis://***@cache:6379 refused'],
+    ['an empty username and a raw #', 'redis://:pa#ss@cache:6379 refused', 'redis://***@cache:6379 refused'],
+    ['an empty username and a raw slash', 'redis://:pa/ss@cache:6379 refused', 'redis://***@cache:6379 refused'],
+    ['a raw ? in a token-only username', 'GET https://tok?en@github.com/x', 'GET https://***@github.com/x'],
+    ['a raw ? in the username of user:pass', 'GET https://u?x:pw@h/x', 'GET https://***@h/x'],
+    ['a raw # in the username of user:pass', 'GET https://u#x:pw@h/x', 'GET https://***@h/x'],
+    ['a key suffix longer than 32 characters', 'password_for_the_production_database_primary_user=hunter2 refused',
+      'password_for_the_production_database_primary_user=*** refused'],
+    ['a key keyword before a very long prefix', `${'x'.repeat(100)}_token=abc`, `${'x'.repeat(100)}_token=***`],
     // Unchanged text.
     ['a URL without userinfo', 'GET http://host/path@seg failed', 'GET http://host/path@seg failed'],
     ['a URL with a port and an at sign in the path', 'GET https://host:8443/x/@scope/pkg', 'GET https://host:8443/x/@scope/pkg'],
@@ -1029,6 +1039,8 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a socket error', 'connect ECONNREFUSED 10.0.0.5:5432', 'connect ECONNREFUSED 10.0.0.5:5432'],
     ['the word token without a value', 'the token expired, request a new one', 'the token expired, request a new one'],
     ['the word Basic outside an authorization header', 'Basic authentication is disabled', 'Basic authentication is disabled'],
+    ['an empty-username authority that is only a port', 'GET http://:8080/x@y', 'GET http://:8080/x@y'],
+    ['a long name without a keyword', `${'a'.repeat(100)}=value`, `${'a'.repeat(100)}=value`],
   ])('redactSecrets: %s', (_label, input, expected) => {
     expect(redactSecrets(input)).toBe(expected);
   });
@@ -1042,6 +1054,9 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a scheme and a long authority', `a://u:${'x:'.repeat(20000)}`],
     ['a long dotted scheme', `${'a.'.repeat(20000)}://`],
     ['repeated authorization', 'authorization: basic '.repeat(2000)],
+    ['a repeated key with a long suffix', 'password_'.repeat(4500)],
+    ['a repeated key and equals signs', 'password=x'.repeat(4000)],
+    ['repeated empty-username schemes', 'a://:'.repeat(8000)],
   ])('redactSecrets stays linear on 40,000 characters of %s', (_label, input) => {
     const started = performance.now();
     redactSecrets(input);

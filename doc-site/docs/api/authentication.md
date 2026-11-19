@@ -288,7 +288,7 @@ timeout (each Neo4j write transaction is bounded at 30 seconds), so a stalled ru
 same user until it ends or its PostgreSQL session is terminated. This is acceptable for an interactive operator command;
 stop the stalled process. A holder stalled in a Neo4j read is idle in its transaction, so `pg_cancel_backend` does
 nothing to it; if the lock must be freed from the database side, run `pg_terminate_backend` on the `pid` of the
-`pg_locks` row with `locktype = 'advisory'`, `classid = 2129` and `granted`. The lock is then released and a waiting run
+`pg_locks` row with `locktype = 'advisory'`, `classid = 2129`, `objsubid = 2` and `granted`. The lock is then released and a waiting run
 proceeds, but the terminated process is still alive and can reach its Neo4j write. That write is guarded by
 `coalesce(u.scopes, []) = $observed`, so it changes nothing when the waiting run changed the scopes first: the stalled
 run exits 2 (`refused: not_applied`). If the write still applies (the scopes were unchanged), its audit insert fails on

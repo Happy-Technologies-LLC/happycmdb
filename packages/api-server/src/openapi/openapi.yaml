@@ -797,6 +797,114 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /cis/{id}/oversized-delete:
+    post:
+      tags: [Configuration Items]
+      summary: Recovery delete of a CI with an oversized stored value (admin only)
+      operationId: deleteOversizedCI
+      description: >-
+        HAP-797. Admin role only: `write` is not enough (an operator or viewer gets 403). Deletes a legacy CI whose stored
+        value breaks a journal plan limit (a value over 64 KiB or an array over 1000 members), which `DELETE /cis/{id}`
+        refuses with 422 every time. Same journaled delete, except the history row and audit entry hold a bounded snapshot
+        (each oversized value replaced by its byte size and SHA-256) and the caller's `evidence_ref`. Preserve the full
+        values first with `GET /cis/{id}/stored-properties`. Only a CI with at least one oversized value is accepted; any
+        other answers 409 with message `not_oversized`: one the ordinary delete can plan (use `DELETE /cis/{id}`), and one
+        with more than 1000 stored properties and no oversized value (a key-count limit, so the ordinary delete answers
+        422 and this route 409). An oversized CI whose bounded plan still breaks another limit answers 422. A missing CI
+        and another organization's CI answer the same 404.
+      parameters:
+        - $ref: '#/components/parameters/CIId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [evidence_ref]
+              properties:
+                evidence_ref:
+                  type: string
+                  minLength: 1
+                  maxLength: 512
+                  description: Where the full values were preserved. Recorded in the audit entry, never resolved. Control and format characters (bidi override, zero-width) are refused with 400.
+      responses:
+        '204':
+          description: CI deleted
+        '400':
+          description: >-
+            Invalid CI id or request shape (`{success: false, error: Bad Request, message: Invalid request}`), or a
+            missing, empty, over-long or control-character `evidence_ref` (the validation error body with `_error:
+            Validation Error`)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            The journal refused the delete: `not_oversized` (see the description); the CI's class is owned by its source
+            (`code: source_owned`); the CI has an unresolved write (`CI is temporarily unavailable`); or the write was
+            aborted (`CI could not be reconciled`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                notOversized:
+                  value:
+                    success: false
+                    error: Conflict
+                    message: not_oversized
+        '422':
+          description: The bounded plan still breaks a journal plan limit (`CI cannot be changed through the audited path`)
+        '500':
+          description: 'Unexpected failure: `{success: false, error: Failed to delete CI}`'
+        '503':
+          description: >-
+            CI write temporarily unavailable: the journal schema or the audit chain key is not ready, so nothing was
+            written (no `correlation_id`), or the journal's second phase failed after the graph write (the body carries a
+            `correlation_id`)
+
+  /cis/{id}/stored-properties:
+    get:
+      tags: [Configuration Items]
+      summary: Read every stored property of a CI, HP1-encoded (admin only)
+      operationId: getCIStoredProperties
+      description: >-
+        HAP-797. Admin role only, though it is a read. The preservation copy for `POST /cis/{id}/oversized-delete`:
+        `GET /cis/{id}` narrows the node to fixed keys, this returns every stored property exactly as stored, in the HP1
+        JSON encoding (the form the recovery's `bytes` and `sha256` describe), unparsed and untruncated. A missing CI
+        and another organization's CI answer the same 404; a CI with an unresolved journal write answers 409.
+      parameters:
+        - $ref: '#/components/parameters/CIId'
+      responses:
+        '200':
+          description: The CI's stored properties
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    type: object
+                    required: [id, properties]
+                    properties:
+                      id: { type: string }
+                      properties: { type: object, additionalProperties: true, description: 'Every stored property, HP1-encoded (`$hp1` tags keep integer, float, temporal and non-UTF-8 values lossless).' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The CI has an unresolved journal write (`CI is temporarily unavailable`)
+        '500':
+          description: 'Unexpected failure: `{success: false, error: Failed to retrieve CI}`'
+
   /cis/search:
     post:
       tags: [Configuration Items]
@@ -1560,7 +1668,10 @@ paths:
         '403':
           $ref: '#/components/responses/CIForbidden'
         '503':
-          description: ITIL incident records are unavailable in this schema version
+          description: >-
+            Two causes, both `{success: false, error}`. `ITIL records unavailable`: the ITIL incident records are not
+            available in this schema version. `Analytics resource limit exceeded`: the bounded read hit its statement
+            timeout.
 
   # =============================================================================
   # RELATIONSHIPS
@@ -1692,7 +1803,8 @@ paths:
         request. Only receipts for the endpoints' current incarnations are returned, so a re-created CI starts with none.
         An edge written before receipts existed has none (`receipts: []`); that is not evidence of absence. Both CIs must
         belong to the caller's organization: a missing, foreign or unowned endpoint is the same 404. Receipts are
-        history, not currentness: read them against the live relationship.
+        history, not currentness: read them against the live relationship. While the receipt table is missing or this
+        API's database login lacks SELECT on it (a rollback window), the read answers 503.
       operationId: listRelationshipEvidence
       parameters:
         - name: from_id
@@ -1744,6 +1856,18 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '503':
+          description: >-
+            Relationship evidence temporarily unavailable: the receipt table is missing or this API's database login lacks
+            SELECT on it (SQLSTATE 42P01 or 42501). Fixed body, no database error text.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                success: false
+                error: Service Unavailable
+                message: Relationship evidence temporarily unavailable
 
   /relationships/type/{type}:
     get:
@@ -3457,15 +3581,16 @@ paths:
                     description: >-
                       Percentage (0 to 100, one decimal) of the caller's CIs whose `health` is `healthy`
                       (`ci_health.healthy / ci_health.total * 100`). Null, and named in `unavailable`, when the health
-                      signal is unavailable (the ITIL incident tables do not exist, or more than 5000 CIs have an open
-                      incident) or the organization has no CIs. A measured 0 means every CI is degraded or critical;
-                      it is never a placeholder.
+                      signal is unavailable (the ITIL incident tables do not exist, more than 5000 CIs have an open
+                      incident, or the incident read failed or timed out) or the organization has no CIs. A measured 0
+                      means every CI is degraded or critical; it is never a placeholder.
                   ci_health:
                     type: object
                     nullable: true
                     description: >-
                       The caller's CIs by derived `health` state (see the CI schema). The three states add up to
-                      `total`. Null when the health signal is unavailable.
+                      `total`. Null when the health signal is unavailable (the ITIL incident tables do not exist, more
+                      than 5000 CIs have an open incident, or the incident read failed or timed out).
                     properties:
                       healthy:
                         type: integer
@@ -4469,6 +4594,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/BusinessServiceForbidden'
+        '503':
+          description: 'Analytics resource limit exceeded: the bounded read hit its statement timeout (`{success: false, error}`).'
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
 

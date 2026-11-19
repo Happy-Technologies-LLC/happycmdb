@@ -114,7 +114,7 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 }));
 
 import { logger, loadConfig } from '@cmdb/common';
-import { getNeo4jClient, setJournalSeam } from '@cmdb/database';
+import { getNeo4jClient, getPostgresClient, setJournalSeam } from '@cmdb/database';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { resolvers } from '../../../graphql/resolvers';
@@ -429,6 +429,39 @@ describe('GET /relationships/evidence', () => {
       await evidence('a', { to_id: to, type: 'DEPENDS_ON' }), await evidence('a', { from_id: from, type: 'DEPENDS_ON' }),
       await read('a', 'x'.repeat(256), to), await read('a', from, to, { limit: 200 })];
     expect(statuses.map(res => res.status)).toEqual([400, 400, 400, 400, 400, 400, 400, 400, 200]);
+  });
+
+  describe('receipt read failure', () => {
+    const UNAVAILABLE = { success: false, error: 'Service Unavailable', message: 'Relationship evidence temporarily unavailable' };
+    const FAILED = { success: false, error: 'Failed to list relationship evidence', message: 'Internal error' };
+    const THROWN = 'relation "relationship_evidence_receipts" does not exist (secret-fragment)';
+    const failWith = (code?: string) => jest.spyOn(getPostgresClient(), 'query')
+      .mockRejectedValue(Object.assign(new Error(THROWN), code ? { code } : {}));
+    afterEach(() => jest.restoreAllMocks());
+
+    it('is 503 with the real PostgreSQL error while the receipt table is missing, and unchanged once it is back', async () => {
+      const [from, to] = [seed(A), seed(A)];
+      await create('a', from, to);
+      await rows(TABLE_AWAY);
+      try {
+        const res = await read('a', from, to);
+        expect([res.status, res.body]).toEqual([503, UNAVAILABLE]);
+      } finally {
+        await rows(TABLE_BACK);
+      }
+      const back = await read('a', from, to);
+      expect([back.status, back.body.data.receipts.length, back.body.pagination.total]).toEqual([200, 1, 1]);
+    });
+
+    it.each([['42P01', 503, UNAVAILABLE], ['42501', 503, UNAVAILABLE], ['57014', 500, FAILED], ['42703', 500, FAILED], ['XX000', 500, FAILED], [undefined, 500, FAILED]] as const)(
+      'SQLSTATE %s is the fixed %i, without the thrown message', async (code, status, body) => {
+        const [from, to] = [seed(A), seed(A)];
+        await create('a', from, to);
+        failWith(code);
+        const res = await read('a', from, to);
+        expect([res.status, res.body]).toEqual([status, body]);
+        expect(JSON.stringify(res.body)).not.toContain('secret-fragment');
+      });
   });
 });
 

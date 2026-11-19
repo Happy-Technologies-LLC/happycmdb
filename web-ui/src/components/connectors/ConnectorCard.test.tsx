@@ -85,7 +85,7 @@ describe('connector card', () => {
 
     await user.click(screen.getByRole('button', { name: 'ServiceNow homepage' }));
 
-    expect(open).toHaveBeenCalledWith('https://example.test/servicenow', '_blank');
+    expect(open).toHaveBeenCalledWith('https://example.test/servicenow', '_blank', 'noopener,noreferrer');
     expect(onSelect).not.toHaveBeenCalled();
   });
 

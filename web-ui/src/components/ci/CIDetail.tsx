@@ -2,10 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useMemo, useState } from 'react';
-import { Icon } from '@happy-technologies/design-system';
+import { Button, Icon } from '@happy-technologies/design-system';
 import { useNavigate } from 'react-router-dom';
 import { useCI } from '../../hooks/useCIs';
-import { useCIRelationships, useImpactAnalysis } from '../../hooks/useCIRelationships';
+import { useCIRelationships, useImpactEnvelope } from '../../hooks/useCIRelationships';
+import type { CIRelationship, ImpactEdge } from '../../services/ci.service';
+import CurrentnessBadge from '../impact/CurrentnessBadge';
+import EdgeEvidenceDrawer from '../impact/EdgeEvidenceDrawer';
+import ImpactBasisBanner from '../impact/ImpactBasisBanner';
+import UnreportedCiMarker from '../impact/UnreportedCiMarker';
+import { edgeKey, indexEdges } from '../impact/edgeKey';
 import CIStatusBadge from './CIStatusBadge';
 import CITypeBadge, { typeIcons } from './CITypeBadge';
 import DependencyGraph from '../visualization/DependencyGraph';
@@ -41,10 +47,13 @@ export const CIDetail: React.FC<CIDetailProps> = ({
     true,  // Always load for stats
     relationshipDepth
   );
-  const { data: impactAnalysis, isLoading: impactLoading } = useImpactAnalysis(
+  const { data: impact, isPending: impactPending } = useImpactEnvelope(
     ciId,
     true  // Always load for stats
   );
+  const impactAnalysis = impact?.data;
+  const envelope = impact?.envelope ?? null;
+  const [evidenceEdge, setEvidenceEdge] = useState<ImpactEdge | null>(null);
 
   // Direct (depth-1) neighbors for the mockup focal-node composition. Filtering
   // keeps these correct even when the graph below is fetched at a deeper depth.
@@ -56,6 +65,45 @@ export const CIDetail: React.FC<CIDetailProps> = ({
     () => (relationships ?? []).filter((r) => r.source_ci_id === ciId && r.target_ci),
     [relationships, ciId]
   );
+
+  // The server qualifies DEPENDS_ON edges only; a relationship with no entry here gets no badge and no drawer.
+  const edgeIndex = useMemo(() => indexEdges(envelope?.edges), [envelope]);
+  const unreportedIds = useMemo(
+    () => new Set(envelope?.coverage.unreported_ci_ids ?? []),
+    [envelope]
+  );
+  const focalUnreported = unreportedIds.has(ciId);
+  const ciNames = useMemo(() => {
+    const names: Record<string, string> = {};
+    for (const r of relationships ?? []) {
+      if (r.source_ci) names[r.source_ci_id] = r.source_ci.name;
+      if (r.target_ci) names[r.target_ci_id] = r.target_ci.name;
+    }
+    if (ci) names[ciId] = ci.name;
+    return names;
+  }, [relationships, ci, ciId]);
+
+  const renderEdgeMeta = (r: CIRelationship, neighbourId: string) => {
+    const edge = edgeIndex.get(edgeKey(r.source_ci_id, r.target_ci_id, r.type));
+    const unreported = unreportedIds.has(neighbourId);
+    if (!edge && !unreported) return null;
+    return (
+      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+        {unreported && <UnreportedCiMarker />}
+        {edge && <CurrentnessBadge currentness={edge.currentness} />}
+        {edge && (
+          <Button
+            variant="link"
+            size="sm"
+            aria-label={`View evidence: ${ciNames[edge.from] ?? edge.from} ${edge.type} ${ciNames[edge.to] ?? edge.to}`}
+            onClick={() => setEvidenceEdge(edge)}
+          >
+            Evidence
+          </Button>
+        )}
+      </div>
+    );
+  };
 
   const handleBack = () => {
     if (onBack) {
@@ -336,13 +384,14 @@ export const CIDetail: React.FC<CIDetailProps> = ({
 
           {activeTab === 1 && (
             <div>
-              {relationshipsLoading ? (
+              {relationshipsLoading || (impactPending && !(relationships && relationships.length > 0)) ? (
                 <div className="flex justify-center py-8">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-sky"></div>
                 </div>
               ) : relationships && relationships.length > 0 ? (
                 <div className="space-y-8">
                   {/* Direct-neighbor focal topology (mockup) above the full graph */}
+                  {envelope && <ImpactBasisBanner envelope={envelope} />}
                   <div className="rounded-lg border border-line bg-white p-7 shadow-sm">
                     <div className="mb-1.5 flex items-center justify-between">
                       <h3 className="text-lg font-semibold text-navy">Dependency topology</h3>
@@ -371,6 +420,7 @@ export const CIDetail: React.FC<CIDetailProps> = ({
                                     {r.source_ci!.name}
                                   </div>
                                   <div className="text-[10.5px] text-ink-soft">{r.type}</div>
+                                  {renderEdgeMeta(r, r.source_ci_id)}
                                 </div>
                               </div>
                               <div className="h-0 w-[34px] flex-none border-t-2 border-dashed border-line" />
@@ -396,6 +446,11 @@ export const CIDetail: React.FC<CIDetailProps> = ({
                           <span className="h-[7px] w-[7px] rounded-full" style={{ background: statusColors[ci.status] }} />
                           {ci.status}
                         </div>
+                        {focalUnreported && (
+                          <div className="mt-2">
+                            <UnreportedCiMarker variant="on-dark" />
+                          </div>
+                        )}
                       </div>
 
                       {/* Downstream - impacts */}
@@ -414,6 +469,7 @@ export const CIDetail: React.FC<CIDetailProps> = ({
                                     {r.target_ci!.name}
                                   </div>
                                   <div className="text-[10.5px] text-ink-soft">{r.type}</div>
+                                  {renderEdgeMeta(r, r.target_ci_id)}
                                 </div>
                               </div>
                             </div>
@@ -435,8 +491,20 @@ export const CIDetail: React.FC<CIDetailProps> = ({
                   />
                 </div>
               ) : (
-                <div className="bg-sky-soft border border-sky rounded-lg p-4 text-sky-text">
-                  No relationships found for this CI.
+                <div className="space-y-4">
+                  {envelope && <ImpactBasisBanner envelope={envelope} />}
+                  <div className="bg-sky-soft border border-sky rounded-lg p-4 text-sky-text">
+                    {focalUnreported ? (
+                      <>
+                        <span className="mr-2">
+                          <UnreportedCiMarker />
+                        </span>
+                        No relationships reported for this CI; coverage is incomplete.
+                      </>
+                    ) : (
+                      'No relationships found for this CI.'
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -449,6 +517,7 @@ export const CIDetail: React.FC<CIDetailProps> = ({
           {activeTab === 3 && <AuditHistory ciId={ciId} />}
         </div>
       </LiquidGlass>
+      <EdgeEvidenceDrawer edge={evidenceEdge} onClose={() => setEvidenceEdge(null)} ciNames={ciNames} />
     </div>
   );
 };

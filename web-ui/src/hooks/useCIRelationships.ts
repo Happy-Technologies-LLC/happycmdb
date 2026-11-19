@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import ciService, { CIRelationship, ImpactAnalysis } from '../services/ci.service';
 import { CI_QUERY_KEYS } from './useCIs';
 import { useMemo } from 'react';
@@ -23,6 +23,51 @@ export function useImpactAnalysis(ciId: string, enabled = true) {
     enabled: enabled && !!ciId,
     staleTime: 30000,
     gcTime: 300000,
+  });
+}
+
+/** The impact read with its basis, coverage and per-edge evidence envelope (null on a server that sends none). */
+export function useImpactEnvelope(ciId: string, enabled = true) {
+  return useQuery({
+    queryKey: CI_QUERY_KEYS.impactEnvelope(ciId),
+    queryFn: () => ciService.getImpactEnvelope(ciId),
+    enabled: enabled && !!ciId,
+    staleTime: 30000,
+    gcTime: 300000,
+  });
+}
+
+export const EVIDENCE_PAGE_SIZE = 20;
+
+/**
+ * Receipts of one edge, newest first, 20 per page. The key carries from, to and type, so one edge's rows are never
+ * served for another. Fetches only while `enabled` (the drawer is open).
+ */
+export function useRelationshipEvidence(fromId: string, toId: string, type: string, enabled: boolean) {
+  return useInfiniteQuery({
+    queryKey: CI_QUERY_KEYS.relationshipEvidence(fromId, toId, type),
+    queryFn: ({ pageParam }) =>
+      ciService.getRelationshipEvidence(fromId, toId, type, { limit: EVIDENCE_PAGE_SIZE, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (last) => {
+      const next = last.pagination.offset + last.pagination.count;
+      return last.pagination.count > 0 && next < last.pagination.total ? next : undefined;
+    },
+    // Offset paging over a newest-first list: a receipt written while the drawer is open shifts later pages by one
+    // and repeats the previous page's last receipt. Keep the first occurrence of each receipt_id.
+    select: (data) => {
+      const seen = new Set<string>();
+      return {
+        ...data,
+        pages: data.pages.map((page) => ({
+          ...page,
+          receipts: page.receipts.filter((r) => !seen.has(r.receipt_id) && !!seen.add(r.receipt_id)),
+        })),
+      };
+    },
+    enabled: enabled && !!fromId && !!toId && !!type,
+    retry: false,
+    staleTime: 0,
   });
 }
 

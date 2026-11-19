@@ -111,6 +111,24 @@ export class ImpactPredictionEngine {
     organizationId: string,
     admit?: ReferencedWrite
   ): Promise<ImpactAnalysis> {
+    return this.analyzeChangeImpact(ciId, changeType, organizationId, true, admit);
+  }
+
+  /**
+   * HAP-1928 (BW13): the same prediction as `predictChangeImpact`, read-only. It stores nothing (no impact_analyses
+   * row, no criticality cache write), so a caller needs read access only. The returned `id` names no stored row.
+   */
+  async previewChangeImpact(ciId: string, changeType: ChangeType, organizationId: string): Promise<ImpactAnalysis> {
+    return this.analyzeChangeImpact(ciId, changeType, organizationId, false);
+  }
+
+  private async analyzeChangeImpact(
+    ciId: string,
+    changeType: ChangeType,
+    organizationId: string,
+    store: boolean,
+    admit?: ReferencedWrite
+  ): Promise<ImpactAnalysis> {
     logger.info('Predicting change impact', { ci_id: ciId, change_type: changeType });
 
     const session = this.neo4jClient.getSession();
@@ -165,13 +183,15 @@ export class ImpactPredictionEngine {
       };
 
       // One admitted transaction after the gap check over every CI this computation read (v16 §6.5).
-      const referenced = [...criticality.walk.incarnations.keys(), ...affectedCIs.map(ci => ci.ci_id), ...chainRead];
-      await this.persist(admit, referenced, async client => {
-        await this.storeImpactAnalysis(client, impact, criticality.walk.incarnations.get(ciId)!, organizationId);
-        for (const score of criticality.cacheable) {
-          await this.storeCriticalityScore(client, score, criticality.walk.incarnations.get(score.ci_id)!, organizationId);
-        }
-      });
+      if (store) {
+        const referenced = [...criticality.walk.incarnations.keys(), ...affectedCIs.map(ci => ci.ci_id), ...chainRead];
+        await this.persist(admit, referenced, async client => {
+          await this.storeImpactAnalysis(client, impact, criticality.walk.incarnations.get(ciId)!, organizationId);
+          for (const score of criticality.cacheable) {
+            await this.storeCriticalityScore(client, score, criticality.walk.incarnations.get(score.ci_id)!, organizationId);
+          }
+        });
+      }
 
       logger.info('Impact analysis completed', {
         impact_score: impact.impact_score,

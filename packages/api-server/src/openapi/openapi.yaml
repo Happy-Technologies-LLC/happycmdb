@@ -104,6 +104,8 @@ tags:
     description: User authentication and API key management
   - name: Impact
     description: Change impact prediction and dependency graphs
+  - name: Ask
+    description: Ask Happy copilot answers as happy-ui/v1 JSON Lines
   - name: Configuration Items
     description: CRUD operations for Configuration Items (CIs)
   - name: Relationships
@@ -1040,6 +1042,110 @@ paths:
           $ref: '#/components/responses/CITraversalLimit'
         '504':
           $ref: '#/components/responses/CITraversalTimeout'
+
+  /ask:
+    post:
+      tags: [Ask]
+      summary: Ask Happy the impact question about a CI (happy-ui/v1 JSON Lines)
+      description: >-
+        HAP-1928 (UX-4b BW13, decision N4 (a)). Phase 1 of the Ask Happy copilot: a server-composed, deterministic answer
+        to the impact question on one CI. No model, no randomness and no conversation memory: the same impact data always
+        gives the same lines. It is read-only: the prediction is previewed and never stored (no `impact_analyses` row, no
+        criticality cache write), so it needs read access only, and it is scoped to the caller's organization (another
+        organization's CI is a 404, and another organization's business services are never counted or returned). It shares
+        the impact rate limits (429).
+
+        The 200 body is `application/x-ndjson`: one JSON value per line in the design system's `happy-ui/v1` stream format
+        (`begin`, `text`, `effect`s, `node`s, `end`; catalog `happy.core@1`). Every other status is a JSON error with no
+        partial stream. The lines, in order:
+
+        - `text`: one summary line (risk, dependent CIs, business services).
+
+        - `effect` `select` and `focus` of the CI, so the topology moves to it, then `highlight` of its dependent CIs when
+        there are any (`tone` follows the risk level).
+
+        - node `kpis` (`StatGroup`): `Risk` and `Dependent CIs` always; `Cost per hour` only when an affected business
+        service has annual revenue recorded (a lower bound, with the count that backs it, when only some do; see
+        `/impact/predict`); `Estimated downtime` only when the change type has an estimate (heuristic, not measured).
+        A value with no backing data is omitted. A figure that has data behind it is shown as computed, so it can be 0
+        (revenue below $43.80 a year rounds to a cost per hour of 0, and decommissioning a CI with no dependents has a
+        0 minute downtime heuristic).
+
+        - node `services` (`ImpactChain`, at most 12): the affected business services, most critical first. Absent when none.
+
+        - node `chain` (`ImpactChain`, at most 12): the longest dependency chain from the CI. Absent without dependents.
+
+        - node `unavailable` (`Text`): what was left out for lack of data. Absent when nothing was.
+
+        - node `basis` (`Text`): declared-graph reachability only; a missing edge is not evidence of no dependency.
+
+        - node `recommendations-heading` (`Text`) and one `rec-<rule id>` `Callout` per rule-based recommendation, in rule
+        order (the rules are listed under `/impact/predict`).
+      operationId: askImpact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ci_id]
+              properties:
+                ci_id:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                question:
+                  type: string
+                  enum: [impact]
+                  default: impact
+                  description: Phase 1 answers the impact question only.
+                change_type:
+                  type: string
+                  default: failover
+                  description: The change the question assumes. Defaults to `failover`.
+                  enum: [configuration_change, version_upgrade, restart, decommission, network_change, security_change, performance_tuning, failover]
+      responses:
+        '200':
+          description: The answer as `happy-ui/v1` JSON Lines
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+              example: |
+                {"op":"begin","$schema":"happy-ui/v1","catalog":"happy.core@1"}
+                {"op":"text","text":"If you fail over a-database: high risk (score 50), 1 dependent CI (1 direct), 1 business service affected."}
+                {"op":"effect","effect":{"emit":"select","detail":{"id":"ci-a-db"}}}
+                {"op":"effect","effect":{"emit":"focus","detail":{"id":"ci-a-db"}}}
+                {"op":"effect","effect":{"emit":"highlight","detail":{"ids":["ci-a-app"],"tone":"warn"}}}
+                {"op":"node","id":"root","type":"Stack","props":{"gap":16}}
+                {"op":"node","id":"kpis","parent":"root","type":"StatGroup","props":{"items":[{"label":"Risk","value":"High"}]}}
+                {"op":"end"}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            The CI has a pending or failed reconciliation operation (it is temporarily unavailable). Nothing is
+            returned partially; retry once the reconciliation settles.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                success: false
+                error: Conflict
+                message: CI is temporarily unavailable
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          description: A resource limit was exceeded, or the business-service read was refused. Nothing is returned partially.
+        '504':
+          description: The analysis, including the business-service read, exceeded its deadline.
 
   /impact/predict:
     post:

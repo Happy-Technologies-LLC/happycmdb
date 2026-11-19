@@ -283,6 +283,13 @@ export class RelationshipController {
         pagination: { total, count: receipts.length, offset, limit } });
     } catch (error) {
       if (sendJournalError(res, error)) return;
+      // SQLSTATE 42P01 (table missing: rollback window) or 42501 (login lacks SELECT): the write side's schemaFault classes. Only the code is logged.
+      const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
+      if (code === '42P01' || code === '42501') {
+        logger.warn('Relationship evidence read unavailable: receipt table missing or not readable', { code });
+        res.status(503).json({ success: false, error: 'Service Unavailable', message: 'Relationship evidence temporarily unavailable' });
+        return;
+      }
       logger.error('Error listing relationship evidence', error);
       res.status(500).json({ success: false, error: 'Failed to list relationship evidence', message: 'Internal error' });
     }

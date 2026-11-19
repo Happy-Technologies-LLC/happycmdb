@@ -674,15 +674,30 @@ function assertFlagValues(argv: readonly string[]): void {
 
 const REDACTED = '***';
 /**
- * HAP-2136: credential-like content of an error text, replaced before it is printed: URL userinfo, `Bearer <token>`, and
- * the value of any `password`/`passwd`/`token`/`secret` key (also inside a longer name such as `access_token`) after
- * `=` or `:`. Best effort for driver and network error text; the scope and rotation paths print fixed text instead.
+ * HAP-2136: credential-like content of an error text, replaced before it is printed. Best effort for driver and network
+ * error text, NOT a security boundary: an unlisted form passes through, and an ambiguous one is over-redacted. The scope
+ * and rotation paths print fixed text instead; no secret is meant to reach an error in the first place. Covered:
+ *  - URL userinfo (`scheme://user:pass@host`, also an empty user: `redis://:pass@host`). An `@` before the first `/` is
+ *    userinfo, whatever `?`, `#` or `:` precede it (as before). A password with a raw `/` puts the `@` after that
+ *    delimiter, so a second form is accepted only when the authority starts `user:` (the user may be empty) and what
+ *    follows the `:` up to the next `/`, `?`, `#` or whitespace is not all digits (a port); it reads to the next `@`,
+ *    and never across `//` or whitespace. `http://host/path@seg`, `http://host:80/a@b`, `http://:8080/a@b` and
+ *    `http://[::1]/a@b` keep their text; `http://host?x=a@b` and `http://u:x/path@y` are over-redacted, and
+ *    `u:123/x@h` is left (a port).
+ *  - `Bearer <token>` and the `Basic <credentials>` value of an `Authorization` header (also `Proxy-Authorization`).
+ *  - the value of a key whose name contains `password`, `passwd`, `pwd`, `token`, `secret` or `api_key`/`api-key`/`apikey`
+ *    (`access_token`, `x-api-key`, `password_for_the_production_database`; a name of any length), after `=` or `:`
+ *    (quoted values included).
+ * Every pattern is linear on any input: a URL scheme and a key name are matched only where they start (lookbehind, so
+ * one attempt per run of name characters), the keyword is found by one lookahead inside that run, and no quantifier
+ * nests over another. Not covered: `Authorization=Basic%20...` (URL-encoded), a scheme glued to a word (`x_postgres://`).
  */
 export function redactSecrets(text: string): string {
   return text
-    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/]*@/gi, `$1${REDACTED}@`)
+    .replace(/((?<![\w+.-])[a-z][a-z0-9+.-]*:\/\/)(?:[^\s/]*@|[^\s/?#@:[]*:(?!\d+(?:[/?#\s]|$))(?:(?!\/\/)[^\s@])*@)/gi, `$1${REDACTED}@`)
     .replace(/\bBearer\s+[^\s,;]+/gi, `Bearer ${REDACTED}`)
-    .replace(/(\b[\w.-]*(?:password|passwd|token|secret)[\w.-]*["']?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi, `$1${REDACTED}`);
+    .replace(/(\bauthorization["']?\s*[=:]\s*["']?basic\s+)[^\s,;"']+/gi, `$1${REDACTED}`)
+    .replace(/((?<![\w.-])(?=[\w.-]*?(?:password|passwd|pwd|token|secret|api[_-]?key))[\w.-]+["']?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi, `$1${REDACTED}`);
 }
 /** HAP-2131: a bare flag (`--grant`, `--revoke`), matched only where it is a flag: the token after a value flag is that flag's value. */
 function hasFlag(argv: readonly string[], flag: string): boolean {

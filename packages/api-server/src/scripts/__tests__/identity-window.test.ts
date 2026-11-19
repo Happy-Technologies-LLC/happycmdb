@@ -755,7 +755,7 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     expect(JSON.parse(retry.out[0]!)).toEqual({ userId: 'p', outcome: 'revoked', operator: 'alice', occurredAt: rows[1]!['occurred_text'], eventId: rows[1]!['id'], recordOnly: true, alreadyRecorded: true });
   });
 
-  it('a later change is recorded again: only a recovery row that is the latest scope row of the same event covers a record', async () => {
+  it('a later change is recorded again: a recovery row covers a record only when its actor ends in the same operation id', async () => {
     const users = [user()];
     const failing = insertting(() => { throw new Error('down'); });
     open.mockReturnValue(storesOf(users));
@@ -904,6 +904,38 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     expect(await events()).toEqual([]);
   });
 
+  // The ambiguous row is written in the transaction, then the commit throws: exit 1 with the Neo4j error (redacted),
+  // never the commit's own text, and the ROLLBACK leaves no row.
+  it('an ambiguous row whose commit fails exits 1 with the redacted write error, and leaves no row', async () => {
+    const users = [user()];
+    const inserts: unknown[][] = [];
+    const base = sqlOver(async (text, params = []) => {
+      if (/INSERT INTO auth_credential_events/.test(text)) inserts.push(params);
+      return { rows: await send('query', text, params) };
+    });
+    const sql: RotationSql = {
+      query: base.query,
+      transaction: async callback => {
+        await send('exec', 'BEGIN');
+        try {
+          await callback(sql);
+          throw new Error('COMMIT failed: token=commitsecret');
+        } catch (error) {
+          await send('exec', 'ROLLBACK');
+          throw error;
+        }
+      },
+    };
+    open.mockReturnValue({ ...storesOf(users), graph: lateCommit(users).graph, sql });
+
+    const { code, out, err } = await run(['grant-portfolio-import-scope', '--user-id', 'p', '--operator', 'alice']);
+
+    expect([code, out]).toEqual([1, []]);
+    expect(err).toEqual(['identity-window: commit acknowledgement lost password=***']);
+    expect(inserts.map(params => params[2])).toEqual([AMBIGUOUS_ACTOR]);
+    expect(await events()).toEqual([]);
+  });
+
   it('an ambiguous row never counts as a recovery row: the next record appends its own', async () => {
     const users = [user()];
     const { graph, land } = lateCommit(users);
@@ -970,6 +1002,65 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     expect(redactSecrets('connect failed: password=hunter2 token=abc.def secret: s3cr3t client_secret="two words" Authorization: Bearer eyJhbGciOi.x.y bolt://neo4j:pw%40d@db.internal:7687/x'))
       .toBe('connect failed: password=*** token=*** secret: *** client_secret=*** Authorization: Bearer *** bolt://***@db.internal:7687/x');
     expect(redactSecrets('connect ECONNREFUSED 10.0.0.5:5432')).toBe('connect ECONNREFUSED 10.0.0.5:5432');
+  });
+
+  // Follow-up to HAP-2136 / #376: forms the first version left in the clear. Each secret is gone, the other text stays.
+  it.each([
+    ['a URL password with a raw slash', 'connect postgres://u:pa/ss@h:5432/db failed', 'connect postgres://***@h:5432/db failed'],
+    ['a URL password with a raw slash, query and hash', 'redis://u:a?b#c@cache refused', 'redis://***@cache refused'],
+    ['a basic authorization header', 'HTTP 401 Authorization: Basic dXNlcjpodW50ZXIy; retry', 'HTTP 401 Authorization: Basic ***; retry'],
+    ['a JSON proxy authorization header', '{"Proxy-Authorization":"Basic dXNlcjpodW50ZXIy"}', '{"Proxy-Authorization":"Basic ***"}'],
+    ['api_key=', 'GET /v1?api_key=k3y&x=1', 'GET /v1?api_key=***&x=1'],
+    ['apikey:', 'apikey:k3y rejected', 'apikey:*** rejected'],
+    ['api-key=', 'api-key=k3y rejected', 'api-key=*** rejected'],
+    ['x-api-key:', 'headers x-api-key: k3y end', 'headers x-api-key: *** end'],
+    ['pwd=', 'login pwd=hunter2 refused', 'login pwd=*** refused'],
+    ['a mixed sentence', 'connect mysql://u:p/w@db pwd=a apikey:b Authorization: Basic Zm9vOmJhcg== Bearer t.k.n ok',
+      'connect mysql://***@db pwd=*** apikey:*** Authorization: Basic *** Bearer *** ok'],
+    // Forms the first version already covered.
+    ['PGPASSWORD=', 'PGPASSWORD=hunter2 psql', 'PGPASSWORD=*** psql'],
+    ['a JSON password', '{"password":"hunter2","user":"u"}', '{"password":***,"user":"u"}'],
+    ['a quoted value', "token='a b' secret=\"c d\"", 'token=*** secret=***'],
+    ['userinfo with a raw at sign', 'neo4j+s://u:p@ss@h:7687/x', 'neo4j+s://***@h:7687/x'],
+    ['userinfo with an empty username', 'redis://:hunter2@cache:6379', 'redis://***@cache:6379'],
+    ['an empty username and a raw ?', 'redis://:pa?ss@cache:6379 refused', 'redis://***@cache:6379 refused'],
+    ['an empty username and a raw #', 'redis://:pa#ss@cache:6379 refused', 'redis://***@cache:6379 refused'],
+    ['an empty username and a raw slash', 'redis://:pa/ss@cache:6379 refused', 'redis://***@cache:6379 refused'],
+    ['a raw ? in a token-only username', 'GET https://tok?en@github.com/x', 'GET https://***@github.com/x'],
+    ['a raw ? in the username of user:pass', 'GET https://u?x:pw@h/x', 'GET https://***@h/x'],
+    ['a raw # in the username of user:pass', 'GET https://u#x:pw@h/x', 'GET https://***@h/x'],
+    ['a key suffix longer than 32 characters', 'password_for_the_production_database_primary_user=hunter2 refused',
+      'password_for_the_production_database_primary_user=*** refused'],
+    ['a key keyword before a very long prefix', `${'x'.repeat(100)}_token=abc`, `${'x'.repeat(100)}_token=***`],
+    // Unchanged text.
+    ['a URL without userinfo', 'GET http://host/path@seg failed', 'GET http://host/path@seg failed'],
+    ['a URL with a port and an at sign in the path', 'GET https://host:8443/x/@scope/pkg', 'GET https://host:8443/x/@scope/pkg'],
+    ['a bracketed IPv6 URL', 'GET http://[::1]:8080/a@b', 'GET http://[::1]:8080/a@b'],
+    ['a socket error', 'connect ECONNREFUSED 10.0.0.5:5432', 'connect ECONNREFUSED 10.0.0.5:5432'],
+    ['the word token without a value', 'the token expired, request a new one', 'the token expired, request a new one'],
+    ['the word Basic outside an authorization header', 'Basic authentication is disabled', 'Basic authentication is disabled'],
+    ['an empty-username authority that is only a port', 'GET http://:8080/x@y', 'GET http://:8080/x@y'],
+    ['a long name without a keyword', `${'a'.repeat(100)}=value`, `${'a'.repeat(100)}=value`],
+  ])('redactSecrets: %s', (_label, input, expected) => {
+    expect(redactSecrets(input)).toBe(expected);
+  });
+
+  // The first version took 2.76 s on 40,000 characters of `a.` (nested [\w.-]* quantifiers). Synchronous, so the bound is
+  // measured, not a jest timeout; it is a generous multiple of the linear cost (a few milliseconds).
+  it.each([
+    ['dotted words', 'a.'.repeat(20000)],
+    ['a repeated key', 'password'.repeat(5000)],
+    ['repeated schemes', 'a://'.repeat(10000)],
+    ['a scheme and a long authority', `a://u:${'x:'.repeat(20000)}`],
+    ['a long dotted scheme', `${'a.'.repeat(20000)}://`],
+    ['repeated authorization', 'authorization: basic '.repeat(2000)],
+    ['a repeated key with a long suffix', 'password_'.repeat(4500)],
+    ['a repeated key and equals signs', 'password=x'.repeat(4000)],
+    ['repeated empty-username schemes', 'a://:'.repeat(8000)],
+  ])('redactSecrets stays linear on 40,000 characters of %s', (_label, input) => {
+    const started = performance.now();
+    redactSecrets(input);
+    expect(performance.now() - started).toBeLessThan(250);
   });
 
   // HAP-2136 F4

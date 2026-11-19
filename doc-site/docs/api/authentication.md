@@ -285,8 +285,15 @@ key space from every other advisory lock in the application (one-bigint keys, an
 existing lock is taken or blocked by a user id; a hash collision of two ids only makes their runs wait for each other.
 The lock wait is **unbounded**: there is no `lock_timeout`, and the Neo4j reads made while the lock is held have no
 timeout (each Neo4j write transaction is bounded at 30 seconds), so a stalled run holds up every other run on the
-same user until it ends or its PostgreSQL session is cancelled. A cancellation is reported as "PostgreSQL is
-unavailable" with nothing changed. This is acceptable for an interactive operator command; stop the stalled run.
+same user until it ends or its PostgreSQL session is terminated. This is acceptable for an interactive operator command;
+stop the stalled process. A holder stalled in a Neo4j read is idle in its transaction, so `pg_cancel_backend` does
+nothing to it; if the lock must be freed from the database side, run `pg_terminate_backend` on the `pid` of the
+`pg_locks` row with `locktype = 'advisory'`, `classid = 2129`, `objsubid = 2` and `granted`. The lock is then released and a waiting run
+proceeds, but the terminated process is still alive and can reach its Neo4j write. That write is guarded by
+`coalesce(u.scopes, []) = $observed`, so it changes nothing when the waiting run changed the scopes first: the stalled
+run exits 2 (`refused: not_applied`). If the write still applies (the scopes were unchanged), its audit insert fails on
+the lost session and the run exits 3: recover it with the record command. A run terminated while it is still waiting
+for the lock exits 1 with "PostgreSQL is unavailable" and nothing changed.
 
 **PostgreSQL outage.** The lock is a precondition: when PostgreSQL cannot be connected to, grant, revoke and record
 now refuse up front, with exit 1 and a fixed message (`... refused: PostgreSQL is unavailable, so the per-user lock

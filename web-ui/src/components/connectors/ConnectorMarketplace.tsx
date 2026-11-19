@@ -10,15 +10,28 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { connectorRunErrorMessage, connectorsApi } from '../../api/connectors';
-import { Connector } from '../../types';
-import { Icon } from '@happy-technologies/design-system';
+import {
+  Badge,
+  Button,
+  Card,
+  Chip,
+  EmptyState,
+  IconButton,
+  IconWell,
+  SectionHeading,
+  Skeleton,
+} from '@happy-technologies/design-system';
 import { toast } from 'sonner';
-import { Button } from '@/components/ui/button';
-import { LiquidGlass } from '@/components/ui/liquid-glass';
-import { Badge } from '@/components/ui/badge';
 import { useNavigate } from 'react-router-dom';
 import { ConnectorConfigModal } from './ConnectorConfigModal';
 import { RequirePermission } from '@/components/common/RequirePermission';
+import { QueryState } from '@/components/estate/SurfaceState';
+
+const STATUS_TONE: Record<string, 'success' | 'danger' | 'neutral'> = {
+  active: 'success',
+  inactive: 'neutral',
+  error: 'danger',
+};
 
 interface ConnectorTemplate {
   type: string;
@@ -121,10 +134,11 @@ export const ConnectorMarketplace: React.FC = () => {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
 
-  const { data: connectors, isLoading } = useQuery({
+  const connectorsQuery = useQuery({
     queryKey: ['connectors'],
     queryFn: connectorsApi.list,
   });
+  const connectors = connectorsQuery.isError ? undefined : connectorsQuery.data;
 
   const runMutation = useMutation({
     mutationFn: (configId: string) => connectorsApi.run(configId),
@@ -156,93 +170,83 @@ export const ConnectorMarketplace: React.FC = () => {
       ? CONNECTOR_TEMPLATES
       : CONNECTOR_TEMPLATES.filter((t) => t.category === selectedCategory);
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'active':
-        return <Icon name="check-circle" size={20} className="text-success" />;
-      case 'inactive':
-        return <Icon name="clock" size={20} className="text-ink-soft" />;
-      case 'error':
-        return <Icon name="x-circle" size={20} className="text-danger" />;
-      default:
-        return null;
-    }
-  };
-
   return (
     <div className="space-y-6">
       {/* Header */}
       <div>
-        <h2 className="text-3xl font-bold tracking-tight">Connector Marketplace</h2>
-        <p className="text-muted-foreground mt-1">
+        <SectionHeading level={2}>Connector Marketplace</SectionHeading>
+        <p className="-mt-2 text-sm text-[var(--hh-text-muted)]">
           Deploy bi-directional integrations with ITSM, ticketing, and monitoring systems
         </p>
       </div>
 
       {/* Discovery Banner */}
-      <LiquidGlass variant="default" rounded="xl" className="border-l-4 border-l-sky">
+      <Card>
         <div className="flex items-start gap-4">
-          <div className="p-2 bg-sky-soft rounded-lg">
-            <Icon name="info" size={24} className="text-sky-text" />
-          </div>
+          <IconWell icon="info" tone="accent" />
           <div className="flex-1">
-            <h3 className="font-semibold text-lg mb-1">Looking for Cloud Infrastructure Discovery?</h3>
-            <p className="text-sm text-muted-foreground mb-3">
+            <SectionHeading level={3}>Looking for Cloud Infrastructure Discovery?</SectionHeading>
+            <p className="-mt-2 mb-3 text-sm text-[var(--hh-text-muted)]">
               For discovering CIs from AWS, Azure, GCP, Kubernetes, SSH, and network devices, use the
               <strong> Discovery </strong> feature instead. Connectors are for bi-directional synchronization
               with external ITSM and monitoring platforms.
             </p>
-            <Button
-              onClick={() => navigate('/discovery')}
-              size="sm"
-              variant="outline"
-            >
+            <Button onClick={() => navigate('/discovery')} size="sm" variant="outline" iconRight="arrow-right">
               Go to Discovery
-              <Icon name="arrow-right" size={16} className="ml-2" />
             </Button>
           </div>
         </div>
-      </LiquidGlass>
+      </Card>
 
       {/* Category Filter */}
-      <div className="flex gap-2 flex-wrap">
+      <div className="flex flex-wrap gap-2">
         {categories.map((cat) => (
-          <Button
+          <Chip
             key={cat.value}
+            active={selectedCategory === cat.value}
+            aria-pressed={selectedCategory === cat.value}
             onClick={() => setSelectedCategory(cat.value)}
-            variant={selectedCategory === cat.value ? 'default' : 'outline'}
           >
             {cat.label}
-          </Button>
+          </Chip>
         ))}
       </div>
 
       {/* Deployed Connectors */}
-      {connectors && connectors.length > 0 && (
-        <LiquidGlass variant="default" rounded="xl">
-          <h3 className="text-lg font-semibold mb-4">Deployed Connectors</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {connectors.map((connector) => (
-              <div
-                key={connector.id}
-                className="p-4 border border-border rounded-lg hover:bg-accent/50 transition-colors"
-              >
-                <div className="flex items-start justify-between mb-3">
+      <Card>
+        <SectionHeading level={3}>Deployed Connectors</SectionHeading>
+        {connectorsQuery.isPending ? (
+          <div aria-busy="true" className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-32" />
+            ))}
+          </div>
+        ) : connectorsQuery.isError ? (
+          <QueryState what="deployed connectors" error={connectorsQuery.error} onRetry={() => void connectorsQuery.refetch()} />
+        ) : connectors && connectors.length === 0 ? (
+          <EmptyState icon="plugs" title="No connectors deployed yet" />
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {(connectors ?? []).map((connector) => (
+              <Card key={connector.id}>
+                <div className="mb-3 flex items-start justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="text-2xl">
+                    <span aria-hidden="true" className="text-2xl">
                       {CONNECTOR_TEMPLATES.find((t) => t.type === connector.type)?.icon || '🔌'}
                     </span>
                     <div>
                       <h4 className="font-semibold">{connector.name}</h4>
-                      <Badge variant="outline" className="mt-1 capitalize">
+                      <Badge variant="neutral" className="mt-1 capitalize">
                         {connector.type}
                       </Badge>
                     </div>
                   </div>
-                  {getStatusIcon(connector.status)}
+                  <Badge variant={STATUS_TONE[connector.status] ?? 'neutral'} dot>
+                    {connector.status}
+                  </Badge>
                 </div>
 
-                <div className="text-sm text-muted-foreground mb-3">
+                <div className="mb-3 text-sm text-[var(--hh-text-muted)]">
                   Updated: {new Date(connector.updated_at).toLocaleString()}
                 </div>
 
@@ -253,63 +257,57 @@ export const ConnectorMarketplace: React.FC = () => {
                       disabled={runMutation.isPending}
                       className="flex-1"
                       size="sm"
+                      icon="play"
                     >
-                      <Icon name="play" size={16} />
                       Run Now
                     </Button>
-                    <Button
+                    <IconButton
                       onClick={() => {
                         /* TODO: Open config modal */
                       }}
                       variant="outline"
                       size="sm"
-                    >
-                      <Icon name="gear-six" size={16} />
-                    </Button>
-                    <Button
+                      icon="gear-six"
+                      aria-label={`Configure ${connector.name}`}
+                    />
+                    <IconButton
                       onClick={() => deleteMutation.mutate(connector.id)}
-                      variant="destructive"
+                      variant="outline"
                       size="sm"
-                    >
-                      <Icon name="trash" size={16} />
-                    </Button>
+                      icon="trash"
+                      aria-label={`Delete ${connector.name}`}
+                    />
                   </div>
                 </RequirePermission>
-              </div>
+              </Card>
             ))}
           </div>
-        </LiquidGlass>
-      )}
+        )}
+      </Card>
 
       {/* Available Templates */}
-      <LiquidGlass variant="default" rounded="xl">
-        <h3 className="text-lg font-semibold mb-4">Available Connectors</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <Card>
+        <SectionHeading level={3}>Available Connectors</SectionHeading>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
           {filteredTemplates.map((template) => (
-            <div
-              key={template.type}
-              className="p-4 border border-border rounded-lg hover:bg-accent/50 transition-colors"
-            >
-              <div className="flex items-start gap-3 mb-4">
-                <span className="text-3xl">{template.icon}</span>
+            <Card key={template.type}>
+              <div className="mb-4 flex items-start gap-3">
+                <span aria-hidden="true" className="text-3xl">{template.icon}</span>
                 <div className="flex-1">
                   <h4 className="font-semibold">{template.name}</h4>
-                  <p className="text-sm text-muted-foreground mt-1">{template.description}</p>
+                  <p className="mt-1 text-sm text-[var(--hh-text-muted)]">{template.description}</p>
                 </div>
               </div>
               {/* Deploys via POST /connector-configs (requirePermission('write')) */}
               <RequirePermission permission="write">
-                <Button
-                  onClick={() => setConfiguring(template)}
-                  className="w-full"
-                >
+                <Button onClick={() => setConfiguring(template)} className="w-full">
                   Deploy Connector
                 </Button>
               </RequirePermission>
-            </div>
+            </Card>
           ))}
         </div>
-      </LiquidGlass>
+      </Card>
 
       {/* Configuration Modal */}
       {configuring && (

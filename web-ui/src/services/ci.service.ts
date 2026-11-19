@@ -124,6 +124,80 @@ export interface ImpactAnalysis {
   unavailable?: string[];
 }
 
+/** HAP-2030: how current the receipts behind one edge are; derived by the server per read, never stored. */
+export type EdgeCurrentness = 'current' | 'stale' | 'contradicted' | 'unsupported';
+
+export type EvidenceClass = 'declared' | 'static_observed' | 'runtime_observed' | 'inferred';
+
+export type EvidencePolarity = 'supports' | 'contradicts';
+
+/** Receipt summary of one edge (edge-evidence.ts). Rendered as returned: the UI never recomputes currentness. */
+export interface EdgeEvidenceSummary {
+  classes: EvidenceClass[];
+  support: { supports: number; contradicts: number };
+  receipt_count: number;
+  /** More than 200 receipts exist; the counts cover the newest 200. */
+  receipts_truncated: boolean;
+  last_supported_at: string | null;
+  receipts_href: string;
+}
+
+/** One qualified DEPENDS_ON edge, oriented as stored (from = start CI), whichever way the traversal walked. */
+export interface ImpactEdge {
+  from: string;
+  to: string;
+  type: string;
+  currentness: EdgeCurrentness;
+  evidence: EdgeEvidenceSummary;
+}
+
+/** HAP-2028 coverage block of an impact read. */
+export interface ImpactCoverage {
+  ci_nodes_in_scope: number;
+  /** CIs in scope that no source has reported: their relationships may be missing from the graph. */
+  unreported_ci_ids: string[];
+  runtime_observed_receipts_in_scope: false;
+  note: string;
+}
+
+/** Top-level keys the impact reads carry beside `data` (impact-envelope.ts, edge-evidence.ts). */
+export interface ImpactEnvelope {
+  basis: 'declared_graph_reachability';
+  runtime_blast_radius: 'not_established';
+  coverage: ImpactCoverage;
+  edges: ImpactEdge[];
+}
+
+/** `envelope` is null when the server predates HAP-2028 and sends none. */
+export interface ImpactResponse {
+  data: ImpactAnalysis;
+  envelope: ImpactEnvelope | null;
+}
+
+/** One row of GET /relationships/evidence (HAP-2029). */
+export interface RelationshipReceipt {
+  receipt_id: string;
+  evidence_class: EvidenceClass;
+  polarity: EvidencePolarity;
+  source_name: string | null;
+  source_id: string | null;
+  source_version: string | null;
+  method: string | null;
+  rationale_code: string | null;
+  observed_at: string;
+  observer: string | null;
+  observer_type: string | null;
+  correlation_id: string | null;
+}
+
+export interface RelationshipEvidencePage {
+  from_id: string;
+  to_id: string;
+  type: string;
+  receipts: RelationshipReceipt[];
+  pagination: { total: number; count: number; offset: number; limit: number };
+}
+
 export interface CreateCIRequest {
   name: string;
   type: CIType;
@@ -210,11 +284,49 @@ class CIService {
   }
 
   async getImpactAnalysis(id: string): Promise<ImpactAnalysis> {
+    return (await this.getImpactEnvelope(id)).data;
+  }
+
+  /** GET /cis/:id/impact with the top-level basis, coverage and edges the server sends beside `data`. */
+  async getImpactEnvelope(id: string): Promise<ImpactResponse> {
+    const response = await this.axiosInstance.get<
+      { success: boolean; data: ImpactAnalysis } & Partial<ImpactEnvelope>
+    >(`/cis/${id}/impact`);
+    const { data, basis, runtime_blast_radius, coverage, edges } = response.data;
+    if (!basis || !coverage) return { data, envelope: null };
+    return {
+      data,
+      envelope: {
+        basis,
+        runtime_blast_radius: runtime_blast_radius ?? 'not_established',
+        coverage: {
+          ...coverage,
+          unreported_ci_ids: Array.isArray(coverage.unreported_ci_ids) ? coverage.unreported_ci_ids : [],
+        },
+        edges: Array.isArray(edges) ? edges : [],
+      },
+    };
+  }
+
+  /**
+   * GET /relationships/evidence: the receipts of one edge, newest first. `sideRead`: a refusal is shown by the
+   * evidence drawer itself, not as a page-level forbidden banner.
+   */
+  async getRelationshipEvidence(
+    fromId: string,
+    toId: string,
+    type: string,
+    { limit = 20, offset = 0 }: { limit?: number; offset?: number } = {}
+  ): Promise<RelationshipEvidencePage> {
     const response = await this.axiosInstance.get<{
       success: boolean;
-      data: ImpactAnalysis;
-    }>(`/cis/${id}/impact`);
-    return response.data.data;
+      data: Omit<RelationshipEvidencePage, 'pagination'>;
+      pagination: RelationshipEvidencePage['pagination'];
+    }>('/relationships/evidence', {
+      params: { from_id: fromId, to_id: toId, type, limit, offset },
+      sideRead: true,
+    });
+    return { ...response.data.data, pagination: response.data.pagination };
   }
 
   async getDashboardStats(): Promise<DashboardStats> {

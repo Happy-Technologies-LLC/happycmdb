@@ -19,7 +19,8 @@ const { apiClient, permission } = vi.hoisted(() => ({
   permission: { write: true },
 }));
 vi.mock('@/lib/api-client', () => ({ apiClient }));
-vi.mock('@/hooks/usePermission', () => ({ usePermission: () => permission.write }));
+// Level-aware, like the real hook: every role holds `read`; `permission.write` switches the write level (and above).
+vi.mock('@/hooks/usePermission', () => ({ usePermission: (level: string) => level === 'read' || permission.write }));
 
 const config = (id: string, overrides: Record<string, unknown> = {}) => ({
   id, name: `Deployed ${id}`, connector_type: 'servicenow', enabled: true,
@@ -97,6 +98,10 @@ describe('marketplace write gating', () => {
     expect(screen.getByText('Datadog')).toBeVisible();
     expect(screen.getByText('Deployed b')).toBeVisible();
     expect(writeControls()).toEqual([]);
+    expect(screen.queryByRole('button', { name: 'Deploy Connector' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Run Now' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Configure Deployed a' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Delete Deployed a' })).toBeNull();
   });
 
   it('runs and deletes with the connector configuration id and nothing else', async () => {

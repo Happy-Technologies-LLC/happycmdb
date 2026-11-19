@@ -179,7 +179,7 @@ export function ConnectorCard({
             icon="arrow-square-out"
             onClick={(e) => {
               e.stopPropagation();
-              window.open(connector.homepage, '_blank');
+              window.open(connector.homepage, '_blank', 'noopener,noreferrer');
             }}
           >
             <span className="sr-only">{connector.name} homepage</span>

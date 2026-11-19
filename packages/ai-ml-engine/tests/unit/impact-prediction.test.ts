@@ -630,9 +630,20 @@ describe('ImpactPredictionEngine', () => {
       expect({ ...previewed, analyzed_at: undefined }).toEqual({ ...stored, analyzed_at: undefined });
     });
 
-    it('refuses a CI the organization does not own, as predictChangeImpact does', async () => {
-      mockNeo4jClient.getSession.mockReturnValue(createMockNeo4jSession([]));
-      await expect(engine.previewChangeImpact('ci-nonexistent', ChangeType.RESTART, 'org-a')).rejects.toThrow('CI not found');
+    it('looks the root CI up in the caller\'s organization, so a CI another organization owns is refused', async () => {
+      const owner = 'org-a';
+      const session = createMockNeo4jSession([]);
+      // Like the graph: the CI exists only for its owning organization.
+      session.run.mockImplementation(async (_query: string, params: { ciId: string; organizationId: string }) => ({
+        records: params.ciId === mockCIs.database.id && params.organizationId === owner
+          ? [createMockNeo4jRecord({ id: mockCIs.database.id, name: mockCIs.database.name, ci_type: mockCIs.database.ci_type })]
+          : [],
+      }));
+      mockNeo4jClient.getSession.mockReturnValue(session);
+
+      await expect(engine.previewChangeImpact(mockCIs.database.id, ChangeType.RESTART, 'org-b')).rejects.toThrow('CI not found');
+      expect(session.run).toHaveBeenCalledTimes(1);
+      expect(session.run.mock.calls[0][1]).toMatchObject({ ciId: mockCIs.database.id, organizationId: 'org-b' });
     });
   });
 

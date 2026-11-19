@@ -62,7 +62,16 @@ describe('composeImpactAnswer', () => {
     ]);
   });
 
-  it('shows cost per hour and downtime only when they have backing data, never as 0', () => {
+  it('shows the impact score as a plain number: it is not bounded to 100, so no denominator appears anywhere', () => {
+    const lines = compose(impact({ impact_score: 150, risk_level: 'critical' }));
+    const summary = lines.find(line => line.op === 'text')!['text'] as string;
+    expect(summary).toContain('(score 150)');
+    const risk = (node(lines, 'kpis')!['props'].items as Array<Record<string, any>>).find(stat => stat['label'] === 'Risk')!;
+    expect(risk['delta'].text).toBe('score 150');
+    expect(toJsonLines(lines)).not.toContain('/100');
+  });
+
+  it('omits cost per hour and downtime that have no backing data, and shows a figure that has data', () => {
     const full = compose(impact(), [serviceRow('s1')]);
     expect(statLabels(full)).toEqual(['Risk', 'Dependent CIs', 'Cost per hour', 'Estimated downtime']);
     expect(node(full, 'unavailable')).toBeUndefined();

@@ -1067,7 +1067,9 @@ paths:
         - node `kpis` (`StatGroup`): `Risk` and `Dependent CIs` always; `Cost per hour` only when an affected business
         service has annual revenue recorded (a lower bound, with the count that backs it, when only some do; see
         `/impact/predict`); `Estimated downtime` only when the change type has an estimate (heuristic, not measured).
-        A value with no backing data is left out and never shown as 0.
+        A value with no backing data is omitted. A figure that has data behind it is shown as computed, so it can be 0
+        (revenue below $43.80 a year rounds to a cost per hour of 0, and decommissioning a CI with no dependents has a
+        0 minute downtime heuristic).
 
         - node `services` (`ImpactChain`, at most 12): the affected business services, most critical first. Absent when none.
 
@@ -1111,7 +1113,7 @@ paths:
                 type: string
               example: |
                 {"op":"begin","$schema":"happy-ui/v1","catalog":"happy.core@1"}
-                {"op":"text","text":"If you fail over a-database: high risk (score 50/100), 1 dependent CI (1 direct), 1 business service affected."}
+                {"op":"text","text":"If you fail over a-database: high risk (score 50), 1 dependent CI (1 direct), 1 business service affected."}
                 {"op":"effect","effect":{"emit":"select","detail":{"id":"ci-a-db"}}}
                 {"op":"effect","effect":{"emit":"focus","detail":{"id":"ci-a-db"}}}
                 {"op":"effect","effect":{"emit":"highlight","detail":{"ids":["ci-a-app"],"tone":"warn"}}}
@@ -1126,6 +1128,18 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            The CI has a pending or failed reconciliation operation (it is temporarily unavailable). Nothing is
+            returned partially; retry once the reconciliation settles.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                success: false
+                error: Conflict
+                message: CI is temporarily unavailable
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '503':

@@ -18,7 +18,7 @@
  *      a lower bound says how many services priced it), Estimated downtime (only when the change type has an estimate).
  *      `services` ImpactChain: the affected business services by criticality (at most 12).
  *      `chain` ImpactChain: the longest dependency chain from the CI (at most 12).
- *      `unavailable` Text: what was left out for lack of data. A value with no backing data is never shown as 0.
+ *      `unavailable` Text: what was left out for lack of data. A value with no backing data is omitted; a figure that is backed by data is shown as it is, 0 included.
  *      `basis` Text: the declared-graph coverage note (not a runtime blast radius).
  *      `recommendations-heading` Text and `rec-<rule id>` Callouts: the rule-based recommendations, in rule order.
  */
@@ -96,7 +96,7 @@ export function composeImpactAnswer(input: ImpactAnswerInput): HappyUILine[] {
   const hasCost = context.cost_per_hour !== null;
   const hasDowntime = impact.estimated_downtime_minutes !== undefined;
 
-  const summary = `If you ${verb} ${sourceName}: ${impact.risk_level} risk (score ${impact.impact_score}/100), `
+  const summary = `If you ${verb} ${sourceName}: ${impact.risk_level} risk (score ${impact.impact_score}), `
     + `${plural(impact.blast_radius, 'dependent CI')} (${direct} direct), ${plural(services.length, 'business service')} affected.`;
 
   const lines: HappyUILine[] = [
@@ -116,7 +116,7 @@ export function composeImpactAnswer(input: ImpactAnswerInput): HappyUILine[] {
   node('root', 'Stack', { gap: 16 }, null);
 
   const stats: Array<Record<string, unknown>> = [
-    { label: 'Risk', value: capitalize(impact.risk_level), delta: { text: `score ${impact.impact_score}/100`, tone: riskTone } },
+    { label: 'Risk', value: capitalize(impact.risk_level), delta: { text: `score ${impact.impact_score}`, tone: riskTone } },
     { label: 'Dependent CIs', value: impact.blast_radius, delta: { text: `${direct} direct` } },
   ];
   if (hasCost) {

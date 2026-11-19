@@ -671,6 +671,7 @@ describe('ImpactPredictionEngine', () => {
       };
       const ciNodePatterns = (cypher: string) => cypher.match(/\(\s*\w*\s*:CI\b[^)]*\)/g) ?? [];
       const traversals = (calls: Call[]) => calls.filter(call => /UNWIND \$frontier/.test(call.cypher) && ciNodePatterns(call.cypher).length > 0);
+      const rootLookups = (calls: Call[]) => calls.filter(call => /RETURN ci\.id as id\b/.test(call.cypher) && 'ciId' in call.params);
 
       it('puts organization_id: $organizationId on every CI node pattern of every traversal statement', async () => {
         const calls = await recordPreview('org-a');
@@ -690,10 +691,21 @@ describe('ImpactPredictionEngine', () => {
         const forB = await recordPreview('org-b');
         for (const [calls, organization] of [[forA, 'org-a'], [forB, 'org-b']] as const) {
           const mentioning = calls.filter(call => call.cypher.includes('$organizationId'));
-          expect(mentioning.length).toBeGreaterThanOrEqual(traversals(calls).length + 1);
+          // Root lookup + every traversal + criticality read: the floor no longer hides a dropped root predicate.
+          expect(mentioning.length).toBeGreaterThanOrEqual(rootLookups(calls).length + traversals(calls).length + 1);
           for (const call of mentioning) expect(call.params.organizationId).toBe(organization);
         }
         expect(forA[0].params.organizationId).not.toBe(forB[0].params.organizationId);
+      });
+
+      it('guards the seed CI of the root lookup with the caller\'s organization, for two organizations', async () => {
+        for (const organization of ['org-a', 'org-b']) {
+          const calls = await recordPreview(organization);
+          const roots = rootLookups(calls);
+          expect(roots).toHaveLength(1);
+          expect(roots[0].cypher).toMatch(/\(ci:CI \{id: \$ciId\}\)\s*WHERE\s+ci\.organization_id\s*=\s*\$organizationId\b/);
+          expect(roots[0].params).toMatchObject({ ciId: mockCIs.database.id, organizationId: organization });
+        }
       });
     });
   });

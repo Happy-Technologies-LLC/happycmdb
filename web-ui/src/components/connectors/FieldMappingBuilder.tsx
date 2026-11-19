@@ -7,19 +7,18 @@
  */
 
 import React, { useState } from 'react';
-import { Icon } from '@happy-technologies/design-system';
-import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Badge } from '@/components/ui/badge';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+  Badge,
+  Button,
+  Card,
+  Checkbox,
+  Icon,
+  IconButton,
+  Input,
+  Label,
+  NativeSelect,
+  SectionHeading,
+} from '@happy-technologies/design-system';
 
 interface FieldMapping {
   id: string;
@@ -115,26 +114,26 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
   const getTransformationIcon = (type?: string) => {
     switch (type) {
       case 'expression':
-        return <Icon name="lightning" size={16} className="text-warning" />;
+        return <Icon name="lightning" size={16} className="text-[var(--hh-warning-text)]" />;
       case 'lookup':
-        return <Icon name="database" size={16} className="text-sky-text" />;
+        return <Icon name="database" size={16} className="text-[var(--hh-accent-text)]" />;
       case 'conditional':
-        return <Icon name="gear-six" size={16} className="text-navy" />;
+        return <Icon name="gear-six" size={16} className="text-[var(--hh-text-primary)]" />;
       default:
-        return <Icon name="arrow-right" size={16} className="text-ink-soft" />;
+        return <Icon name="arrow-right" size={16} className="text-[var(--hh-text-muted)]" />;
     }
   };
 
   const getTransformationBadge = (type?: string) => {
     switch (type) {
       case 'expression':
-        return <Badge variant="outline" className="bg-warning-soft text-warning border-warning/20">Expression</Badge>;
+        return <Badge variant="warning">Expression</Badge>;
       case 'lookup':
-        return <Badge variant="outline" className="bg-sky-soft text-sky-text border-sky">Lookup</Badge>;
+        return <Badge variant="info">Lookup</Badge>;
       case 'conditional':
-        return <Badge variant="outline" className="bg-sky-soft text-navy border-sky">Conditional</Badge>;
+        return <Badge variant="info">Conditional</Badge>;
       default:
-        return <Badge variant="outline" className="bg-warm-alt text-ink-soft">Direct</Badge>;
+        return <Badge variant="neutral">Direct</Badge>;
     }
   };
 
@@ -142,8 +141,8 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
     <div className="space-y-4">
       {/* Mapping List */}
       {mappings.length === 0 ? (
-        <Card className="p-8 text-center border-dashed">
-          <div className="text-muted-foreground mb-4">
+        <Card className="border-dashed p-8 text-center">
+          <div className="mb-4 text-[var(--hh-text-muted)]">
             <Icon name="database" size={48} className="mx-auto mb-2 opacity-50" />
             <p>No field mappings configured yet</p>
             <p className="text-sm">Add your first mapping to get started</p>
@@ -151,200 +150,193 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
         </Card>
       ) : (
         <div className="space-y-3">
-          {mappings.map((mapping, index) => (
-            <Card
-              key={mapping.id}
-              className={`p-4 transition-all ${
-                editingMapping === mapping.id ? 'ring-2 ring-primary' : ''
-              }`}
-            >
-              {editingMapping === mapping.id ? (
-                /* Edit Mode */
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h4 className="font-semibold text-sm">Mapping #{index + 1}</h4>
-                    <div className="flex gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setEditingMapping(null)}
-                      >
-                        Done
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="destructive"
-                        onClick={() => deleteMapping(mapping.id)}
-                      >
-                        <Icon name="trash" size={16} />
-                      </Button>
-                    </div>
-                  </div>
+          {mappings.map((mapping, index) => {
+            const sourceId = `${mapping.id}-source`;
+            const targetId = `${mapping.id}-target`;
+            const customTargetId = `${mapping.id}-custom-target`;
+            const transformationId = `${mapping.id}-transformation`;
+            const expressionId = `${mapping.id}-expression`;
+            const lookupId = `${mapping.id}-lookup`;
+            const ifConditionId = `${mapping.id}-if-condition`;
+            const thenValueId = `${mapping.id}-then-value`;
+            const elseValueId = `${mapping.id}-else-value`;
+            const defaultValueId = `${mapping.id}-default-value`;
+            const requiredId = `${mapping.id}-required`;
+            const isCustomTarget =
+              !!mapping.target_field &&
+              mapping.target_field !== 'custom' &&
+              !STANDARD_CI_FIELDS.some((f) => f.value === mapping.target_field) &&
+              !COMMON_METADATA_FIELDS.some((f) => f.value === mapping.target_field);
 
-                  <div className="grid grid-cols-2 gap-4">
-                    {/* Source Field */}
-                    <div className="space-y-2">
-                      <Label>Source Field</Label>
+            return (
+              <Card
+                key={mapping.id}
+                inset="none"
+                className={`p-4 transition-all ${
+                  editingMapping === mapping.id ? 'ring-2 ring-[var(--hh-accent-text)]' : ''
+                }`}
+              >
+                {editingMapping === mapping.id ? (
+                  /* Edit Mode */
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <SectionHeading level={4} className="mb-0 !text-sm !font-semibold">
+                        Mapping #{index + 1}
+                      </SectionHeading>
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" variant="secondary" onClick={() => setEditingMapping(null)}>
+                          Done
+                        </Button>
+                        <IconButton
+                          icon="trash"
+                          variant="ghost"
+                          size="sm"
+                          aria-label="Delete mapping"
+                          onClick={() => deleteMapping(mapping.id)}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4">
+                      {/* Source Field */}
                       <Input
+                        id={sourceId}
+                        label="Source Field"
                         placeholder="e.g., sys_id, name, status"
                         value={mapping.source_field}
                         onChange={(e) =>
                           updateMapping(mapping.id, { source_field: e.target.value })
                         }
+                        hint={`Field name from ${connectorType} source`}
                       />
-                      <p className="text-xs text-muted-foreground">
-                        Field name from {connectorType} source
-                      </p>
-                    </div>
 
-                    {/* Target Field */}
-                    <div className="space-y-2">
-                      <Label>Target Field</Label>
-                      {showCustomFieldInput === mapping.id ? (
-                        <div className="flex gap-2">
-                          <Input
-                            placeholder="Enter custom field name (e.g., cpu_cores, patch_level)"
-                            value={customFieldName}
-                            onChange={(e) => setCustomFieldName(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' && customFieldName.trim()) {
-                                updateMapping(mapping.id, { target_field: customFieldName.trim() });
-                                setCustomFieldName('');
-                                setShowCustomFieldInput(null);
-                              } else if (e.key === 'Escape') {
-                                setCustomFieldName('');
-                                setShowCustomFieldInput(null);
-                              }
-                            }}
-                            autoFocus
-                          />
-                          <Button
-                            size="sm"
-                            onClick={() => {
-                              if (customFieldName.trim()) {
-                                updateMapping(mapping.id, { target_field: customFieldName.trim() });
-                                setCustomFieldName('');
-                                setShowCustomFieldInput(null);
-                              }
-                            }}
-                          >
-                            Add
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => {
-                              setCustomFieldName('');
-                              setShowCustomFieldInput(null);
-                            }}
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      ) : (
-                        <Select
-                          value={mapping.target_field || 'select'}
-                          onValueChange={(value) => {
-                            if (value === 'custom') {
-                              setShowCustomFieldInput(mapping.id);
-                              setCustomFieldName('');
-                            } else {
-                              updateMapping(mapping.id, { target_field: value });
-                            }
-                          }}
+                      {/* Target Field */}
+                      <div className="flex flex-col gap-2">
+                        <Label
+                          htmlFor={showCustomFieldInput === mapping.id ? customTargetId : targetId}
                         >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select target field or enter custom" />
-                          </SelectTrigger>
-                          <SelectContent className="max-h-96">
-                            {/* Standard CI Fields */}
-                            <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground bg-muted/50">
-                              Standard CI Fields
-                            </div>
-                            {STANDARD_CI_FIELDS.map((field) => (
-                              <SelectItem key={field.value} value={field.value}>
-                                <div className="flex items-center justify-between w-full">
-                                  <span>{field.label}</span>
-                                  <span className="text-xs text-muted-foreground ml-2">
-                                    {field.category}
-                            {field.required && <span className="text-danger ml-1">*</span>}
-                                  </span>
-                                </div>
-                              </SelectItem>
-                            ))}
-
-                            {/* Metadata Fields */}
-                            <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground bg-muted/50 mt-2">
-                              Common Metadata Fields
-                            </div>
-                            {COMMON_METADATA_FIELDS.map((field) => (
-                              <SelectItem key={field.value} value={field.value}>
-                                <div className="flex items-center justify-between w-full">
-                                  <span>{field.label}</span>
-                                  <Badge variant="outline" className="text-xs ml-2">
-                                    {field.category}
-                                  </Badge>
-                                </div>
-                              </SelectItem>
-                            ))}
-
-                            {/* Custom Field Option */}
-                            <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground bg-muted/50 mt-2">
-                              Custom
-                            </div>
-                            <SelectItem value="custom">
-                              <div className="flex items-center gap-2">
-                                <Icon name="plus" size={12} />
-                                <span className="font-medium">Enter custom field name...</span>
-                              </div>
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
-                      )}
-                      <p className="text-xs text-muted-foreground">
-                        {mapping.target_field && !STANDARD_CI_FIELDS.find(f => f.value === mapping.target_field) ? (
-                          <span className="flex items-center gap-1">
-                            <Badge variant="secondary" className="text-xs">Metadata</Badge>
-                            This field will be stored in dynamic metadata
-                          </span>
+                          Target Field
+                        </Label>
+                        {showCustomFieldInput === mapping.id ? (
+                          <div className="flex gap-2">
+                            <Input
+                              id={customTargetId}
+                              containerClassName="flex-1"
+                              placeholder="Enter custom field name (e.g., cpu_cores, patch_level)"
+                              value={customFieldName}
+                              onChange={(e) => setCustomFieldName(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && customFieldName.trim()) {
+                                  updateMapping(mapping.id, { target_field: customFieldName.trim() });
+                                  setCustomFieldName('');
+                                  setShowCustomFieldInput(null);
+                                } else if (e.key === 'Escape') {
+                                  setCustomFieldName('');
+                                  setShowCustomFieldInput(null);
+                                }
+                              }}
+                              autoFocus
+                            />
+                            <Button
+                              size="sm"
+                              onClick={() => {
+                                if (customFieldName.trim()) {
+                                  updateMapping(mapping.id, { target_field: customFieldName.trim() });
+                                  setCustomFieldName('');
+                                  setShowCustomFieldInput(null);
+                                }
+                              }}
+                            >
+                              Add
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => {
+                                setCustomFieldName('');
+                                setShowCustomFieldInput(null);
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
                         ) : (
-                          'Select a standard CI field or create a custom metadata field'
+                          <NativeSelect
+                            id={targetId}
+                            value={mapping.target_field || ''}
+                            onChange={(e) => {
+                              const value = e.target.value;
+                              if (value === 'custom') {
+                                setShowCustomFieldInput(mapping.id);
+                                setCustomFieldName('');
+                              } else {
+                                updateMapping(mapping.id, { target_field: value });
+                              }
+                            }}
+                          >
+                            <option value="" disabled>
+                              Select target field or enter custom
+                            </option>
+                            <optgroup label="Standard CI Fields">
+                              {STANDARD_CI_FIELDS.map((field) => (
+                                <option key={field.value} value={field.value}>
+                                  {`${field.label} (${field.category})${field.required ? ' *' : ''}`}
+                                </option>
+                              ))}
+                            </optgroup>
+                            <optgroup label="Common Metadata Fields">
+                              {COMMON_METADATA_FIELDS.map((field) => (
+                                <option key={field.value} value={field.value}>
+                                  {`${field.label} (${field.category})`}
+                                </option>
+                              ))}
+                            </optgroup>
+                            <optgroup label="Custom">
+                              {isCustomTarget && (
+                                <option value={mapping.target_field}>{mapping.target_field}</option>
+                              )}
+                              <option value="custom">Enter custom field name...</option>
+                            </optgroup>
+                          </NativeSelect>
                         )}
-                      </p>
+                        <p className="text-xs text-[var(--hh-text-muted)]">
+                          {mapping.target_field && !STANDARD_CI_FIELDS.find(f => f.value === mapping.target_field) ? (
+                            <span className="flex items-center gap-1">
+                              <Badge variant="neutral">Metadata</Badge>
+                              This field will be stored in dynamic metadata
+                            </span>
+                          ) : (
+                            'Select a standard CI field or create a custom metadata field'
+                          )}
+                        </p>
+                      </div>
                     </div>
-                  </div>
 
-                  {/* Transformation Type */}
-                  <div className="space-y-2">
-                    <Label>Transformation Type</Label>
-                    <Select
+                    {/* Transformation Type */}
+                    <NativeSelect
+                      id={transformationId}
+                      label="Transformation Type"
                       value={mapping.transformation?.type || 'direct'}
-                      onValueChange={(value: any) =>
+                      onChange={(e) =>
                         updateMapping(mapping.id, {
                           transformation: {
                             ...mapping.transformation,
-                            type: value,
+                            type: e.target.value as NonNullable<FieldMapping['transformation']>['type'],
                           },
                         })
                       }
                     >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="direct">Direct (no transformation)</SelectItem>
-                        <SelectItem value="expression">Expression (JavaScript)</SelectItem>
-                        <SelectItem value="lookup">Lookup Table</SelectItem>
-                        <SelectItem value="conditional">Conditional Logic</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
+                      <option value="direct">Direct (no transformation)</option>
+                      <option value="expression">Expression (JavaScript)</option>
+                      <option value="lookup">Lookup Table</option>
+                      <option value="conditional">Conditional Logic</option>
+                    </NativeSelect>
 
-                  {/* Transformation-specific fields */}
-                  {mapping.transformation?.type === 'expression' && (
-                    <div className="space-y-2">
-                      <Label>Expression</Label>
+                    {/* Transformation-specific fields */}
+                    {mapping.transformation?.type === 'expression' && (
                       <Input
+                        id={expressionId}
+                        label="Expression"
                         placeholder="e.g., value.toUpperCase()"
                         value={mapping.transformation.expression || ''}
                         onChange={(e) =>
@@ -356,17 +348,14 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
                             },
                           })
                         }
+                        hint="JavaScript expression to transform the value"
                       />
-                      <p className="text-xs text-muted-foreground">
-                        JavaScript expression to transform the value
-                      </p>
-                    </div>
-                  )}
+                    )}
 
-                  {mapping.transformation?.type === 'lookup' && (
-                    <div className="space-y-2">
-                      <Label>Lookup Table Name</Label>
+                    {mapping.transformation?.type === 'lookup' && (
                       <Input
+                        id={lookupId}
+                        label="Lookup Table Name"
                         placeholder="e.g., status_mapping"
                         value={mapping.transformation.lookup_table || ''}
                         onChange={(e) =>
@@ -378,18 +367,15 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
                             },
                           })
                         }
+                        hint="Reference to a lookup table for value translation"
                       />
-                      <p className="text-xs text-muted-foreground">
-                        Reference to a lookup table for value translation
-                      </p>
-                    </div>
-                  )}
+                    )}
 
-                  {mapping.transformation?.type === 'conditional' && (
-                    <div className="grid grid-cols-3 gap-4">
-                      <div className="space-y-2">
-                        <Label>If Condition</Label>
+                    {mapping.transformation?.type === 'conditional' && (
+                      <div className="grid grid-cols-3 gap-4">
                         <Input
+                          id={ifConditionId}
+                          label="If Condition"
                           placeholder="value === 'active'"
                           value={mapping.transformation.if_condition || ''}
                           onChange={(e) =>
@@ -402,10 +388,9 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
                             })
                           }
                         />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Then Value</Label>
                         <Input
+                          id={thenValueId}
+                          label="Then Value"
                           placeholder="active"
                           value={mapping.transformation.then_value || ''}
                           onChange={(e) =>
@@ -418,10 +403,9 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
                             })
                           }
                         />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Else Value</Label>
                         <Input
+                          id={elseValueId}
+                          label="Else Value"
                           placeholder="inactive"
                           value={mapping.transformation.else_value || ''}
                           onChange={(e) =>
@@ -435,96 +419,91 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
                           }
                         />
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  {/* Additional Options */}
-                  <div className="grid grid-cols-2 gap-4 pt-2 border-t">
-                    <div className="space-y-2">
-                      <Label>Default Value (Optional)</Label>
+                    {/* Additional Options */}
+                    <div className="grid grid-cols-2 gap-4 border-t border-[var(--hh-border)] pt-2">
                       <Input
+                        id={defaultValueId}
+                        label="Default Value (Optional)"
                         placeholder="Value if source is empty"
                         value={mapping.default_value || ''}
                         onChange={(e) =>
                           updateMapping(mapping.id, { default_value: e.target.value })
                         }
                       />
-                    </div>
-                    <div className="flex items-end">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="checkbox"
+                      <div className="flex items-end">
+                        <Checkbox
+                          id={requiredId}
+                          label="Required field"
                           checked={mapping.required}
-                          onChange={(e) =>
-                            updateMapping(mapping.id, { required: e.target.checked })
-                          }
-                          className="rounded"
+                          onChange={(checked) => updateMapping(mapping.id, { required: checked })}
                         />
-                        <span className="text-sm">Required field</span>
-                      </label>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                /* View Mode */
-                <div
-                  className="flex items-center justify-between cursor-pointer"
-                  onClick={() => setEditingMapping(mapping.id)}
-                >
-                  <div className="flex items-center gap-4 flex-1">
-                    <Badge variant="outline" className="font-mono text-xs">
-                      #{index + 1}
-                    </Badge>
-
-                    <div className="flex items-center gap-3 flex-1">
-                      <div className="text-sm">
-                        <span className="font-medium text-sky-text">{mapping.source_field || '(empty)'}</span>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        {getTransformationIcon(mapping.transformation?.type)}
-                        {getTransformationBadge(mapping.transformation?.type)}
-                      </div>
-
-                      <div className="text-sm">
-                        <span className="font-medium text-success">{mapping.target_field || '(empty)'}</span>
                       </div>
                     </div>
-
-                    {mapping.required && (
-                      <Badge variant="destructive" className="text-xs">Required</Badge>
-                    )}
                   </div>
+                ) : (
+                  /* View Mode */
+                  <div
+                    className="flex cursor-pointer items-center justify-between"
+                    onClick={() => setEditingMapping(mapping.id)}
+                  >
+                    <div className="flex flex-1 items-center gap-4">
+                      <Badge variant="neutral">#{index + 1}</Badge>
 
-                  <Icon name="gear-six" size={20} className="text-muted-foreground" />
-                </div>
-              )}
-            </Card>
-          ))}
+                      <div className="flex flex-1 items-center gap-3">
+                        <div className="text-sm">
+                          <span className="font-medium text-[var(--hh-accent-text)]">
+                            {mapping.source_field || '(empty)'}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {getTransformationIcon(mapping.transformation?.type)}
+                          {getTransformationBadge(mapping.transformation?.type)}
+                        </div>
+
+                        <div className="text-sm">
+                          <span className="font-medium text-[var(--hh-success-text)]">
+                            {mapping.target_field || '(empty)'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {mapping.required && <Badge variant="danger">Required</Badge>}
+                    </div>
+
+                    <Icon name="gear-six" size={20} className="text-[var(--hh-text-muted)]" />
+                  </div>
+                )}
+              </Card>
+            );
+          })}
         </div>
       )}
 
       {/* Add Mapping Button */}
-      <Button onClick={addMapping} variant="outline" className="w-full">
-        <Icon name="plus" size={16} className="mr-2" />
+      <Button onClick={addMapping} variant="secondary" icon="plus" fullWidth>
         Add Field Mapping
       </Button>
 
       {/* Helper Info */}
-      <Card className="p-4 bg-muted/50 border-dashed">
-        <h4 className="font-semibold text-sm mb-2">Field Mapping Tips</h4>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <Card inset="none" className="border-dashed p-4">
+        <SectionHeading level={4} className="mb-2 !text-sm !font-semibold">
+          Field Mapping Tips
+        </SectionHeading>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div>
-            <p className="text-xs font-semibold text-foreground mb-1">Target Field Types:</p>
-            <ul className="text-xs text-muted-foreground space-y-1">
+            <p className="mb-1 text-xs font-semibold text-[var(--hh-text-primary)]">Target Field Types:</p>
+            <ul className="space-y-1 text-xs text-[var(--hh-text-muted)]">
               <li>• <strong>Standard Fields:</strong> Core CI attributes (name, type, ip_address, etc.)</li>
               <li>• <strong>Metadata Fields:</strong> Dynamic attributes stored in metadata (cpu_cores, os_version, etc.)</li>
               <li>• <strong>Custom Fields:</strong> Any custom field name you define</li>
             </ul>
           </div>
           <div>
-            <p className="text-xs font-semibold text-foreground mb-1">Transformation Types:</p>
-            <ul className="text-xs text-muted-foreground space-y-1">
+            <p className="mb-1 text-xs font-semibold text-[var(--hh-text-primary)]">Transformation Types:</p>
+            <ul className="space-y-1 text-xs text-[var(--hh-text-muted)]">
               <li>• <strong>Direct:</strong> Copy value as-is from source to target</li>
               <li>• <strong>Expression:</strong> Transform using JavaScript (e.g., value.toUpperCase())</li>
               <li>• <strong>Lookup:</strong> Translate values using a lookup table</li>
@@ -532,9 +511,9 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
             </ul>
           </div>
         </div>
-        <div className="mt-3 pt-3 border-t border-border/50">
-          <p className="text-xs text-muted-foreground">
-            <Badge variant="secondary" className="text-xs mr-1">💡 Tip</Badge>
+        <div className="mt-3 border-t border-[var(--hh-border)] pt-3">
+          <p className="text-xs text-[var(--hh-text-muted)]">
+            <Badge variant="info">💡 Tip</Badge>{' '}
             Fields not in the standard list are automatically stored in dynamic metadata and will appear in the CI detail view.
           </p>
         </div>

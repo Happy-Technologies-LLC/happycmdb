@@ -4,7 +4,6 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
-import type { ReactElement, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
@@ -19,22 +18,6 @@ vi.mock('axios', () => ({ default: { create: () => ({
 vi.mock('../../hooks/useCredentials', () => ({
   useCredentials: () => ({ credentials: saved, loading: false, error: null, loadCredentials: vi.fn() }),
 }));
-// Radix Select does not open in jsdom; each item becomes a button that sets its Select's value.
-// vi.mock factories are hoisted above static imports, so React must be imported inside the factory.
-vi.mock('../ui/select', async () => {
-  const React = await import('react');
-  const Ctx = React.createContext<(value: string) => void>(() => undefined);
-  const Pass = ({ children }: { children?: ReactNode }): ReactElement => React.createElement(React.Fragment, null, children);
-  return {
-    Select: ({ onValueChange, children }: { onValueChange?: (value: string) => void; children?: ReactNode }) =>
-      React.createElement(Ctx.Provider, { value: onValueChange ?? (() => undefined) }, children),
-    SelectTrigger: Pass, SelectContent: Pass, SelectValue: () => null,
-    SelectItem: ({ value, children }: { value: string; children?: ReactNode }) => {
-      const choose = React.useContext(Ctx);
-      return React.createElement('button', { type: 'button', onClick: () => choose(value) }, children);
-    },
-  };
-});
 
 import DiscoveryDefinitionForm from './DiscoveryDefinitionForm';
 import { discoveryService, type DiscoveryDefinitionInput } from '../../services/discovery.service';
@@ -67,13 +50,18 @@ const submitToService = vi.fn((data: DiscoveryDefinitionInput): void => {
   void discoveryService.createDefinition(data);
 });
 const type = (label: RegExp, value: string): boolean => fireEvent.change(screen.getByLabelText(label), { target: { value } });
+// The DS Select is a combobox whose listbox renders while open: open it, then choose the option.
+const pick = (select: RegExp, option: string | RegExp): void => {
+  fireEvent.click(screen.getByRole('combobox', { name: select }));
+  fireEvent.click(screen.getByRole('option', { name: option }));
+};
 const posted = (path: string): Posted | undefined =>
   (request.post.mock.calls as [string, Posted][]).find(([p]) => p === path)?.[1];
 
 // The password goes in first so that on base, the inline config field logs it before the new fields are missing.
 function renderSsh(password?: string, adHoc?: (data: DiscoveryDefinitionInput) => void): void {
   render(<DiscoveryDefinitionForm onSubmit={submitToService} onCancel={vi.fn()} showAdHocAction={!!adHoc} onAdHocRun={adHoc} />);
-  fireEvent.click(screen.getByRole('button', { name: 'SSH' }));
+  pick(/^provider/i, 'SSH');
   type(/^name/i, 'web hosts');
   type(/target hosts/i, 'host1.example.com\n192.0.2.10');
   if (password !== undefined) {
@@ -114,7 +102,7 @@ describe('HAP-774 S7 SSH discovery form', () => {
 
   it('(b) private-key path creates ssh_key with the PEM text as material', async () => {
     renderSsh();
-    fireEvent.click(screen.getByRole('button', { name: /private key \(pem\)/i }));
+    pick(/^authentication/i, /private key \(pem\)/i);
     type(/private key \(pem text\)/i, PEM);
     fireEvent.click(screen.getByRole('button', { name: /create definition/i }));
 
@@ -150,7 +138,7 @@ describe('HAP-774 S7 SSH discovery form', () => {
 
   it.each(['ACTIVE-DIRECTORY', 'SNMP'])('(e) %s renders unsupported, collects no secret and submits nothing', (name) => {
     const { container } = render(<DiscoveryDefinitionForm onSubmit={submitToService} onCancel={vi.fn()} />);
-    fireEvent.click(screen.getByRole('button', { name }));
+    pick(/^provider/i, name);
     expect(screen.getByText(/discovery is unsupported/i)).toBeInTheDocument();
     expect(container.querySelectorAll('input[type="password"]')).toHaveLength(0);
     expect(screen.queryByLabelText(/username|community|private key|credential/i)).toBeNull();
@@ -192,7 +180,7 @@ describe('HAP-774 S7 SSH discovery form', () => {
     saved.push({ id: 'cred-9', name: 'ops', protocol: 'ssh_key' });
     const onAdHocRun = vi.fn();
     renderSsh(undefined, onAdHocRun);
-    fireEvent.click(screen.getByRole('button', { name: 'ops' }));
+    pick(/^ssh credential/i, 'ops');
     fireEvent.click(screen.getByRole('button', { name: /run once/i }));
     expect(onAdHocRun).toHaveBeenCalledWith(expect.objectContaining({ credentialId: 'cred-9' }));
     expect(screen.queryByText('Save the credential first to run once')).toBeNull();

@@ -7,22 +7,20 @@ import {
   DiscoveryDefinition,
   DiscoveryDefinitionInput,
 } from '../../services/discovery.service';
-import { Button } from '../ui/button';
-import { Input } from '../ui/input';
-import { Label } from '../ui/label';
-import { Textarea } from '../ui/textarea';
-import { SecretInput, SecretTextarea } from '../ui/secret-input';
-import { Switch } from '../ui/switch';
 import {
+  Banner,
+  Button,
+  Card,
+  Input,
+  Label,
+  SectionHeading,
   Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../ui/select';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../ui/card';
-import { Alert, AlertDescription } from '../ui/alert';
-import { Icon } from '@happy-technologies/design-system';
+  Switch,
+  Textarea,
+} from '@happy-technologies/design-system';
+// Secret fields stay on the local unmirrored-value primitives (HAP-1213 DOM contract): the DS Input/Textarea
+// mirror `value` into the DOM tree, so no secret field may move onto them.
+import { SecretInput, SecretTextarea } from '../ui/secret-input';
 import { RequirePermission } from '@/components/common/RequirePermission';
 import DiscoveryConfigForm, { DiscoveryConfigFormRef } from './DiscoveryConfigForm';
 import { AgentSelector } from './AgentSelector';
@@ -47,6 +45,17 @@ const PROVIDERS: DiscoveryProvider[] = [
   'active-directory',
   'snmp'
 ];
+const PROVIDER_OPTIONS = PROVIDERS.map((p) => ({ value: p, label: p.toUpperCase() }));
+const AUTH_OPTIONS = [
+  { value: 'password', label: 'Password' },
+  { value: 'key', label: 'Private key (PEM)' },
+];
+const METHOD_OPTIONS = [
+  { value: 'agentless', label: 'Agentless (Direct from server)' },
+  { value: 'agent', label: 'Agent-based (Distributed agents)' },
+];
+const MUTED = 'text-sm text-[var(--hh-text-muted)]';
+const CODE = 'rounded-[var(--hh-radius-sm)] bg-[var(--hh-bg-elevated)] px-1 py-0.5';
 
 export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = ({
   definition,
@@ -199,311 +208,246 @@ export const DiscoveryDefinitionForm: React.FC<DiscoveryDefinitionFormProps> = (
     setCronExpression(newCron);
   };
 
+  const sectionHint = (text: string) => <p className={MUTED}>{text}</p>;
+
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Basic Information</CardTitle>
-          <CardDescription>
-            {isEditMode
+      <Card className="space-y-4">
+        <div>
+          <SectionHeading level={3} className="!mb-1">Basic Information</SectionHeading>
+          {sectionHint(
+            isEditMode
               ? 'Update the basic details of your discovery definition'
-              : 'Configure basic details for your discovery definition'}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="name">Name *</Label>
-            <Input
-              id="name"
-              placeholder="e.g., AWS Production Discovery"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className={errors.name ? 'border-destructive' : ''}
-            />
-            {errors.name && (
-              <p className="text-sm text-destructive">{errors.name}</p>
-            )}
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="description">Description</Label>
-            <Textarea
-              id="description"
-              placeholder="Optional description of what this discovery covers"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={3}
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="provider">Provider *</Label>
-            <Select
-              value={provider}
-              onValueChange={(value) => {
-                setProvider(value as DiscoveryProvider);
-                // The new-credential section is SSH-only, so leaving SSH abandons its secret.
-                if (value !== 'ssh') clearNewCredSecret();
-              }}
-              disabled={isEditMode}
-            >
-              <SelectTrigger id="provider">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {PROVIDERS.map((p) => (
-                  <SelectItem key={p} value={p}>
-                    {p.toUpperCase()}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {isEditMode && (
-              <p className="text-xs text-muted-foreground">
-                Provider cannot be changed after creation
-              </p>
-            )}
-          </div>
-
-          {provider === 'ssh' && (
-            <div className="space-y-2">
-              <Label htmlFor="credential">SSH Credential *</Label>
-              <Select value={credentialId} onValueChange={selectCredential}>
-                <SelectTrigger id="credential">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Create a new SSH credential</SelectItem>
-                  {sshCredentials.map((cred) => (
-                    <SelectItem key={cred.id} value={cred.id}>
-                      {cred.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+              : 'Configure basic details for your discovery definition'
           )}
+        </div>
 
-          {createSshCredential && (
-            <div className="space-y-3 p-4 border rounded-lg bg-muted/50">
-              {([
-                ['name', 'Credential Name *', 'text', errors.credentialName],
-                ['username', 'Username *', 'text', errors.credentialUsername],
-                ['port', 'Port (optional, default 22)', 'number', errors.credentialPort],
-              ] as const).map(([key, label, type, error]) => (
-                <div key={key} className="space-y-2">
-                  <Label htmlFor={`ssh-cred-${key}`}>{label}</Label>
-                  <Input
-                    id={`ssh-cred-${key}`}
-                    type={type}
-                    value={newCred[key]}
-                    onChange={(e) => setNewCredField(key, e.target.value)}
+        <Input
+          id="name"
+          label="Name *"
+          placeholder="e.g., AWS Production Discovery"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          error={errors.name}
+        />
+
+        <Textarea
+          id="description"
+          label="Description"
+          placeholder="Optional description of what this discovery covers"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          rows={3}
+        />
+
+        <Select
+          id="provider"
+          label="Provider *"
+          value={provider}
+          onChange={(value) => {
+            setProvider(value as DiscoveryProvider);
+            // The new-credential section is SSH-only, so leaving SSH abandons its secret.
+            if (value !== 'ssh') clearNewCredSecret();
+          }}
+          options={PROVIDER_OPTIONS}
+          disabled={isEditMode}
+          hint={isEditMode ? 'Provider cannot be changed after creation' : undefined}
+        />
+
+        {provider === 'ssh' && (
+          <Select
+            id="credential"
+            label="SSH Credential *"
+            value={credentialId}
+            onChange={selectCredential}
+            options={[
+              { value: 'none', label: 'Create a new SSH credential' },
+              ...sshCredentials.map((cred) => ({ value: cred.id, label: cred.name })),
+            ]}
+          />
+        )}
+
+        {createSshCredential && (
+          <div className="space-y-3 rounded-[var(--hh-radius-lg)] bg-[var(--hh-bg-elevated)] p-4">
+            {([
+              ['name', 'Credential Name *', 'text', errors.credentialName],
+              ['username', 'Username *', 'text', errors.credentialUsername],
+              ['port', 'Port (optional, default 22)', 'number', errors.credentialPort],
+            ] as const).map(([key, label, type, error]) => (
+              <Input
+                key={key}
+                id={`ssh-cred-${key}`}
+                label={label}
+                type={type}
+                value={newCred[key]}
+                onChange={(e) => setNewCredField(key, e.target.value)}
+                error={error}
+              />
+            ))}
+            <Select
+              id="ssh-cred-auth"
+              label="Authentication"
+              value={newCred.auth}
+              onChange={(auth) => setNewCred((current) => ({ ...current, auth, secret: '' }))}
+              options={AUTH_OPTIONS}
+            />
+            <div className="flex flex-col gap-2">
+              {newCred.auth === 'key' ? (
+                <>
+                  <Label htmlFor="ssh-cred-secret">Private Key (PEM text) *</Label>
+                  <SecretTextarea
+                    id="ssh-cred-secret"
+                    placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                    value={newCred.secret}
+                    onChange={(e) => setNewCredField('secret', e.target.value)}
+                    rows={6}
+                    className="font-mono text-xs"
                   />
-                  {error && <p className="text-sm text-destructive">{error}</p>}
-                </div>
-              ))}
-              <div className="space-y-2">
-                <Label htmlFor="ssh-cred-auth">Authentication</Label>
-                <Select
-                  value={newCred.auth}
-                  onValueChange={(auth) => setNewCred((current) => ({ ...current, auth, secret: '' }))}
-                >
-                  <SelectTrigger id="ssh-cred-auth">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="password">Password</SelectItem>
-                    <SelectItem value="key">Private key (PEM)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                {newCred.auth === 'key' ? (
-                  <>
-                    <Label htmlFor="ssh-cred-secret">Private Key (PEM text) *</Label>
-                    <SecretTextarea
-                      id="ssh-cred-secret"
-                      placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-                      value={newCred.secret}
-                      onChange={(e) => setNewCredField('secret', e.target.value)}
-                      rows={6}
-                      className="font-mono text-xs"
-                    />
-                  </>
-                ) : (
-                  <>
-                    <Label htmlFor="ssh-cred-secret">Password *</Label>
-                    <SecretInput
-                      id="ssh-cred-secret"
-                      value={newCred.secret}
-                      onChange={(e) => setNewCredField('secret', e.target.value)}
-                    />
-                  </>
-                )}
-                {errors.credentialSecret && (
-                  <p className="text-sm text-destructive">{errors.credentialSecret}</p>
-                )}
-                <p className="text-xs text-muted-foreground">
-                  Saved as an encrypted credential; the definition stores only its id.
-                </p>
-              </div>
-            </div>
-          )}
-
-          <div className="space-y-2">
-            <Label htmlFor="method">Discovery Method *</Label>
-            <Select
-              value={method}
-              onValueChange={(value) => setMethod(value as 'agentless' | 'agent')}
-            >
-              <SelectTrigger id="method">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="agentless">Agentless (Direct from server)</SelectItem>
-                <SelectItem value="agent">Agent-based (Distributed agents)</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              {method === 'agentless'
-                ? 'Discovery runs directly from this server. Requires network access to target resources.'
-                : 'Discovery runs on distributed agents. Best for accessing resources in isolated networks.'}
-            </p>
-          </div>
-
-          {method === 'agent' && (
-            <AgentSelector
-              method={method}
-              provider={provider}
-              selectedAgentId={agentId}
-              onAgentChange={setAgentId}
-              targetNetworks={config.targets || []}
-            />
-          )}
-
-          <div className="flex items-center justify-between">
-            <div>
-              <Label htmlFor="active">Active</Label>
-              <p className="text-sm text-muted-foreground">
-                Inactive definitions cannot be run
+                </>
+              ) : (
+                <>
+                  <Label htmlFor="ssh-cred-secret">Password *</Label>
+                  <SecretInput
+                    id="ssh-cred-secret"
+                    value={newCred.secret}
+                    onChange={(e) => setNewCredField('secret', e.target.value)}
+                  />
+                </>
+              )}
+              {errors.credentialSecret && (
+                <p className="text-sm text-[var(--hh-error-text)]">{errors.credentialSecret}</p>
+              )}
+              <p className="text-xs text-[var(--hh-text-muted)]">
+                Saved as an encrypted credential; the definition stores only its id.
               </p>
             </div>
-            <Switch id="active" checked={active} onCheckedChange={setActive} />
           </div>
-        </CardContent>
-      </Card>
+        )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Discovery Configuration</CardTitle>
-          <CardDescription>
-            Configure provider-specific discovery settings
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <DiscoveryConfigForm
-            ref={configFormRef}
+        <Select
+          id="method"
+          label="Discovery Method *"
+          value={method}
+          onChange={(value) => setMethod(value as 'agentless' | 'agent')}
+          options={METHOD_OPTIONS}
+          hint={
+            method === 'agentless'
+              ? 'Discovery runs directly from this server. Requires network access to target resources.'
+              : 'Discovery runs on distributed agents. Best for accessing resources in isolated networks.'
+          }
+        />
+
+        {method === 'agent' && (
+          <AgentSelector
+            method={method}
             provider={provider}
-            initialConfig={config}
-            onSubmit={setConfig}
-            showActions={false}
+            selectedAgentId={agentId}
+            onAgentChange={setAgentId}
+            targetNetworks={config.targets || []}
           />
-        </CardContent>
+        )}
+
+        <div className="space-y-1">
+          <Switch id="active" label="Active" checked={active} onChange={setActive} />
+          {sectionHint('Inactive definitions cannot be run')}
+        </div>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Field Mappings (Optional)</CardTitle>
-          <CardDescription>
-            Map discovered fields to standard CI properties or custom metadata fields
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <FieldMappingBuilder
-            connectorType={provider}
-            mappings={Object.entries(fieldMappings).map(([target, source], index) => ({
-              id: `mapping_${index}`,
-              source_field: source,
-              target_field: target,
-              transformation: { type: 'direct' as const },
-              required: false,
-            }))}
-            onChange={(mappings) => {
-              const newFieldMappings: Record<string, string> = {};
-              mappings.forEach((mapping) => {
-                if (mapping.source_field && mapping.target_field) {
-                  newFieldMappings[mapping.target_field] = mapping.source_field;
-                }
-              });
-              setFieldMappings(newFieldMappings);
-            }}
-          />
-          <p className="text-sm text-muted-foreground mt-4">
-            Field mappings allow you to extract specific data from discovered resources.
-            Use dot notation for nested paths (e.g., <code className="bg-muted px-1 py-0.5 rounded">Tags.0.Value</code> or <code className="bg-muted px-1 py-0.5 rounded">PrivateIpAddress</code>).
-            Standard CI fields (like <code className="bg-muted px-1 py-0.5 rounded">name</code>, <code className="bg-muted px-1 py-0.5 rounded">ip_address</code>)
-            will be mapped to top-level properties. All other fields become metadata.
-          </p>
-        </CardContent>
+      <Card className="space-y-4">
+        <div>
+          <SectionHeading level={3} className="!mb-1">Discovery Configuration</SectionHeading>
+          {sectionHint('Configure provider-specific discovery settings')}
+        </div>
+        <DiscoveryConfigForm
+          ref={configFormRef}
+          provider={provider}
+          initialConfig={config}
+          onSubmit={setConfig}
+          showActions={false}
+        />
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Schedule</CardTitle>
-          <CardDescription>
-            Configure automatic discovery schedule using cron expressions
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <Label htmlFor="schedule-enabled">Enable Schedule</Label>
-              <p className="text-sm text-muted-foreground">
-                Run discovery automatically on a schedule
-              </p>
-            </div>
-            <Switch
-              id="schedule-enabled"
-              checked={scheduleEnabled}
-              onCheckedChange={setScheduleEnabled}
-            />
-          </div>
+      <Card className="space-y-4">
+        <div>
+          <SectionHeading level={3} className="!mb-1">Field Mappings (Optional)</SectionHeading>
+          {sectionHint('Map discovered fields to standard CI properties or custom metadata fields')}
+        </div>
+        <FieldMappingBuilder
+          connectorType={provider}
+          mappings={Object.entries(fieldMappings).map(([target, source], index) => ({
+            id: `mapping_${index}`,
+            source_field: source,
+            target_field: target,
+            transformation: { type: 'direct' as const },
+            required: false,
+          }))}
+          onChange={(mappings) => {
+            const newFieldMappings: Record<string, string> = {};
+            mappings.forEach((mapping) => {
+              if (mapping.source_field && mapping.target_field) {
+                newFieldMappings[mapping.target_field] = mapping.source_field;
+              }
+            });
+            setFieldMappings(newFieldMappings);
+          }}
+        />
+        <p className={MUTED}>
+          Field mappings allow you to extract specific data from discovered resources.
+          Use dot notation for nested paths (e.g., <code className={CODE}>Tags.0.Value</code> or <code className={CODE}>PrivateIpAddress</code>).
+          Standard CI fields (like <code className={CODE}>name</code>, <code className={CODE}>ip_address</code>)
+          will be mapped to top-level properties. All other fields become metadata.
+        </p>
+      </Card>
 
-          {scheduleEnabled && (
-            <CronBuilder value={cronExpression} onChange={handleCronChange} />
-          )}
-        </CardContent>
+      <Card className="space-y-4">
+        <div>
+          <SectionHeading level={3} className="!mb-1">Schedule</SectionHeading>
+          {sectionHint('Configure automatic discovery schedule using cron expressions')}
+        </div>
+        <div className="space-y-1">
+          <Switch
+            id="schedule-enabled"
+            label="Enable Schedule"
+            checked={scheduleEnabled}
+            onChange={setScheduleEnabled}
+          />
+          {sectionHint('Run discovery automatically on a schedule')}
+        </div>
+
+        {scheduleEnabled && (
+          <CronBuilder value={cronExpression} onChange={handleCronChange} />
+        )}
       </Card>
 
       {errors.submit && (
-        <Alert variant="destructive">
-          <Icon name="warning-circle" size={16} />
-          <AlertDescription>{errors.submit}</AlertDescription>
-        </Alert>
+        <Banner tone="danger" icon="warning-circle">
+          {errors.submit}
+        </Banner>
       )}
 
-      <div className="flex gap-2 justify-end">
-        <Button type="button" variant="outline" onClick={onCancel}>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <Button type="button" variant="outline" size="md" onClick={onCancel}>
           Cancel
         </Button>
         {showAdHocAction && onAdHocRun && (
-          <Button type="button" variant="secondary" onClick={handleAdHocRun} disabled={createSshCredential}>
-            <Icon name="play-circle" size={16} className="mr-2" />
+          <Button
+            type="button"
+            variant="secondary"
+            size="md"
+            icon="play-circle"
+            onClick={handleAdHocRun}
+            disabled={createSshCredential}
+          >
             Run Once
           </Button>
         )}
-        {showAdHocAction && onAdHocRun && createSshCredential && <p className="text-xs text-muted-foreground self-center">Save the credential first to run once</p>}
+        {showAdHocAction && onAdHocRun && createSshCredential && (
+          <p className="self-center text-xs text-[var(--hh-text-muted)]">Save the credential first to run once</p>
+        )}
         {/* POST/PUT /discovery/definitions need write; Run Once (platform-admin /jobs) stays visible */}
         <RequirePermission permission="write">
-          <Button type="submit">
-            {showAdHocAction ? (
-              <>
-                <Icon name="floppy-disk" size={16} className="mr-2" />
-                Save & Run
-              </>
-            ) : (
-              isEditMode ? 'Update Definition' : 'Create Definition'
-            )}
+          <Button type="submit" size="md" icon={showAdHocAction ? 'floppy-disk' : undefined}>
+            {showAdHocAction ? 'Save & Run' : isEditMode ? 'Update Definition' : 'Create Definition'}
           </Button>
         </RequirePermission>
       </div>

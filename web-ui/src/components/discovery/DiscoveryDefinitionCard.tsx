@@ -1,26 +1,23 @@
+// Copyright 2026 Happy Technologies LLC
+// SPDX-License-Identifier: Apache-2.0
+
 import React, { useState } from 'react';
 import { DiscoveryDefinition, DiscoveryProvider } from '../../services/discovery.service';
-import { Card, CardContent, CardFooter, CardHeader } from '../ui/card';
-import { Button } from '../ui/button';
-import { Badge } from '../ui/badge';
-import { Avatar, AvatarFallback } from '../ui/avatar';
-import { Separator } from '../ui/separator';
-import { Switch } from '../ui/switch';
-import { Icon } from '@happy-technologies/design-system';
-import { RequirePermission } from '@/components/common/RequirePermission';
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '../ui/alert-dialog';
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  Icon,
+  IconButton,
+  IconWell,
+  Separator,
+  Switch,
+  type IconWellTone,
+} from '@happy-technologies/design-system';
+import { RequirePermission } from '@/components/common/RequirePermission';
+import { usePermission } from '@/hooks/usePermission';
 import { useToast } from '../../contexts/ToastContext';
-import { brand } from '@/lib/brandColors';
 
 interface DiscoveryDefinitionCardProps {
   definition: DiscoveryDefinition;
@@ -32,12 +29,12 @@ interface DiscoveryDefinitionCardProps {
 
 const PROVIDER_CONFIG: Record<
   DiscoveryProvider,
-  { name: string; color: string; icon: string }
+  { name: string; tone: IconWellTone; icon: string }
 > = {
-  nmap: { name: 'Network Scan (Nmap)', color: brand.navy, icon: 'share-network' },
-  ssh: { name: 'SSH Discovery', color: brand.success, icon: 'hard-drive' },
-  'active-directory': { name: 'Active Directory', color: brand.sky, icon: 'users' },
-  snmp: { name: 'SNMP Discovery', color: brand.danger, icon: 'share-network' },
+  nmap: { name: 'Network Scan (Nmap)', tone: 'accent', icon: 'share-network' },
+  ssh: { name: 'SSH Discovery', tone: 'success', icon: 'hard-drive' },
+  'active-directory': { name: 'Active Directory', tone: 'ai', icon: 'users' },
+  snmp: { name: 'SNMP Discovery', tone: 'danger', icon: 'share-network' },
 };
 
 const formatRelativeTime = (dateString?: string): string => {
@@ -81,7 +78,9 @@ export const DiscoveryDefinitionCard: React.FC<DiscoveryDefinitionCardProps> = (
   onToggleSchedule,
 }) => {
   const config = PROVIDER_CONFIG[definition.provider];
+  const canWrite = usePermission('write');
   const [isScheduleEnabled, setIsScheduleEnabled] = useState(definition.schedule.enabled);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const { showToast } = useToast();
 
   const handleScheduleToggle = async () => {
@@ -106,146 +105,138 @@ export const DiscoveryDefinitionCard: React.FC<DiscoveryDefinitionCardProps> = (
 
   const getStatusBadge = () => {
     if (!definition.lastRunStatus) {
-      return <Badge variant="outline">Never run</Badge>;
+      return <Badge variant="neutral">Never run</Badge>;
     }
 
     switch (definition.lastRunStatus) {
       case 'completed':
         return (
-          <Badge variant="secondary" className="flex items-center gap-1">
+          <Badge variant="success">
             <Icon name="check-circle" size={12} />
             Success
           </Badge>
         );
       case 'failed':
         return (
-          <Badge variant="destructive" className="flex items-center gap-1">
+          <Badge variant="danger">
             <Icon name="warning-circle" size={12} />
             Failed
           </Badge>
         );
       case 'running':
         return (
-          <Badge variant="default" className="flex items-center gap-1">
+          <Badge variant="info">
             <Icon name="clock" size={12} className="animate-spin" />
             Running
           </Badge>
         );
       default:
-        return <Badge variant="outline">{definition.lastRunStatus}</Badge>;
+        return <Badge variant="neutral">{definition.lastRunStatus}</Badge>;
     }
   };
 
   return (
-    <Card className={`h-full flex flex-col ${definition.active ? '' : 'opacity-70'}`}>
-      <CardHeader>
-        <div className="flex justify-between items-start">
+    <Card as="article" className={`flex h-full flex-col gap-4 ${definition.active ? '' : 'opacity-70'}`}>
+      <div>
+        <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
-            <Avatar className="w-12 h-12" style={{ backgroundColor: config.color }}>
-              <AvatarFallback>
-                <Icon name={config.icon} size={24} className="text-white" />
-              </AvatarFallback>
-            </Avatar>
+            <IconWell icon={config.icon} tone={config.tone} size="lg" />
             <div>
-              <h3 className="font-semibold">{definition.name}</h3>
-              <p className="text-xs text-muted-foreground">
-                {config.name}
-              </p>
+              <p className="font-semibold">{definition.name}</p>
+              <p className="text-xs text-[var(--hh-text-muted)]">{config.name}</p>
             </div>
           </div>
           <div className="flex flex-col items-end gap-2">
-            <Badge variant={definition.active ? 'secondary' : 'outline'}>
+            <Badge variant={definition.active ? 'success' : 'neutral'}>
               {definition.active ? 'Active' : 'Inactive'}
             </Badge>
             {getStatusBadge()}
           </div>
         </div>
         {definition.description && (
-          <p className="text-sm text-muted-foreground mt-2">{definition.description}</p>
+          <p className="mt-2 text-sm text-[var(--hh-text-muted)]">{definition.description}</p>
         )}
-      </CardHeader>
+      </div>
 
-      <CardContent className="flex-1">
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <Icon name="calendar" size={16} />
-              <span>Schedule:</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium">
-                {parseCronExpression(definition.schedule.cronExpression)}
-              </span>
+      <div className="flex-1 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm text-[var(--hh-text-muted)]">
+            <Icon name="calendar" size={16} />
+            <span>Schedule:</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">
+              {parseCronExpression(definition.schedule.cronExpression)}
+            </span>
+            {/* POST .../schedule/enable|disable need 'write' (discovery-definition.routes.ts); a viewer sees the state, not a toggle. */}
+            {canWrite ? (
               <Switch
+                aria-label={`Schedule for ${definition.name}`}
                 checked={isScheduleEnabled}
-                onCheckedChange={handleScheduleToggle}
+                onChange={handleScheduleToggle}
                 disabled={!definition.active || !definition.schedule.cronExpression}
               />
-            </div>
-          </div>
-
-          <Separator />
-
-          <div className="space-y-2">
-            <div className="flex justify-between">
-              <span className="text-sm text-muted-foreground">Last Run:</span>
-              <span className="text-sm font-medium">
-                {formatRelativeTime(definition.lastRunAt)}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-muted-foreground">Created:</span>
-              <span className="text-sm font-medium">
-                {formatRelativeTime(definition.createdAt)}
-              </span>
-            </div>
+            ) : (
+              <Badge variant={isScheduleEnabled ? 'success' : 'neutral'}>
+                {isScheduleEnabled ? 'Scheduled' : 'Not running'}
+              </Badge>
+            )}
           </div>
         </div>
-      </CardContent>
 
-      <CardFooter className="flex gap-2">
+        <Separator />
+
+        <div className="space-y-2">
+          <div className="flex justify-between">
+            <span className="text-sm text-[var(--hh-text-muted)]">Last Run:</span>
+            <span className="text-sm font-medium">{formatRelativeTime(definition.lastRunAt)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-sm text-[var(--hh-text-muted)]">Created:</span>
+            <span className="text-sm font-medium">{formatRelativeTime(definition.createdAt)}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex gap-2">
         <RequirePermission permission="write">
           <Button
             className="flex-1"
+            icon="play"
+            size="md"
             onClick={handleRun}
             disabled={!definition.active}
           >
-            <Icon name="play" size={16} className="mr-2" />
             Run Now
           </Button>
-          <Button
+          <IconButton
+            icon="pencil-simple"
             variant="outline"
+            shape="rounded"
+            aria-label={`Edit ${definition.name}`}
             onClick={() => onEdit(definition.id)}
-          >
-            <Icon name="pencil-simple" size={16} />
-          </Button>
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button variant="outline">
-                <Icon name="trash" size={16} className="text-destructive" />
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete Discovery Definition</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Are you sure you want to delete "{definition.name}"? This action cannot be
-                  undone. Any scheduled jobs will be cancelled.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={() => onDelete(definition.id)}
-                  className="bg-destructive text-destructive-foreground"
-                >
-                  Delete
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+          />
+          <IconButton
+            icon="trash"
+            variant="outline"
+            shape="rounded"
+            aria-label={`Delete ${definition.name}`}
+            onClick={() => setConfirmingDelete(true)}
+          />
+          <ConfirmDialog
+            open={confirmingDelete}
+            tone="danger"
+            title="Delete Discovery Definition"
+            body={`Are you sure you want to delete "${definition.name}"? This action cannot be undone. Any scheduled jobs will be cancelled.`}
+            confirmLabel="Delete"
+            onConfirm={() => {
+              setConfirmingDelete(false);
+              onDelete(definition.id);
+            }}
+            onCancel={() => setConfirmingDelete(false)}
+          />
         </RequirePermission>
-      </CardFooter>
+      </div>
     </Card>
   );
 };

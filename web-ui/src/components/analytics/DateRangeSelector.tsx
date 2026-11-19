@@ -7,10 +7,7 @@
  */
 
 import React, { useState } from 'react';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { Button, Card, Input } from '@happy-technologies/design-system';
 import { DateRangeParams } from '../../services/analytics.service';
 
 export interface DateRangeSelectorProps {
@@ -108,58 +105,56 @@ export const DateRangeSelector: React.FC<DateRangeSelectorProps> = ({
 
   return (
     <Card className="mb-4">
-      <CardContent className="pt-6">
-        <div className="space-y-4">
-          <div className="flex flex-wrap gap-2">
-            {presetOptions.map((preset) => (
-              <Button
-                key={preset.id}
-                onClick={() => handlePresetSelect(preset)}
-                variant={selectedRange === preset.id ? 'default' : 'outline'}
-                size="sm"
-              >
-                {preset.label}
-              </Button>
-            ))}
+      <div className="space-y-4">
+        <div className="flex flex-wrap gap-2">
+          {presetOptions.map((preset) => (
             <Button
-              onClick={() => setShowCustom(!showCustom)}
-              variant={selectedRange === 'custom' ? 'default' : 'outline'}
-              size="sm"
+              key={preset.id}
+              onClick={() => handlePresetSelect(preset)}
+              variant={selectedRange === preset.id ? 'primary' : 'secondary'}
+              aria-pressed={selectedRange === preset.id}
             >
-              Custom
+              {preset.label}
+            </Button>
+          ))}
+          <Button
+            onClick={() => setShowCustom(!showCustom)}
+            variant={selectedRange === 'custom' ? 'primary' : 'secondary'}
+            aria-pressed={selectedRange === 'custom'}
+          >
+            Custom
+          </Button>
+        </div>
+
+        {showCustom && (
+          <div className="flex flex-wrap items-end gap-4">
+            <Input
+              id="start-date"
+              label="Start Date"
+              type="date"
+              size="sm"
+              containerClassName="flex-1"
+              value={customStartDate}
+              onChange={(e) => setCustomStartDate(e.target.value)}
+            />
+            <Input
+              id="end-date"
+              label="End Date"
+              type="date"
+              size="sm"
+              containerClassName="flex-1"
+              value={customEndDate}
+              onChange={(e) => setCustomEndDate(e.target.value)}
+            />
+            <Button
+              onClick={handleCustomRangeApply}
+              disabled={!customStartDate || !customEndDate}
+            >
+              Apply
             </Button>
           </div>
-
-          {showCustom && (
-            <div className="flex gap-4 items-end">
-              <div className="flex-1">
-                <Label htmlFor="start-date">Start Date</Label>
-                <Input
-                  id="start-date"
-                  type="date"
-                  value={customStartDate}
-                  onChange={(e) => setCustomStartDate(e.target.value)}
-                />
-              </div>
-              <div className="flex-1">
-                <Label htmlFor="end-date">End Date</Label>
-                <Input
-                  id="end-date"
-                  type="date"
-                  value={customEndDate}
-                  onChange={(e) => setCustomEndDate(e.target.value)}
-                />
-              </div>
-              <Button
-                onClick={handleCustomRangeApply}
-                disabled={!customStartDate || !customEndDate}
-              >
-                Apply
-              </Button>
-            </div>
-          )}
-        </div>
-      </CardContent>
+        )}
+      </div>
     </Card>
   );
 };

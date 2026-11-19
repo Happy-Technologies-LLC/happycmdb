@@ -7,70 +7,25 @@
  */
 
 import React from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Icon } from '@happy-technologies/design-system';
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from 'recharts';
 import { useCICountsByType } from '../../hooks/useAnalytics';
 import { ExportButton } from './ExportButton';
+import { AnalyticsPanel } from './MetricCard';
 import { brand, chartSeries } from '@/lib/brandColors';
 
 const COLORS = chartSeries;
 
 export const TypeDistribution: React.FC = () => {
-  const { data, loading, error } = useCICountsByType();
+  const { data, loading, error, refetch } = useCICountsByType();
 
-  if (loading) {
-    return (
-      <Card className="mb-4">
-        <CardHeader>
-          <CardTitle>CI Distribution by Type</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex justify-center items-center h-[300px]">
-            <Icon name="spinner-gap" size={32} className="animate-spin text-primary" />
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
+  const rows = data ?? [];
 
-  if (error) {
-    return (
-      <Card className="mb-4">
-        <CardHeader>
-          <CardTitle>CI Distribution by Type</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Alert variant="destructive">
-            <AlertDescription>Failed to load data</AlertDescription>
-          </Alert>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (!data || data.length === 0) {
-    return (
-      <Card className="mb-4">
-        <CardHeader>
-          <CardTitle>CI Distribution by Type</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Alert>
-            <AlertDescription>No data available</AlertDescription>
-          </Alert>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  const chartData = data.map((item) => ({
+  const chartData = rows.map((item) => ({
     name: item.ci_type,
     value: item.count,
   }));
 
-  const totalCIs = data.reduce((sum, item) => sum + item.count, 0);
+  const totalCIs = rows.reduce((sum, item) => sum + item.count, 0);
 
   const CustomTooltip = ({ active, payload }: any) => {
     if (active && payload && payload.length) {
@@ -94,7 +49,7 @@ export const TypeDistribution: React.FC = () => {
     return (
       <div className="flex flex-wrap justify-center mt-5 gap-4">
         {payload.map((entry: any, index: number) => {
-          const percentage = ((entry.value / totalCIs) * 100).toFixed(1);
+          const percentage = ((entry.payload.value / totalCIs) * 100).toFixed(1);
           return (
             <div key={`legend-${index}`} className="flex items-center gap-2">
               <div
@@ -112,45 +67,48 @@ export const TypeDistribution: React.FC = () => {
   };
 
   return (
-    <Card className="mb-4">
-      <CardHeader>
-        <div className="flex justify-between items-center">
-          <CardTitle>CI Distribution by Type</CardTitle>
-          <ExportButton data={data} filename="ci_distribution_by_type" />
-        </div>
-      </CardHeader>
+    <AnalyticsPanel
+      title="CI Distribution by Type"
+      loading={loading}
+      error={error}
+      onRetry={refetch}
+      empty={!data || data.length === 0}
+      emptyLabel="No data available"
+      actions={<ExportButton data={rows} filename="ci_distribution_by_type" />}
+    >
+      {() => (
+        <>
+          <p className="text-sm text-muted-foreground font-medium mb-4">
+            Total CIs: {totalCIs.toLocaleString()}
+          </p>
 
-      <CardContent>
-        <p className="text-sm text-muted-foreground font-medium mb-4">
-          Total CIs: {totalCIs.toLocaleString()}
-        </p>
-
-        <ResponsiveContainer width="100%" height={300}>
-          <PieChart>
-            <Pie
-              data={chartData}
-              cx="50%"
-              cy="50%"
-              innerRadius={60}
-              outerRadius={100}
-              fill={brand.sky}
-              dataKey="value"
-              label={({ name, percent }) =>
-                `${name}: ${(percent * 100).toFixed(0)}%`
-              }
-            >
-              {chartData.map((entry, index) => (
-                <Cell
-                  key={`cell-${index}`}
-                  fill={COLORS[index % COLORS.length]}
-                />
-              ))}
-            </Pie>
-            <Tooltip content={<CustomTooltip />} />
-            <Legend content={renderLegend} />
-          </PieChart>
-        </ResponsiveContainer>
-      </CardContent>
-    </Card>
+          <ResponsiveContainer width="100%" height={300}>
+            <PieChart>
+              <Pie
+                data={chartData}
+                cx="50%"
+                cy="50%"
+                innerRadius={60}
+                outerRadius={100}
+                fill={brand.sky}
+                dataKey="value"
+                label={({ name, percent }) =>
+                  `${name}: ${(percent * 100).toFixed(0)}%`
+                }
+              >
+                {chartData.map((entry, index) => (
+                  <Cell
+                    key={`cell-${index}`}
+                    fill={COLORS[index % COLORS.length]}
+                  />
+                ))}
+              </Pie>
+              <Tooltip content={<CustomTooltip />} />
+              <Legend content={renderLegend} />
+            </PieChart>
+          </ResponsiveContainer>
+        </>
+      )}
+    </AnalyticsPanel>
   );
 };

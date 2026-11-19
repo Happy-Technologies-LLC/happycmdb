@@ -108,7 +108,7 @@ it('an authenticated admin without an organization gets 403 with zero SQL and Ne
     }
   }
   expect(outcomes).toEqual(Object.keys(callers).flatMap(caller => ROUTES.map(route => ({
-    caller, route: label(route), status: 403, body: { _error: 'Forbidden', _message: 'Organization claim required' },
+    caller, route: label(route), status: 403, body: expect.objectContaining({ _error: 'Forbidden', _message: 'Organization claim required', code: 'ORGANIZATION_REQUIRED' }),
     sql: 0, neo4jSessions: 0, neo4jStatements: 0,
   }))));
 });

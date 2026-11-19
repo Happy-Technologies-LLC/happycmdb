@@ -859,9 +859,9 @@ describe('AuthController profile/password/account routes', () => {
     repository.users.get('user-1')!._role = 'operator';
     const chained = await request(app).post('/api/v1/auth/api-key')
       .set('X-API-Key', key).send({ name: 'Escalated key', expiresInDays: 365 });
-    expect([chained.status, chained.body]).toEqual([403, {
-      _error: 'Forbidden', _message: 'JWT user session required',
-    }]);
+    expect([chained.status, chained.body]).toEqual([403, expect.objectContaining({
+      _error: 'Forbidden', _message: 'JWT user session required', code: 'JWT_SESSION_REQUIRED',
+    })]);
     expect((await request(app).post('/api/v1/auth/api-key')
       .set('Authorization', 'Bearer malformed').set('X-API-Key', key)
       .send({ name: 'Escalated key' })).status).toBe(401);
@@ -938,9 +938,9 @@ describe('AuthController profile/password/account routes', () => {
       for (const role of ['viewer', 'operator', 'admin', 'agent'] as const) {
         repository.users.get('user-1')!._role = role;
         const denied = await call(method, path, apiKey, invalidBody);
-        expect([denied.status, denied.body]).toEqual([403, {
-          _error: 'Forbidden', _message: 'JWT user session required',
-        }]);
+        expect([denied.status, denied.body]).toEqual([403, expect.objectContaining({
+          _error: 'Forbidden', _message: 'JWT user session required', code: 'JWT_SESSION_REQUIRED',
+        })]);
       }
       expect(repository.listCalls).toBe(0);
       expect(repository.apiKeys.get('alice-key')?.revoked).toBe(false);
@@ -1045,6 +1045,8 @@ describe('AuthController profile/password/account routes', () => {
 
   describe('HAP-1911 platformAdmin and organizationId from the stored principal', () => {
     const legacyKeys = ['avatar', 'createdAt', 'email', 'lastLoginAt', 'name', 'role', 'userId', 'username'];
+    // HAP-1930 (BW16): additive, the role's grants from the server's own table.
+    const additiveKeys = ['organizationId', 'permissions', 'platformAdmin'];
     const me = () => request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${victimToken}`);
     const store = (patch: Partial<User>) => Object.assign(repository.users.get('user-1')!, patch);
     // JSON drops undefined keys, so the wire key set is what the client sees.
@@ -1055,11 +1057,11 @@ describe('AuthController profile/password/account routes', () => {
       const res = await me();
 
       expect(res.status).toBe(200);
-      expect(wireKeys(res)).toEqual([...legacyKeys, 'organizationId', 'platformAdmin'].sort());
+      expect(wireKeys(res)).toEqual([...legacyKeys, ...additiveKeys].sort());
       expect(res.body.data).toEqual({
         userId: 'user-1', username: 'alice', email: 'alice@example.com', name: 'Alice', avatar: 'data:image/png;base64,AAAA',
         role: 'operator', createdAt: '2024-01-01T00:00:00.000Z', lastLoginAt: '2024-02-02T00:00:00.000Z',
-        platformAdmin: false, organizationId: 'org-acme',
+        platformAdmin: false, organizationId: 'org-acme', permissions: ['read', 'write', 'discover'],
       });
     });
 
@@ -1068,6 +1070,20 @@ describe('AuthController profile/password/account routes', () => {
       const res = await me();
       expect(res.body.data).toHaveProperty('organizationId', null);
       expect(res.body.data.platformAdmin).toBe(false);
+    });
+
+    it.each([
+      ['admin', ['read', 'write', 'discover', 'admin']],
+      ['operator', ['read', 'write', 'discover']],
+      ['viewer', ['read']],
+      ['agent', ['discover', 'write']],
+    ] as const)('HAP-1930: %s gets its own role and the grants of the server role table, on GET /me and PUT /profile', async (role, permissions) => {
+      store({ _role: role });
+      const read = await me();
+      expect(read.status).toBe(200);
+      expect(read.body.data).toMatchObject({ role, permissions });
+      const updated = await request(app).put('/api/v1/auth/profile').set('Authorization', `Bearer ${victimToken}`).send({ name: 'Same' });
+      expect(updated.body.data).toMatchObject({ role, permissions });
     });
 
     it('a platform administrator gets true, on GET /me and PUT /profile', async () => {
@@ -1133,7 +1149,7 @@ describe('AuthController profile/password/account routes', () => {
         for (const secret of ['$2', 'correct-horse', 'credentialEpoch', '_cep', 'seedProvenance', 'credentials:manage', '4:abc:1', 'passwordHash']) {
           expect(text).not.toContain(secret);
         }
-        expect(Object.keys(body.data).sort()).toEqual([...legacyKeys, 'organizationId', 'platformAdmin'].sort());
+        expect(Object.keys(body.data).sort()).toEqual([...legacyKeys, ...additiveKeys].sort());
       }
     });
   });
@@ -1366,7 +1382,7 @@ describe('AuthController profile/password/account routes', () => {
 
       describe('HAP-1714 organization required', () => {
         const OTHER_ORG = '9d1f2c3b-7a40-4e55-8b6d-1c2e3f4a5b6c';
-        const REFUSED = { success: false, error: 'Forbidden', message: 'Organization required to change password' };
+        const REFUSED = expect.objectContaining({ success: false, error: 'Forbidden', message: 'Organization required to change password', code: 'ORGANIZATION_REQUIRED' });
         const store = (patch: Partial<User>) => repository.users.set('user-1', { ...repository.users.get('user-1')!, ...patch });
         /** The request authenticates against the stored user as it is now; the service then reads it as `patch` has it. */
         const changesAfterAuthentication = (patch: Partial<User>) => {
@@ -1603,7 +1619,7 @@ describe('AuthController profile/password/account routes', () => {
 
       const res = await revoke(bearer);
 
-      expect([res.status, res.body]).toEqual([403, { success: false, error: 'Forbidden', message: 'Organization required to revoke sessions' }]);
+      expect([res.status, res.body]).toEqual([403, expect.objectContaining({ success: false, error: 'Forbidden', message: 'Organization required to revoke sessions', code: 'ORGANIZATION_REQUIRED' })]);
       expect(res.headers['set-cookie']).toBeUndefined();
       expect(bump).not.toHaveBeenCalled();
       expect(repository.audits).toEqual([]);

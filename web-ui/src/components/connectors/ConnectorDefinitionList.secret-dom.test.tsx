@@ -7,23 +7,29 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { domLeaks, secretMarker } from '@/tests/utils/secretDom';
 import { publicInstalledConnector } from '../../../../packages/api-server/src/services/public-installed-connector';
 
-const { apiClient } = vi.hoisted(() => ({ apiClient: { get: vi.fn(), post: vi.fn() } }));
+const { apiClient, permission } = vi.hoisted(() => ({
+  apiClient: { get: vi.fn(), post: vi.fn(), delete: vi.fn() },
+  permission: { write: true },
+}));
 vi.mock('@/lib/api-client', () => ({ apiClient }));
 vi.mock('@/hooks/useCredentials', () => ({
   useCredentials: () => ({ credentials: [], loading: false, error: null, loadCredentials: vi.fn() }),
 }));
-vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null }));
+vi.mock('@happy-technologies/design-system', async (importActual) => ({
+  ...(await importActual<typeof import('@happy-technologies/design-system')>()),
+  Icon: () => null,
+}));
 
 import { ConnectorDefinitionList } from './ConnectorDefinitionList';
 // These screens gate their write controls on the signed-in role (HAP-1252 S1); this test is about the writes, so the user may write.
-vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
+vi.mock('@/hooks/usePermission', () => ({ usePermission: () => permission.write }));
 
 const manifest = JSON.parse(
   fs.readFileSync(path.resolve(__dirname, '../../../../packages/connectors/oracle-cloud/connector.json'), 'utf-8')
@@ -42,6 +48,7 @@ beforeEach(() => {
     throw new Error('Unexpected test endpoint');
   });
   apiClient.post.mockResolvedValue({ data: { id: 'created' } });
+  permission.write = true;
 });
 
 afterEach(() => {
@@ -88,5 +95,96 @@ describe('oracle-cloud private_key through ConnectorDefinitionList (HAP-1895)', 
       tenancy_ocid: 'ocid1.tenancy.oc1..t', user_ocid: 'ocid1.user.oc1..u', fingerprint: '12:34',
       private_key: pem, region: 'us-ashburn-1',
     });
+  });
+});
+
+// HAP-1922: the list on the design system. Loading, empty, a retryable error and a refused read each get their own
+// state; a viewer sees the rows but no write control.
+describe('ConnectorDefinitionList states and write gating (HAP-1922)', () => {
+  const config = {
+    id: 'cfg-1', name: 'Prod ServiceNow', connector_type: 'servicenow', enabled: true,
+    schedule_enabled: false, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-02T00:00:00Z',
+  };
+  const mockReads = (configs: () => Promise<unknown>) =>
+    apiClient.get.mockImplementation(async (url: string) => {
+      if (url === '/connector-configs') return configs();
+      if (url === '/connectors/installed') return { data: [] };
+      throw new Error('Unexpected test endpoint');
+    });
+  const renderList = () =>
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter><ConnectorDefinitionList /></MemoryRouter>
+      </QueryClientProvider>
+    );
+
+  it('does not read as empty while the definitions are loading', async () => {
+    mockReads(() => new Promise(() => {}));
+    renderList();
+    await waitFor(() => expect(apiClient.get).toHaveBeenCalledWith('/connector-configs', expect.anything()));
+    expect(screen.queryByText(/No connectors deployed yet/)).toBeNull();
+    expect(screen.queryByText('Could not load connector definitions')).toBeNull();
+  });
+
+  it('says so when nothing is deployed', async () => {
+    mockReads(async () => ({ data: [] }));
+    renderList();
+    expect(await screen.findByText(/No connectors deployed yet/)).toBeInTheDocument();
+    expect(screen.getByText('0 of 0 connectors')).toBeInTheDocument();
+  });
+
+  it('shows a failed read with a retry that loads the rows', async () => {
+    const user = userEvent.setup();
+    let attempts = 0;
+    mockReads(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('Request failed with status code 500');
+      return { data: [config] };
+    });
+    renderList();
+
+    expect(await screen.findByText('Could not load connector definitions')).toBeInTheDocument();
+    expect(screen.queryByText(/No connectors deployed yet/)).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Prod ServiceNow')).toBeInTheDocument();
+    expect(screen.queryByText('Could not load connector definitions')).toBeNull();
+  });
+
+  it("shows the server's own reason when the read is refused", async () => {
+    mockReads(async () => {
+      throw { response: { status: 403, data: { _message: "Permission 'read' required" } } };
+    });
+    renderList();
+
+    expect(await screen.findByText('No access to connector definitions')).toBeInTheDocument();
+    expect(screen.getByText("Permission 'read' required")).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+
+  it('shows a viewer the rows and no write control', async () => {
+    permission.write = false;
+    mockReads(async () => ({ data: [config] }));
+    renderList();
+
+    expect(await screen.findByText('Prod ServiceNow')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Install Connector' })).toBeNull();
+    for (const name of ['Run Now', 'Edit', 'Delete']) {
+      expect(screen.queryByRole('button', { name })).toBeNull();
+    }
+  });
+
+  it('gives a writer the row actions, and Delete asks before it sends', async () => {
+    const user = userEvent.setup();
+    mockReads(async () => ({ data: [config] }));
+    apiClient.delete.mockResolvedValue({});
+    renderList();
+
+    expect(await screen.findByRole('button', { name: 'Install Connector' })).toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: 'Delete' }));
+    expect(apiClient.delete).not.toHaveBeenCalled();
+    const dialog = await screen.findByRole('dialog', { name: 'Delete Connector' });
+    expect(dialog).toHaveTextContent('Are you sure you want to delete "Prod ServiceNow"?');
+    await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(apiClient.delete).toHaveBeenCalledWith('/connector-configs/cfg-1'));
   });
 });

@@ -6,24 +6,27 @@
  * Multi-step wizard for configuring integration connectors
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { Icon } from '@happy-technologies/design-system';
-import { Button } from '@/components/ui/button';
-import { LiquidGlass } from '@/components/ui/liquid-glass';
-import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import { SecretInput, SecretTextarea } from '@/components/ui/secret-input';
-import { Switch } from '@/components/ui/switch';
+import React, { useState, useEffect, useCallback, useId } from 'react';
 import {
+  Badge,
+  Banner,
+  Button,
+  Card,
+  Dialog,
+  EmptyState,
+  Input,
+  Label,
+  SectionHeading,
   Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+  Stepper,
+  Switch,
+  Textarea,
+} from '@happy-technologies/design-system';
+// Documented localUi exceptions: the DS ships no secret field yet (SecretInput/SecretTextarea keep a typed secret
+// out of the DOM tree, HAP-1213), and the cron builder is a shared component owned outside this lane.
+import { SecretInput, SecretTextarea } from '@/components/ui/secret-input';
 import { CronBuilder } from '@/components/ui/cron-builder';
+import { QueryState } from '@/components/estate/SurfaceState';
 import { FieldMappingBuilder } from './FieldMappingBuilder';
 import { apiClient } from '@/lib/api-client';
 
@@ -66,6 +69,11 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
   const [step, setStep] = useState(1);
   const [loadingTemplate, setLoadingTemplate] = useState(true);
   const [fullTemplate, setFullTemplate] = useState<any>(null);
+  // A failed template read is shown (with a retry) instead of reading as "no resources". Only a fixed value is
+  // kept: the template endpoint is untrusted, so its error payload is never echoed.
+  const [templateFailure, setTemplateFailure] = useState<unknown>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const titleId = useId();
   const [config, setConfig] = useState<any>({
     name: '',
     type: template.type,
@@ -83,6 +91,7 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
   useEffect(() => {
     const loadTemplate = async () => {
       try {
+        setTemplateFailure(null);
         setLoadingTemplate(true);
         const response = await apiClient.get<any>(`/connectors/installed/${template.type}`);
         const templateData = response.data;
@@ -120,15 +129,20 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
           field_mappings: initialMappings,
           enabled_resources: enabledResources,
         }));
-      } catch {
-        // The template endpoint is untrusted; avoid echoing its error payload.
+      } catch (error) {
+        setFullTemplate(null);
+        setTemplateFailure(
+          (error as { response?: { status?: number } } | null)?.response?.status === 403
+            ? { response: { status: 403 } }
+            : new Error('Request failed'),
+        );
       } finally {
         setLoadingTemplate(false);
       }
     };
 
     loadTemplate();
-  }, [template.type]);
+  }, [template.type, loadAttempt]);
 
   const totalSteps = 3;
 
@@ -193,283 +207,240 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <LiquidGlass
-        variant="default"
-        rounded="xl"
-        className="w-full max-w-7xl max-h-[90vh] flex flex-col"
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-border">
-          <div className="flex items-center gap-3">
-            <span className="text-3xl">{template.icon}</span>
-            <div>
-              <h2 className="text-2xl font-bold">Configure {template.name}</h2>
-              <p className="text-sm text-muted-foreground">{template.description}</p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-muted rounded-lg transition-colors"
-          >
-            <Icon name="x" size={20} />
-          </button>
+    <Dialog
+      open
+      onClose={onClose}
+      aria-labelledby={titleId}
+      className="flex max-h-[90vh] flex-col"
+      style={{ maxWidth: '80rem' }}
+    >
+      {/* Header */}
+      <div className="flex items-center gap-3 border-b border-[var(--hh-hairline)] p-6 pr-16">
+        <span className="text-3xl">{template.icon}</span>
+        <div className="min-w-0">
+          <SectionHeading id={titleId} level={2} className="mb-0">
+            Configure {template.name}
+          </SectionHeading>
+          <p className="text-sm text-[var(--hh-text-muted)]">{template.description}</p>
         </div>
+      </div>
 
-        {/* Progress Steps */}
-        <div className="flex items-center justify-center gap-4 p-6 border-b border-border bg-muted/20">
-          {[1, 2, 3].map((stepNum) => (
-            <div key={stepNum} className="flex items-center gap-2">
-              <div
-                className={`w-10 h-10 rounded-full flex items-center justify-center font-semibold transition-all ${
-                  stepNum === step
-                    ? 'bg-primary text-primary-foreground'
-                    : stepNum < step
-                    ? 'bg-success text-white'
-                    : 'bg-muted text-muted-foreground'
-                }`}
-              >
-                {stepNum < step ? <Icon name="check" size={20} /> : stepNum}
-              </div>
-              <span className={`text-sm font-medium ${stepNum === step ? 'text-foreground' : 'text-muted-foreground'}`}>
-                {stepNum === 1 && 'Basic Info'}
-                {stepNum === 2 && 'Connection'}
-                {stepNum === 3 && 'Field Mapping'}
-              </span>
-              {stepNum < 3 && (
-                <Icon name="arrow-right" size={16} className="text-muted-foreground ml-2" />
-              )}
-            </div>
-          ))}
-        </div>
+      {/* Progress Steps */}
+      <div className="border-b border-[var(--hh-hairline)] bg-[var(--hh-bg-elevated)] p-6">
+        <Stepper
+          current={step - 1}
+          className="justify-center gap-8"
+          steps={[{ label: 'Basic Info' }, { label: 'Connection' }, { label: 'Field Mapping' }]}
+        />
+      </div>
 
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6" style={{ maxHeight: 'calc(90vh - 300px)' }}>
-          {/* Step 1: Basic Info */}
-          {step === 1 && (
-            <div className="space-y-6 max-w-2xl mx-auto">
-              <div className="space-y-2">
-                <Label htmlFor="name">Connector Name *</Label>
-                <Input
-                  id="name"
-                  placeholder={`My ${template.name} Integration`}
-                  value={config.name}
-                  onChange={(e) => setConfig({ ...config, name: e.target.value })}
+      {/* Content */}
+      <div className="min-h-0 flex-1 overflow-y-auto p-6">
+        {/* Step 1: Basic Info */}
+        {step === 1 && (
+          <div className="mx-auto max-w-2xl space-y-6">
+            <Input
+              id="name"
+              label="Connector Name *"
+              hint="Give your connector instance a descriptive name"
+              placeholder={`My ${template.name} Integration`}
+              value={config.name}
+              onChange={(e) => setConfig({ ...config, name: e.target.value })}
+            />
+
+            <Textarea
+              id="description"
+              label="Description (Optional)"
+              placeholder="Describe what this connector will be used for..."
+              value={config.description || ''}
+              onChange={(e) => setConfig({ ...config, description: e.target.value })}
+              rows={3}
+            />
+
+            <div className="space-y-4 border-t border-[var(--hh-hairline)] pt-4">
+              <div className="space-y-1">
+                <Switch
+                  id="schedule-enabled"
+                  label="Enable Schedule"
+                  checked={config.schedule.enabled}
+                  onChange={(checked) =>
+                    setConfig({
+                      ...config,
+                      schedule: { ...config.schedule, enabled: checked },
+                    })
+                  }
                 />
-                <p className="text-xs text-muted-foreground">
-                  Give your connector instance a descriptive name
+                <p className="text-sm text-[var(--hh-text-muted)]">
+                  Run sync automatically on a schedule
                 </p>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="description">Description (Optional)</Label>
-                <Textarea
-                  id="description"
-                  placeholder="Describe what this connector will be used for..."
-                  value={config.description || ''}
-                  onChange={(e) => setConfig({ ...config, description: e.target.value })}
-                  rows={3}
+              {config.schedule.enabled && (
+                <CronBuilder
+                  value={config.schedule.cron_expression}
+                  onChange={updateScheduleExpression}
                 />
-              </div>
+              )}
+            </div>
 
+            <div className="space-y-1 border-t border-[var(--hh-hairline)] pt-4">
+              <Switch
+                id="enabled"
+                label="Active"
+                checked={config.enabled}
+                onChange={(checked) => setConfig({ ...config, enabled: checked })}
+              />
+              <p className="text-sm text-[var(--hh-text-muted)]">
+                Inactive connectors cannot sync
+              </p>
+            </div>
+          </div>
+        )}
 
-              <div className="space-y-4 border-t pt-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <Label htmlFor="schedule-enabled">Enable Schedule</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Run sync automatically on a schedule
-                    </p>
-                  </div>
-                  <Switch
-                    id="schedule-enabled"
-                    checked={config.schedule.enabled}
-                    onCheckedChange={(checked) =>
-                      setConfig({
-                        ...config,
-                        schedule: { ...config.schedule, enabled: checked },
-                      })
-                    }
+        {/* Step 2: Connection Config */}
+        {step === 2 && (
+          <div className="mx-auto max-w-2xl space-y-6">
+            <Banner tone="info" icon="info">
+              <strong className="block font-semibold">Connection Settings</strong>
+              <span className="text-sm font-normal">
+                Configure the connection details to connect to your {template.name} instance
+              </span>
+            </Banner>
+
+            {Object.entries(template.config_schema).map(([key, field]: [string, any]) => (
+              <div key={key} className="space-y-2">
+                <Label htmlFor={key}>
+                  {field.label} {field.required && <span className="text-[var(--hh-error-text)]">*</span>}
+                </Label>
+
+                {field.type === 'select' ? (
+                  <Select
+                    id={key}
+                    value={config.connection[key] || field.default || field.options?.[0] || ''}
+                    onChange={(value) => updateConnection(key, value)}
+                    options={(field.options ?? []).map((option: string) => ({ value: option, label: option }))}
                   />
-                </div>
-
-                {config.schedule.enabled && (
-                  <CronBuilder
-                    value={config.schedule.cron_expression}
-                    onChange={updateScheduleExpression}
+                ) : secretControl(field) === 'textarea' ? (
+                  <SecretTextarea
+                    id={key}
+                    placeholder={field.label}
+                    value={config.connection[key] || ''}
+                    onChange={(e) => updateConnection(key, e.target.value)}
+                    rows={5}
+                  />
+                ) : field.type === 'textarea' ? (
+                  <Textarea
+                    id={key}
+                    placeholder={field.label}
+                    value={config.connection[key] || ''}
+                    onChange={(e) => updateConnection(key, e.target.value)}
+                    rows={5}
+                  />
+                ) : secretControl(field) === 'input' ? (
+                  <SecretInput
+                    id={key}
+                    autoComplete="new-password"
+                    placeholder={field.label}
+                    value={config.connection[key] || ''}
+                    onChange={(e) => updateConnection(key, e.target.value)}
+                  />
+                ) : (
+                  <Input
+                    id={key}
+                    type="text"
+                    placeholder={field.label}
+                    value={config.connection[key] || ''}
+                    onChange={(e) => updateConnection(key, e.target.value)}
                   />
                 )}
+
+                {field.description && (
+                  <p className="text-xs text-[var(--hh-text-muted)]">{field.description}</p>
+                )}
               </div>
+            ))}
 
-              <div className="flex items-center justify-between border-t pt-4">
-                <div>
-                  <Label htmlFor="enabled">Active</Label>
-                  <p className="text-sm text-muted-foreground">
-                    Inactive connectors cannot sync
-                  </p>
-                </div>
-                <Switch
-                  id="enabled"
-                  checked={config.enabled}
-                  onCheckedChange={(checked) => setConfig({ ...config, enabled: checked })}
-                />
-              </div>
-            </div>
-          )}
+            <Banner tone="neutral" icon="lock-key">
+              <strong className="block font-semibold">Security Note</strong>
+              <span className="text-xs font-normal">
+                Credentials are encrypted at rest and never exposed in logs or API responses
+              </span>
+            </Banner>
+          </div>
+        )}
 
-          {/* Step 2: Connection Config */}
-          {step === 2 && (
-            <div className="space-y-6 max-w-2xl mx-auto">
-              <div className="bg-sky-soft border border-sky rounded-lg p-4 mb-6">
-                <h3 className="font-semibold text-navy mb-1">Connection Settings</h3>
-                <p className="text-sm text-sky-text">
-                  Configure the connection details to connect to your {template.name} instance
-                </p>
-              </div>
+        {/* Step 3: Field Mapping */}
+        {step === 3 && (
+          <div className="space-y-6">
+            <Banner tone="info" icon="info">
+              <strong className="block font-semibold">Field Mapping by Resource</strong>
+              <span className="text-sm font-normal">
+                Map fields from each {template.name} resource to HappyCMDB CI attributes.
+                Predefined mappings are loaded from the connector template.
+              </span>
+            </Banner>
 
-              {Object.entries(template.config_schema).map(([key, field]: [string, any]) => (
-                <div key={key} className="space-y-2">
-                  <Label htmlFor={key}>
-                    {field.label} {field.required && <span className="text-danger">*</span>}
-                  </Label>
-
-                  {field.type === 'select' ? (
-                    <Select
-                      value={config.connection[key] || field.default || field.options?.[0]}
-                      onValueChange={(value) => updateConnection(key, value)}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder={`Select ${field.label}`} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {field.options?.map((option: string) => (
-                          <SelectItem key={option} value={option}>
-                            {option}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : secretControl(field) === 'textarea' ? (
-                    <SecretTextarea
-                      id={key}
-                      placeholder={field.label}
-                      value={config.connection[key] || ''}
-                      onChange={(e) => updateConnection(key, e.target.value)}
-                      rows={5}
-                    />
-                  ) : field.type === 'textarea' ? (
-                    <Textarea
-                      id={key}
-                      placeholder={field.label}
-                      value={config.connection[key] || ''}
-                      onChange={(e) => updateConnection(key, e.target.value)}
-                      rows={5}
-                    />
-                  ) : secretControl(field) === 'input' ? (
-                    <SecretInput
-                      id={key}
-                      autoComplete="new-password"
-                      placeholder={field.label}
-                      value={config.connection[key] || ''}
-                      onChange={(e) => updateConnection(key, e.target.value)}
-                    />
-                  ) : (
-                    <Input
-                      id={key}
-                      type="text"
-                      placeholder={field.label}
-                      value={config.connection[key] || ''}
-                      onChange={(e) => updateConnection(key, e.target.value)}
-                    />
-                  )}
-
-                  {field.description && (
-                    <p className="text-xs text-muted-foreground">{field.description}</p>
-                  )}
-                </div>
-              ))}
-
-              <div className="bg-warning-soft border border-warning/20 rounded-lg p-4 mt-6">
-                <h4 className="font-semibold text-warning-text text-sm mb-1">Security Note</h4>
-                <p className="text-xs text-warning-text">
-                  Credentials are encrypted at rest and never exposed in logs or API responses
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* Step 3: Field Mapping */}
-          {step === 3 && (
-            <div className="space-y-6">
-              <div className="bg-sky-soft border border-sky rounded-lg p-4 mb-6">
-                <h3 className="font-semibold text-navy mb-1">Field Mapping by Resource</h3>
-                <p className="text-sm text-sky-text">
-                  Map fields from each {template.name} resource to HappyCMDB CI attributes.
-                  Predefined mappings are loaded from the connector template.
-                </p>
-              </div>
-
-              {loadingTemplate ? (
-                <div className="text-center py-8">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
-                  <p className="text-sm text-muted-foreground mt-2">Loading connector resources...</p>
-                </div>
-              ) : fullTemplate?.metadata?.resources ? (
-                <div className="space-y-6">
-                  {fullTemplate.metadata.resources
-                    .filter((resource: any) => resource.ci_type !== null)  // Exclude relationship resources
-                    .map((resource: any) => (
-                      <div key={resource.id} className="border rounded-lg p-4 space-y-4">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <h4 className="font-semibold text-lg">{resource.name}</h4>
-                            <p className="text-sm text-muted-foreground">{resource.description}</p>
-                          </div>
-                          <Badge variant={config.enabled_resources.includes(resource.id) ? 'default' : 'secondary'}>
-                            {config.enabled_resources.includes(resource.id) ? 'Enabled' : 'Disabled'}
-                          </Badge>
+            {loadingTemplate ? (
+              <EmptyState loading label="Loading connector resources..." />
+            ) : templateFailure ? (
+              <QueryState
+                what="connector resources"
+                error={templateFailure}
+                onRetry={() => setLoadAttempt((attempt) => attempt + 1)}
+              />
+            ) : fullTemplate?.metadata?.resources ? (
+              <div className="space-y-6">
+                {fullTemplate.metadata.resources
+                  .filter((resource: any) => resource.ci_type !== null)  // Exclude relationship resources
+                  .map((resource: any) => (
+                    <Card key={resource.id} className="space-y-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <SectionHeading level={3} className="mb-1">{resource.name}</SectionHeading>
+                          <p className="text-sm text-[var(--hh-text-muted)]">{resource.description}</p>
                         </div>
-
-                        {config.enabled_resources.includes(resource.id) && (
-                          <FieldMappingBuilder
-                            connectorType={template.type}
-                            resourceName={resource.name}
-                            mappings={config.field_mappings[resource.id] || []}
-                            onChange={(mappings) => updateFieldMappings(resource.id, mappings)}
-                          />
-                        )}
+                        <Badge variant={config.enabled_resources.includes(resource.id) ? 'info' : 'neutral'}>
+                          {config.enabled_resources.includes(resource.id) ? 'Enabled' : 'Disabled'}
+                        </Badge>
                       </div>
-                    ))}
-                </div>
-              ) : (
-                <div className="text-center py-8 text-muted-foreground">
-                  No resources found for this connector
-                </div>
-              )}
-            </div>
-          )}
-        </div>
 
-        {/* Footer Actions */}
-        <div className="flex items-center justify-between p-6 border-t border-border bg-muted/20">
-          <div className="text-sm text-muted-foreground">
-            Step {step} of {totalSteps}
+                      {config.enabled_resources.includes(resource.id) && (
+                        <FieldMappingBuilder
+                          connectorType={template.type}
+                          resourceName={resource.name}
+                          mappings={config.field_mappings[resource.id] || []}
+                          onChange={(mappings) => updateFieldMappings(resource.id, mappings)}
+                        />
+                      )}
+                    </Card>
+                  ))}
+              </div>
+            ) : (
+              <EmptyState label="No resources found for this connector" />
+            )}
           </div>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={step === 1 ? onClose : handleBack}>
-              <Icon name="arrow-left" size={16} className="mr-2" />
-              {step === 1 ? 'Cancel' : 'Back'}
-            </Button>
-            <Button
-              onClick={handleNext}
-              disabled={!canProceed()}
-            >
-              {step === totalSteps ? 'Deploy Connector' : 'Next'}
-              {step < totalSteps && <Icon name="arrow-right" size={16} className="ml-2" />}
-            </Button>
-          </div>
+        )}
+      </div>
+
+      {/* Footer Actions */}
+      <div className="flex items-center justify-between border-t border-[var(--hh-hairline)] bg-[var(--hh-bg-elevated)] p-6">
+        <div className="text-sm text-[var(--hh-text-muted)]">
+          Step {step} of {totalSteps}
         </div>
-      </LiquidGlass>
-    </div>
+        <div className="flex gap-2">
+          <Button variant="secondary" size="md" icon="arrow-left" onClick={step === 1 ? onClose : handleBack}>
+            {step === 1 ? 'Cancel' : 'Back'}
+          </Button>
+          <Button
+            size="md"
+            iconRight={step < totalSteps ? 'arrow-right' : undefined}
+            onClick={handleNext}
+            disabled={!canProceed()}
+          >
+            {step === totalSteps ? 'Deploy Connector' : 'Next'}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
   );
 };

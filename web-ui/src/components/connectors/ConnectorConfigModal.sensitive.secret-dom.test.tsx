@@ -12,7 +12,10 @@ vi.mock('@/lib/api-client', () => ({ apiClient }));
 vi.mock('@/hooks/useCredentials', () => ({
   useCredentials: () => ({ credentials: [], loading: false, error: null, loadCredentials: vi.fn() }),
 }));
-vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null }));
+vi.mock('@happy-technologies/design-system', async (importActual) => ({
+  ...(await importActual<typeof import('@happy-technologies/design-system')>()),
+  Icon: () => null,
+}));
 
 import { ConnectorConfigModal } from './ConnectorConfigModal';
 

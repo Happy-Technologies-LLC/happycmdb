@@ -3518,7 +3518,37 @@ paths:
                       Names of fields in this payload that are `null` because no backing data exists or it could not
                       be computed (`health_score` when the health signal is unavailable or the organization has no CIs;
                       `open_drift_count` or `configuration_coverage` when their source fails or the organization
-                      exceeds the bounded scan).
+                      exceeds the bounded scan; `kpi_history` when the BW7 history could not be written or read).
+                  kpi_history:
+                    type: object
+                    nullable: true
+                    description: >-
+                      BW7. Per metric, up to the newest 10 RECORDED daily values of the caller's organization,
+                      ascending by date. The series is SPARSE: the first dashboard read of each UTC day records that
+                      day's value (append-only table `estate_kpi_snapshots`, never rewritten the same day), an
+                      unavailable (`null`) figure is never recorded, and a day on which nobody read the dashboard has
+                      no point (there is no scheduler and no backfill). Dates are the days actually recorded, never a
+                      filled calendar. A metric with no point is `[]`. `null` when the history could not be written or
+                      read (named `kpi_history` in `unavailable`); the current figures are unaffected.
+                    required: [health_score, open_drift_count, configuration_coverage_ratio, total_cis]
+                    properties:
+                      health_score: { $ref: '#/components/schemas/EstateKpiSeries' }
+                      open_drift_count: { $ref: '#/components/schemas/EstateKpiSeries' }
+                      configuration_coverage_ratio: { $ref: '#/components/schemas/EstateKpiSeries' }
+                      total_cis: { $ref: '#/components/schemas/EstateKpiSeries' }
+                  kpi_delta:
+                    type: object
+                    nullable: true
+                    description: >-
+                      BW7. Per metric, the latest recorded value minus the previous RECORDED value (not the previous
+                      calendar day: a gap day has no point), rounded to 10 decimals; `null` for a metric with fewer
+                      than 2 recorded points. The whole object is `null` exactly when `kpi_history` is.
+                    required: [health_score, open_drift_count, configuration_coverage_ratio, total_cis]
+                    properties:
+                      health_score: { type: number, nullable: true }
+                      open_drift_count: { type: number, nullable: true }
+                      configuration_coverage_ratio: { type: number, nullable: true }
+                      total_cis: { type: number, nullable: true }
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -5886,6 +5916,18 @@ components:
             error: CI traversal timed out
 
   schemas:
+    EstateKpiSeries:
+      type: array
+      description: >-
+        Up to the newest 10 recorded daily values of one estate KPI, ascending by date. Sparse: only days on which the
+        dashboard was read are present.
+      maxItems: 10
+      items:
+        type: object
+        required: [date, value]
+        properties:
+          date: { type: string, format: date, description: UTC day the value was recorded. }
+          value: { type: number }
     # =========================================================================
     # CORE MODELS
     # =========================================================================

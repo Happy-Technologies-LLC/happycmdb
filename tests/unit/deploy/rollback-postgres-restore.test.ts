@@ -201,7 +201,7 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
     const ledger = ['032_secret_table_public_grants', '033_public_business_service_audit_acl', '034_history_sequence_discovery_acl',
       '039_recent_audit_activity_acl', '044_business_service_journal_read_acl', '045_staging_app_login_acl', '046_service_offerings',
       '047_ai_sync_cursors', '048_portfolio_import', '050_bi_cost_view_grants', '051_bi_view_security_barrier',
-      '054_relationship_evidence_receipts'].map((name) => `${name}.sql`);
+      '054_relationship_evidence_receipts', '056_estate_kpi_snapshots'].map((name) => `${name}.sql`);
     mkdirSync(join(dir, 'grant'));
     stub('grant/psql', [
       'echo "psql $*" >> "$OUT.calls"',
@@ -223,6 +223,16 @@ describe('HAP-1749/HAP-1762: rollback.sh PostgreSQL restore, guarded over a live
       expect(receiptCalls).toHaveLength(1);
     } else {
       expect(receipts).toBeUndefined();
+    }
+    // 056 is replayed the same way: grants only, append-only so no UPDATE/DELETE.
+    const snapshotCalls = calls.filter((line) => line.includes('estate_kpi_snapshots'));
+    if (failFile === '') {
+      expect(snapshotCalls).toHaveLength(1);
+      expect(snapshotCalls[0]).toContain('GRANT SELECT, INSERT ON public.estate_kpi_snapshots');
+      expect(snapshotCalls[0]).not.toMatch(/UPDATE|DELETE/);
+      expect(snapshotCalls[0]).not.toMatch(/ -f /);
+    } else {
+      expect(snapshotCalls).toEqual([]);
     }
     expect(calls.findIndex((line) => line.includes('REVOKE EXECUTE'))).toBeLessThan(calls.findIndex((line) => line.includes(' -f ')));
     expect(calls.findIndex((line) => line.includes('REVOKE EXECUTE'))).toBeGreaterThanOrEqual(0);

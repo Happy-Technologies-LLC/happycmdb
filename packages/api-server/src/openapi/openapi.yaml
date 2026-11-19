@@ -1474,6 +1474,80 @@ paths:
                   message:
                     type: string
 
+  /itil/metrics/open-incidents:
+    get:
+      tags: [Configuration Items]
+      summary: Open-incident ribbon payload
+      description: >-
+        Open incidents of the caller's organization for the estate hub's incident ribbon. Open = status not in
+        `resolved`, `closed`, `cancelled`. Order: priority ascending (P1 first), then newest `reported_at`.
+        `affected_service` is derived from the affected CI: the organization's non-retired services mapped to it
+        (`ci_business_service_mappings`), the most critical first, then name, then id (`incident.affected_business_service_id`
+        is a UUID and cannot hold a portfolio service id). `users_affected` is the incident's stored
+        `business_impact.estimated_user_impact`, else the primary service's `metadata.user_count`; `revenue_per_hour`
+        is the stored `business_impact.revenue_per_hour`, else the primary service's
+        `metadata.revenue_impact.annual_revenue_supported / 8760` (24x7 spread, cents). Only positive figures count; a
+        missing one is `null` and named in the incident's `unavailable`, never 0. `POST /itil/incidents` now stores the
+        same figures (null when unknown) in `business_impact`, with `affected_services` listing every mapped service;
+        `revenue_per_hour` there is the rate and `estimated_revenue_impact` (a total for every other writer and reader) is
+        left null, never reinterpreted as a rate by this endpoint. A stored `estimated_user_impact` is rounded to a whole
+        user. An out-of-range `limit` is a 400, not clamped.
+      operationId: getOpenIncidentRibbon
+      parameters:
+        - name: limit
+          in: query
+          description: Most incidents returned, 1..50.
+          schema: { type: integer, minimum: 1, maximum: 50, default: 5 }
+      responses:
+        '200':
+          description: Open incidents; `incidents` is empty (and `open_count` 0) when there are none.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    required: [incidents, open_count]
+                    properties:
+                      open_count: { type: integer, description: Every open incident of the organization, not only the ones returned. }
+                      incidents:
+                        type: array
+                        items:
+                          type: object
+                          required: [id, incident_number, title, priority, status, affected_ci_id, affected_service, opened_at, users_affected, revenue_per_hour, unavailable]
+                          properties:
+                            id: { type: string, format: uuid }
+                            incident_number: { type: string }
+                            title: { type: string }
+                            priority: { type: integer, minimum: 1, maximum: 5 }
+                            status: { type: string }
+                            affected_ci_id: { type: string, nullable: true }
+                            affected_service:
+                              type: object
+                              nullable: true
+                              required: [service_id, name]
+                              properties:
+                                service_id: { type: string }
+                                name: { type: string }
+                            opened_at: { type: string, format: date-time }
+                            users_affected: { type: integer, nullable: true }
+                            revenue_per_hour: { type: number, nullable: true }
+                            unavailable:
+                              type: array
+                              description: Names of the figures above that are null because no data backs them.
+                              items: { type: string }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CIForbidden'
+        '503':
+          description: ITIL incident records are unavailable in this schema version
+
   # =============================================================================
   # RELATIONSHIPS
   # =============================================================================
@@ -3523,6 +3597,69 @@ paths:
         '504':
           description: Topology summary timed out
 
+  /analytics/recent-changes:
+    get:
+      tags: [Analytics]
+      summary: Tenant-wide recent CI changes
+      description: >-
+        Newest-first feed of `ci_change_history` rows of the caller's organization recorded in the last hour (`1h`,
+        default) or day (`24h`), for the estate hub's "Live changes". A row is returned only when its organization
+        stamp is the caller's AND its CI still exists in the caller's organization at the incarnation the row was
+        recorded against (the `/analytics/change-timeline` fence): changes of a deleted or replaced CI are absent.
+        `total` counts every qualifying row in the window, not only the page. `ci_name` and `ci_type` are read from
+        the caller's organization's graph and are `null` when the CI has none. Poll only: there is no push channel.
+        An unknown `window` or out-of-range `limit` is a 400, not clamped. Shares the `analytics` admission scope.
+      operationId: getRecentChanges
+      parameters:
+        - name: window
+          in: query
+          schema: { type: string, enum: ['1h', '24h'], default: '1h' }
+        - name: limit
+          in: query
+          description: Most changes returned, 1..100.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        '200':
+          description: Recent changes; `changes` is empty (and `total` 0) when nothing qualifies.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    required: [window, total, changes]
+                    properties:
+                      window: { type: string, enum: ['1h', '24h'] }
+                      total: { type: integer }
+                      changes:
+                        type: array
+                        items:
+                          type: object
+                          required: [id, changed_at, change_type, changed_by, change_source, changed_fields, ci_id, ci_name, ci_type]
+                          properties:
+                            id: { type: string, format: uuid }
+                            changed_at: { type: string, format: date-time }
+                            change_type: { type: string }
+                            changed_by: { type: string, nullable: true }
+                            change_source: { type: string }
+                            changed_fields: { type: array, items: { type: string } }
+                            ci_id: { type: string }
+                            ci_name: { type: string, nullable: true }
+                            ci_type: { type: string, nullable: true }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          description: Analytics rate or concurrency limit exceeded
+        '503':
+          description: Analytics resource limit exceeded
+
   /analytics/ci-counts:
     get:
       tags: [Analytics]
@@ -4227,6 +4364,69 @@ paths:
           $ref: '#/components/responses/BusinessServiceServerError'
         '503':
           $ref: '#/components/responses/BusinessServiceWriteUnavailable'
+
+  /business-services/availability:
+    get:
+      tags: [Business Services]
+      summary: 24 h availability of the top services (incident-derived)
+      description: >-
+        Availability over the last 24 hours for the estate hub's "Top services" list, for the caller's organization.
+        There is no uptime probe in the repository, so the figure is DERIVED, not measured. Rule: a service-affecting
+        incident is one of the organization's incidents with priority 1 or 2 (P1/P2), status not `cancelled`, whose
+        `affected_ci_id` is mapped to the service (`ci_business_service_mappings`). Its downtime is
+        `[reported_at, resolved_at]` (else `closed_at`, else still open up to now), clipped to `[now() - 24 h, now()]`
+        on the database clock; overlapping intervals of one service are merged.
+        `availability_24h_pct = 100 * (1 - downtime / 24 h)` (3 decimals). A mapped service with no such incident reads
+        100, which means "no P1/P2 incident recorded", not a probe-verified uptime (`basis` says `incident_derived`).
+        A service with no mapped CI has no signal path: its three figures are `null` and named in its `unavailable`.
+        Services are the organization's `live` or `retiring` ones, most critical first (critical, high, medium, low,
+        other), then name, then id. An out-of-range `limit` is a 400, not clamped.
+      operationId: getBusinessServiceAvailability
+      parameters:
+        - name: limit
+          in: query
+          description: Most services returned, 1..50.
+          schema: { type: integer, minimum: 1, maximum: 50, default: 5 }
+      responses:
+        '200':
+          description: Availability per service; `services` is empty when the organization has no live service.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    required: [window_hours, basis, services]
+                    properties:
+                      window_hours: { type: integer, enum: [24] }
+                      basis: { type: string, enum: [incident_derived] }
+                      services:
+                        type: array
+                        items:
+                          type: object
+                          required: [service_id, name, criticality, availability_24h_pct, downtime_minutes_24h, service_affecting_incidents_24h, unavailable]
+                          properties:
+                            service_id: { type: string }
+                            name: { type: string }
+                            criticality: { type: string }
+                            availability_24h_pct: { type: number, nullable: true }
+                            downtime_minutes_24h: { type: number, nullable: true, description: Merged P1/P2 downtime inside the window, in minutes. }
+                            service_affecting_incidents_24h: { type: integer, nullable: true, description: Distinct P1/P2 incidents with downtime inside the window. }
+                            unavailable:
+                              type: array
+                              description: Names of the figures above that are null because no data backs them.
+                              items: { type: string }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/BusinessServiceForbidden'
+        '500':
+          $ref: '#/components/responses/BusinessServiceServerError'
 
   /business-services/{service_id}:
     parameters:

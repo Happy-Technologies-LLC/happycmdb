@@ -12,6 +12,10 @@ import {
   CI_LIST_UNAVAILABLE_RESPONSE, writeReferencedCIs,
 } from '../../read-admission';
 import { assertCIId, isReservedKey, requestActor, sendJournalError } from '../../journal-http';
+import {
+  businessImpactFor, deriveImpact, readMappedServices, readOpenIncidentRibbon,
+  RIBBON_DEFAULT_INCIDENTS, RIBBON_MAX_INCIDENTS,
+} from '../../services/incident-business-impact';
 
 
 /**
@@ -263,6 +267,17 @@ export class ITILController {
       // For now, use a simple default priority calculation
       const priority = this.calculateBasicPriority(ci);
 
+      // BW8: the figures come from the services the CI is mapped to, never from the priority heuristic above. An
+      // estimate that cannot be read must not block the incident: it is stored as unknown (null).
+      let impact = deriveImpact([]);
+      try {
+        impact = deriveImpact(await readMappedServices(
+          { query: (text, params) => this.postgresClient.pool.query(text, params) },
+          requestOrganizationId(req), [affectedCIId]));
+      } catch (error) {
+        logger.warn('Incident business impact unavailable', error);
+      }
+
       const incidentUuid = uuidv4();
       const incidentNumber = `INC-${incidentUuid}`;
       const title = description.length > 500 ? `${description.slice(0, 497)}...` : description;
@@ -271,9 +286,9 @@ export class ITILController {
         `
         INSERT INTO itil_incidents (
           id, incident_number, title, description, affected_ci_id,
-          reported_by, reported_at, priority, impact, urgency, status, organization_id
+          reported_by, reported_at, priority, impact, urgency, status, organization_id, business_impact
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
         RETURNING *
         `,
         [
@@ -289,6 +304,7 @@ export class ITILController {
           priority.urgency,
           'new',
           requestOrganizationId(req),
+          JSON.stringify(businessImpactFor(impact)),
         ]
       ));
 
@@ -1302,6 +1318,38 @@ export class ITILController {
       res.status(500).json({
         success: false,
         error: 'Failed to retrieve incident summary',
+        message: 'Internal error',
+      });
+    }
+  }
+
+  /**
+   * Open-incident ribbon payload for the estate hub (HAP-1926 BW8).
+   * GET /itil/metrics/open-incidents?limit=1..50 (default 5; an invalid value is a 400, never clamped).
+   * Rules for "open", ordering, the derived affected service and the users / revenue-per-hour figures:
+   * services/incident-business-impact.ts.
+   */
+  async getOpenIncidentRibbon(req: Request, res: Response): Promise<void> {
+    const raw = (req.query as Record<string, unknown>)['limit'];
+    const limit = raw === undefined ? RIBBON_DEFAULT_INCIDENTS : Number(raw);
+    if (!Number.isInteger(limit) || limit < 1 || limit > RIBBON_MAX_INCIDENTS) {
+      res.status(400).json({
+        success: false,
+        error: 'Bad Request',
+        message: `limit must be an integer from 1 to ${RIBBON_MAX_INCIDENTS}`,
+      });
+      return;
+    }
+    try {
+      const data = await readOpenIncidentRibbon(
+        { query: (text, params) => this.postgresClient.pool.query(text, params) },
+        requestOrganizationId(req), limit);
+      res.json({ success: true, data });
+    } catch (error) {
+      logger.error('Error getting open incident ribbon', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to retrieve open incidents',
         message: 'Internal error',
       });
     }

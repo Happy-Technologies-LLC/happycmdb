@@ -57,6 +57,7 @@ jest.mock('../../controllers/analytics.controller', () => ({
   AnalyticsController: jest.fn(() => ({
     getDashboardStats: mockRouteHandler,
     getTopologySummary: mockRouteHandler,
+    getRecentChanges: mockRouteHandler,
     getCICountsByType: mockRouteHandler,
     getCICountsByStatus: mockRouteHandler,
     getCICountsByEnvironment: mockRouteHandler,

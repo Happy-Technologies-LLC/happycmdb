@@ -98,6 +98,9 @@ analyticsRoutes.get(
   controller.getChangeTimeline.bind(controller)
 );
 
+// Caller-organization recent CI changes feed (last hour or day)
+analyticsRoutes.get('/recent-changes', controller.getRecentChanges.bind(controller));
+
 // CI health metrics derived from anomaly detections
 analyticsRoutes.get(
   '/health-metrics/:ciId',

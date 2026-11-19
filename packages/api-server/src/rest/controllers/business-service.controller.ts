@@ -21,6 +21,7 @@ import {
   C1Lifecycle, lifecycleMoveAllowed, lifecycleNeedsOwner, serviceReference, StoredDependencyRow,
 } from '../../services/business-service-reference';
 import { decodeListCursor, encodeListCursor } from '../../services/c1-list-cursor';
+import { parseAvailabilityOptions, readServiceAvailability } from '../../services/service-availability.service';
 import { sendTraversalFailure } from './traversal-failure';
 import { impactEnvelope } from '../impact-envelope';
 import { loadEdgeEvidence, qualificationOf, type EdgeQualification } from '../edge-evidence';
@@ -1031,6 +1032,30 @@ export class BusinessServiceController {
       res.status(500).json({
         success: false,
         error: 'Failed to delete service dependency'
+      });
+    }
+  }
+
+  /**
+   * GET /api/v1/business-services/availability?limit=1..50 (default 5; invalid is a 400, never clamped)
+   * Availability over the last 24 h for the estate hub's "Top services" (HAP-1926 BW10). There is no uptime probe:
+   * the figure is derived from the organization's P1/P2 incidents on the service's mapped CIs. The rule, the null
+   * states and the service order: services/service-availability.service.ts.
+   */
+  async getServiceAvailability(req: Request, res: Response): Promise<void> {
+    const options = parseAvailabilityOptions(req.query as Record<string, unknown>);
+    if ('error' in options) {
+      res.status(400).json({ success: false, error: 'Bad Request', message: options.error });
+      return;
+    }
+    try {
+      const data = await readServiceAvailability(this.pgClient, requestOrganizationId(req), options.limit);
+      res.json({ success: true, data });
+    } catch (error) {
+      logger.error('Error getting service availability', { error: errorLogFields(error) });
+      res.status(500).json({
+        success: false,
+        error: 'Failed to retrieve service availability'
       });
     }
   }

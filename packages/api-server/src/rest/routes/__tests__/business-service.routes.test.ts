@@ -66,6 +66,7 @@ jest.mock('../../../auth/auth-bootstrap', () => ({
 jest.mock('../../controllers/business-service.controller', () => ({
   BusinessServiceController: jest.fn(() => ({
     listBusinessServices: mockRouteHandler,
+    getServiceAvailability: mockRouteHandler,
     getBusinessService: mockRouteHandler,
     createBusinessService: mockRouteHandler,
     updateBusinessService: mockRouteHandler,

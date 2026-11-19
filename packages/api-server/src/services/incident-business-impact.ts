@@ -23,10 +23,13 @@
  * would overstate them. Every mapped service is listed in `business_impact.affected_services`.
  *
  * ## Stored vs. live
- * createIncident stores the figures in `business_impact` (`estimated_user_impact`, `estimated_revenue_impact` = revenue
- * per hour, `estimated_cost_of_downtime`; unknown = JSON null). The ribbon uses the stored figure when it is positive
- * and otherwise derives it live from the service metadata, so incidents created before this change (stored zeros, the
- * column default) and services documented later still show their figures.
+ * createIncident stores the figures in `business_impact`: `estimated_user_impact`, `revenue_per_hour` (a NEW key: the
+ * rate) and `estimated_cost_of_downtime`; unknown = JSON null. `estimated_revenue_impact` is left null on create: other
+ * writers (the ITIL priority service, seeds), GraphQL, the BI views and the web UI treat it as a TOTAL, so the ribbon
+ * never reads it as a rate. The ribbon uses the stored figure when it is positive and otherwise derives it live from
+ * the service metadata, so incidents created before this change (stored zeros, the column default, a total under
+ * `estimated_revenue_impact`) and services documented later still show their figures. A stored users figure is rounded
+ * to a whole user.
  *
  * ## The ribbon: `GET /itil/metrics/open-incidents`
  * Open = status not in resolved, closed, cancelled. Order: priority ascending (P1 first), then newest `reported_at`.
@@ -120,8 +123,9 @@ export async function readMappedServices(sql: Sql, organizationId: string, ciIds
 export function businessImpactFor(impact: DerivedImpact): Record<string, unknown> {
   return {
     estimated_user_impact: impact.users_affected,
-    // Revenue per hour of the primary affected service (the ribbon's "$/h").
-    estimated_revenue_impact: impact.revenue_per_hour,
+    // The rate, under its own key: `estimated_revenue_impact` is a total for every other consumer and stays unset.
+    estimated_revenue_impact: null,
+    revenue_per_hour: impact.revenue_per_hour,
     estimated_cost_of_downtime: null,
     affected_services: impact.services.slice(0, AFFECTED_SERVICES_MAX),
   };
@@ -151,6 +155,11 @@ export interface OpenIncidentRibbon {
 const stored = (businessImpact: unknown, key: string): number | null =>
   isRecord(businessImpact) ? positive(Number(businessImpact[key])) : null;
 
+const storedUsers = (businessImpact: unknown): number | null => {
+  const users = stored(businessImpact, 'estimated_user_impact');
+  return users === null ? null : positive(Math.round(users));
+};
+
 export async function readOpenIncidentRibbon(
   sql: Sql, organizationId: string, limit: number
 ): Promise<OpenIncidentRibbon> {
@@ -168,8 +177,8 @@ export async function readOpenIncidentRibbon(
   const mapped = await readMappedServices(sql, organizationId, ciIds);
   const incidents = page.rows.map((row: Record<string, any>): RibbonIncident => {
     const live = deriveImpact(mapped.filter(service => service.ci_id === row.affected_ci_id));
-    const users = stored(row.business_impact, 'estimated_user_impact') ?? live.users_affected;
-    const revenue = stored(row.business_impact, 'estimated_revenue_impact') ?? live.revenue_per_hour;
+    const users = storedUsers(row.business_impact) ?? live.users_affected;
+    const revenue = stored(row.business_impact, 'revenue_per_hour') ?? live.revenue_per_hour;
     const unavailable = [
       ...(users === null ? ['users_affected'] : []),
       ...(revenue === null ? ['revenue_per_hour'] : []),

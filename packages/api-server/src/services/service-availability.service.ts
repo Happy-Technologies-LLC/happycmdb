@@ -11,8 +11,9 @@
  * (`ci_business_service_mappings`). The figure is therefore DERIVED, by this rule:
  * - A service-affecting incident is one of the caller's organization with priority 1 or 2 (P1/P2) whose status is not
  *   `cancelled` and whose `affected_ci_id` is mapped to the service. Lower priorities are not outages.
- * - Its downtime interval is `[reported_at, resolved_at]`, else `closed_at`, else still open (up to now), clipped to the
- *   window `[now() - 24 h, now()]` on the database clock.
+ * - Its downtime interval is `[reported_at, resolved_at]`, else `closed_at`, else (status `resolved`/`closed` with neither
+ *   timestamp recorded) `updated_at`, else still open (up to now), clipped to the window `[now() - 24 h, now()]` on the
+ *   database clock. A finished incident missing both timestamps therefore never counts as down until now.
  * - Overlapping intervals of one service are merged, so two simultaneous incidents count their union once.
  * - `availability_24h_pct = 100 * (1 - downtime / 24 h)`, rounded to 3 decimals; `downtime_minutes_24h` is the merged
  *   downtime rounded to 2 decimals; `service_affecting_incidents_24h` counts the distinct incidents with downtime in
@@ -30,6 +31,10 @@
 interface Sql {
   query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
 }
+
+/** When an incident stopped counting as down: resolved_at, else closed_at, else updated_at for a finished one, else now. */
+const INCIDENT_END = `COALESCE(i.resolved_at, i.closed_at,
+                CASE WHEN i.status IN ('resolved', 'closed') THEN i.updated_at ELSE now() END)`;
 
 export const AVAILABILITY_WINDOW_HOURS = 24;
 export const AVAILABILITY_DEFAULT_LIMIT = 5;
@@ -99,13 +104,13 @@ export async function readServiceAvailability(sql: Sql, organizationId: string, 
     const incidents = await sql.query(
       `SELECT DISTINCT m.service_id, i.id,
               GREATEST(i.reported_at, now() - ($3::int * interval '1 hour')) AS start_at,
-              LEAST(COALESCE(i.resolved_at, i.closed_at, now()), now()) AS end_at
+              LEAST(${INCIDENT_END}, now()) AS end_at
        FROM itil_incidents i
        JOIN ci_business_service_mappings m ON m.ci_id = i.affected_ci_id
        WHERE i.organization_id = $1 AND m.service_id = ANY($2::text[])
          AND i.priority <= $4 AND i.status <> 'cancelled'
          AND i.reported_at < now()
-         AND COALESCE(i.resolved_at, i.closed_at, now()) > now() - ($3::int * interval '1 hour')`,
+         AND ${INCIDENT_END} > now() - ($3::int * interval '1 hour')`,
       [organizationId, mapped, AVAILABILITY_WINDOW_HOURS, SERVICE_AFFECTING_MAX_PRIORITY]);
     for (const row of incidents.rows as Array<{ service_id: string; id: string; start_at: Date; end_at: Date }>) {
       const start = new Date(row.start_at).getTime();

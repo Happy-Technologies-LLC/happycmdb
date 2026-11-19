@@ -225,9 +225,12 @@ The backends for the incident ribbon figures, live changes and top services now 
 does not read them yet. `GET /itil/metrics/open-incidents` returns the open incidents with the affected service and
 `users_affected` / `revenue_per_hour`, taken from the figures recorded on the affected CI's mapped service
 (`metadata.user_count`, `metadata.revenue_impact.annual_revenue_supported / 8760`), `null` and listed in `unavailable`
-when none is recorded. `GET /analytics/recent-changes?window=1h|24h` is the tenant-wide change feed (poll, no push).
+when none is recorded. A new incident stores the rate under `business_impact.revenue_per_hour`; the ribbon reads only that
+key (or derives it live), never `estimated_revenue_impact`, which is a total for the ITIL priority service, GraphQL, the BI
+views and this UI. `GET /analytics/recent-changes?window=1h|24h` is the tenant-wide change feed (poll, no push).
 `GET /business-services/availability` is incident-derived (P1/P2 downtime on the service's mapped CIs over 24 h), not a
-probe: 100 means "no P1/P2 incident recorded", and a service with no mapped CI is `null`. The rules are in
+probe: 100 means "no P1/P2 incident recorded", and a service with no mapped CI is `null`. A resolved or closed incident
+with neither `resolved_at` nor `closed_at` ends at its `updated_at`. The rules are in
 `services/incident-business-impact.ts`, `recent-changes.service.ts` and `service-availability.service.ts`.
 
 Every surface has loading, error and 403 states (`SurfaceState.tsx`). Reads that must not refuse the page (incidents,

@@ -1257,11 +1257,13 @@ paths:
         (`ci_business_service_mappings`), the most critical first, then name, then id (`incident.affected_business_service_id`
         is a UUID and cannot hold a portfolio service id). `users_affected` is the incident's stored
         `business_impact.estimated_user_impact`, else the primary service's `metadata.user_count`; `revenue_per_hour`
-        is the stored `business_impact.estimated_revenue_impact`, else the primary service's
+        is the stored `business_impact.revenue_per_hour`, else the primary service's
         `metadata.revenue_impact.annual_revenue_supported / 8760` (24x7 spread, cents). Only positive figures count; a
         missing one is `null` and named in the incident's `unavailable`, never 0. `POST /itil/incidents` now stores the
         same figures (null when unknown) in `business_impact`, with `affected_services` listing every mapped service;
-        `estimated_revenue_impact` there is per hour. An out-of-range `limit` is a 400, not clamped.
+        `revenue_per_hour` there is the rate and `estimated_revenue_impact` (a total for every other writer and reader) is
+        left null, never reinterpreted as a rate by this endpoint. A stored `estimated_user_impact` is rounded to a whole
+        user. An out-of-range `limit` is a 400, not clamped.
       operationId: getOpenIncidentRibbon
       parameters:
         - name: limit

@@ -142,16 +142,18 @@ const addService = (org: string, name: string, opts: { criticality?: string; lif
 };
 /** An incident; `reported` / `resolved` are "N minutes ago" (resolved omitted = still open). */
 const addIncident = (org: string, ci: string, opts: { priority?: number; status?: string; reportedMin?: number; resolvedMin?: number;
-  title?: string; businessImpact?: unknown } = {}) =>
+  updatedMin?: number; title?: string; businessImpact?: unknown } = {}) =>
   sql(
     `INSERT INTO itil_incidents (incident_number, title, impact, urgency, priority, affected_ci_id, status, reported_by,
-       reported_at, resolved_at, organization_id, business_impact)
+       reported_at, resolved_at, organization_id, business_impact, updated_at)
      VALUES ($1, $2, 'high', 'high', $3, $4, $5, 'op', now() - ($6::int * interval '1 minute'),
        CASE WHEN $7::int IS NULL THEN NULL ELSE now() - ($7::int * interval '1 minute') END, $8::uuid,
-       COALESCE($9::jsonb, '{"estimated_user_impact":0,"estimated_revenue_impact":0,"estimated_cost_of_downtime":0,"affected_services":[]}'::jsonb))
+       COALESCE($9::jsonb, '{"estimated_user_impact":0,"estimated_revenue_impact":0,"estimated_cost_of_downtime":0,"affected_services":[]}'::jsonb),
+       now() - ($10::int * interval '1 minute'))
      RETURNING id`,
     [`INC-${nextId()}`, opts.title ?? 'incident', opts.priority ?? 3, ci, opts.status ?? 'new', opts.reportedMin ?? 10,
-      opts.resolvedMin ?? null, org, opts.businessImpact === undefined ? null : JSON.stringify(opts.businessImpact)]);
+      opts.resolvedMin ?? null, org, opts.businessImpact === undefined ? null : JSON.stringify(opts.businessImpact),
+      opts.updatedMin ?? 0]);
 const addChange = (org: string | null, ci: Node, ago: { minutes: number }, extra: { type?: string; incarnation?: string } = {}) =>
   sql(
     `INSERT INTO ci_change_history (ci_id, change_type, change_source, changed_fields, changed_at, ci_incarnation_id, organization_id)
@@ -242,11 +244,31 @@ describe('BW8: open-incident ribbon and business_impact on create', () => {
 
   it('prefers a positive stored figure, and falls back to live service metadata for the column\'s zero default', async () => {
     await addService(ORG_A, 'Checkout', { ciIds: ['ci-1'], metadata: { user_count: 100 } });
-    await addIncident(ORG_A, 'ci-1', { title: 'stored', priority: 1, businessImpact: { estimated_user_impact: 4200, estimated_revenue_impact: 35.5 } });
+    await addIncident(ORG_A, 'ci-1', { title: 'stored', priority: 1, businessImpact: { estimated_user_impact: 4200, revenue_per_hour: 35.5 } });
     await addIncident(ORG_A, 'ci-1', { title: 'legacy zeros', priority: 2 });
     const [stored, legacy] = (await ribbon(ORG_A)).body.data.incidents;
     expect(stored).toMatchObject({ users_affected: 4200, revenue_per_hour: 35.5 });
     expect(legacy).toMatchObject({ users_affected: 100, revenue_per_hour: null, unavailable: ['revenue_per_hour'] });
+  });
+
+  it('never reports a stored estimated_revenue_impact total (ITIL priority service, seeds) as revenue per hour', async () => {
+    await addService(ORG_A, 'Checkout', { ciIds: ['ci-1'], metadata: { user_count: 100, revenue_impact: { annual_revenue_supported: 87_600 } } });
+    await addService(ORG_A, 'Bare', { ciIds: ['ci-2'], metadata: { user_count: 100 } });
+    await addIncident(ORG_A, 'ci-1', { title: 'total, documented', priority: 1, businessImpact: { estimated_user_impact: 0, estimated_revenue_impact: 125000 } });
+    await addIncident(ORG_A, 'ci-2', { title: 'total, undocumented', priority: 2, businessImpact: { estimated_revenue_impact: 125000 } });
+    const [documented, undocumented] = (await ribbon(ORG_A)).body.data.incidents;
+    // The documented service's live rate wins; an undocumented one is unavailable, not 125000.
+    expect(documented).toMatchObject({ revenue_per_hour: 10 });
+    expect(undocumented).toMatchObject({ revenue_per_hour: null, unavailable: ['revenue_per_hour'] });
+  });
+
+  it('rounds a stored non-integer estimated_user_impact to a whole user', async () => {
+    await addService(ORG_A, 'Checkout', { ciIds: ['ci-1'], metadata: { user_count: 100 } });
+    await addIncident(ORG_A, 'ci-1', { title: 'fractional', priority: 1, businessImpact: { estimated_user_impact: 4200.6 } });
+    await addIncident(ORG_A, 'ci-1', { title: 'sub-one', priority: 2, businessImpact: { estimated_user_impact: 0.4 } });
+    const [fractional, subOne] = (await ribbon(ORG_A)).body.data.incidents;
+    expect(fractional.users_affected).toBe(4201);
+    expect(subOne.users_affected).toBe(100);
   });
 
   it('createIncident stores the mapped service\'s figures in business_impact, and null (not zero) when none exist', async () => {
@@ -257,11 +279,12 @@ describe('BW8: open-incident ribbon and business_impact on create', () => {
     const mapped = await createIncident(ORG_A, 'ci-1');
     expect(mapped.statusCode).toBe(201);
     expect(mapped.body.data.business_impact).toMatchObject({
-      estimated_user_impact: 2000, estimated_revenue_impact: 10, estimated_cost_of_downtime: null,
+      estimated_user_impact: 2000, estimated_revenue_impact: null, revenue_per_hour: 10, estimated_cost_of_downtime: null,
       affected_services: [{ name: 'Checkout' }] });
     const unmapped = await createIncident(ORG_A, 'ci-2');
     expect(unmapped.body.data.business_impact).toEqual({
-      estimated_user_impact: null, estimated_revenue_impact: null, estimated_cost_of_downtime: null, affected_services: [] });
+      estimated_user_impact: null, estimated_revenue_impact: null, revenue_per_hour: null, estimated_cost_of_downtime: null,
+      affected_services: [] });
     // The create response keeps its existing keys.
     expect(Object.keys(mapped.body).sort()).toEqual(['data', 'message', 'priorityCalculation', 'success']);
   });
@@ -349,6 +372,18 @@ describe('BW10: 24 h service availability', () => {
     expect(clipped.downtime_minutes_24h).toBeCloseTo(60, 1);
     expect(ongoing.downtime_minutes_24h).toBeCloseTo(60, 1);
     expect(ongoing.availability_24h_pct).toBeCloseTo(95.833, 1);
+  });
+
+  it('ends a resolved or closed incident that has no resolved_at/closed_at at updated_at, not at now', async () => {
+    await addService(ORG_A, 'Finished', { criticality: 'critical', ciIds: ['ci-1'] });
+    await addService(ORG_A, 'Ongoing', { criticality: 'high', ciIds: ['ci-2'] });
+    // Reported 3 h ago, last updated 2 h ago, never given a resolution timestamp: 60 minutes of downtime.
+    await addIncident(ORG_A, 'ci-1', { priority: 1, reportedMin: 180, updatedMin: 120, status: 'closed' });
+    // A still-open incident is unaffected by updated_at: it runs to now.
+    await addIncident(ORG_A, 'ci-2', { priority: 1, reportedMin: 180, updatedMin: 120, status: 'in_progress' });
+    const [finished, ongoing] = (await availability(ORG_A)).body.data.services;
+    expect(finished.downtime_minutes_24h).toBeCloseTo(60, 1);
+    expect(ongoing.downtime_minutes_24h).toBeCloseTo(180, 1);
   });
 
   it('reads 100 for a mapped service with no incident, and null (listed as unavailable) for a service with no mapped CI', async () => {

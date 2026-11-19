@@ -301,8 +301,13 @@ GRANT SELECT (connector_type, config_name, started_at, status, duration_ms, reco
   regardless of this role still apply: `CONNECT` on every database (the role can log in to `grafana`, `metabase` and
   `postgres`), `TEMPORARY`, and `EXECUTE` on functions (after a `--no-acl` restore this includes the SECURITY DEFINER
   `cmdb.fn_business_service_health`, which takes any organization id). Review those PUBLIC grants before use.
-- **Tenant scoping**: no `CREATE POLICY` / `ROW LEVEL SECURITY` exists in the shipped migrations, so tenant scoping is
-  application-side. `cmdb.dim_ci` has `organization_id`; `cmdb.fact_ci_changes` and `cmdb.fact_ci_relationships` have
+- **Tenant scoping**: application-side everywhere (every query carries the organization predicate), plus row level
+  security on exactly one table, `public.estate_kpi_snapshots` (migration 056, HAP-1925). Its policy (ENABLE and FORCE,
+  so the owner is subject too) keys on the transaction-local setting `cmdb.organization_id`, which the API sets from the
+  verified token's organization at the start of each history transaction; an unset or empty setting matches no row and
+  an INSERT without it is refused. That is defence in depth only: any session may `SET` that setting, so it is not a
+  sole control and the Grafana role described here must not be given this table. No other table has a `CREATE POLICY`.
+  `cmdb.dim_ci` has `organization_id`; `cmdb.fact_ci_changes` and `cmdb.fact_ci_relationships` have
   none, and `connector_run_history` gets it only from migration 018 (the compose `init-postgres.sql` does not add it).
   The role above therefore reads **every organization's** rows: safe only for single-organization deployments, or where
   every Grafana user may see all tenants. Multi-tenant Grafana needs a design decision first: a role per tenant plus RLS

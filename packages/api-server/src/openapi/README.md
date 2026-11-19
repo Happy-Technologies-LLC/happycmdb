@@ -101,6 +101,7 @@ is performed by this change.
   The same response carries `affected_business_services`, `cost_per_hour`, `cost_per_hour_services_priced` and `unavailable` (HAP-1927, BW11): the services mapped to the CI or to a downstream CI, read in the caller's organization (service, mapped CI and reconciliation state all organization-checked, retired services skipped). Cost per hour is `annual_revenue_supported / 8760` per service, read from the service's `metadata`, summed and rounded to cents; `null` and listed in `unavailable` when no service has revenue, never 0
 - `POST /impact/predict` - Change impact prediction (persists the analysis). Adds the same business context, `direction` on each affected CI (`downstream`), a `failover` change type (weight 1.2, downtime `15 + blast_radius * 3` minutes) and deterministic rule-based `recommendations` (rule ids in the OpenAPI description; no model) (HAP-1927, BW12)
 - `GET /impact/graph/{rootCiId}` - Bounded dependency graph; every `data.edges[]` item carries `currentness` and `evidence` (HAP-2030), 503/504 documented, never a partial graph
+- `POST /ask` - Ask Happy, phase 1 (HAP-1928, BW13): the impact question on one CI answered as `happy-ui/v1` JSON Lines (`application/x-ndjson`). Read-only (the prediction is previewed, never stored), organization-scoped, deterministic (no model, no conversation memory); `select`/`focus`/`highlight` effects, a risk/dependents/cost/downtime `StatGroup`, affected-service and dependency `ImpactChain`s and rule-based recommendation `Callout`s. Cost and downtime are omitted without backing data (a computed 0 is shown as 0)
 - `GET /cis/{id}/audit` - Audit history
 
 Every REST/GraphQL CI and relationship write (create, update, delete, ITIL
@@ -135,10 +136,10 @@ pending/failed for the caller's organization they answer 409 `CI is temporarily
 unavailable` with no row or event; an admission lock timeout answers 503.
 
 Per-organization read gate (HAP-850, X-29): `GET /cis`, `POST /cis/search`, the four
-`/search` endpoints and `GET /impact/graph/{rootCiId}` run at most 2 at once per verified
+`/search` endpoints, `GET /impact/graph/{rootCiId}` and `POST /ask` run at most 2 at once per verified
 organization per API process. Others wait FIFO (at most 64, admitted at least 50 ms apart,
 for at most 5 s); overflow or an expired wait gets the route's existing body: 503 `CI list
-temporarily unavailable`, or 429 `Impact analysis rate limit exceeded` on the impact graph.
+temporarily unavailable`, or 429 `Impact analysis rate limit exceeded` on the impact graph and ask.
 A slot is held until the handler's work settles, even after a timed-out response. Writes,
 other reads and GraphQL are not gated, and other organizations never wait.
 Journaled writes (HAP-873): per organization and API process, only one write at a time waits for the

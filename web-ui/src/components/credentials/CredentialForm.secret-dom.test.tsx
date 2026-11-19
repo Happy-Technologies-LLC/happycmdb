@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render } from '@testing-library/react';
 import { domLeaks, secretMarker } from '@/tests/utils/secretDom';
 
 vi.mock('@/contexts/ToastContext', () => ({ useToast: () => ({ showToast: vi.fn() }) }));
-vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null, Eyebrow: () => null }));
+vi.mock('@happy-technologies/design-system', async (importActual) => ({ ...(await importActual<object>()), Icon: () => null }));
 
 import { CredentialForm } from './CredentialForm';
 

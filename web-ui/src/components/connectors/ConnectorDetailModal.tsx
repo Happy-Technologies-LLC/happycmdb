@@ -27,6 +27,7 @@ import {
 } from '@happy-technologies/design-system';
 import { ConnectorRegistry } from '@/services/connector.service';
 import { getConnectorIcon, getCategoryLabel } from '@/lib/connector-icons';
+import { safeExternalUrl } from '@/lib/safe-external-url';
 import { categoryTileClass } from './ConnectorCard';
 import { format } from 'date-fns';
 
@@ -65,6 +66,10 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
   const displayCategory =
     (connector.metadata as any)?.connector_category ||
     connector.connectorType.toLowerCase();
+
+  // Manifest links are third-party data: only http(s) values become links.
+  const homepageUrl = safeExternalUrl(connector.homepage);
+  const repositoryUrl = safeExternalUrl(connector.repository);
 
   return (
     <Dialog
@@ -165,10 +170,10 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                     Links
                   </h4>
                   <div className="flex flex-col items-start gap-2">
-                    {connector.homepage && (
+                    {homepageUrl && (
                       <a
                         className={LINK}
-                        href={connector.homepage}
+                        href={homepageUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                       >
@@ -176,10 +181,10 @@ export const ConnectorDetailModal: React.FC<ConnectorDetailModalProps> = ({
                         Homepage
                       </a>
                     )}
-                    {connector.repository && (
+                    {repositoryUrl && (
                       <a
                         className={LINK}
-                        href={connector.repository}
+                        href={repositoryUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                       >

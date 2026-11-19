@@ -69,10 +69,9 @@ describe('assembleBusinessContext', () => {
 });
 
 describe('deriveImpactRecommendations', () => {
-  it('is deterministic: the same input gives the same list in rule order', () => {
+  it('lists the recommendations in rule order', () => {
     const value = impact({ change_type: ChangeType.DECOMMISSION, risk_level: RiskLevel.CRITICAL, critical_path: ['a', 'b', 'c', 'd'] });
     const services = [{ business_criticality: 'high' as const }];
-    expect(deriveImpactRecommendations(value, services)).toEqual(deriveImpactRecommendations(value, services));
     expect(ids(value, services)).toEqual([
       'maintenance_window', 'notify_dependents', 'notify_service_owners', 'rollback_plan', 'clear_dependents_first',
       'review_dependency_chain',

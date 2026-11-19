@@ -410,6 +410,7 @@ Authorization: Bearer YOUR_ACCESS_TOKEN
     "name": "Alice",
     "avatar": "data:image/png;base64,...",
     "role": "operator",
+    "permissions": ["read", "write", "discover"],
     "createdAt": "2025-01-01T00:00:00Z",
     "lastLoginAt": "2025-11-15T10:00:00Z",
     "platformAdmin": false,
@@ -418,7 +419,7 @@ Authorization: Bearer YOUR_ACCESS_TOKEN
 }
 ```
 
-`platformAdmin` is the effective platform-administrator status the server enforces (the stored flag, never true for a seeded account). `organizationId` is the caller's organization, `null` for a user without one. Both come from the stored user, not from the request or token claims; the UI displays them and never decides access from them.
+`permissions` is the server role table's grant for `role` (empty for a stored role the table does not know); it is for display, the server still checks every request. `platformAdmin` is the effective platform-administrator status the server enforces (the stored flag, never true for a seeded account). `organizationId` is the caller's organization, `null` for a user without one. Both come from the stored user, not from the request or token claims; the UI displays them and never decides access from them.
 
 **Error Responses**:
 - `401 Unauthorized` - Missing or invalid access token
@@ -632,35 +633,46 @@ response = requests.get('http://localhost:3000/api/v1/cis', headers=headers)
 
 ## Role-Based Access Control (RBAC)
 
-HappyCMDB uses role-based access control to manage permissions.
+The server has four roles and four permissions (`packages/api-server/src/auth/types.ts`). Every route is checked on the server against the user's current stored role; a viewer who is shown a write control is still refused.
 
-### Roles
+### Roles and permissions
 
 | Role | Permissions | Use Case |
 |------|-------------|----------|
-| **viewer** | Read-only access to CIs, dashboards, and reports | Auditors, business stakeholders |
-| **operator** | Read + discovery operations + CI updates | DevOps engineers, operators |
-| **admin** | Full access including user management | IT administrators |
-| **service** | Service-to-service communication | Internal microservices |
+| **admin** | `read`, `write`, `discover`, `admin` | IT administrators |
+| **operator** | `read`, `write`, `discover` | DevOps engineers, operators |
+| **viewer** | `read` | Auditors, business stakeholders |
+| **agent** | `discover`, `write` | Discovery agents (API key) |
 
-### Permissions
+`GET /api/v1/auth/me` returns the caller's `role` and the `permissions` the table above grants it.
 
-Permissions follow the format: `resource:action`
+### The 403 body
 
-**Example Permissions**:
-- `ci:read` - View CIs
-- `ci:write` - Create/update CIs
-- `ci:delete` - Delete CIs
-- `discovery:manage` - Manage discovery definitions
-- `credentials:manage` - Manage credentials
-- `users:manage` - Manage users (admin only)
-- `admin:*` - Wildcard admin access
+Every refusal by a permission, role, organization, JWT-session, platform-administrator or scope guard has one shape. It keeps both key families the server has always sent (`_error`/`_message` and `success`/`error`/`message`) and adds a stable `code`:
 
-### Permission Inheritance
+```json
+{
+  "success": false,
+  "error": "Forbidden",
+  "message": "Permission 'write' required",
+  "_error": "Forbidden",
+  "_message": "Permission 'write' required",
+  "code": "PERMISSION_REQUIRED",
+  "required": { "permission": "write" },
+  "role": "viewer"
+}
+```
 
-- **viewer**: `ci:read`, `dashboard:read`, `report:read`
-- **operator**: All viewer permissions + `ci:write`, `discovery:manage`, `credentials:read`
-- **admin**: All permissions (`*:*`)
+| `code` | Refused because | Extra keys |
+|--------|-----------------|------------|
+| `PERMISSION_REQUIRED` | the role lacks the route's permission | `required.permission`, `role` |
+| `ROLE_REQUIRED` | the route is limited to named roles | `required.roles`, `role` |
+| `ORGANIZATION_REQUIRED` | the user or token has no organization claim | none |
+| `JWT_SESSION_REQUIRED` | an API key called an account operation | none |
+| `PLATFORM_ADMIN_REQUIRED` | the user is not the dedicated platform administrator | none |
+| `SCOPE_REQUIRED` | the user lacks a dedicated scope | `required.scope` |
+
+`role` is the caller's own role and `required` the route's fixed requirement. Other 403s (an unavailable global operation, a queue the server will not mutate, the refresh-cookie header check) keep their own bodies. A missing or invalid credential is `401`, never this body.
 
 ---
 

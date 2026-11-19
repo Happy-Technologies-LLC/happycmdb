@@ -314,7 +314,7 @@ describe('seed-tenant-fixture against the integration harness', () => {
 
     const forbidden = await request(app).get(`/api/v1/business-services/${SERVICE}`).set(asNoOrg);
     expect(forbidden.status).toBe(403);
-    expect(forbidden.body).toEqual({ _error: 'Forbidden', _message: 'Organization claim required' });
+    expect(forbidden.body).toMatchObject({ _error: 'Forbidden', _message: 'Organization claim required', code: 'ORGANIZATION_REQUIRED' });
   });
 
   it('refuses to take over an existing same-organization user it did not create, leaving it untouched', async () => {

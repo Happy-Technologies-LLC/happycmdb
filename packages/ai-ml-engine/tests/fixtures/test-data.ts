@@ -240,6 +240,7 @@ export const mockAffectedCIs: AffectedCI[] = [
     hop_count: 1,
     impact_probability: 90,
     estimated_impact: 'Direct dependency - immediate impact expected',
+    direction: 'downstream',
   },
   {
     ci_id: 'ci-lb-001',
@@ -250,6 +251,7 @@ export const mockAffectedCIs: AffectedCI[] = [
     hop_count: 2,
     impact_probability: 70,
     estimated_impact: 'Indirect impact through 1 intermediary',
+    direction: 'downstream',
   },
   {
     ci_id: 'ci-app-001',
@@ -260,6 +262,7 @@ export const mockAffectedCIs: AffectedCI[] = [
     hop_count: 3,
     impact_probability: 50,
     estimated_impact: 'Indirect impact through 2 intermediaries',
+    direction: 'downstream',
   },
 ];
 

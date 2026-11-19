@@ -13,11 +13,12 @@ import {
   OrganizationChangedError, OrganizationRequiredError, PasswordNotAllowedError, type ApiKeyRevocation,
   type CredentialAuditOperation, type PasswordChangeOutcome, type UserProfile,
 } from '../auth/auth.service';
-import { UserNotFoundError } from '../auth/types';
+import { ROLE_PERMISSIONS, UserNotFoundError } from '../auth/types';
 import { ValidationMiddleware } from './middleware/validation.middleware';
 import { clearRefreshCookie, hasAuthHeader, readRefreshCookie, requireAuthHeader, setRefreshCookie } from './middleware/refresh-cookie';
 import { authSchemas } from '../validation/schemas';
 import { AuthMiddleware, AuthenticatedRequest, logAuthFailure, optionalRequestOrganizationId } from '../middleware/auth.middleware';
+import { sendForbidden } from '../middleware/forbidden-response';
 import { RateLimitMiddleware, type Refusal, type RefusalBucket } from '../middleware/rate-limit.middleware';
 
 const AUTHENTICATION_FAILURE = { success: false, error: 'Authentication failed' };
@@ -35,10 +36,8 @@ const SESSION_REVOKE_UNAVAILABLE = { success: false, error: 'Service Unavailable
 function refuseOrganizationRequired(res: Response, userId: string, operation: CredentialAuditOperation = 'password_change'): void {
   const action = operation === 'password_change' ? 'Password change' : 'Session revoke';
   logger.warn(`${action} refused: the user has no usable organization`, { userId });
-  res.status(403).json({
-    success: false, error: 'Forbidden',
-    message: operation === 'password_change' ? 'Organization required to change password' : 'Organization required to revoke sessions',
-  });
+  sendForbidden(res, 'ORGANIZATION_REQUIRED',
+    operation === 'password_change' ? 'Organization required to change password' : 'Organization required to revoke sessions');
 }
 
 /**
@@ -437,6 +436,8 @@ export class AuthController {
       name: user._name || user._username,
       avatar: user._avatar,
       role: user._role,
+      // HAP-1930 (BW16): what the server's role table grants this role, so a client need not mirror the table.
+      permissions: [...(ROLE_PERMISSIONS[user._role] ?? [])],
       createdAt: user._createdAt,
       lastLoginAt: user.lastLoginAt,
       platformAdmin: user.platformAdmin,

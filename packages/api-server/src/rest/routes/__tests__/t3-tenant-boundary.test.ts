@@ -9,6 +9,7 @@ import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
 import { CIAnalyticsLimitError, MAX_CI_ANALYTICS_NODES } from '@cmdb/common';
+import { impactBusinessTablesSql } from './fixtures/app-login';
 
 Object.assign(process.env, {
   JWT_SECRET: randomBytes(32).toString('hex'),
@@ -267,6 +268,7 @@ beforeAll(async () => {
     ${table('baseline_snapshots')} ${table('drift_detection_results')}
     ${table('impact_analyses')} ${table('ci_criticality_scores')}`);
   await db.exec(readFileSync(join(migrations, '011_ci_organization_scope.sql'), 'utf8'));
+  await db.exec(impactBusinessTablesSql()); // HAP-1927: the business-service tables the impact reads join
   await db.exec(readFileSync(join(migrations, '025_ci_derived_incarnation.sql'), 'utf8'));
   // 030's org columns and keys with 036's primary-key swap: the criticality upsert's conflict target.
   await db.exec(`ALTER TABLE ci_criticality_scores DROP CONSTRAINT ci_criticality_scores_pkey;

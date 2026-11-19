@@ -622,22 +622,23 @@ export class AnalyticsController {
         };
       });
 
-      // BW5/BW6: definitions live in services/estate-kpi.service.ts. A figure that cannot be computed is null and named
-      // in `unavailable`; it never fails the dashboard and is never a placeholder 0.
-      const estateKpis = await readEstateKpis(session, this.postgresClient, organizationId);
+      // BW1/BW4/BW5/BW6: definitions live in services/estate-kpi.service.ts. A figure that cannot be computed is null
+      // and named in `unavailable`; it never fails the dashboard and is never a placeholder 0.
+      const totalCis = ciCountsResult.records[0]?.get('total_cis')?.toNumber() || 0;
+      const estateKpis = await readEstateKpis(session, this.postgresClient, organizationId, totalCis);
 
       res.json({
-        total_cis: ciCountsResult.records[0]?.get('total_cis')?.toNumber() || 0,
+        total_cis: totalCis,
         by_type: byTypeMap,
         by_status: byStatusMap,
         by_environment: byEnvironmentMap,
         recent_discoveries: recentDiscoveries,
-        // null = unavailable: no CI health state exists yet (BW1), and 0 would read as "everything is down".
-        health_score: null,
+        health_score: estateKpis.health_score,
+        ci_health: estateKpis.ci_health,
         critical_relationships: criticalRelationshipResult.records[0]?.get('critical_relationships')?.toNumber() || 0,
         open_drift_count: estateKpis.open_drift_count,
         configuration_coverage: estateKpis.configuration_coverage,
-        unavailable: ['health_score', ...estateKpis.unavailable],
+        unavailable: estateKpis.unavailable,
       });
     } catch (error) {
       logger.error('Error getting dashboard stats', error);

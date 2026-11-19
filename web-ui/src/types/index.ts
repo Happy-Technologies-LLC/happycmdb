@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import type { ServerRole } from '@/lib/permissions';
+import type { Permission, ServerRole } from '@/lib/permissions';
 
 // CI Types
 export type CIType =
@@ -86,6 +86,8 @@ export interface User {
   full_name: string;
   avatar?: string;
   role: ServerRole; // the server's UserRole (packages/api-server/src/auth/types.ts), see lib/permissions.ts
+  /** What the server's role table grants `role` (GET /auth/me); empty when an older server omits it. Display only, never a gate. */
+  permissions: Permission[];
   created_at: string;
   last_login?: string;
   /** Effective platform-administrator status as the server decided it (GET /auth/me); display only, never a gate. */
@@ -176,7 +178,7 @@ export interface DashboardStats {
   cis_by_status: Record<CIStatus, number>;
   cis_by_environment: Record<Environment, number>;
   recent_discoveries: number;
-  /** null: unavailable (no CI health state yet, BW1). */
+  /** Percentage of CIs with health `healthy` (BW1/BW4); null: unavailable. */
   health_score: number | null;
 }
 
@@ -308,6 +310,32 @@ export interface ImpactAnalysis {
   analyzed_at: string;
   estimated_downtime_minutes?: number;
   affected_cis: AffectedCI[];
+  /** HAP-1927 BW11/BW12: present on POST /impact/predict only (not on history rows). See the OpenAPI schema. */
+  affected_business_services?: AffectedBusinessService[];
+  /** annual revenue / 8760 summed over the affected services that have revenue; null (listed in `unavailable`) when none does. */
+  cost_per_hour?: number | null;
+  /** How many affected services contributed to `cost_per_hour`; a lower bound when fewer than `affected_business_services.length`. */
+  cost_per_hour_services_priced?: number;
+  /** Rule-based, deterministic recommendations (no LLM). */
+  recommendations?: ImpactRecommendation[];
+  /** Fields that have no backing data on this response. */
+  unavailable?: string[];
+}
+
+export interface AffectedBusinessService {
+  service_id: string;
+  name: string;
+  business_criticality: 'critical' | 'high' | 'medium' | 'low';
+  lifecycle: string;
+  users: number | null;
+  annual_revenue: number | null;
+  cost_per_hour: number | null;
+  affected_ci_ids: string[];
+}
+
+export interface ImpactRecommendation {
+  id: string;
+  message: string;
 }
 
 export interface AffectedCI {
@@ -319,6 +347,8 @@ export interface AffectedCI {
   hop_count: number;
   impact_probability: number;
   estimated_impact: string;
+  /** Absent on records stored before HAP-1927. The prediction walks dependents only, so it is `downstream`. */
+  direction?: 'upstream' | 'downstream';
 }
 
 export interface DriftDetectionResult {

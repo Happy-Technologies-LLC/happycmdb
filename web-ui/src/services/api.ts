@@ -5,6 +5,7 @@ import axios, { AxiosError, AxiosInstance, AxiosRequestConfig, AxiosResponse } f
 import type { AuthToken, LoginCredentials, User } from '../types';
 import { AUTH_HEADER, attachSession, endSession, refreshSession } from '../lib/session';
 import { setToken } from '../utils/token';
+import { isPermission } from '../lib/permissions';
 
 export interface UpdateProfileData {
   name?: string;
@@ -33,6 +34,7 @@ interface RawUserPayload {
   _lastLoginAt?: string;
   platformAdmin?: boolean;
   organizationId?: string | null;
+  permissions?: unknown;
 }
 
 // Create axios instance
@@ -89,6 +91,7 @@ class ApiService {
       // Server-decided; an older server omits both, which reads as no platform authority and no tenant.
       platform_admin: userData.platformAdmin === true,
       organization_id: userData.organizationId ?? null,
+      permissions: Array.isArray(userData.permissions) ? userData.permissions.filter(isPermission) : [],
     };
   }
 

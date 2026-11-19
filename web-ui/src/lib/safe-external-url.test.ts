@@ -4,16 +4,31 @@
 import { describe, expect, it } from 'vitest';
 import { safeExternalUrl } from './safe-external-url';
 
-describe('safeExternalUrl', () => {
-  it.each(['https://example.test/x', 'http://example.test', 'HTTPS://example.test'])(
-    'returns the original string for %s',
-    (value) => {
-      expect(safeExternalUrl(value)).toBe(value);
-    },
-  );
+// input -> the exact string handed to href and window.open
+const ACCEPTED: Array<[string, string]> = [
+  ['https://example.test/x', 'https://example.test/x'],
+  ['http://example.test', 'http://example.test/'],
+  ['HTTPS://example.test', 'https://example.test/'],
+  ['  https://Example.test  ', 'https://example.test/'],
+  ['https://user:pw@host/', 'https://user:pw@host/'],
+  // No `//` after the scheme: a browser would resolve the raw string against the page, so only the href is returned.
+  ['https:/api/v1/x', 'https://api/v1/x'],
+  ['https:evil.test', 'https://evil.test/'],
+  ['HTTP:/x', 'http://x/'],
+  ['https:\\evil.test', 'https://evil.test/'],
+  ['https:\\\\evil.test', 'https://evil.test/'],
+];
 
-  it('returns the trimmed original, not the normalised URL', () => {
-    expect(safeExternalUrl('  https://Example.test  ')).toBe('https://Example.test');
+describe('safeExternalUrl', () => {
+  it.each(ACCEPTED)('returns the validated URL for %j', (value, expected) => {
+    expect(safeExternalUrl(value)).toBe(expected);
+  });
+
+  it.each(ACCEPTED)('returns a string that re-resolves to itself on an https and an http page for %j', (value) => {
+    const result = safeExternalUrl(value);
+    expect(result).not.toBeNull();
+    expect(new URL(result as string, 'https://cmdb.example/').href).toBe(result);
+    expect(new URL(result as string, 'http://cmdb.example/').href).toBe(result);
   });
 
   it.each([
@@ -26,6 +41,8 @@ describe('safeExternalUrl', () => {
     'vbscript:x',
     'file:///etc/passwd',
     'mailto:a@example.test',
+    'blob:https://example.test/x',
+    'blob:null/x',
     '//example.test',
     '/relative',
     'example.test',

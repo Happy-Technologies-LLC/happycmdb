@@ -77,6 +77,12 @@ describe('connector detail modal', () => {
     expect(view.getByRole('link', { name: 'Repository' })).toHaveAttribute('href', 'https://example.test/servicenow.git');
   });
 
+  it('renders the validated absolute URL, not a page-relative one, for a homepage without slashes after the scheme', async () => {
+    const { dialog } = await openModal(undefined, { ...CONNECTOR, homepage: 'https:/api/v1/x' } as ConnectorRegistry);
+
+    expect(within(dialog).getByRole('link', { name: 'Homepage' })).toHaveAttribute('href', 'https://api/v1/x');
+  });
+
   it('renders no repository link for an unsafe repository and keeps the safe homepage link', async () => {
     const { dialog } = await openModal(undefined, { ...CONNECTOR, repository: 'data:text/html,x' } as ConnectorRegistry);
     const view = within(dialog);

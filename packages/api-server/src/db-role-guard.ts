@@ -27,10 +27,9 @@ export interface DbRoleRow {
   session_authorization_masked: boolean;
   /**
    * current_user or session_user is a member of pg_execute_server_program, pg_write_server_files,
-   * pg_read_server_files or pg_write_all_data (those that exist on this server): the first three reach the database
-   * host (programs, files); pg_write_all_data skips the table grant checks for writes on every table, which voids
-   * the login's least-privilege grants. It does not bypass RLS. pg_read_all_data is not flagged: read-only, and it
-   * does not bypass RLS either.
+   * pg_read_server_files, pg_read_all_data or pg_write_all_data (those that exist on this server): the first three
+   * reach the database host (programs, files); pg_read_all_data and pg_write_all_data skip the table grant checks
+   * for reads and writes on every table, which voids the login's least-privilege grants. Neither bypasses RLS.
    */
   dangerous_builtin_role_member: boolean;
   /**
@@ -38,6 +37,11 @@ export interface DbRoleRow {
    * holds or can SET ROLE to a role that can grant itself any role. Always false on 16+.
    */
   createrole_escalation: boolean;
+  /**
+   * current_user or session_user is a member (itself included) of a role with REPLICATION, so it holds or can SET
+   * ROLE to a role that streams every row through a replication slot or a base backup without grants or RLS.
+   */
+  replication_escalation: boolean;
 }
 
 export interface DbRolePool {
@@ -56,19 +60,21 @@ export function requireNonSuperuser(env: NodeJS.ProcessEnv = process.env): boole
 
 type GuardFlags = Pick<DbRoleRow,
   'rolsuper' | 'rolbypassrls' | 'session_user_privileged' | 'can_set_privileged_role' |
-  'session_authorization_masked' | 'dangerous_builtin_role_member' | 'createrole_escalation'>;
+  'session_authorization_masked' | 'dangerous_builtin_role_member' | 'createrole_escalation' |
+  'replication_escalation'>;
 
 /** Every flag of the row, in the order the log and refusal text list them. */
 const FLAG_NAMES: ReadonlyArray<keyof GuardFlags> = [
   'rolsuper', 'rolbypassrls', 'session_user_privileged', 'can_set_privileged_role',
   'session_authorization_masked', 'dangerous_builtin_role_member', 'createrole_escalation',
+  'replication_escalation',
 ];
 
 /**
  * A superuser ignores row level security and every grant check; a role with BYPASSRLS ignores RLS policies only
  * (grants still apply). Either is flagged, on the current role, on the session login, and through membership that
- * allows SET ROLE. A masked session login, membership of a dangerous built-in role, and CREATEROLE below
- * PostgreSQL 16 are flagged too. Anything other than an explicit false counts as a violation.
+ * allows SET ROLE. A masked session login, membership of a dangerous built-in role, CREATEROLE below
+ * PostgreSQL 16 and REPLICATION are flagged too. Anything other than an explicit false counts as a violation.
  */
 export function bypassesRowSecurity(row: GuardFlags): boolean {
   return FLAG_NAMES.some(name => row[name] !== false);
@@ -91,8 +97,11 @@ export function bypassesRowSecurity(row: GuardFlags): boolean {
  *   but a member can SET ROLE to the holder (pg_has_role on a role's own oid is true), so any CREATEROLE role that
  *   current_user or session_user is a member of is flagged. On 16+ CREATEROLE alone only grants roles the creator
  *   holds with ADMIN OPTION, so it is not flagged there.
- * - The four built-in roles are looked up by name in pg_roles, so a server that lacks one (pg_write_all_data is 14+)
- *   simply does not match it.
+ * - The five built-in roles are looked up by name in pg_roles, so a server that lacks one (pg_write_all_data and
+ *   pg_read_all_data are 14+) simply does not match it.
+ * - replication_escalation: REPLICATION is not inherited either, but a member can SET ROLE to the holder, so any
+ *   REPLICATION role that current_user or session_user is a member of is flagged (a superuser has the attribute
+ *   too, already flagged).
  */
 function probeSql(serverVersionNum: number): string {
   const hasSystemUser = serverVersionNum >= SYSTEM_USER_MIN_VERSION;
@@ -113,9 +122,11 @@ function probeSql(serverVersionNum: number): string {
     "AND (pg_has_role(current_user, r.oid, 'MEMBER') OR pg_has_role(session_user, r.oid, 'MEMBER'))) AS can_set_privileged_role, " +
     `(${masked}) AS session_authorization_masked, ` +
     "EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname IN ('pg_execute_server_program', 'pg_write_server_files', " +
-    "'pg_read_server_files', 'pg_write_all_data') " +
+    "'pg_read_server_files', 'pg_read_all_data', 'pg_write_all_data') " +
     "AND (pg_has_role(current_user, r.oid, 'MEMBER') OR pg_has_role(session_user, r.oid, 'MEMBER'))) AS dangerous_builtin_role_member, " +
-    `${createrole} AS createrole_escalation ` +
+    `${createrole} AS createrole_escalation, ` +
+    "EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolreplication " +
+    "AND (pg_has_role(current_user, r.oid, 'MEMBER') OR pg_has_role(session_user, r.oid, 'MEMBER'))) AS replication_escalation " +
     'FROM pg_roles WHERE rolname IN (current_user, session_user) ' +
     'HAVING bool_or(rolname = current_user)'
   );
@@ -185,10 +196,11 @@ export async function checkDbRole(pool: DbRolePool, env: NodeJS.ProcessEnv = pro
     session_authorization_masked: row.session_authorization_masked,
     dangerous_builtin_role_member: row.dangerous_builtin_role_member,
     createrole_escalation: row.createrole_escalation,
+    replication_escalation: row.replication_escalation,
   };
   if (!bypassesRowSecurity(row)) {
     logger.info(
-      'PostgreSQL login role is NOSUPERUSER and NOBYPASSRLS, cannot SET ROLE to a role that is, and holds no escalation-capable membership or CREATEROLE', flags);
+      'PostgreSQL login role is NOSUPERUSER and NOBYPASSRLS, cannot SET ROLE to a role that is, and holds no escalation-capable membership, CREATEROLE or REPLICATION', flags);
     return;
   }
   const detail = FLAG_NAMES.map(name => `${name}=${row[name]}`).join(', ');
@@ -196,8 +208,9 @@ export async function checkDbRole(pool: DbRolePool, env: NodeJS.ProcessEnv = pro
     'a superuser (ignores row level security and grants), a BYPASSRLS role (ignores row level security policies), ' +
     'a session login that is one (session_user_privileged), a role it can SET ROLE to that is one (can_set_privileged_role), ' +
     'a session login masked by SET SESSION AUTHORIZATION (session_authorization_masked), ' +
-    'a member of pg_execute_server_program, pg_write_server_files, pg_read_server_files or pg_write_all_data (dangerous_builtin_role_member), ' +
-    'or a member of a CREATEROLE role on PostgreSQL 15 or older, which can grant itself any role (createrole_escalation)';
+    'a member of pg_execute_server_program, pg_write_server_files, pg_read_server_files, pg_read_all_data or pg_write_all_data (dangerous_builtin_role_member), ' +
+    'a member of a CREATEROLE role on PostgreSQL 15 or older, which can grant itself any role (createrole_escalation), ' +
+    'or a member of a REPLICATION role, which can stream every row (replication_escalation)';
   if (enforce) {
     throw new Error(
       `REQUIRE_NON_SUPERUSER_DB=true: PostgreSQL login role "${row.current_user}" (session login "${row.session_user}"; ${detail}) ` +

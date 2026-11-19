@@ -23,8 +23,12 @@ import { usePermission } from '@/hooks/usePermission';
 import { RequirePermission } from '@/components/common/RequirePermission';
 import { CI, CreateCIRequest, UpdateCIRequest } from '../services/ci.service';
 
-/** The create and edit form is wider than the dialog default and scrolls inside the viewport. */
-const FORM_DIALOG = 'max-w-2xl max-h-[90vh] overflow-y-auto';
+/**
+ * The create and edit form is wider than the dialog default (max-w-md) and scrolls inside the viewport. Inline,
+ * because the DS joins class names without merging, so a max-w class here would race the default one in the
+ * stylesheet.
+ */
+const FORM_DIALOG: React.CSSProperties = { maxWidth: '42rem', maxHeight: '90vh', overflowY: 'auto' };
 
 type ViewMode = 'list' | 'grid';
 
@@ -173,7 +177,7 @@ export const Inventory: React.FC = () => {
         open={canWrite && createDialogOpen}
         onClose={() => setCreateDialogOpen(false)}
         aria-label="Create Configuration Item"
-        className={FORM_DIALOG}
+        style={FORM_DIALOG}
       >
         <CIForm
           onSubmit={handleCreateSubmit}
@@ -187,7 +191,7 @@ export const Inventory: React.FC = () => {
         open={canWrite && editDialogOpen}
         onClose={() => setEditDialogOpen(false)}
         aria-label="Edit Configuration Item"
-        className={FORM_DIALOG}
+        style={FORM_DIALOG}
       >
         {selectedCI && (
           <CIForm

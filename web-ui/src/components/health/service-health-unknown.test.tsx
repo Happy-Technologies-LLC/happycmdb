@@ -10,7 +10,11 @@ const { get } = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock('axios', () => ({ default: { create: () => ({
   get, interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } },
 }) } }));
-vi.mock('@happy-technologies/design-system', () => ({ Icon: ({ name }: { name: string }) => <span data-icon={name} /> }));
+// Only Icon is stubbed (the assertions read its name); the rest of the design system is the real one.
+vi.mock('@happy-technologies/design-system', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@happy-technologies/design-system')>()),
+  Icon: ({ name }: { name: string }) => <span data-icon={name} />,
+}));
 import { HealthDashboard } from './HealthDashboard';
 import { ServiceHealthDots } from '../layout/ServiceHealthDots';
 

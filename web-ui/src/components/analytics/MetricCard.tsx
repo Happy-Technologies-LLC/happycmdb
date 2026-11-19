@@ -1,17 +1,25 @@
 /**
  * MetricCard Component
- * Reusable card for displaying key metrics with optional trend indicators
+ * Reusable card for displaying key metrics with optional trend indicators, plus the AnalyticsPanel chrome the
+ * analytics charts share (title, export slot, loading / failed / empty states).
  */
 
 import React from 'react';
-import { Card, CardContent } from '@/components/ui/card';
-import { Icon } from '@happy-technologies/design-system';
-import { cn } from '@/lib/utils';
-import { brand } from '@/lib/brandColors';
+import type { KeyboardEvent, ReactNode } from 'react';
+import {
+  Button,
+  Card,
+  EmptyState,
+  MetricCard as DsMetricCard,
+  SectionHeading,
+} from '@happy-technologies/design-system';
+import { classifyError } from '@/lib/estate';
+import { isKnown, NOT_AVAILABLE } from '@/lib/dashboardValue';
 
 export interface MetricCardProps {
   title: string;
-  value: string | number;
+  /** null or undefined means the figure is unavailable: the card says so instead of showing 0. */
+  value: string | number | null | undefined;
   subtitle?: string;
   icon?: string;
   trend?: {
@@ -19,7 +27,6 @@ export interface MetricCardProps {
     direction: 'up' | 'down';
     isPositive?: boolean;
   };
-  color?: string;
   onPress?: () => void;
   loading?: boolean;
 }
@@ -30,77 +37,117 @@ export const MetricCard: React.FC<MetricCardProps> = ({
   subtitle,
   icon,
   trend,
-  color = brand.sky,
   onPress,
   loading = false,
 }) => {
-  const getTrendColor = () => {
-    if (!trend) return undefined;
-    if (trend.isPositive !== undefined) {
-      return trend.isPositive ? brand.success : brand.danger;
-    }
-    return trend.direction === 'up' ? brand.success : brand.danger;
-  };
+  let shown: string;
+  if (typeof value === 'number') shown = isKnown(value) ? value.toLocaleString() : NOT_AVAILABLE;
+  else shown = value ?? NOT_AVAILABLE;
 
-  const trendIconName = trend?.direction === 'up' ? 'trend-up' : 'trend-down';
+  const good = trend ? (trend.isPositive ?? trend.direction === 'up') : false;
+  const pressProps = onPress
+    ? {
+        role: 'button' as const,
+        tabIndex: 0,
+        onClick: onPress,
+        onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
+          if (event.target !== event.currentTarget) return;
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onPress();
+          }
+        },
+      }
+    : {};
 
   return (
-    <Card
-      className={cn(
-        'h-full',
-        onPress && 'cursor-pointer transition-all hover:shadow-lg hover:-translate-y-0.5'
-      )}
-      onClick={onPress}
-    >
-      <CardContent className="p-6">
-        <div className="flex justify-between items-center mb-3">
-          <p className="text-sm text-muted-foreground font-medium">
-            {title}
-          </p>
-          {icon && (
-            <div className="w-8 h-8 flex items-center justify-center">
-              <Icon name={icon} size={24} />
-            </div>
-          )}
-        </div>
+    <DsMetricCard
+      {...pressProps}
+      className="h-full"
+      icon={icon}
+      label={title}
+      value={shown}
+      sub={subtitle}
+      loading={loading}
+      annotation={
+        trend
+          ? {
+              text: `${Math.abs(trend.value).toFixed(1)}%`,
+              tone: good ? 'success' : 'danger',
+              icon: trend.direction === 'up' ? 'trend-up' : 'trend-down',
+            }
+          : undefined
+      }
+    />
+  );
+};
 
-        {loading ? (
-          <div className="flex justify-center items-center h-20">
-            <Icon name="spinner-gap" size={24} className="animate-spin text-primary" />
-          </div>
-        ) : (
-          <>
-            <h4 className="text-3xl font-bold mb-2" style={{ color }}>
-              {typeof value === 'number' ? value.toLocaleString() : value}
-            </h4>
+export interface AnalyticsPanelProps {
+  title: string;
+  /** Header actions (an ExportButton). Shown only once the body has data. */
+  actions?: ReactNode;
+  /** Always shown above the body: a date range selector, a CI id field. */
+  toolbar?: ReactNode;
+  loading?: boolean;
+  error?: Error | null;
+  /** Called by the failed state's "Try again". */
+  onRetry?: () => void;
+  /** True when the read succeeded with nothing to show. */
+  empty?: boolean;
+  emptyLabel?: string;
+  /** The body: only called when the read succeeded with data, so it may rely on that data. */
+  children: () => ReactNode;
+}
 
-            {(subtitle || trend) && (
-              <div className="flex justify-between items-center">
-                {subtitle && (
-                  <p className="text-xs text-muted-foreground">
-                    {subtitle}
-                  </p>
-                )}
-                {trend && (
-                  <div className="flex items-center gap-1">
-                    <Icon
-                      name={trendIconName}
-                      size={16}
-                      style={{ color: getTrendColor() }}
-                    />
-                    <span
-                      className="text-xs font-semibold"
-                      style={{ color: getTrendColor() }}
-                    >
-                      {Math.abs(trend.value).toFixed(1)}%
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
-          </>
-        )}
-      </CardContent>
+/**
+ * One analytics panel. A refused read (403) says "Not permitted" and offers no retry; any other failure shows the
+ * error and "Try again". An unavailable panel never shows a chart or a zero.
+ */
+export const AnalyticsPanel: React.FC<AnalyticsPanelProps> = ({
+  title,
+  actions,
+  toolbar,
+  loading = false,
+  error = null,
+  onRetry,
+  empty = false,
+  emptyLabel = 'No data available',
+  children,
+}) => {
+  let body: ReactNode;
+  let ready = false;
+  if (loading) {
+    body = <EmptyState loading label="Loading…" className="min-h-[200px]" />;
+  } else if (error) {
+    const failure = classifyError(error);
+    const forbidden = failure.kind === 'forbidden';
+    body = (
+      <EmptyState
+        tone="danger"
+        icon={forbidden ? 'lock-key' : 'warning-circle'}
+        title="Failed to load data"
+        description={forbidden ? `Not permitted. ${failure.message}` : failure.message}
+        action={
+          !forbidden && onRetry ? (
+            <Button variant="secondary" onClick={onRetry}>
+              Try again
+            </Button>
+          ) : undefined
+        }
+      />
+    );
+  } else if (empty) {
+    body = <EmptyState label={emptyLabel} />;
+  } else {
+    ready = true;
+    body = children();
+  }
+
+  return (
+    <Card as="section" aria-label={title} className="mb-4">
+      <SectionHeading right={ready ? actions : undefined}>{title}</SectionHeading>
+      {toolbar}
+      {body}
     </Card>
   );
 };

@@ -18,11 +18,22 @@
  * reason). Drift is a configuration signal, not a health one. Both stay out of this definition until they can be
  * attributed.
  *
+ * Incidents carry no CI incarnation (`itil_incidents` has no `ci_incarnation_id`), so an open incident follows the CI
+ * id: when a CI is deleted and re-created under the same id in the same organization, the open incident marks the new
+ * incarnation `critical` or `degraded` until it is resolved. The effect stays inside one tenant (every read is scoped by
+ * `organization_id`); it is a known limit of the signal, not something a read can correct.
+ *
  * ## Unavailable, never faked
  * Where the ITIL record tables are absent (V2/V3 schemas), no health signal exists: every figure is `null`, not
  * `healthy`. A read that fails after the tables are known to exist throws for the caller to handle.
+ *
+ * ## Bounded
+ * `withCIHealth` runs the read in one transaction under a PostgreSQL `statement_timeout` (`CI_HEALTH_TIMEOUT_MS`,
+ * default 3000 ms; services/bounded-pg-read.ts). A stalled or locked database therefore fails the read with SQLSTATE
+ * `57014`, and the CI read answers `health: null` instead of waiting on it.
  */
 
+import { boundedPgRead, ciHealthTimeoutMs, type TransactionalSql } from './bounded-pg-read';
 import { itilRecordTablesAvailable } from './itil-record-schema';
 
 export type CIHealthState = 'healthy' | 'degraded' | 'critical';
@@ -65,7 +76,7 @@ export async function readOpenIncidentPriorities(
 
 /**
  * Health state per CI id for the caller's organization; every id asked about is present (`healthy` with no open
- * incident). Null when the health signal is unavailable.
+ * incident). Null when the health signal is unavailable. Unbounded: `withCIHealth` supplies the bound.
  */
 export async function readCIHealth(
   sql: Sql, organizationId: string, ciIds: readonly string[],
@@ -79,15 +90,17 @@ export async function readCIHealth(
 }
 
 /**
- * The CIs with a `health` key: the derived state, or `null` when the signal is unavailable (or the read failed,
- * which must not fail the CI read itself). Every other key is unchanged.
+ * The CIs with a `health` key: the derived state, or `null` when the signal is unavailable (or the read failed or
+ * timed out, which must not fail the CI read itself). Every other key is unchanged. `onError` is called once per
+ * failed read.
  */
 export async function withCIHealth<T extends { id: string }>(
-  sql: Sql, organizationId: string, cis: readonly T[], onError: (error: unknown) => void,
+  pg: TransactionalSql, organizationId: string, cis: readonly T[], onError: (error: unknown) => void,
 ): Promise<Array<T & { health: CIHealthState | null }>> {
   let health: Map<string, CIHealthState> | null = null;
   try {
-    health = await readCIHealth(sql, organizationId, cis.map(ci => ci.id));
+    const ciIds = cis.map(ci => ci.id);
+    health = await boundedPgRead(pg, ciHealthTimeoutMs(), sql => readCIHealth(sql, organizationId, ciIds));
   } catch (error) {
     onError(error);
   }

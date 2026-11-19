@@ -13,6 +13,9 @@ import {
 } from '../../read-admission';
 import { assertCIId, isReservedKey, requestActor, sendJournalError } from '../../journal-http';
 import {
+  boundedPgRead, estateFeedTimeoutMs, ESTATE_FEED_LIMIT_RESPONSE, isStatementTimeout,
+} from '../../services/bounded-pg-read';
+import {
   businessImpactFor, deriveImpact, readMappedServices, readOpenIncidentRibbon,
   RIBBON_DEFAULT_INCIDENTS, RIBBON_MAX_INCIDENTS,
 } from '../../services/incident-business-impact';
@@ -1341,11 +1344,16 @@ export class ITILController {
       return;
     }
     try {
-      const data = await readOpenIncidentRibbon(
-        { query: (text, params) => this.postgresClient.pool.query(text, params) },
-        requestOrganizationId(req), limit);
+      const organizationId = requestOrganizationId(req);
+      const data = await boundedPgRead(this.postgresClient, estateFeedTimeoutMs(),
+        sql => readOpenIncidentRibbon(sql, organizationId, limit));
       res.json({ success: true, data });
     } catch (error) {
+      if (isStatementTimeout(error)) {
+        logger.warn('Open incident ribbon exceeded its statement timeout', error);
+        res.status(503).json(ESTATE_FEED_LIMIT_RESPONSE);
+        return;
+      }
       logger.error('Error getting open incident ribbon', error);
       res.status(500).json({
         success: false,

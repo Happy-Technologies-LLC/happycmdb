@@ -246,9 +246,9 @@ describe('F-051: DiscoverySessionsView loading -> filter by search/status/provid
     await user.click(screen.getByText('db.internal'));
     const modal = await screen.findByRole('dialog');
     expect(within(modal).getByText('sess-a')).toBeInTheDocument();
-    expect(within(modal).getByRole('tab', { name: 'Overview' })).toHaveAttribute('data-state', 'active');
+    expect(within(modal).getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
     await user.click(within(modal).getByRole('tab', { name: 'Tool Calls' }));
-    expect(within(modal).getByRole('tab', { name: 'Tool Calls' })).toHaveAttribute('data-state', 'active');
+    expect(within(modal).getByRole('tab', { name: 'Tool Calls' })).toHaveAttribute('aria-selected', 'true');
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
 
@@ -360,12 +360,12 @@ describe('F-052: PatternLibrary filter reset, state-gated actions, delete confir
 
     await user.click(screen.getByText('Detail Modal Pattern'));
     const modal = await screen.findByRole('dialog');
-    expect(within(modal).getByRole('tab', { name: 'Info' })).toHaveAttribute('data-state', 'active');
+    expect(within(modal).getByRole('tab', { name: 'Info' })).toHaveAttribute('aria-selected', 'true');
     expect(within(modal).getByRole('tab', { name: 'Detection' })).toBeInTheDocument();
     expect(within(modal).getByRole('tab', { name: 'Discovery' })).toBeInTheDocument();
     expect(within(modal).getByRole('tab', { name: 'Tests' })).toBeInTheDocument();
     await user.click(within(modal).getByRole('tab', { name: 'Detection' }));
-    expect(within(modal).getByRole('tab', { name: 'Detection' })).toHaveAttribute('data-state', 'active');
+    expect(within(modal).getByRole('tab', { name: 'Detection' })).toHaveAttribute('aria-selected', 'true');
   });
 });
 

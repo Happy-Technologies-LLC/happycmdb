@@ -645,6 +645,57 @@ describe('ImpactPredictionEngine', () => {
       expect(session.run).toHaveBeenCalledTimes(1);
       expect(session.run.mock.calls[0][1]).toMatchObject({ ciId: mockCIs.database.id, organizationId: 'org-b' });
     });
+
+    // The route test mocks the engine, so only this test fails if a traversal node pattern loses its tenant predicate.
+    describe('organization predicate of the dependent traversal', () => {
+      type Call = { cypher: string; params: Record<string, unknown> };
+      const recordPreview = async (organizationId: string): Promise<Call[]> => {
+        const calls: Call[] = [];
+        const session = createMockNeo4jSession([]);
+        session.run.mockImplementation(async (cypher: string, params: Record<string, unknown>) => {
+          calls.push({ cypher, params });
+          // The root lookup and the criticality read need a row; every traversal frontier stays empty.
+          const records = /RETURN ci\.id as id/.test(cypher)
+            ? [createMockNeo4jRecord({ id: mockCIs.database.id, name: mockCIs.database.name, ci_type: mockCIs.database.ci_type })]
+            : /RETURN ci\.id as ci_id/.test(cypher)
+              ? [createMockNeo4jRecord({
+                ci_id: mockCIs.database.id, ci_name: mockCIs.database.name,
+                dependent_count: { toNumber: () => 0 }, dependency_count: { toNumber: () => 0 }, dependent_ids: [],
+              })]
+              : [];
+          return { records };
+        });
+        mockNeo4jClient.getSession.mockReturnValue(session);
+        await engine.previewChangeImpact(mockCIs.database.id, ChangeType.FAILOVER, organizationId);
+        return calls;
+      };
+      const ciNodePatterns = (cypher: string) => cypher.match(/\(\s*\w*\s*:CI\b[^)]*\)/g) ?? [];
+      const traversals = (calls: Call[]) => calls.filter(call => /UNWIND \$frontier/.test(call.cypher) && ciNodePatterns(call.cypher).length > 0);
+
+      it('puts organization_id: $organizationId on every CI node pattern of every traversal statement', async () => {
+        const calls = await recordPreview('org-a');
+        const found = traversals(calls);
+        // Affected-CI walk and critical-path walk.
+        expect(found.length).toBeGreaterThanOrEqual(2);
+        for (const { cypher } of found) {
+          const patterns = ciNodePatterns(cypher);
+          const guarded = patterns.filter(pattern => /\borganization_id:\s*\$organizationId\b/.test(pattern));
+          expect(patterns.length).toBeGreaterThanOrEqual(3);
+          expect(guarded).toEqual(patterns);
+        }
+      });
+
+      it('binds the caller\'s organization, and a different organization binds a different value', async () => {
+        const forA = await recordPreview('org-a');
+        const forB = await recordPreview('org-b');
+        for (const [calls, organization] of [[forA, 'org-a'], [forB, 'org-b']] as const) {
+          const mentioning = calls.filter(call => call.cypher.includes('$organizationId'));
+          expect(mentioning.length).toBeGreaterThanOrEqual(traversals(calls).length + 1);
+          for (const call of mentioning) expect(call.params.organizationId).toBe(organization);
+        }
+        expect(forA[0].params.organizationId).not.toBe(forB[0].params.organizationId);
+      });
+    });
   });
 
   describe('change type weight', () => {

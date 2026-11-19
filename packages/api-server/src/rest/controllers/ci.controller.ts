@@ -18,7 +18,8 @@ import {
 import { withNormalizedCIFields } from '../../services/ci-normalized-fields';
 import { withCIHealth } from '../../services/ci-health';
 import { sendTraversalFailure } from './traversal-failure';
-import { impactEnvelope } from '../impact-envelope';
+import { impactEnvelope, impactLineageTimeoutMs } from '../impact-envelope';
+import { loadImpactBusinessContext } from '../../services/impact-business-context';
 import { loadEdgeEvidence, qualifyEdges } from '../edge-evidence';
 
 /**
@@ -568,13 +569,19 @@ export class CIController {
         new Set(allCIs.map((ci: any) => ci.environment).filter(Boolean))
       );
 
+      // HAP-1927 BW11: the services this CI or anything downstream of it is mapped to (upstream CIs are not affected).
+      const businessContext = await loadImpactBusinessContext(
+        organizationId, [id, ...downstreamCIs.map((downstreamCI: any) => downstreamCI.id)],
+        { timeoutMs: impactLineageTimeoutMs() });
+
       // Construct the impact analysis response
       const impactAnalysis = {
         ci: convertNeo4jTypes(ci),
         upstream: upstreamCIs,
         downstream: downstreamCIs,
         impact_score,
-        affected_environments
+        affected_environments,
+        ...businessContext
       };
 
       const envelope = await impactEnvelope(organizationId, [

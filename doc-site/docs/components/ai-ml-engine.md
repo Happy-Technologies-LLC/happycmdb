@@ -586,6 +586,7 @@ Different change types have different risk weights:
 | **VERSION_UPGRADE** | 1.5 | 30 min + (blast_radius × 5 min) |
 | **NETWORK_CHANGE** | 1.3 | Not estimated |
 | **SECURITY_CHANGE** | 1.3 | Not estimated |
+| **FAILOVER** | 1.2 | 15 min + (blast_radius × 3 min), a heuristic from the dependent count, not a measured switchover |
 | **RESTART** | 1.0 | 5 min + (blast_radius × 2 min) |
 | **CONFIGURATION_CHANGE** | 0.8 | Not estimated |
 | **PERFORMANCE_TUNING** | 0.8 | Not estimated |

@@ -573,6 +573,28 @@ describe('ImpactPredictionEngine', () => {
 
       expect(impact.estimated_downtime_minutes).toBeUndefined();
     });
+
+    // HAP-1927 (BW12): failover is a change type with a heuristic downtime estimate and per-record direction.
+    it('estimates FAILOVER downtime and marks every affected CI as a downstream dependent', async () => {
+      const affectedRecords = Array.from({ length: 7 }, (_, i) => ({
+        ci_id: `ci-${i}`, ci_name: `server-${i}`, ci_type: 'server', hop_count: 1,
+        path_ids: [mockCIs.database.id, `ci-${i}`],
+      }));
+      setupPredictImpactMocks({
+        ciData: { id: mockCIs.database.id, name: mockCIs.database.name, ci_type: mockCIs.database.ci_type },
+        affectedRecords,
+        criticalPath: [mockCIs.database.id, 'ci-0'],
+        criticalityScore: 80,
+        ciId: mockCIs.database.id,
+      });
+
+      const impact = await engine.predictChangeImpact(mockCIs.database.id, ChangeType.FAILOVER, 'org-a');
+
+      // FAILOVER formula: 15 + blastRadius * 3
+      expect(impact.estimated_downtime_minutes).toBe(15 + 7 * 3);
+      expect(impact.affected_cis).toHaveLength(7);
+      expect(impact.affected_cis.every(affected => affected.direction === 'downstream')).toBe(true);
+    });
   });
 
   describe('change type weight', () => {

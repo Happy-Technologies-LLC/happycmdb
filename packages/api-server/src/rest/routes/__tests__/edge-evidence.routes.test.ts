@@ -213,7 +213,7 @@ import {
 } from '../../edge-evidence';
 import { MAX_IMPACT_LINEAGE_TIMEOUT_MS } from '../../impact-envelope';
 import {
-  APP_GRANTS_SQL, assertAppLogin, asTableOwner, createLoginRolesSql, journalReadAclSql, lineageReadAclSql,
+  APP_GRANTS_SQL, assertAppLogin, asTableOwner, createLoginRolesSql, impactBusinessTablesSql, journalReadAclSql, lineageReadAclSql,
   migrationSql, receiptTableSql,
 } from './fixtures/app-login';
 
@@ -265,6 +265,7 @@ beforeAll(async () => {
     GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO cmdb_user;
     GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA cmdb TO cmdb_user;
     GRANT USAGE ON ALL SEQUENCES IN SCHEMA public, cmdb TO cmdb_user;`, [], 'exec');
+  await mockSql(impactBusinessTablesSql(), [], 'exec'); // HAP-1927: the business-service tables the impact reads join
   await mockSql(`${APP_GRANTS_SQL}\n${journalReadAclSql()}\n${lineageReadAclSql()}`, [], 'exec');
   await mockSql(receiptTableSql(), [], 'exec');
   await mockSql('RESET ROLE; SET SESSION AUTHORIZATION cmdb_user;', [], 'exec');
@@ -409,7 +410,8 @@ describe.each(ENDPOINTS)('GET /cis/:id/%s', (name, path) => {
         for (const member of res.body.data) expect(Object.keys(member).sort()).toEqual(['end', 'length', 'segments', 'start']);
       } else {
         expect(Object.keys(res.body).sort()).toEqual(['basis', 'coverage', 'data', 'depth', 'edges', 'runtime_blast_radius', 'success', 'totalImpacted']);
-        expect(Object.keys(res.body.data).sort()).toEqual(['affected_environments', 'ci', 'downstream', 'impact_score', 'upstream']);
+        // HAP-1927 added business-service members to data; every pre-change member is still there.
+        expect(Object.keys(res.body.data)).toEqual(expect.arrayContaining(['affected_environments', 'ci', 'downstream', 'impact_score', 'upstream']));
         expect([res.body.data.upstream.length, res.body.data.downstream.length, res.body.totalImpacted]).toEqual([5, 0, 5]);
       }
     });

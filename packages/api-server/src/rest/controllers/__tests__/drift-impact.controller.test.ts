@@ -23,7 +23,11 @@ jest.mock('@cmdb/common', () => ({
 
 jest.mock('@cmdb/database', () => ({
   getNeo4jClient: jest.fn(),
-  getPostgresClient: () => ({ query: async () => ({ rows: [] }) }), // no own-org journal gap
+  getPostgresClient: () => ({
+    query: async () => ({ rows: [] }), // no own-org journal gap
+    transaction: async (work: (client: { query: () => Promise<{ rows: [] }> }) => Promise<unknown>) =>
+      work({ query: async () => ({ rows: [] }) }), // no mapped business services
+  }),
 }));
 
 jest.mock('@cmdb/ai-ml-engine', () => ({

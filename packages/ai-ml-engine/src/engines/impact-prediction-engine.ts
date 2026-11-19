@@ -254,6 +254,8 @@ export class ImpactPredictionEngine {
         hop_count: hops,
         impact_probability: Math.round(this.calculateImpactProbability(hops)),
         estimated_impact: this.estimateImpactDescription(hops),
+        // traverseDependents follows incoming edges only: every record is a dependent of the source.
+        direction: 'downstream' as const,
       };
     });
   }
@@ -642,6 +644,8 @@ export class ImpactPredictionEngine {
       case ChangeType.NETWORK_CHANGE:
       case ChangeType.SECURITY_CHANGE:
         return 1.3;
+      case ChangeType.FAILOVER:
+        return 1.2;
       case ChangeType.RESTART:
         return 1.0;
       case ChangeType.CONFIGURATION_CHANGE:
@@ -691,6 +695,9 @@ export class ImpactPredictionEngine {
         return 30 + blastRadius * 5;
       case ChangeType.DECOMMISSION:
         return blastRadius * 10;
+      case ChangeType.FAILOVER:
+        // HAP-1927 (BW12): heuristic like the others, not a measurement: a fixed 15 minute switchover plus 3 per dependent.
+        return 15 + blastRadius * 3;
       default:
         return undefined;
     }

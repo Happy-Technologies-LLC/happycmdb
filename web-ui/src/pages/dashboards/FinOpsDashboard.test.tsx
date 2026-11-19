@@ -2,12 +2,28 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { AxiosResponse } from 'axios';
-import { render, screen } from '@testing-library/react';
+import axios, { AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { FinOpsDashboard } from './FinOpsDashboard';
+import { ForbiddenHost } from '@/components/layout/ForbiddenHost';
+import { attachSession } from '@/lib/session';
 import { apiClient } from '@/services/api';
 
 vi.mock('@/services/api', () => ({ apiClient: { get: vi.fn() } }));
+
+// The export hook is replaced by spies: the arguments it is called with are the contract.
+const exports = vi.hoisted(() => ({ exportToPDF: vi.fn(), exportToExcel: vi.fn() }));
+vi.mock('@/hooks/useDashboardData', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/useDashboardData')>();
+  return { ...actual, useExportDashboard: () => exports };
+});
+
+beforeEach(() => {
+  vi.mocked(apiClient.get).mockReset();
+  exports.exportToPDF.mockClear();
+  exports.exportToExcel.mockClear();
+});
 
 function servePayload(payload: unknown) {
   vi.mocked(apiClient.get).mockResolvedValue({
@@ -148,4 +164,179 @@ it('still renders real cloud spend, budgets, unit economics and recommendations'
   expect(screen.getByText('Potential savings: $40K')).toBeVisible();
   expect(screen.getByText('Save $400/mo')).toBeVisible();
   expect(screen.queryByText(/Not available yet/)).not.toBeInTheDocument();
+});
+
+// ---------------------------------------------------------------------------
+// Page states, controls and genuine figures.
+// ---------------------------------------------------------------------------
+
+function renderWithShell() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <ForbiddenHost />
+        <FinOpsDashboard />
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+}
+
+/** The real session client (its 403 interceptor reports to ForbiddenHost) answering every read with `status`. */
+function refuseReads(status: number, body: unknown) {
+  const client = axios.create({
+    adapter: async (config: InternalAxiosRequestConfig) => {
+      const response = { data: body, status, statusText: '', headers: {}, config, request: {} };
+      throw new AxiosError(`Request failed with status code ${status}`, 'ERR_BAD_REQUEST', config, {}, response);
+    },
+  });
+  attachSession(client);
+  vi.mocked(apiClient.get).mockImplementation((url, config) => client.get(url, config));
+}
+
+const emptyPayload = {
+  cloudCosts: [],
+  onPremVsCloud: { onPremCost: null, cloudCost: null, totalCost: null, tcoComparison: [] },
+  costByTower: [],
+  budgetVariance: [],
+  unitEconomics: [],
+  costOptimization: { recommendations: [], totalPotentialSavings: null },
+  unavailable: [],
+};
+
+const WRITE_CONTROL = /\b(create|add|new|edit|save|delete|remove|retire|update)\b/i;
+
+describe('page states', () => {
+  it('shows a labelled loading state while the read is in flight, and no figures', async () => {
+    vi.mocked(apiClient.get).mockReturnValue(new Promise(() => undefined));
+    const { container } = renderWithShell();
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Loading FinOps dashboard…');
+    expect(container.textContent).not.toMatch(/NaN|\$0|0%/);
+  });
+
+  it('says so when the server answers with no cost data at all', async () => {
+    servePayload(emptyPayload);
+    const { container } = renderWithShell();
+
+    expect(await screen.findByText('No FinOps data')).toBeVisible();
+    expect(screen.getByRole('heading', { level: 1, name: 'FinOps Dashboard' })).toBeVisible();
+    expect(container.textContent).not.toMatch(/NaN|\$0|0%/);
+  });
+
+  it('shows a visible, retryable error for a failed read, never a blank page or a zero', async () => {
+    vi.mocked(apiClient.get).mockRejectedValueOnce(new Error('upstream exploded'));
+    const { container } = renderWithShell();
+
+    expect(await screen.findByText('Could not load FinOps dashboard')).toBeVisible();
+    expect(screen.getByText('upstream exploded')).toBeVisible();
+    expect(container.textContent).not.toMatch(/NaN|\$0|0%/);
+
+    servePayload({ ...noBackingData });
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('Cloud spend by provider: Not available yet')).toBeVisible();
+    expect(screen.queryByText('Could not load FinOps dashboard')).not.toBeInTheDocument();
+  });
+
+  it('shows its own not-permitted state on a 403 while the shell banner shows the server reason; a viewer is offered no write control', async () => {
+    refuseReads(403, { _error: 'Forbidden', _message: "Permission 'read' required" });
+    renderWithShell();
+
+    expect(await screen.findByText('No access to FinOps dashboard')).toBeVisible();
+    expect(await screen.findByRole('alert')).toHaveTextContent("Access denied. Permission 'read' required");
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+
+    const names = screen.getAllByRole('button').map((button) => button.textContent ?? '');
+    expect(names).toEqual(['Export PDF', 'Export Excel', 'Refresh']);
+    expect(names.filter((name) => WRITE_CONTROL.test(name))).toEqual([]);
+  });
+});
+
+describe('controls', () => {
+  it('refresh sends the query again', async () => {
+    servePayload(noBackingData);
+    renderWithShell();
+    await screen.findByRole('heading', { name: 'FinOps Dashboard' });
+    const before = vi.mocked(apiClient.get).mock.calls.length;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    await waitFor(() => expect(vi.mocked(apiClient.get).mock.calls.length).toBeGreaterThan(before));
+    expect(vi.mocked(apiClient.get).mock.calls.at(-1)?.[0]).toBe('/dashboards/finops?days=90');
+  });
+
+  it('re-queries with the selected range', async () => {
+    servePayload(noBackingData);
+    renderWithShell();
+    await screen.findByRole('heading', { name: 'FinOps Dashboard' });
+    expect(vi.mocked(apiClient.get).mock.calls.at(-1)?.[0]).toBe('/dashboards/finops?days=90');
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Time range' }), { target: { value: '30d' } });
+
+    await waitFor(() => expect(vi.mocked(apiClient.get).mock.calls.at(-1)?.[0]).toBe('/dashboards/finops?days=30'));
+    fireEvent.change(await screen.findByRole('combobox', { name: 'Time range' }), { target: { value: '1y' } });
+    await waitFor(() => expect(vi.mocked(apiClient.get).mock.calls.at(-1)?.[0]).toBe('/dashboards/finops?days=365'));
+  });
+
+  it('exports with the selected range', async () => {
+    servePayload(noBackingData);
+    renderWithShell();
+    await screen.findByRole('heading', { name: 'FinOps Dashboard' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export PDF' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Export Excel' }));
+
+    const args = ['finops', { timeRange: { start: '90d', end: 'now', label: 'Last 90 days' } }];
+    expect(exports.exportToPDF).toHaveBeenCalledWith(...args);
+    expect(exports.exportToExcel).toHaveBeenCalledWith(...args);
+  });
+
+  it('titles the page and its sections with real headings', async () => {
+    servePayload(noBackingData);
+    renderWithShell();
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'FinOps Dashboard' })).toBeVisible();
+    for (const name of [
+      'On-Premise vs Cloud',
+      'TCO Comparison',
+      'Budget Variance by Capability',
+      'Unit Economics',
+      'Cost Optimization Recommendations',
+    ]) {
+      expect(screen.getByRole('heading', { name })).toBeVisible();
+    }
+  });
+});
+
+describe('uncosted and genuinely zero figures', () => {
+  it('renders an uncosted cloud segment as unavailable, not as a zero-width slice labelled 0%', async () => {
+    servePayload({
+      ...noBackingData,
+      onPremVsCloud: { onPremCost: 1000000, cloudCost: null, totalCost: null, tcoComparison: [] },
+      unavailable: ['onPremVsCloud.cloudCost', 'onPremVsCloud.totalCost'],
+    });
+    renderWithShell();
+
+    expect(await screen.findByText('On-premise vs cloud cost: Not available yet')).toBeVisible();
+    expect(screen.getByText('$1.0M')).toBeVisible();
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/NaN|\$0|0\.0%|0%/);
+  });
+
+  it('renders a costed segment of exactly zero as $0, not as unavailable', async () => {
+    servePayload({
+      ...noBackingData,
+      onPremVsCloud: { onPremCost: 1000000, cloudCost: 0, totalCost: 1000000, tcoComparison: [] },
+      unitEconomics: [{ metric: 'Cost per VM', value: 0, unit: 'per month', trend: null, changePercent: null }],
+      unavailable: ['unitEconomics'],
+    });
+    renderWithShell();
+
+    // The cloud row and the unit metric, each a costed zero.
+    expect(await screen.findAllByText('$0')).toHaveLength(2);
+    expect(screen.queryByText('On-premise vs cloud cost: Not available yet')).not.toBeInTheDocument();
+    expect(screen.getByText('Cost per VM').parentElement).toHaveTextContent('$0');
+  });
 });

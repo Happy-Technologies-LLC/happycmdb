@@ -1069,11 +1069,17 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a key=value with an ampersand before the at sign', 'postgres://password=p&ss@host', 'postgres://password=***'],
     ['a key user with a slash and a semicolon in the password', 'x://token:p/w;q@host', 'x://token:***'],
     ['a key user with text after a quoted password', 'postgres://pwd:"a"bc@db', 'postgres://pwd:***'],
+    ['a quoted password then a quoted secret of another key', 'postgres://pwd:"a"bc@db token="Zz9q"', 'postgres://pwd:*** token=***'],
+    ['a single-quoted password then a quoted secret of another key', "postgres://pwd:'a'bc@db password='Zz9q'", 'postgres://pwd:*** password=***'],
+    ['an unclosed quoted password then a quoted secret of another key', 'postgres://app_pwd:"Aa1@db token="Q7k"', 'postgres://app_pwd:***'],
+    ['an unclosed quoted password then text', 'postgres://pwd:"Aa1@db failed: password="Zz9q"', 'postgres://pwd:***'],
+    ['a quoted value across the at sign then a key', 'x_a://token="a@b c" password=x', 'x_a://token=*** password=***'],
     ['a key with a colon in a glued scheme', 'x_a://secret:s3@cret failed', 'x_a://secret:*** failed'],
     ['a user named like a key is over-redacted with its host', 'https://token:pw@h/x', 'https://token:***'],
     ['plain user:pass userinfo after a glued scheme', 'x_a://user:pass@host', 'x_a://***@host'],
     ['an empty user and a path after a glued scheme', 'x_a://:pass@host/', 'x_a://***@host/'],
-    ['an empty user, a raw at sign and a slash in the password', 'x_a://:p@ss/w@host/', 'x_a://***@ss/w@host/'],
+    // Known gap, not a goal: the password fragment `ss/w` is printed, exactly as before #426 (a raw `/` and `@` in an empty-user password).
+    ['an empty user, a raw at sign and a slash in the password (known gap)', 'x_a://:p@ss/w@host/', 'x_a://***@ss/w@host/'],
     ['a quoted Basic value before a key', 'Authorization: "Basic abc" token=1', 'Authorization: "Basic ***" token=***'],
     // Unchanged text.
     ['a URL without userinfo', 'GET http://host/path@seg failed', 'GET http://host/path@seg failed'],
@@ -1110,6 +1116,9 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
     ['a long run of leading punctuation', '.-+'.repeat(70000)],
     ['dotted digits then a scheme', `${'1.'.repeat(70000)}x://u:p@h`],
     ['repeated key=value userinfo (100 KB)', 'x_a://password=a@'.repeat(6000)],
+    ['repeated unclosed quoted userinfo (100 KB)', 'x_a://password="a@'.repeat(6000)],
+    ['repeated unclosed single-quoted userinfo (100 KB)', "x_a://password='a@h ".repeat(5000)],
+    ['repeated quoted userinfo with a closing quote (100 KB)', 'x_a://token="a@b" '.repeat(6000)],
     ['a long key name in a scheme userinfo (100 KB)', `x_a://${'password_'.repeat(11000)}=v@h`],
     ['a long key-free name in a scheme userinfo (100 KB)', `x_a://${'a'.repeat(100000)}@h`],
   ])('redactSecrets stays linear on long input: %s', (_label, input) => {
@@ -1156,6 +1165,8 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
       ['Vq9x@Tz4l', ['Vq9x', 'Tz4l']],
       ['"Vq9x@Tz4l w3"', ['Vq9x', 'Tz4l', 'w3']],
       ["'Vq9x@Tz4l w3'", ['Vq9x', 'Tz4l', 'w3']],
+      ['"Vq9x@Tz4l', ['Vq9x', 'Tz4l']],
+      ["'Vq9x@Tz4l", ['Vq9x', 'Tz4l']],
       ['Vq9x@Tz4l@Uy8k', ['Vq9x', 'Tz4l', 'Uy8k']],
       ['Vq9x&Tz4l@Uy8k', ['Vq9x', 'Tz4l', 'Uy8k']],
       ['Vq9x,Tz4l@Uy8k', ['Vq9x', 'Tz4l', 'Uy8k']],
@@ -1163,21 +1174,31 @@ describe('portfolio-import scope audit events (HAP-2039)', () => {
       ['"Vq9x"Tz4l@Uy8k', ['Vq9x', 'Tz4l', 'Uy8k']],
       ["'Vq9x'Tz4l@Uy8k", ['Vq9x', 'Tz4l', 'Uy8k']],
     ];
+    // What follows the token. A secret in a later key must stay masked, whatever quote the userinfo value opened with.
+    const tails: Array<[string, string[]]> = [
+      ['', []],
+      [' token="Q7k"', ['Q7k']],
+      [" password='Q7k'", ['Q7k']],
+      [', secret="Q7k"', ['Q7k']],
+      [' x token=Q7k', ['Q7k']],
+    ];
     let redactedBefore = 0;
     for (const prefix of prefixes) {
       for (const scheme of schemes) {
         for (const key of keys) {
           for (const separator of ['=', ':']) {
-            for (const [value, secrets] of forms) {
-              const input = `${prefix}${scheme}://${key}${separator}${value}`;
-              if (before(input) === input) {
-                continue;
-              }
-              redactedBefore++;
-              const output = redactSecrets(input);
-              expect({ input, output }).toEqual({ input, output: expect.stringContaining(`${scheme}://${key}${separator}***`) });
-              for (const secret of secrets) {
-                expect({ input, output }).toEqual({ input, output: expect.not.stringContaining(secret) });
+            for (const [value, valueSecrets] of forms) {
+              for (const [tail, tailSecrets] of tails) {
+                const input = `${prefix}${scheme}://${key}${separator}${value}${tail}`;
+                if (before(input) === input) {
+                  continue;
+                }
+                redactedBefore++;
+                const output = redactSecrets(input);
+                expect({ input, output }).toEqual({ input, output: expect.stringContaining(`${scheme}://${key}${separator}***`) });
+                for (const secret of [...valueSecrets, ...tailSecrets]) {
+                  expect({ input, output }).toEqual({ input, output: expect.not.stringContaining(secret) });
+                }
               }
             }
           }

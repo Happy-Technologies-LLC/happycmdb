@@ -393,7 +393,7 @@ import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { ciRoutes } from '../ci.routes';
 import { IMPACT_LINEAGE_TIMEOUT_MS, MAX_IMPACT_LINEAGE_TIMEOUT_MS, impactLineageTimeoutMs } from '../../impact-envelope';
 import { itilRoutes } from '../itil.routes';
-import { driftRoutes, impactRoutes } from '../drift-impact.routes';
+import { driftRoutes, impactRoutes, askRoutes } from '../drift-impact.routes';
 import { analyticsRoutes } from '../analytics.routes';
 import { anomalyRoutes } from '../anomaly.routes';
 
@@ -463,6 +463,7 @@ app.use('/api/v1/cis', ciRoutes);
 app.use('/api/v1/itil', itilRoutes);
 app.use('/api/v1/drift', driftRoutes);
 app.use('/api/v1/impact', impactRoutes);
+app.use('/api/v1/ask', askRoutes);
 app.use('/api/v1/analytics', analyticsRoutes);
 app.use('/api/v1/anomalies', anomalyRoutes);
 
@@ -1175,6 +1176,145 @@ describe('/api/v1/cis tenant scoping', () => {
         expect(res.body.data.cost_per_hour).toBeNull();
         expect(res.body.data.unavailable).toEqual(['cost_per_hour']);
         expect(res.body.data.recommendations.map((r: { id: string }) => r.id)).not.toContain('notify_service_owners');
+      });
+    });
+
+    // HAP-1928 (BW13): POST /ask, the deterministic happy-ui/v1 impact answer. Read-only and organization-scoped.
+    describe('POST /ask', () => {
+      const predicted = (overrides: Record<string, unknown> = {}) => ({
+        id: 'unstored', source_ci_id: 'ci-a-db', source_ci_name: 'a-database', change_type: 'failover', impact_score: 50,
+        affected_cis: [{ ci_id: 'ci-a-app', ci_name: 'a-app', ci_type: 'server', impact_type: 'direct',
+          dependency_path: ['ci-a-db', 'ci-a-app'], hop_count: 1, impact_probability: 90, estimated_impact: 'direct',
+          direction: 'downstream' }],
+        blast_radius: 1, critical_path: ['ci-a-db', 'ci-a-app'], risk_level: 'high', analyzed_at: '2026-01-01T00:00:00.000Z',
+        estimated_downtime_minutes: 18, ...overrides,
+      });
+      // The impact rate limit is per user: a fresh user per call keeps these tests independent of the other impact tests here.
+      let askers = 0;
+      const asker = (organizationId: string): Record<string, string> => {
+        const userId = `asker-${askers += 1}`;
+        USERS[userId] = { _id: userId, _username: userId, _role: 'operator', _enabled: true, _organizationId: organizationId };
+        return bearer(userId, organizationId);
+      };
+      const ask = (body: Record<string, unknown>, as: Record<string, string> = asker(ORG_A)) => request(app).post('/api/v1/ask')
+        .set(as).send(body).buffer(true).parse((res, done) => {
+          let data = '';
+          res.setEncoding('utf8');
+          res.on('data', chunk => { data += chunk; });
+          res.on('end', () => done(null, data));
+        });
+      const lines = (res: { body: string }) => res.body.trim().split('\n').map(line => JSON.parse(line));
+      const kpis = (res: { body: string }) => lines(res).find(line => line.id === 'kpis').props.items as Array<Record<string, any>>;
+      const preview = (value: unknown = predicted()) => jest.spyOn(getImpactPredictionEngine(), 'previewChangeImpact')
+        .mockResolvedValue(value as never);
+
+      it('streams the impact answer for a CI of the caller as happy-ui/v1 JSON Lines, failover by default, storing nothing', async () => {
+        const previewed = preview();
+        const stored = jest.spyOn(getImpactPredictionEngine(), 'predictChangeImpact');
+        await ciRow('ci-a-db', ORG_A);
+        await ciRow('ci-a-app', ORG_A);
+        await service('svc-a', ORG_A, 'critical', { annual_revenue_supported: 8_760_000, user_count: 10 });
+        await map('ci-a-app', 'svc-a');
+
+        const res = await ask({ ci_id: 'ci-a-db' });
+
+        expect(res.status).toBe(200);
+        expect(res.headers['content-type']).toMatch(/^application\/x-ndjson/);
+        expect(previewed).toHaveBeenCalledWith('ci-a-db', 'failover', ORG_A);
+        expect(stored).not.toHaveBeenCalled();
+        const stream = lines(res);
+        expect(stream[0]).toEqual({ op: 'begin', $schema: 'happy-ui/v1', catalog: 'happy.core@1' });
+        expect(stream[stream.length - 1]).toEqual({ op: 'end' });
+        expect(stream.filter(line => line.op === 'effect').map(line => line.effect)).toEqual([
+          { emit: 'select', detail: { id: 'ci-a-db' } }, { emit: 'focus', detail: { id: 'ci-a-db' } },
+          { emit: 'highlight', detail: { ids: ['ci-a-app'], tone: 'warn' } },
+        ]);
+        expect(kpis(res).map(stat => [stat.label, stat.value])).toEqual(
+          [['Risk', 'High'], ['Dependent CIs', 1], ['Cost per hour', 1000], ['Estimated downtime', 18]]);
+        expect(stream.find(line => line.id === 'services').props.items.map((item: { id: string }) => item.id)).toEqual(['svc-a']);
+        expect(stream.filter(line => line.type === 'Callout').map(line => line.id)).toEqual(
+          ['rec-maintenance_window', 'rec-notify_dependents', 'rec-notify_service_owners', 'rec-verify_standby']);
+      });
+
+      it('passes the requested change type to the prediction', async () => {
+        const previewed = preview(predicted({ change_type: 'restart' }));
+        await ciRow('ci-a-db', ORG_A);
+
+        expect((await ask({ ci_id: 'ci-a-db', question: 'impact', change_type: 'RESTART' })).status).toBe(200);
+        expect(previewed).toHaveBeenCalledWith('ci-a-db', 'restart', ORG_A);
+      });
+
+      it("never counts or returns another organization's service, even one mapped to this organization's CI", async () => {
+        preview();
+        await ciRow('ci-a-db', ORG_A);
+        await ciRow('ci-a-app', ORG_A);
+        await service('svc-a', ORG_A, 'high', { annual_revenue_supported: 8_760_000 });
+        await service('svc-b', ORG_B, 'critical', { annual_revenue_supported: 87_600_000, user_count: 9999 });
+        await map('ci-a-app', 'svc-a');
+        await map('ci-a-app', 'svc-b');
+
+        const res = await ask({ ci_id: 'ci-a-db' });
+
+        expect(lines(res).find(line => line.id === 'services').props.items.map((item: { id: string }) => item.id)).toEqual(['svc-a']);
+        expect(kpis(res).find(stat => stat.label === 'Cost per hour')!.value).toBe(1000);
+        expect(res.body).not.toContain('svc-b');
+        expect(res.body).not.toContain('9999');
+      });
+
+      it("does not answer for another organization's CI: 404 before any prediction", async () => {
+        const previewed = preview();
+        await ciRow('ci-b-db', ORG_B);
+
+        const res = await ask({ ci_id: 'ci-b-db' });
+
+        expect(res.status).toBe(404);
+        expect(JSON.parse(res.body)).toEqual({ success: false, error: 'Not Found', message: "CI with ID 'ci-b-db' not found" });
+        expect(previewed).not.toHaveBeenCalled();
+        expect((await ask({ ci_id: 'ci-a-db' }, AS_B)).status).toBe(404);
+      });
+
+      it('hides cost per hour and downtime, never showing 0, and lists them as not available', async () => {
+        preview(predicted({ change_type: 'performance_tuning', estimated_downtime_minutes: undefined }));
+        await ciRow('ci-a-db', ORG_A);
+        await ciRow('ci-a-app', ORG_A);
+        await service('svc-none', ORG_A, 'medium', {});
+        await map('ci-a-app', 'svc-none');
+
+        const res = await ask({ ci_id: 'ci-a-db', change_type: 'performance_tuning' });
+
+        expect(res.status).toBe(200);
+        expect(kpis(res).map(stat => stat.label)).toEqual(['Risk', 'Dependent CIs']);
+        const unavailable = lines(res).find(line => line.id === 'unavailable');
+        expect(unavailable.props.text).toMatch(/cost per hour/);
+        expect(unavailable.props.text).toMatch(/estimated downtime/);
+        expect(lines(res).find(line => line.id === 'services').props.items).toEqual(
+          [{ id: 'svc-none', name: 'svc-none name', tag: 'medium', tagTone: 'sky' }]);
+      });
+
+      it('answers a CI with no recorded dependents without services, chain or highlight', async () => {
+        preview(predicted({ affected_cis: [], blast_radius: 0, critical_path: ['ci-a-db'], risk_level: 'minimal' }));
+        await ciRow('ci-a-db', ORG_A);
+
+        const stream = lines(await ask({ ci_id: 'ci-a-db' }));
+
+        expect(stream.map(line => line.id).filter(Boolean)).not.toEqual(expect.arrayContaining(['services']));
+        expect(stream.some(line => line.id === 'chain')).toBe(false);
+        expect(stream.some(line => line.effect?.emit === 'highlight')).toBe(false);
+        expect(stream.some(line => line.id === 'rec-no_recorded_dependents')).toBe(true);
+      });
+
+      it('refuses a question other than impact, a missing or oversized CI id and an unknown change type before any lookup', async () => {
+        const previewed = preview();
+        const bad = [{}, { ci_id: 'ci-a-db', question: 'who owns this?' }, { ci_id: 'x'.repeat(65) },
+          { ci_id: 'ci-a-db', change_type: 'teleport' }];
+        for (const body of bad) expect((await ask(body)).status).toBe(400);
+        expect(previewed).not.toHaveBeenCalled();
+      });
+
+      it('refuses a token with no organization claim', async () => {
+        const previewed = preview();
+        expect((await ask({ ci_id: 'ci-a-db' }, NO_ORG)).status).toBe(403);
+        expect(previewed).not.toHaveBeenCalled();
       });
     });
   });

@@ -2,33 +2,28 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState, useEffect } from 'react';
-import { Icon } from '@happy-technologies/design-system';
-import { LiquidGlass } from '../components/ui/liquid-glass';
-import { Button } from '../components/ui/button';
-import { Input } from '../components/ui/input';
-import { Badge } from '../components/ui/badge';
-import { Eyebrow } from '../components/ui/eyebrow';
 import {
+  Badge,
+  Button,
+  Card,
+  DataTable,
   Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '../components/ui/dialog';
-import { Label } from '../components/ui/label';
-import {
+  EmptyState,
+  IconButton,
+  Input,
+  MetricCard,
+  PageHeader,
+  SectionHeading,
   Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../components/ui/select';
+  type BadgeVariant,
+  type Column,
+} from '@happy-technologies/design-system';
 import { apiClient } from '../lib/api-client';
+import { EMPTY_VALUE, isKnown } from '../lib/dashboardValue';
 import { useToast } from '../contexts/ToastContext';
 import { logClientError } from '../utils/logger';
 import { RequirePermission } from '../components/common/RequirePermission';
+import { QueryState } from '../components/estate/SurfaceState';
 import { ServiceOfferingsDialog } from '../components/business-services/ServiceOfferingsDialog';
 
 /** Canonical business criticality accepted by /api/v1/business-services. */
@@ -50,12 +45,13 @@ interface BusinessService {
   description?: string;
   /** Canonical API value; null when the stored value is missing or not canonical. */
   criticality: Criticality | null;
-  revenueImpact: number;
-  userCount: number;
+  /** The figures below are null when the API row carries no value for them; null is shown as unknown, never as 0. */
+  revenueImpact: number | null;
+  userCount: number | null;
   owner?: string;
   status: 'active' | 'inactive' | 'planned';
-  supportingCIs?: number;
-  monthlyCost?: number;
+  supportingCIs: number | null;
+  monthlyCost: number | null;
 }
 
 // Backend API interface
@@ -96,6 +92,19 @@ interface ListPage<T> {
   as_of: string;
 }
 
+/** A stored metadata figure as a number; null when it is absent or not numeric. */
+const figure = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+/** Sum of the figures that are known; null when none is (never 0). */
+const sumKnown = (values: Array<number | null>): number | null => {
+  const known = values.filter(isKnown);
+  return known.length === 0 ? null : known.reduce((sum, v) => sum + v, 0);
+};
+
 // Mapper functions to convert between UI and API formats
 const mapAPIToUI = (apiService: BusinessServiceAPI): BusinessService => {
   return {
@@ -103,12 +112,13 @@ const mapAPIToUI = (apiService: BusinessServiceAPI): BusinessService => {
     name: apiService.name,
     description: apiService.description,
     criticality: isCriticality(apiService.business_criticality) ? apiService.business_criticality : null,
-    revenueImpact: apiService.metadata?.revenue_impact || 0,
-    userCount: apiService.metadata?.user_count || 0,
+    revenueImpact: figure(apiService.metadata?.revenue_impact),
+    userCount: figure(apiService.metadata?.user_count),
     owner: apiService.owned_by,
     status: apiService.operational_status as BusinessService['status'],
-    supportingCIs: apiService.metadata?.supporting_cis || 0,
-    monthlyCost: apiService.metadata?.monthly_cost || 0,
+    supportingCIs: figure(apiService.metadata?.supporting_cis),
+    // A stored 0 is the form's default for "not entered": it is unknown here, as it always was in the list.
+    monthlyCost: figure(apiService.metadata?.monthly_cost) || null,
   };
 };
 
@@ -133,25 +143,48 @@ const mapUIToAPI = (
   };
 };
 
-const CRITICALITY_COLORS: Record<Criticality, string> = {
-  critical: 'bg-danger-soft text-danger',
-  high: 'bg-warning-soft text-warning-text',
-  medium: 'bg-warning-soft text-warning-text',
-  low: 'bg-sky-soft text-sky-text',
+const CRITICALITY_VARIANTS: Record<Criticality, BadgeVariant> = {
+  critical: 'danger',
+  high: 'warning',
+  medium: 'warning',
+  low: 'info',
 };
 
-const UNKNOWN_CRITICALITY_COLOR = 'bg-warm-alt text-ink-soft';
+const STATUS_VARIANTS: Record<BusinessService['status'], BadgeVariant> = {
+  active: 'success',
+  inactive: 'neutral',
+  planned: 'info',
+};
 
-const STATUS_COLORS = {
-  active: 'bg-success-soft text-success',
-  inactive: 'bg-warm-alt text-ink-soft',
-  planned: 'bg-sky-soft text-sky-text',
+const EMPTY_FORM = {
+  name: '',
+  description: '',
+  criticality: '' as Criticality | '',
+  revenueImpact: '',
+  userCount: '',
+  owner: '',
+};
+
+const formatCurrency = (amount: number | null) => {
+  if (!isKnown(amount)) return EMPTY_VALUE;
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(amount);
+};
+
+const formatNumber = (num: number | null) => {
+  if (!isKnown(num)) return EMPTY_VALUE;
+  return new Intl.NumberFormat('en-US').format(num);
 };
 
 export const BusinessServices: React.FC = () => {
   const { showToast } = useToast();
   const [services, setServices] = useState<BusinessService[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<unknown>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCriticality, setFilterCriticality] = useState<string>('all');
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
@@ -159,14 +192,7 @@ export const BusinessServices: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [offeringsFor, setOfferingsFor] = useState<BusinessService | null>(null);
 
-  const [formData, setFormData] = useState({
-    name: '',
-    description: '',
-    criticality: '' as Criticality | '',
-    revenueImpact: '',
-    userCount: '',
-    owner: '',
-  });
+  const [formData, setFormData] = useState(EMPTY_FORM);
 
   // Load services from API
   useEffect(() => {
@@ -176,6 +202,7 @@ export const BusinessServices: React.FC = () => {
   const loadServices = async () => {
     try {
       setLoading(true);
+      setLoadError(null);
       const loaded: BusinessServiceAPI[] = [];
       let cursor: string | null = null;
       do {
@@ -188,6 +215,7 @@ export const BusinessServices: React.FC = () => {
       setServices(loaded.map(mapAPIToUI));
     } catch (error: any) {
       logClientError('Failed to load business services:', error);
+      setLoadError(error);
       showToast('Failed to load business services', 'error');
     } finally {
       setLoading(false);
@@ -236,14 +264,7 @@ export const BusinessServices: React.FC = () => {
         showToast('Business service created successfully', 'success');
       }
 
-      setFormData({
-        name: '',
-        description: '',
-        criticality: '',
-        revenueImpact: '',
-        userCount: '',
-        owner: '',
-      });
+      setFormData(EMPTY_FORM);
       setIsCreateDialogOpen(false);
     } catch (error: any) {
       logClientError('Failed to save business service:', error);
@@ -254,14 +275,20 @@ export const BusinessServices: React.FC = () => {
     }
   };
 
+  const handleCreate = () => {
+    setEditingService(null);
+    setFormData(EMPTY_FORM);
+    setIsCreateDialogOpen(true);
+  };
+
   const handleEdit = (service: BusinessService) => {
     setEditingService(service);
     setFormData({
       name: service.name,
       description: service.description || '',
       criticality: service.criticality ?? '',
-      revenueImpact: service.revenueImpact.toString(),
-      userCount: service.userCount.toString(),
+      revenueImpact: service.revenueImpact?.toString() ?? '',
+      userCount: service.userCount?.toString() ?? '',
       owner: service.owner || '',
     });
     setIsCreateDialogOpen(true);
@@ -283,340 +310,251 @@ export const BusinessServices: React.FC = () => {
     }
   };
 
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(amount);
-  };
+  const loaded = !loading && loadError === null;
+  // Until the list is read there is nothing to total: an unread list is unknown, not 0.
+  const total = (read: (s: BusinessService) => number | null) => (loaded ? sumKnown(services.map(read)) : null);
 
-  const formatNumber = (num: number) => {
-    return new Intl.NumberFormat('en-US').format(num);
-  };
+  const columns: Array<Column<BusinessService>> = [
+    {
+      header: 'Service Name',
+      render: (service) => (
+        <div>
+          <div className="font-medium">{service.name}</div>
+          {service.description && (
+            <div className="text-xs text-[var(--hh-text-muted)]">{service.description}</div>
+          )}
+        </div>
+      ),
+    },
+    {
+      header: 'Criticality',
+      render: (service) => (
+        <Badge variant={service.criticality ? CRITICALITY_VARIANTS[service.criticality] : 'neutral'}>
+          {CRITICALITY_OPTIONS.find((option) => option.value === service.criticality)?.label ?? 'Unknown'}
+        </Badge>
+      ),
+    },
+    {
+      header: 'Status',
+      render: (service) => <Badge variant={STATUS_VARIANTS[service.status] ?? 'neutral'}>{service.status}</Badge>,
+    },
+    { header: 'Revenue Impact', render: (service) => formatCurrency(service.revenueImpact) },
+    { header: 'Users', render: (service) => formatNumber(service.userCount) },
+    { header: 'Monthly Cost', render: (service) => formatCurrency(service.monthlyCost) },
+    {
+      header: 'Supporting CIs',
+      render: (service) => (
+        <span className="text-[var(--hh-text-muted)]">{formatNumber(service.supportingCIs)}</span>
+      ),
+    },
+    {
+      header: 'Actions',
+      className: 'text-right',
+      render: (service) => (
+        <div className="flex justify-end gap-2">
+          <RequirePermission permission="write">
+            <IconButton
+              icon="pencil-simple"
+              variant="ghost"
+              size="sm"
+              aria-label={`Edit ${service.name}`}
+              onClick={() => handleEdit(service)}
+            />
+          </RequirePermission>
+          <IconButton
+            icon="package"
+            variant="ghost"
+            size="sm"
+            aria-label={`Offerings for ${service.name}`}
+            onClick={() => setOfferingsFor(service)}
+          />
+          <RequirePermission permission="write">
+            <IconButton
+              icon="trash"
+              variant="ghost"
+              size="sm"
+              aria-label={`Delete ${service.name}`}
+              onClick={() => handleDelete(service.id)}
+            />
+          </RequirePermission>
+        </div>
+      ),
+    },
+  ];
 
   return (
     <div className="container mx-auto p-6 space-y-6">
-      {/* Header */}
-      <div className="flex justify-between items-center">
-        <div>
-          <Eyebrow>Service Catalog</Eyebrow>
-          <h1 className="mt-3 text-[1.9rem]">Business Services</h1>
-          <p className="mt-1.5 text-ink-soft">
-            Manage and monitor your business-critical services
-          </p>
-        </div>
-
-        <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-          {/* POST/PATCH /business-services require 'write'; the dialog opens only from here or the gated edit button */}
+      <PageHeader
+        eyebrow="Service Catalog"
+        title="Business Services"
+        lede="Manage and monitor your business-critical services"
+        actions={
+          // POST/PATCH /business-services require 'write'; the dialog opens only from here or the gated edit button
           <RequirePermission permission="write">
-            <DialogTrigger asChild>
-              <Button onClick={() => {
-                setEditingService(null);
-                setFormData({
-                  name: '',
-                  description: '',
-                  criticality: '',
-                  revenueImpact: '',
-                  userCount: '',
-                  owner: '',
-                });
-              }}>
-                <Icon name="plus" size={16} className="mr-2" />
-                Create Service
-              </Button>
-            </DialogTrigger>
+            <Button icon="plus" onClick={handleCreate}>
+              Create Service
+            </Button>
           </RequirePermission>
-          <DialogContent className="max-w-2xl">
-            <DialogHeader>
-              <DialogTitle>{editingService ? 'Edit Business Service' : 'Create Business Service'}</DialogTitle>
-              <DialogDescription>
-                Define a new business service and its key attributes
-              </DialogDescription>
-            </DialogHeader>
+        }
+      />
 
-            <div className="grid gap-4 py-4">
-              <div className="grid gap-2">
-                <Label htmlFor="name">Service Name</Label>
-                <Input
-                  id="name"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="e.g., Customer Portal"
-                />
-              </div>
+      <Dialog
+        open={isCreateDialogOpen}
+        onClose={() => setIsCreateDialogOpen(false)}
+        aria-label={editingService ? 'Edit Business Service' : 'Create Business Service'}
+        className="max-w-2xl overflow-visible!"
+      >
+        <div className="grid gap-4 p-6">
+          <div className="pr-8">
+            <SectionHeading className="mb-1">
+              {editingService ? 'Edit Business Service' : 'Create Business Service'}
+            </SectionHeading>
+            <p className="text-sm text-[var(--hh-text-muted)]">Define a new business service and its key attributes</p>
+          </div>
 
-              <div className="grid gap-2">
-                <Label htmlFor="description">Description</Label>
-                <Input
-                  id="description"
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="Brief description of the service"
-                />
-              </div>
+          <Input
+            label="Service Name"
+            data-autofocus
+            value={formData.name}
+            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            placeholder="e.g., Customer Portal"
+          />
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="grid gap-2">
-                  <Label htmlFor="criticality">Criticality</Label>
-                  <Select
-                    value={formData.criticality}
-                    onValueChange={(value) => setFormData({ ...formData, criticality: value as Criticality })}
-                  >
-                    <SelectTrigger id="criticality" aria-label="Criticality">
-                      <SelectValue placeholder="Select criticality" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {CRITICALITY_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+          <Input
+            label="Description"
+            value={formData.description}
+            onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+            placeholder="Brief description of the service"
+          />
 
-                <div className="grid gap-2">
-                  <Label htmlFor="owner">Service Owner</Label>
-                  <Input
-                    id="owner"
-                    value={formData.owner}
-                    onChange={(e) => setFormData({ ...formData, owner: e.target.value })}
-                    placeholder="Team or person"
-                  />
-                </div>
-              </div>
+          <div className="grid grid-cols-2 gap-4">
+            <Select
+              label="Criticality"
+              value={formData.criticality}
+              onChange={(value) => setFormData({ ...formData, criticality: value as Criticality | '' })}
+              options={[{ value: '', label: 'Select criticality' }, ...CRITICALITY_OPTIONS]}
+            />
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="grid gap-2">
-                  <Label htmlFor="revenueImpact">Annual Revenue Impact ($)</Label>
-                  <Input
-                    id="revenueImpact"
-                    type="number"
-                    value={formData.revenueImpact}
-                    onChange={(e) => setFormData({ ...formData, revenueImpact: e.target.value })}
-                    placeholder="0"
-                  />
-                </div>
+            <Input
+              label="Service Owner"
+              value={formData.owner}
+              onChange={(e) => setFormData({ ...formData, owner: e.target.value })}
+              placeholder="Team or person"
+            />
+          </div>
 
-                <div className="grid gap-2">
-                  <Label htmlFor="userCount">User Count</Label>
-                  <Input
-                    id="userCount"
-                    type="number"
-                    value={formData.userCount}
-                    onChange={(e) => setFormData({ ...formData, userCount: e.target.value })}
-                    placeholder="0"
-                  />
-                </div>
-              </div>
-            </div>
+          <div className="grid grid-cols-2 gap-4">
+            <Input
+              label="Annual Revenue Impact ($)"
+              type="number"
+              value={formData.revenueImpact}
+              onChange={(e) => setFormData({ ...formData, revenueImpact: e.target.value })}
+              placeholder="0"
+            />
 
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setIsCreateDialogOpen(false)} disabled={saving}>
-                Cancel
-              </Button>
-              <Button onClick={handleCreateService} disabled={!formData.name || !formData.criticality || saving}>
-                {saving ? 'Saving...' : editingService ? 'Update Service' : 'Create Service'}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      </div>
+            <Input
+              label="User Count"
+              type="number"
+              value={formData.userCount}
+              onChange={(e) => setFormData({ ...formData, userCount: e.target.value })}
+              placeholder="0"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setIsCreateDialogOpen(false)} disabled={saving}>
+              Cancel
+            </Button>
+            <Button onClick={handleCreateService} disabled={!formData.name || !formData.criticality || saving}>
+              {saving ? 'Saving...' : editingService ? 'Update Service' : 'Create Service'}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <LiquidGlass variant="default" rounded="xl">
-          <div className="p-6">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-muted-foreground">Total Services</span>
-              <Icon name="graph" size={16} className="text-muted-foreground" />
-            </div>
-            <div className="text-3xl font-bold">{services.length}</div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {services.filter(s => s.status === 'active').length} active
-            </p>
-          </div>
-        </LiquidGlass>
-
-        <LiquidGlass variant="default" rounded="xl">
-          <div className="p-6">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-muted-foreground">Total Revenue Impact</span>
-              <Icon name="currency-dollar" size={16} className="text-muted-foreground" />
-            </div>
-            <div className="text-3xl font-bold">
-              {formatCurrency(services.reduce((sum, s) => sum + s.revenueImpact, 0))}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">Annual</p>
-          </div>
-        </LiquidGlass>
-
-        <LiquidGlass variant="default" rounded="xl">
-          <div className="p-6">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-muted-foreground">Total Users</span>
-              <Icon name="users" size={16} className="text-muted-foreground" />
-            </div>
-            <div className="text-3xl font-bold">
-              {formatNumber(services.reduce((sum, s) => sum + s.userCount, 0))}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">Across all services</p>
-          </div>
-        </LiquidGlass>
-
-        <LiquidGlass variant="default" rounded="xl">
-          <div className="p-6">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-muted-foreground">Monthly IT Cost</span>
-              <Icon name="trend-up" size={16} className="text-muted-foreground" />
-            </div>
-            <div className="text-3xl font-bold">
-              {formatCurrency(services.reduce((sum, s) => sum + (s.monthlyCost || 0), 0))}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1">All services</p>
-          </div>
-        </LiquidGlass>
+        <MetricCard
+          icon="graph"
+          label="Total Services"
+          value={loaded ? services.length : EMPTY_VALUE}
+          sub={loaded ? `${services.filter(s => s.status === 'active').length} active` : undefined}
+        />
+        <MetricCard
+          icon="currency-dollar"
+          label="Total Revenue Impact"
+          value={formatCurrency(total((s) => s.revenueImpact))}
+          sub="Annual"
+        />
+        <MetricCard
+          icon="users"
+          label="Total Users"
+          value={formatNumber(total((s) => s.userCount))}
+          sub="Across all services"
+        />
+        <MetricCard
+          icon="trend-up"
+          label="Monthly IT Cost"
+          value={formatCurrency(total((s) => s.monthlyCost))}
+          sub="All services"
+        />
       </div>
 
-      {/* Filters */}
-      <LiquidGlass variant="default" rounded="xl">
-        <div className="p-4">
-          <div className="flex gap-4 items-center">
-            <div className="flex-1">
-              <div className="relative">
-                <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
+      {!loaded ? (
+        <Card>
+          <QueryState what="business services" loading={loading} error={loadError} onRetry={loadServices} />
+        </Card>
+      ) : (
+        <>
+          {/* Filters */}
+          <Card inset="none" className="p-4">
+            <div className="flex gap-4 items-center">
+              <div className="flex-1">
                 <Input
+                  icon="magnifying-glass"
+                  aria-label="Search services"
                   placeholder="Search services..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10"
                 />
               </div>
+
+              <Select
+                aria-label="Filter by criticality"
+                containerClassName="w-[200px]"
+                value={filterCriticality}
+                onChange={setFilterCriticality}
+                options={[{ value: 'all', label: 'All criticalities' }, ...CRITICALITY_OPTIONS]}
+              />
             </div>
+          </Card>
 
-            <Select value={filterCriticality} onValueChange={setFilterCriticality}>
-              <SelectTrigger className="w-[200px]" aria-label="Filter by criticality">
-                <SelectValue placeholder="Filter by criticality" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All criticalities</SelectItem>
-                {CRITICALITY_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-      </LiquidGlass>
-
-      {/* Services Table */}
-      <LiquidGlass variant="default" rounded="xl">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-border">
-                <th className="text-left py-3 px-4 text-sm font-semibold">Service Name</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold">Criticality</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold">Status</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold">Revenue Impact</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold">Users</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold">Monthly Cost</th>
-                <th className="text-left py-3 px-4 text-sm font-semibold">Supporting CIs</th>
-                <th className="text-right py-3 px-4 text-sm font-semibold">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={8} className="text-center py-8 text-muted-foreground">
-                    Loading business services...
-                  </td>
-                </tr>
-              ) : filteredServices.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="text-center py-8 text-muted-foreground">
-                    No services found
-                  </td>
-                </tr>
-              ) : (
-                filteredServices.map((service) => (
-                  <tr
-                    key={service.id}
-                    className="border-b border-border hover:bg-accent transition-colors"
-                  >
-                    <td className="py-3 px-4">
-                      <div>
-                        <div className="font-medium">{service.name}</div>
-                        {service.description && (
-                          <div className="text-xs text-muted-foreground">{service.description}</div>
-                        )}
-                      </div>
-                    </td>
-                    <td className="py-3 px-4">
-                      <Badge
-                        className={service.criticality ? CRITICALITY_COLORS[service.criticality] : UNKNOWN_CRITICALITY_COLOR}
-                      >
-                        {CRITICALITY_OPTIONS.find((option) => option.value === service.criticality)?.label ?? 'Unknown'}
-                      </Badge>
-                    </td>
-                    <td className="py-3 px-4">
-                      <Badge className={STATUS_COLORS[service.status]} variant="outline">
-                        {service.status}
-                      </Badge>
-                    </td>
-                    <td className="py-3 px-4 text-sm">
-                      {formatCurrency(service.revenueImpact)}
-                    </td>
-                    <td className="py-3 px-4 text-sm">
-                      {formatNumber(service.userCount)}
-                    </td>
-                    <td className="py-3 px-4 text-sm">
-                      {service.monthlyCost ? formatCurrency(service.monthlyCost) : '-'}
-                    </td>
-                    <td className="py-3 px-4 text-sm">
-                      <span className="text-muted-foreground">{service.supportingCIs || 0}</span>
-                    </td>
-                    <td className="py-3 px-4">
-                      <div className="flex gap-2 justify-end">
-                        <RequirePermission permission="write">
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            onClick={() => handleEdit(service)}
-                          >
-                            <Icon name="pencil-simple" size={16} />
-                          </Button>
-                        </RequirePermission>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          aria-label={`Offerings for ${service.name}`}
-                          onClick={() => setOfferingsFor(service)}
-                        >
-                          <Icon name="package" size={16} />
-                        </Button>
-                        <RequirePermission permission="write">
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            onClick={() => handleDelete(service.id)}
-                          >
-                            <Icon name="trash" size={16} />
-                          </Button>
-                        </RequirePermission>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </LiquidGlass>
+          {/* Services Table */}
+          {services.length === 0 ? (
+            <Card>
+              <EmptyState
+                icon="graph"
+                title="No services found"
+                description="No business services have been created yet."
+                action={
+                  <RequirePermission permission="write">
+                    <Button variant="secondary" onClick={handleCreate}>
+                      Create your first service
+                    </Button>
+                  </RequirePermission>
+                }
+              />
+            </Card>
+          ) : (
+            <DataTable
+              rows={filteredServices}
+              columns={columns}
+              rowKey={(service) => service.id}
+              emptyLabel="No services found"
+            />
+          )}
+        </>
+      )}
       <ServiceOfferingsDialog service={offeringsFor} onClose={() => setOfferingsFor(null)} />
     </div>
   );

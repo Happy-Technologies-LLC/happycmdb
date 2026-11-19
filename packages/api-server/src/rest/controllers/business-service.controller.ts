@@ -18,6 +18,9 @@ import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { errorLogFields } from '../../utils/log-error';
 import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, filterOwnedDimensionRows, writeReferencedCIs } from '../../read-admission';
 import {
+  boundedPgRead, estateFeedTimeoutMs, ESTATE_FEED_LIMIT_RESPONSE, isStatementTimeout,
+} from '../../services/bounded-pg-read';
+import {
   C1Lifecycle, lifecycleMoveAllowed, lifecycleNeedsOwner, serviceReference, StoredDependencyRow,
 } from '../../services/business-service-reference';
 import { decodeListCursor, encodeListCursor } from '../../services/c1-list-cursor';
@@ -1049,9 +1052,16 @@ export class BusinessServiceController {
       return;
     }
     try {
-      const data = await readServiceAvailability(this.pgClient, requestOrganizationId(req), options.limit);
+      const organizationId = requestOrganizationId(req);
+      const data = await boundedPgRead(this.pgClient, estateFeedTimeoutMs(),
+        sql => readServiceAvailability(sql, organizationId, options.limit));
       res.json({ success: true, data });
     } catch (error) {
+      if (isStatementTimeout(error)) {
+        logger.warn('Service availability exceeded its statement timeout', { error: errorLogFields(error) });
+        res.status(503).json(ESTATE_FEED_LIMIT_RESPONSE);
+        return;
+      }
       logger.error('Error getting service availability', { error: errorLogFields(error) });
       res.status(500).json({
         success: false,

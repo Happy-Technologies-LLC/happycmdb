@@ -1263,6 +1263,10 @@
   "@typescript-eslint/prefer-nullish-coalescing": 1,
   "@typescript-eslint/strict-boolean-expressions": 1
  },
+ "packages/api-server/src/services/bounded-pg-read.ts": {
+  "@typescript-eslint/prefer-nullish-coalescing": 1,
+  "@typescript-eslint/strict-boolean-expressions": 1
+ },
  "packages/api-server/src/services/business-service-ownership.ts": {
   "@typescript-eslint/prefer-nullish-coalescing": 1,
   "@typescript-eslint/strict-boolean-expressions": 1

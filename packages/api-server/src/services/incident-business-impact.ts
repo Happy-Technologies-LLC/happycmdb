@@ -34,6 +34,13 @@
  * ## The ribbon: `GET /itil/metrics/open-incidents`
  * Open = status not in resolved, closed, cancelled. Order: priority ascending (P1 first), then newest `reported_at`.
  * Every statement is scoped by `organization_id`; the service side is scoped by the service's own organization.
+ *
+ * Known limit: `affected_service` is the LIVE primary service of the affected CI (today's mappings), while
+ * `users_affected` and `revenue_per_hour` prefer the figures stored on the incident when it was created. After a
+ * service mapping or its metadata changes, the named service and the figures can therefore describe different services.
+ *
+ * Bounded: the controller runs these statements in one transaction under a PostgreSQL `statement_timeout`
+ * (`ESTATE_FEED_TIMEOUT_MS`, default 5000 ms; services/bounded-pg-read.ts); a timeout answers 503, never a partial ribbon.
  */
 
 /** The one pg method these reads need; both the pool and a pooled client satisfy it. */
@@ -182,14 +189,14 @@ export async function readOpenIncidentRibbon(
   sql: Sql, organizationId: string, limit: number
 ): Promise<OpenIncidentRibbon> {
   const open = `organization_id = $1 AND status NOT IN ('resolved', 'closed', 'cancelled')`;
-  const [page, count] = await Promise.all([
-    sql.query<OpenIncidentRow>(
-      `SELECT id, incident_number, title, priority, status, affected_ci_id, reported_at, business_impact
-       FROM itil_incidents WHERE ${open}
-       ORDER BY priority ASC, reported_at DESC, id LIMIT $2`,
-      [organizationId, limit]),
-    sql.query<{ open_count: number }>(`SELECT count(*)::int AS open_count FROM itil_incidents WHERE ${open}`, [organizationId]),
-  ]);
+  // Sequential: the controller runs every statement on one transaction connection, which serves one at a time.
+  const page = await sql.query<OpenIncidentRow>(
+    `SELECT id, incident_number, title, priority, status, affected_ci_id, reported_at, business_impact
+     FROM itil_incidents WHERE ${open}
+     ORDER BY priority ASC, reported_at DESC, id LIMIT $2`,
+    [organizationId, limit]);
+  const count = await sql.query<{ open_count: number }>(
+    `SELECT count(*)::int AS open_count FROM itil_incidents WHERE ${open}`, [organizationId]);
   const ciIds = [...new Set(page.rows.map((row: { affected_ci_id: string | null }) => row.affected_ci_id)
     .filter((id: string | null): id is string => typeof id === 'string'))];
   const mapped = await readMappedServices(sql, organizationId, ciIds);

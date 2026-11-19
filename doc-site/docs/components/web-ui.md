@@ -234,6 +234,18 @@ probe: 100 means "no P1/P2 incident recorded", and a service with no mapped CI i
 with neither `resolved_at` nor `closed_at` ends at its `updated_at`. The rules are in
 `services/incident-business-impact.ts`, `recent-changes.service.ts` and `service-availability.service.ts`.
 
+These incident-derived reads are bounded by a PostgreSQL `statement_timeout`, not by the analytics concurrency limiter (the
+hub requests several feeds at once for one user). The ribbon and availability run in one transaction under
+`ESTATE_FEED_TIMEOUT_MS` (default 5000 ms) and answer `503 {"success": false, "error": "Analytics resource limit exceeded"}`
+when a statement times out, never a partial figure. CI `health` on `GET /cis` and `GET /cis/{id}` runs under
+`CI_HEALTH_TIMEOUT_MS` (default 3000 ms); a timeout answers `health: null` for the CIs and does not fail the CI read.
+Either knob must be a positive integer of at most 2147483647, else the default applies. Where `itil_incidents` has no
+`organization_id` (or does not exist), availability lists every service with three `null` figures and all three names in
+`unavailable`. Known limits: an incident carries no CI incarnation, so an open incident follows the CI id and marks a CI
+deleted and re-created under the same id (same organization) `critical` or `degraded` until it is resolved; a service whose
+only mapped CIs were deleted still reads 100 % in availability (`has_mapped_cis` counts mappings, not live CIs); and the
+ribbon's `affected_service` is the live primary service while its figures may come from the figures stored at creation.
+
 Every surface has loading, error and 403 states (`SurfaceState.tsx`). Reads that must not refuse the page (incidents,
 relationships) are sent with `sideRead: true`, so a 403 shows on that surface only. "Run discovery" is gated with
 `RequirePermission permission="write"`.

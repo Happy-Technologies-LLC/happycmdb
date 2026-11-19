@@ -1,25 +1,21 @@
 import React, { useState, useEffect } from 'react';
-import { Icon } from '@happy-technologies/design-system';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { LiquidGlass } from '@/components/ui/liquid-glass';
 import {
+  Badge,
+  Banner,
+  Button,
+  DataTable,
   Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import {
-  FormDialog,
-  FormDialogContent,
-  FormDialogHeader,
-  FormDialogBody,
-  FormDialogTitle,
-} from '@/components/ui/form-dialog';
+  FieldList,
+  IconButton,
+  ListRow,
+  PageHeader,
+  SectionHeading,
+  Tag,
+  type Column,
+} from '@happy-technologies/design-system';
 import CredentialSetForm from './CredentialSetForm';
 import { RequirePermission } from '@/components/common/RequirePermission';
+import { QueryState } from '@/components/estate/SurfaceState';
 import {
   credentialService,
   type CredentialSetSummary,
@@ -33,7 +29,8 @@ import { logClientError } from '@/utils/logger';
 export const CredentialSetList: React.FC = () => {
   const { showToast } = useToast();
   const [sets, setSets] = useState<CredentialSetSummary[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadFailure, setLoadFailure] = useState<{ cause: unknown } | null>(null);
 
   // Dialog states
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -46,10 +43,12 @@ export const CredentialSetList: React.FC = () => {
   const loadSets = async () => {
     try {
       setLoading(true);
+      setLoadFailure(null);
       const data = await credentialService.getCredentialSets();
       setSets(data);
     } catch (error) {
       logClientError('Failed to load credential sets:', error);
+      setLoadFailure({ cause: error });
       showToast('Failed to load credential sets', 'error');
     } finally {
       setLoading(false);
@@ -127,300 +126,256 @@ export const CredentialSetList: React.FC = () => {
     });
   };
 
+  const openDetail = (set: CredentialSetSummary) => {
+    setSelectedSet(set);
+    setDetailDialogOpen(true);
+  };
+
+  const columns: Array<Column<CredentialSetSummary>> = [
+    {
+      header: 'Name',
+      render: (set) => (
+        <div>
+          <span className="text-sm font-medium">{set.name}</span>
+          {set.description && (
+            <p className="mt-0.5 max-w-[300px] truncate text-xs text-[var(--hh-text-muted)]">
+              {set.description}
+            </p>
+          )}
+        </div>
+      ),
+    },
+    {
+      header: 'Strategy',
+      render: (set) => <Badge variant="neutral">{formatLabel(set.strategy)}</Badge>,
+    },
+    {
+      header: 'Credentials',
+      render: (set) =>
+        `${set.credentials.length} credential${set.credentials.length !== 1 ? 's' : ''}`,
+    },
+    {
+      header: 'Tags',
+      render: (set) =>
+        !set.tags || set.tags.length === 0 ? (
+          <span className="text-[var(--hh-text-muted)]">-</span>
+        ) : (
+          <div className="flex flex-wrap gap-1">
+            {set.tags.slice(0, 2).map((tag) => (
+              <Tag key={tag}>{tag}</Tag>
+            ))}
+            {set.tags.length > 2 && <Tag>+{set.tags.length - 2}</Tag>}
+          </div>
+        ),
+    },
+    {
+      header: 'Created',
+      render: (set) => (
+        <span className="text-[var(--hh-text-muted)]">{formatDate(set.created_at)}</span>
+      ),
+    },
+    {
+      header: 'Actions',
+      className: 'text-right',
+      render: (set) => (
+        <div className="flex justify-end gap-1">
+          <IconButton
+            icon="eye"
+            variant="ghost"
+            size="sm"
+            shape="rounded"
+            aria-label="View Details"
+            title="View Details"
+            onClick={() => openDetail(set)}
+          />
+          <RequirePermission permission="write">
+            <IconButton
+              icon="pencil-simple"
+              variant="ghost"
+              size="sm"
+              shape="rounded"
+              aria-label="Edit"
+              title="Edit"
+              onClick={() => {
+                setSelectedSet(set);
+                setEditDialogOpen(true);
+              }}
+            />
+            <IconButton
+              icon="trash"
+              variant="ghost"
+              size="sm"
+              shape="rounded"
+              aria-label="Delete"
+              title="Delete"
+              onClick={() => {
+                setSelectedSet(set);
+                setDeleteDialogOpen(true);
+              }}
+            />
+          </RequirePermission>
+        </div>
+      ),
+    },
+  ];
+
+  const usageCount = selectedSet?.usage_count ?? 0;
+
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Credential Sets</h1>
-          <p className="text-muted-foreground mt-1">
-            Manage groups of credentials for sequential or parallel authentication
-          </p>
-        </div>
-        <RequirePermission permission="write">
-          <Button onClick={() => setCreateDialogOpen(true)}>
-            <Icon name="plus" size={16} className="mr-2" />
-            Create Set
-          </Button>
-        </RequirePermission>
-      </div>
+      <PageHeader
+        eyebrow="Credentials"
+        title="Credential Sets"
+        lede="Manage groups of credentials for sequential or parallel authentication"
+        actions={
+          <RequirePermission permission="write">
+            <Button icon="plus" onClick={() => setCreateDialogOpen(true)}>
+              Create Set
+            </Button>
+          </RequirePermission>
+        }
+      />
 
-      <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
-        {/* Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-muted/30 border-b border-border/50">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Name
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Strategy
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Credentials
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Tags
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Created
-                </th>
-                <th className="px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/30">
-              {loading ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center">
-                    <div className="flex justify-center">
-                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-                    </div>
-                  </td>
-                </tr>
-              ) : sets.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                    No credential sets found. Create your first set to get started.
-                  </td>
-                </tr>
-              ) : (
-                sets.map((set) => (
-                  <tr
-                    key={set.id}
-                    className="hover:bg-muted/50 cursor-pointer transition-colors"
-                    onClick={() => {
-                      setSelectedSet(set);
-                      setDetailDialogOpen(true);
-                    }}
-                  >
-                    <td className="px-4 py-3">
-                      <div>
-                        <span className="text-sm font-medium text-foreground">{set.name}</span>
-                        {set.description && (
-                          <p className="text-xs text-muted-foreground mt-0.5 max-w-[300px] truncate">
-                            {set.description}
-                          </p>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge variant="secondary">{formatLabel(set.strategy)}</Badge>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="text-sm text-foreground">
-                        {set.credentials.length} credential{set.credentials.length !== 1 ? 's' : ''}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      {!set.tags || set.tags.length === 0 ? (
-                        <span className="text-sm text-muted-foreground">-</span>
-                      ) : (
-                        <div className="flex flex-wrap gap-1">
-                          {set.tags.slice(0, 2).map((tag) => (
-                            <Badge key={tag} variant="outline" className="text-xs">
-                              {tag}
-                            </Badge>
-                          ))}
-                          {set.tags.length > 2 && (
-                            <Badge variant="outline" className="text-xs">
-                              +{set.tags.length - 2}
-                            </Badge>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="text-sm text-muted-foreground">
-                        {formatDate(set.created_at)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex justify-end gap-1">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedSet(set);
-                            setDetailDialogOpen(true);
-                          }}
-                          className="p-1.5 hover:bg-muted rounded transition-colors"
-                          title="View Details"
-                        >
-                          <Icon name="eye" size={16} className="text-muted-foreground" />
-                        </button>
-                        <RequirePermission permission="write">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedSet(set);
-                              setEditDialogOpen(true);
-                            }}
-                            className="p-1.5 hover:bg-primary/10 rounded transition-colors"
-                            title="Edit"
-                          >
-                            <Icon name="pencil-simple" size={16} className="text-primary" />
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedSet(set);
-                              setDeleteDialogOpen(true);
-                            }}
-                            className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
-                            title="Delete"
-                          >
-                            <Icon name="trash" size={16} className="text-destructive" />
-                          </button>
-                        </RequirePermission>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </LiquidGlass>
+      {loading || loadFailure ? (
+        <QueryState
+          what="credential sets"
+          loading={loading}
+          error={loadFailure?.cause}
+          onRetry={loadSets}
+        />
+      ) : (
+        <DataTable
+          caption="Credential sets"
+          rows={sets}
+          columns={columns}
+          rowKey={(set) => set.id}
+          onRowClick={openDetail}
+          emptyLabel="No credential sets found. Create your first set to get started."
+        />
+      )}
 
       {/* Create Dialog */}
-      <FormDialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-        <FormDialogContent>
-          <FormDialogHeader>
-            <FormDialogTitle>Create Credential Set</FormDialogTitle>
-          </FormDialogHeader>
-          <FormDialogBody>
-            <div className="overflow-y-auto max-h-[calc(85vh-12rem)]">
-              <CredentialSetForm
-                onSubmit={handleCreate}
-                onCancel={() => setCreateDialogOpen(false)}
-                isSubmitting={isSubmitting}
-              />
-            </div>
-          </FormDialogBody>
-        </FormDialogContent>
-      </FormDialog>
+      <Dialog
+        open={createDialogOpen}
+        onClose={() => setCreateDialogOpen(false)}
+        aria-label="Create Credential Set"
+        className="max-w-3xl!"
+      >
+        <div className="p-6">
+          <SectionHeading className="pr-10">Create Credential Set</SectionHeading>
+          <div className="max-h-[70vh] overflow-y-auto">
+            <CredentialSetForm
+              onSubmit={handleCreate}
+              onCancel={() => setCreateDialogOpen(false)}
+              isSubmitting={isSubmitting}
+            />
+          </div>
+        </div>
+      </Dialog>
 
       {/* Edit Dialog */}
-      <FormDialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <FormDialogContent>
-          <FormDialogHeader>
-            <FormDialogTitle>Edit Credential Set</FormDialogTitle>
-          </FormDialogHeader>
-          <FormDialogBody>
-            <div className="overflow-y-auto max-h-[calc(85vh-12rem)]">
-              {selectedSet && (
-                <CredentialSetForm
-                  set={selectedSet}
-                  onSubmit={handleEdit}
-                  onCancel={() => {
-                    setEditDialogOpen(false);
-                    setSelectedSet(null);
-                  }}
-                  isSubmitting={isSubmitting}
-                />
-              )}
-            </div>
-          </FormDialogBody>
-        </FormDialogContent>
-      </FormDialog>
+      <Dialog
+        open={editDialogOpen}
+        onClose={() => setEditDialogOpen(false)}
+        aria-label="Edit Credential Set"
+        className="max-w-3xl!"
+      >
+        <div className="p-6">
+          <SectionHeading className="pr-10">Edit Credential Set</SectionHeading>
+          <div className="max-h-[70vh] overflow-y-auto">
+            {selectedSet && (
+              <CredentialSetForm
+                set={selectedSet}
+                onSubmit={handleEdit}
+                onCancel={() => {
+                  setEditDialogOpen(false);
+                  setSelectedSet(null);
+                }}
+                isSubmitting={isSubmitting}
+              />
+            )}
+          </div>
+        </div>
+      </Dialog>
 
       {/* Detail Dialog */}
-      <FormDialog open={detailDialogOpen} onOpenChange={setDetailDialogOpen}>
-        <FormDialogContent>
-          <FormDialogHeader>
-            <FormDialogTitle>Credential Set Details</FormDialogTitle>
-          </FormDialogHeader>
-          <FormDialogBody>
-            <div className="overflow-y-auto max-h-[calc(85vh-12rem)] space-y-4">
-              {selectedSet && (
-                <>
-                  <div>
-                    <h3 className="text-sm font-medium text-muted-foreground">Name</h3>
-                    <p className="text-base font-medium">{selectedSet.name}</p>
+      <Dialog
+        open={detailDialogOpen}
+        onClose={() => setDetailDialogOpen(false)}
+        aria-label="Credential Set Details"
+        className="max-w-2xl!"
+      >
+        <div className="p-6">
+          <SectionHeading className="pr-10">Credential Set Details</SectionHeading>
+          <div className="max-h-[70vh] space-y-4 overflow-y-auto">
+            {selectedSet && (
+              <>
+                <FieldList
+                  fields={[
+                    ['Name', selectedSet.name],
+                    ['Description', selectedSet.description],
+                    ['Strategy', <Badge variant="neutral">{formatLabel(selectedSet.strategy)}</Badge>],
+                  ]}
+                />
+                <div>
+                  <SectionHeading level={3}>
+                    Credentials ({selectedSet.credentials.length})
+                  </SectionHeading>
+                  <div className="space-y-1">
+                    {selectedSet.credentials.map((cred, index) => (
+                      <ListRow
+                        key={cred.id}
+                        leading={
+                          <span className="hh-mono text-xs text-[var(--hh-text-muted)]">
+                            #{index + 1}
+                          </span>
+                        }
+                        title={cred.name}
+                        description={cred.description}
+                        actions={
+                          <>
+                            <Badge variant="neutral">{formatProtocol(cred.protocol)}</Badge>
+                            <Badge variant="neutral">{formatScope(cred.scope)}</Badge>
+                          </>
+                        }
+                      />
+                    ))}
                   </div>
-                  {selectedSet.description && (
-                    <div>
-                      <h3 className="text-sm font-medium text-muted-foreground">Description</h3>
-                      <p className="text-sm">{selectedSet.description}</p>
-                    </div>
-                  )}
+                </div>
+                {selectedSet.tags && selectedSet.tags.length > 0 && (
                   <div>
-                    <h3 className="text-sm font-medium text-muted-foreground">Strategy</h3>
-                    <Badge variant="secondary" className="mt-1">
-                      {formatLabel(selectedSet.strategy)}
-                    </Badge>
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-medium text-muted-foreground mb-2">
-                      Credentials ({selectedSet.credentials.length})
-                    </h3>
-                    <div className="space-y-2">
-                      {selectedSet.credentials.map((cred, index) => (
-                        <div
-                          key={cred.id}
-                          className="p-3 border border-border rounded-lg bg-muted/20"
-                        >
-                          <div className="flex items-center justify-between">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs text-muted-foreground">#{index + 1}</span>
-                                <span className="text-sm font-medium">{cred.name}</span>
-                              </div>
-                              {cred.description && (
-                                <p className="text-xs text-muted-foreground mt-1">
-                                  {cred.description}
-                                </p>
-                              )}
-                            </div>
-                            <div className="flex gap-2">
-                              <Badge variant="outline">{formatProtocol(cred.protocol)}</Badge>
-                              <Badge variant="outline">{formatScope(cred.scope)}</Badge>
-                            </div>
-                          </div>
-                        </div>
+                    <SectionHeading level={3}>Tags</SectionHeading>
+                    <div className="flex flex-wrap gap-2">
+                      {selectedSet.tags.map((tag) => (
+                        <Tag key={tag}>{tag}</Tag>
                       ))}
                     </div>
                   </div>
-                  {selectedSet.tags && selectedSet.tags.length > 0 && (
-                    <div>
-                      <h3 className="text-sm font-medium text-muted-foreground mb-2">Tags</h3>
-                      <div className="flex flex-wrap gap-2">
-                        {selectedSet.tags.map((tag) => (
-                          <Badge key={tag} variant="outline">
-                            {tag}
-                          </Badge>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          </FormDialogBody>
-        </FormDialogContent>
-      </FormDialog>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      </Dialog>
 
       {/* Delete Confirmation Dialog */}
-      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete Credential Set</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete "{selectedSet?.name}"?
-              {selectedSet?.usage_count && selectedSet.usage_count > 0 && (
-                <span className="block mt-2 text-destructive font-medium">
-                  Warning: This credential set is used by {selectedSet.usage_count} discovery
-                  definition{selectedSet.usage_count !== 1 ? 's' : ''}. Deleting it may affect
-                  those definitions.
-                </span>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
+      <Dialog
+        open={deleteDialogOpen}
+        onClose={() => setDeleteDialogOpen(false)}
+        aria-label="Delete Credential Set"
+      >
+        <div className="space-y-4 p-6">
+          <SectionHeading className="pr-10">Delete Credential Set</SectionHeading>
+          <p className="text-sm">Are you sure you want to delete "{selectedSet?.name}"?</p>
+          {usageCount > 0 && (
+            <Banner tone="danger">
+              Warning: This credential set is used by {usageCount} discovery definition
+              {usageCount !== 1 ? 's' : ''}. Deleting it may affect those definitions.
+            </Banner>
+          )}
+          <div className="flex justify-end gap-2">
             <Button
-              variant="outline"
+              variant="secondary"
               onClick={() => {
                 setDeleteDialogOpen(false);
                 setSelectedSet(null);
@@ -429,11 +384,11 @@ export const CredentialSetList: React.FC = () => {
             >
               Cancel
             </Button>
-            <Button variant="destructive" onClick={handleDelete} disabled={isSubmitting}>
+            <Button variant="danger" onClick={handleDelete} disabled={isSubmitting}>
               {isSubmitting ? 'Deleting...' : 'Delete'}
             </Button>
-          </DialogFooter>
-        </DialogContent>
+          </div>
+        </div>
       </Dialog>
     </div>
   );

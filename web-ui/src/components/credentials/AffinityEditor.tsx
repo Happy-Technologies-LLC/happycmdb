@@ -1,9 +1,5 @@
 import React, { useState } from 'react';
-import { Icon } from '@happy-technologies/design-system';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Badge } from '@/components/ui/badge';
+import { Card, Chip, IconButton, Input, Label, SectionHeading, Tag } from '@happy-technologies/design-system';
 import { CredentialAffinity } from '@/services/credential.service';
 
 interface AffinityEditorProps {
@@ -96,11 +92,35 @@ export const AffinityEditor: React.FC<AffinityEditorProps> = ({ affinity, onChan
     return currentArray.includes(value);
   };
 
+  const chipGroup = (
+    field: keyof CredentialAffinity,
+    label: string,
+    values: string[],
+    display: (value: string) => string = (value) => value
+  ) => (
+    <div className="space-y-2" role="group" aria-label={label}>
+      <Label>{label}</Label>
+      <div className="flex flex-wrap gap-2">
+        {values.map((value) => (
+          <Chip
+            key={value}
+            active={isSelected(field, value)}
+            onClick={() => handleToggleItem(field, value)}
+          >
+            {display(value)}
+          </Chip>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
-    <div className="space-y-6 p-4 border border-border rounded-lg bg-muted/20">
+    <Card className="space-y-6">
       <div className="space-y-1">
-        <h3 className="text-sm font-semibold">Credential Affinity</h3>
-        <p className="text-xs text-muted-foreground">
+        <SectionHeading level={3}>
+          Credential Affinity
+        </SectionHeading>
+        <p className="text-xs text-[var(--hh-text-muted)]">
           Define where this credential should be prioritized for use
         </p>
       </div>
@@ -121,30 +141,22 @@ export const AffinityEditor: React.FC<AffinityEditorProps> = ({ affinity, onChan
               }
             }}
             placeholder="10.0.0.0/8 or 192.168.1.0/24"
-            className="flex-1"
+            containerClassName="flex-1"
           />
-          <Button
-            type="button"
-            size="icon"
+          <IconButton
+            icon="plus"
             variant="outline"
+            shape="rounded"
+            aria-label="Add network CIDR"
             onClick={() => handleAddItem('networks', networkInput, () => setNetworkInput(''))}
-          >
-            <Icon name="plus" size={16} />
-          </Button>
+          />
         </div>
         {affinity.networks && affinity.networks.length > 0 && (
-          <div className="flex flex-wrap gap-2 mt-2">
+          <div className="mt-2 flex flex-wrap gap-2">
             {affinity.networks.map((network) => (
-              <Badge key={network} variant="secondary" className="gap-1">
+              <Tag key={network} onRemove={() => handleRemoveItem('networks', network)}>
                 {network}
-                <button
-                  type="button"
-                  onClick={() => handleRemoveItem('networks', network)}
-                  className="hover:text-destructive"
-                >
-                  <Icon name="x" size={12} />
-                </button>
-              </Badge>
+              </Tag>
             ))}
           </div>
         )}
@@ -166,111 +178,43 @@ export const AffinityEditor: React.FC<AffinityEditorProps> = ({ affinity, onChan
               }
             }}
             placeholder="*.prod.example.com or db-*"
-            className="flex-1"
+            containerClassName="flex-1"
           />
-          <Button
-            type="button"
-            size="icon"
+          <IconButton
+            icon="plus"
             variant="outline"
+            shape="rounded"
+            aria-label="Add hostname pattern"
             onClick={() =>
               handleAddItem('hostname_patterns', hostnameInput, () => setHostnameInput(''))
             }
-          >
-            <Icon name="plus" size={16} />
-          </Button>
+          />
         </div>
         {affinity.hostname_patterns && affinity.hostname_patterns.length > 0 && (
-          <div className="flex flex-wrap gap-2 mt-2">
+          <div className="mt-2 flex flex-wrap gap-2">
             {affinity.hostname_patterns.map((pattern) => (
-              <Badge key={pattern} variant="secondary" className="gap-1">
+              <Tag key={pattern} onRemove={() => handleRemoveItem('hostname_patterns', pattern)}>
                 {pattern}
-                <button
-                  type="button"
-                  onClick={() => handleRemoveItem('hostname_patterns', pattern)}
-                  className="hover:text-destructive"
-                >
-                  <Icon name="x" size={12} />
-                </button>
-              </Badge>
+              </Tag>
             ))}
           </div>
         )}
       </div>
 
-      {/* OS Types */}
-      <div className="space-y-2">
-        <Label>Operating Systems</Label>
-        <div className="flex flex-wrap gap-2">
-          {OS_TYPES.map((os) => (
-            <Badge
-              key={os}
-              variant={isSelected('os_types', os) ? 'default' : 'outline'}
-              className="cursor-pointer hover:opacity-80 transition-opacity"
-              onClick={() => handleToggleItem('os_types', os)}
-            >
-              {os}
-            </Badge>
-          ))}
-        </div>
-      </div>
-
-      {/* Device Types */}
-      <div className="space-y-2">
-        <Label>Device Types</Label>
-        <div className="flex flex-wrap gap-2">
-          {DEVICE_TYPES.map((type) => (
-            <Badge
-              key={type}
-              variant={isSelected('device_types', type) ? 'default' : 'outline'}
-              className="cursor-pointer hover:opacity-80 transition-opacity"
-              onClick={() => handleToggleItem('device_types', type)}
-            >
-              {type}
-            </Badge>
-          ))}
-        </div>
-      </div>
-
-      {/* Environments */}
-      <div className="space-y-2">
-        <Label>Environments</Label>
-        <div className="flex flex-wrap gap-2">
-          {ENVIRONMENTS.map((env) => (
-            <Badge
-              key={env}
-              variant={isSelected('environments', env) ? 'default' : 'outline'}
-              className="cursor-pointer hover:opacity-80 transition-opacity"
-              onClick={() => handleToggleItem('environments', env)}
-            >
-              {env}
-            </Badge>
-          ))}
-        </div>
-      </div>
-
-      {/* Cloud Providers */}
-      <div className="space-y-2">
-        <Label>Cloud Providers</Label>
-        <div className="flex flex-wrap gap-2">
-          {CLOUD_PROVIDERS.map((provider) => (
-            <Badge
-              key={provider}
-              variant={isSelected('cloud_providers', provider) ? 'default' : 'outline'}
-              className="cursor-pointer hover:opacity-80 transition-opacity"
-              onClick={() => handleToggleItem('cloud_providers', provider)}
-            >
-              {provider.toUpperCase()}
-            </Badge>
-          ))}
-        </div>
-      </div>
+      {chipGroup('os_types', 'Operating Systems', OS_TYPES)}
+      {chipGroup('device_types', 'Device Types', DEVICE_TYPES)}
+      {chipGroup('environments', 'Environments', ENVIRONMENTS)}
+      {chipGroup('cloud_providers', 'Cloud Providers', CLOUD_PROVIDERS, (provider) =>
+        provider.toUpperCase()
+      )}
 
       {/* Priority Slider */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <Label htmlFor="priority">Priority</Label>
-          <span className="text-sm text-muted-foreground">{affinity.priority || 5}</span>
+          <span className="text-sm text-[var(--hh-text-muted)]">{affinity.priority || 5}</span>
         </div>
+        {/* The design system 1.1.x ships no slider; the native range input stays (listed in the PR). */}
         <input
           id="priority"
           type="range"
@@ -278,14 +222,14 @@ export const AffinityEditor: React.FC<AffinityEditorProps> = ({ affinity, onChan
           max="10"
           value={affinity.priority || 5}
           onChange={(e) => handlePriorityChange(parseInt(e.target.value, 10))}
-          className="w-full h-2 bg-muted rounded-lg appearance-none cursor-pointer accent-primary"
+          className="h-2 w-full cursor-pointer accent-[var(--hh-accent-text)]"
         />
-        <div className="flex justify-between text-xs text-muted-foreground">
+        <div className="flex justify-between text-xs text-[var(--hh-text-muted)]">
           <span>Low (1)</span>
           <span>High (10)</span>
         </div>
       </div>
-    </div>
+    </Card>
   );
 };
 

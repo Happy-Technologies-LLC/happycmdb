@@ -6,7 +6,8 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import axios from 'axios';
 import type { InternalAxiosRequestConfig } from 'axios';
 import { setToken } from '../../utils/token';
-vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null, Eyebrow: () => null }));
+// The views now render real design-system components; only the icon glyphs are stubbed.
+vi.mock('@happy-technologies/design-system', async (importOriginal) => ({ ...(await importOriginal<typeof import('@happy-technologies/design-system')>()), Icon: () => null }));
 // These screens gate their write controls on the signed-in role (HAP-1252 S1); this test is about the writes, so the user may write.
 vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
 // Built at runtime from neutral parts; it only has to round-trip from the in-memory token store into the header.

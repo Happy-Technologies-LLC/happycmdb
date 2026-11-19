@@ -61,6 +61,7 @@ it('AgentList deletes an agent_id containing ../ only inside /api/v1/agents/ (HA
   const sentPath = new URL(`${del.baseURL ?? ''}${del.url}`, window.location.origin).pathname; // dot segments resolved, as a browser does
   expect(sentPath).toMatch(/^\/api\/v1\/agents\/[^/]+$/);
   expect(decodeURIComponent(sentPath.split('/').pop()!)).toBe(id);
+  expect(del.headers.Authorization).toBe(`Bearer ${SEEDED}`);
 });
 it.each(['.', '..'])('AgentList sends no DELETE for the dot-segment agent_id %j (HAP-1234 S1)', async (id) => {
   await clickDelete(id);

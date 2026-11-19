@@ -142,15 +142,20 @@ describe('AgentList rows and controls', () => {
   });
 
   it('a writer can delete: confirmation first, then DELETE of the encoded id, then a refresh', async () => {
+    const id = 'agent/with space'; // encoding changes this id, so a dropped encodeURIComponent fails the test
+    vi.mocked(apiClient.get).mockResolvedValue({
+      success: true,
+      data: [agent('alpha'), agent('bravo', { agent_id: id, status: 'offline', total_jobs_failed: 2 })],
+    });
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     vi.mocked(apiClient.delete).mockResolvedValue({ success: true });
     renderList();
     await screen.findByRole('table', { name: 'Discovery agents' });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete agent agent-bravo' }));
+    fireEvent.click(screen.getByRole('button', { name: `Delete agent ${id}` }));
 
-    expect(window.confirm).toHaveBeenCalledWith('Are you sure you want to delete agent agent-bravo?');
-    await waitFor(() => expect(apiClient.delete).toHaveBeenCalledWith('/agents/agent-bravo'));
+    expect(window.confirm).toHaveBeenCalledWith(`Are you sure you want to delete agent ${id}?`);
+    await waitFor(() => expect(apiClient.delete).toHaveBeenCalledWith('/agents/agent%2Fwith%20space'));
     await waitFor(() => expect(vi.mocked(apiClient.get).mock.calls.length).toBeGreaterThanOrEqual(2));
   });
 

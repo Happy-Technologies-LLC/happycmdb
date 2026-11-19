@@ -91,12 +91,18 @@ describe('connector card', () => {
 
   it.each(['javascript:alert(1)', 'data:text/html,x', ' JaVaScRiPt:alert(1)'])(
     'has no homepage control and never opens a window for the unsafe homepage %j',
-    (homepage) => {
+    async (homepage) => {
+      const user = userEvent.setup();
       const open = vi.spyOn(window, 'open').mockReturnValue(null);
-      render(<ConnectorCard connector={{ ...CONNECTOR, homepage }} />);
+      const onSelect = vi.fn();
+      render(<ConnectorCard connector={{ ...CONNECTOR, homepage }} onSelect={onSelect} />);
 
       expect(screen.queryByRole('button', { name: /homepage/ })).not.toBeInTheDocument();
+
+      await user.click(screen.getByText('Bi-directional ServiceNow CMDB sync'));
+
       expect(open).not.toHaveBeenCalled();
+      expect(onSelect).toHaveBeenCalledTimes(1);
     },
   );
 

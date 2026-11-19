@@ -40,13 +40,14 @@ const role = (rolsuper: boolean, rolbypassrls: boolean, extra: Record<string, un
   ({ row: {
     current_user: 'cmdb_x', session_user: 'cmdb_x', rolsuper, rolbypassrls,
     session_user_privileged: false, can_set_privileged_role: false, session_authorization_masked: false,
-    dangerous_builtin_role_member: false, createrole_escalation: false, ...extra,
+    dangerous_builtin_role_member: false, createrole_escalation: false, replication_escalation: false, ...extra,
   } });
 const FLAGS = { current_user: 'cmdb_x', session_user: 'cmdb_x', rolsuper: false, rolbypassrls: false,
   session_user_privileged: false, can_set_privileged_role: false, session_authorization_masked: false,
-  dangerous_builtin_role_member: false, createrole_escalation: false };
+  dangerous_builtin_role_member: false, createrole_escalation: false, replication_escalation: false };
 const FLAG_NAMES = ['rolsuper', 'rolbypassrls', 'session_user_privileged', 'can_set_privileged_role',
-  'session_authorization_masked', 'dangerous_builtin_role_member', 'createrole_escalation'] as const;
+  'session_authorization_masked', 'dangerous_builtin_role_member', 'createrole_escalation',
+  'replication_escalation'] as const;
 const detailOf = (flags: Record<string, unknown>) => FLAG_NAMES.map(name => `${name}=${flags[name]}`).join(', ');
 const logged = () => JSON.stringify([logger.info.mock.calls, logger.warn.mock.calls, logger.error.mock.calls]);
 const OFF = {} as NodeJS.ProcessEnv;
@@ -93,6 +94,7 @@ describe('checkDbRole', () => {
     ['a session login masked by SET SESSION AUTHORIZATION', { session_authorization_masked: true }],
     ['a member of a dangerous built-in role', { dangerous_builtin_role_member: true }],
     ['a CREATEROLE login below PostgreSQL 16', { createrole_escalation: true }],
+    ['a member of a REPLICATION role', { replication_escalation: true }],
   ];
 
   test.each(escalations)('%s: logs error with enforcement off, refuses with it on, naming roles and flags', async (_name, extra) => {
@@ -114,16 +116,19 @@ describe('checkDbRole', () => {
     await expect(checkDbRole(fakePool({ row: rest }).pool, ON)).rejects.toThrow(/refusing to start/);
   });
 
-  test('the refusal and the error line name each new reason', async () => {
-    const refusal = await checkDbRole(fakePool(role(false, false, { dangerous_builtin_role_member: true })).pool, ON)
+  test('the refusal and the error line name each reason', async () => {
+    const refusal = await checkDbRole(fakePool(role(false, false, { replication_escalation: true })).pool, ON)
       .then(() => undefined, (e: Error) => e);
-    await checkDbRole(fakePool(role(false, false, { dangerous_builtin_role_member: true })).pool, OFF);
+    await checkDbRole(fakePool(role(false, false, { replication_escalation: true })).pool, OFF);
     for (const text of [refusal?.message, logger.error.mock.calls[0][0] as string]) {
       expect(text).toContain('session_authorization_masked');
       expect(text).toContain('dangerous_builtin_role_member');
       expect(text).toContain('createrole_escalation');
+      expect(text).toContain('replication_escalation');
       expect(text).toContain('pg_execute_server_program');
+      expect(text).toContain('pg_read_all_data');
     }
+    expect(refusal?.message).toContain('replication_escalation=true');
   });
 
   test('a probe row whose session login has no pg_roles row (session_user_privileged = true, the SQL default) is a violation', async () => {
@@ -298,7 +303,21 @@ describe('probeDbRole against PostgreSQL', () => {
       CREATE ROLE g_cr_member LOGIN NOSUPERUSER NOBYPASSRLS CREATEROLE IN ROLE g_cr_parent;
       CREATE ROLE g_cr_holder NOLOGIN NOSUPERUSER NOBYPASSRLS CREATEROLE;
       CREATE ROLE g_cr_via_holder LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE IN ROLE g_cr_holder;
-      CREATE ROLE g_cr_grandchild LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE IN ROLE g_cr_via_holder;`);
+      CREATE ROLE g_cr_grandchild LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE IN ROLE g_cr_via_holder;
+      CREATE ROLE g_repl LOGIN NOSUPERUSER NOBYPASSRLS REPLICATION;
+      CREATE ROLE g_repl_parent NOLOGIN NOSUPERUSER NOBYPASSRLS REPLICATION;
+      CREATE ROLE g_repl_member LOGIN NOSUPERUSER NOBYPASSRLS NOREPLICATION IN ROLE g_repl_parent;
+      CREATE ROLE g_repl_noinherit LOGIN NOSUPERUSER NOBYPASSRLS NOREPLICATION NOINHERIT IN ROLE g_repl_parent;
+      CREATE ROLE g_repl_grandchild LOGIN NOSUPERUSER NOBYPASSRLS NOREPLICATION IN ROLE g_repl_member;
+      CREATE ROLE g_sess_plain NOLOGIN NOSUPERUSER NOBYPASSRLS NOREPLICATION;
+      CREATE ROLE g_sess_prog LOGIN NOSUPERUSER NOBYPASSRLS IN ROLE pg_execute_server_program, g_sess_plain;
+      CREATE ROLE g_sess_repl LOGIN NOSUPERUSER NOBYPASSRLS REPLICATION IN ROLE g_sess_plain;
+      CREATE ROLE g_opt_inherit_false LOGIN NOSUPERUSER NOBYPASSRLS;
+      CREATE ROLE g_opt_set_false LOGIN NOSUPERUSER NOBYPASSRLS;
+      CREATE ROLE g_opt_admin_both_false LOGIN NOSUPERUSER NOBYPASSRLS;
+      GRANT pg_execute_server_program TO g_opt_inherit_false WITH INHERIT FALSE;
+      GRANT pg_execute_server_program TO g_opt_set_false WITH SET FALSE;
+      GRANT pg_execute_server_program TO g_opt_admin_both_false WITH ADMIN OPTION, INHERIT FALSE, SET FALSE;`);
   }, 30000);
   afterAll(() => host.kill());
 
@@ -307,7 +326,7 @@ describe('probeDbRole against PostgreSQL', () => {
   const pick = (r: Awaited<ReturnType<typeof probeDbRole>>) =>
     [r.current_user, r.session_user, r.rolsuper, r.rolbypassrls, r.session_user_privileged, r.can_set_privileged_role];
   const escalation = (r: Awaited<ReturnType<typeof probeDbRole>>) =>
-    [r.session_authorization_masked, r.dangerous_builtin_role_member, r.createrole_escalation];
+    [r.session_authorization_masked, r.dangerous_builtin_role_member, r.createrole_escalation, r.replication_escalation];
 
   test.each([
     // A superuser is a member of every role, so it also reports can_set_privileged_role (already flagged by rolsuper).
@@ -326,18 +345,32 @@ describe('probeDbRole against PostgreSQL', () => {
     expect(pick(await probe(sessionRole, setRole))).toEqual(expected);
   });
 
-  // Escalation flags: [session_authorization_masked, dangerous_builtin_role_member, createrole_escalation].
+  // Escalation flags: [session_authorization_masked, dangerous_builtin_role_member, createrole_escalation, replication_escalation].
+  // A superuser is a member of every role, so it also reports every membership-based flag (already flagged by rolsuper).
   test.each([
-    ['plain', 'g_plain', undefined, [false, false, false]],
-    ['pg_execute_server_program member', 'g_prog', undefined, [false, true, false]],
-    ['pg_write_server_files member', 'g_wfiles', undefined, [false, true, false]],
-    ['pg_read_server_files member', 'g_rfiles', undefined, [false, true, false]],
-    ['pg_write_all_data member', 'g_wall', undefined, [false, true, false]],
-    ['pg_read_all_data member only (grant posture, not flagged)', 'g_rall', undefined, [false, false, false]],
-    ['NOINHERIT member (SET ROLE still works)', 'g_noinherit_prog', undefined, [false, true, false]],
-    ['indirect member through a plain parent', 'g_prog_child', undefined, [false, true, false]],
-    ['member current_user under a superuser session login', 'g_super', 'g_prog', [false, true, false]],
-    ['CREATEROLE on the real (PG18) server: not flagged', 'g_createrole', undefined, [false, false, false]],
+    ['plain', 'g_plain', undefined, [false, false, false, false]],
+    ['pg_execute_server_program member', 'g_prog', undefined, [false, true, false, false]],
+    ['pg_write_server_files member', 'g_wfiles', undefined, [false, true, false, false]],
+    ['pg_read_server_files member', 'g_rfiles', undefined, [false, true, false, false]],
+    ['pg_write_all_data member', 'g_wall', undefined, [false, true, false, false]],
+    ['pg_read_all_data member', 'g_rall', undefined, [false, true, false, false]],
+    ['NOINHERIT member (SET ROLE still works)', 'g_noinherit_prog', undefined, [false, true, false, false]],
+    ['indirect member through a plain parent', 'g_prog_child', undefined, [false, true, false, false]],
+    ['member current_user under a superuser session login', 'g_super', 'g_prog', [false, true, false, true]],
+    ['session_user is a member of a dangerous built-in role, current_user is a plain role it belongs to', 'g_sess_prog', 'g_sess_plain',
+      [false, true, false, false]],
+    ['CREATEROLE on the real (PG18) server: not flagged', 'g_createrole', undefined, [false, false, false, false]],
+    ['REPLICATION login', 'g_repl', undefined, [false, false, false, true]],
+    ['member of a NOLOGIN REPLICATION role', 'g_repl_member', undefined, [false, false, false, true]],
+    ['NOINHERIT member of a REPLICATION role (SET ROLE still works)', 'g_repl_noinherit', undefined, [false, false, false, true]],
+    ['indirect member of a REPLICATION role', 'g_repl_grandchild', undefined, [false, false, false, true]],
+    ['REPLICATION current_user under a plain session login that is a member of the role',
+      'g_repl_member', 'g_repl_parent', [false, false, false, true]],
+    ['session_user has REPLICATION, current_user is a plain role it belongs to', 'g_sess_repl', 'g_sess_plain',
+      [false, false, false, true]],
+    ['GRANT ... WITH INHERIT FALSE', 'g_opt_inherit_false', undefined, [false, true, false, false]],
+    ['GRANT ... WITH SET FALSE', 'g_opt_set_false', undefined, [false, true, false, false]],
+    ['GRANT ... WITH ADMIN OPTION, INHERIT FALSE, SET FALSE', 'g_opt_admin_both_false', undefined, [false, true, false, false]],
   ])('%s', async (_name, sessionRole, setRole, expected) => {
     expect(escalation(await probe(sessionRole, setRole))).toEqual(expected);
   });
@@ -374,6 +407,12 @@ describe('probeDbRole against PostgreSQL', () => {
       ? await probe(sessionRole, setRole)
       : await probe(sessionRole, setRole, { systemUser });
     expect(row.session_authorization_masked).toBe(expected);
+  });
+
+  // 160000 is the first server_version_num that has system_user: a masked session is detected exactly there.
+  test('a PG16.0 server (version 160000) detects a masked session login', async () => {
+    const row = await probe('g_plain', undefined, { version: '160000', systemUser: 'scram-sha-256:g_super' });
+    expect(row.session_authorization_masked).toBe(true);
   });
 
   test('is a read-only probe: the transaction is rolled back and the session is usable afterwards', async () => {

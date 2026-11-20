@@ -55,6 +55,10 @@ const identities: Record<string, { _id: string; _username: string; _role: 'opera
   viewer: { _id: 'viewer', _username: 'vicky', _role: 'viewer', _enabled: true, _organizationId: A },
   admin: { _id: 'admin', _username: 'ada', _role: 'admin', _enabled: true, _organizationId: A },
   agent: { _id: 'agent', _username: 'worker', _role: 'agent', _enabled: true, _organizationId: A },
+  // Gate-order fixtures: an org-less agent, and identities whose verified subject is the empty string. The repository
+  // is this file's existing boundary fixture; the token, middleware and router are real.
+  agentNoOrg: { _id: 'agentNoOrg', _username: 'orphan-worker', _role: 'agent', _enabled: true },
+  '': { _id: '', _username: 'ownerless', _role: 'operator', _enabled: true, _organizationId: A },
 };
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({ findUserById: async (id: string) => identities[id] ?? null })),
@@ -76,6 +80,11 @@ const jwt = new JWTService(loadConfig().auth.jwt);
 const as = (id: string) => ({ Authorization: `Bearer ${jwt.generateAccessToken(id, identities[id]._username, identities[id]._role, identities[id]._organizationId, 0, Math.floor(Date.now() / 1000))}` });
 const credential = (name: string) => ({ name, protocol: 'api_key', scope: 'api', credentials: { key: `only-${name}` } });
 const missing = '99999999-9999-4999-8999-999999999999';
+// Exactly what the router-level gates send today. The agent and owner refusals are bare (no `code`, no `_error` family):
+// a later ForbiddenCode for them must change these `toEqual`s on purpose.
+const orgRequired = { success: false, error: 'Forbidden', message: 'Organization claim required', _error: 'Forbidden', _message: 'Organization claim required', code: 'ORGANIZATION_REQUIRED' };
+const agentRefused = { success: false, error: 'Forbidden', message: 'Credential management requires a human user' };
+const ownerRefused = { success: false, error: 'Forbidden', message: 'Verified credential owner required' };
 const legacyId = '88888888-8888-4888-8888-888888888888';
 let bId: string;
 let aId: string;
@@ -207,7 +216,8 @@ it('list counts and the 409 count same-organization references only; a foreign r
 });
 
 it('rejects org-less identities before SQL and prevents match/rank/validate enumeration', async () => {
-  expect((await request(app).get('/api/v1/credentials').set(as('none'))).status).toBe(403);
+  const orgLess = await request(app).get('/api/v1/credentials').set(as('none'));
+  expect([orgLess.status, orgLess.body]).toEqual([403, orgRequired]);
   expect((await request(app).post('/api/v1/credentials/rank').set(as('none')).send({})).status).toBe(403);
   expect((await request(app).post('/api/v1/credentials/match').set(as('none')).send({})).status).toBe(403);
   expect((await request(app).post(`/api/v1/credentials/${aId}/validate`).set(as('none')).send({})).status).toBe(403);
@@ -235,11 +245,41 @@ it('rejects org-less identities before SQL and prevents match/rank/validate enum
 
 it('requires authentication, an organization and write permission before credential mutation', async () => {
   expect((await request(app).get('/api/v1/credentials')).status).toBe(401);
-  expect((await request(app).post('/api/v1/credentials').set(as('none')).send(credential('forbidden'))).status).toBe(403);
+  const orgLessCreate = await request(app).post('/api/v1/credentials').set(as('none')).send(credential('forbidden'));
+  expect([orgLessCreate.status, orgLessCreate.body]).toEqual([403, orgRequired]);
   expect((await request(app).put(`/api/v1/credentials/${aId}`).set(as('viewer')).send({ name: 'forbidden' })).status).toBe(403);
-  expect((await request(app).post('/api/v1/credentials').set(as('agent')).send(credential('agent-forbidden'))).status).toBe(403);
-  expect((await request(app).get('/api/v1/credentials').set(as('agent'))).status).toBe(403);
+  const agentCreate = await request(app).post('/api/v1/credentials').set(as('agent')).send(credential('agent-forbidden'));
+  expect([agentCreate.status, agentCreate.body]).toEqual([403, agentRefused]);
+  const agentList = await request(app).get('/api/v1/credentials').set(as('agent'));
+  expect([agentList.status, agentList.body]).toEqual([403, agentRefused]);
   expect((await sql('SELECT name FROM credentials WHERE id = $1', [aId]))[0].name).toBe('A-private');
+});
+
+it('router gates refuse an agent, an org-less agent and an ownerless subject with their own bodies, in order, before any SQL', async () => {
+  const beforeSql = serial;
+  // Both mount points, a different path under each: the inline agent gate covers /credentials and /credential-sets.
+  const agentMatch = await request(app).post('/api/v1/credentials/match').set(as('agent')).send({});
+  expect([agentMatch.status, agentMatch.body]).toEqual([403, agentRefused]);
+  const agentSets = await request(app).get('/api/v1/credential-sets').set(as('agent'));
+  expect([agentSets.status, agentSets.body]).toEqual([403, agentRefused]);
+  // Order: requireOrganization() runs before the inline gate, so an org-less agent gets the organization body.
+  for (const [verb, path] of [['get', '/credentials'], ['post', '/credentials/match'], ['get', '/credential-sets']] as const) {
+    const response = await request(app)[verb](`/api/v1${path}`).set(as('agentNoOrg')).send({});
+    expect([path, response.status, response.body]).toEqual([path, 403, orgRequired]);
+  }
+  // The owner check runs before the agent check: an empty verified subject is refused as ownerless, even as an agent.
+  const ownerless = await request(app).get('/api/v1/credentials').set(as(''));
+  expect([ownerless.status, ownerless.body]).toEqual([403, ownerRefused]);
+  const ownerlessSets = await request(app).get('/api/v1/credential-sets').set(as(''));
+  expect([ownerlessSets.status, ownerlessSets.body]).toEqual([403, ownerRefused]);
+  identities[''] = { ...identities[''], _role: 'agent' };
+  try {
+    const ownerlessAgent = await request(app).get('/api/v1/credentials').set(as(''));
+    expect([ownerlessAgent.status, ownerlessAgent.body]).toEqual([403, ownerRefused]);
+  } finally {
+    identities[''] = { ...identities[''], _role: 'operator' };
+  }
+  expect(serial).toBe(beforeSql);
 });
 
 it('HAP-514: a viewer owner cannot validate a credential or select a set before any SQL; with write permission the owner can', async () => {
@@ -349,9 +389,11 @@ it('scopes credential sets and their member IDs to the verified owner/org', asyn
   expect(owned.status).toBe(201);
   const setId: string = owned.body.data.id;
   expect((await request(app).get('/api/v1/credential-sets').set(as('d'))).body.data).toEqual([]);
-  expect((await request(app).get('/api/v1/credential-sets').set(as('none'))).status).toBe(403);
-  expect((await request(app).post('/api/v1/credential-sets').set(as('none'))
-    .send({ name: 'orgless', credential_ids: [aId] })).status).toBe(403);
+  const orgLessSets = await request(app).get('/api/v1/credential-sets').set(as('none'));
+  expect([orgLessSets.status, orgLessSets.body]).toEqual([403, orgRequired]);
+  const orgLessSetCreate = await request(app).post('/api/v1/credential-sets').set(as('none'))
+    .send({ name: 'orgless', credential_ids: [aId] });
+  expect([orgLessSetCreate.status, orgLessSetCreate.body]).toEqual([403, orgRequired]);
   expect((await request(app).get('/api/v1/credential-sets').set(as('b'))).body.data).toEqual([]);
   const foreign = await request(app).get(`/api/v1/credential-sets/${setId}`).set(as('b'));
   const absent = await request(app).get(`/api/v1/credential-sets/${missing}`).set(as('b'));

@@ -192,30 +192,60 @@ describe('the column section of the grant matrix', () => {
   }, 60000);
 });
 
-describe('the $hap2126$ block cannot silently drift from the migrations (grants, dynamic grantees, REVOKE, late files)', () => {
+describe('the $hap2126$ block cannot silently drift from the migrations (grants, dynamic grantees, REVOKE, every file)', () => {
   const FIX = 'add the table to the $hap2126$ block in deploy/build01-staging-app-login.sql, to TABLE_MIGRATIONS and EXPECTED in '
     + 'staging-app-login-receipts-grant.test.ts, and to deploy/BUILD01-STAGING.md';
-  /** Migrations after 045 that name cmdb_app (or grant through a placeholder) yet grant it nothing: file name -> why. */
-  const NON_APP_GRANTING: Record<string, string> = {};
-  /** The migrator runs every `*.sql` of the directory in lexical order (migrator.ts `discoverMigrations`), so a later file is any `.sql` that sorts after 045. */
-  const laterThan045 = (names: string[]) => names.filter(name => name.endsWith('.sql') && name > '045_staging_app_login_acl.sql').sort();
-  /** A migration's SQL without `--` comments (full-line and trailing), so a mention of cmdb_app in prose selects nothing. */
+  /** Migrations that name cmdb_app, build a grantee at run time or run EXECUTE with a privilege statement, yet grant cmdb_app nothing: file name -> why. */
+  const NON_APP_GRANTING: Record<string, string> = {
+    '001_complete_schema.sql': 'EXECUTE only in a column-diff function and in trigger EXECUTE FUNCTION; every GRANT is TO PUBLIC',
+    '010_business_service_views_org_functions.sql': 'EXECUTE only as a privilege (REVOKE EXECUTE ... FROM PUBLIC); no GRANT to a role',
+    '020_auth_credential_events.sql': 'EXECUTE only in trigger EXECUTE FUNCTION; the one privilege statement is REVOKE ALL ... FROM PUBLIC',
+    '028_change_history_reconciliation_org_provenance.sql': 'one static EXECUTE of REVOKE ... FROM metabase_readonly; the rest is FROM PUBLIC',
+    '031_business_service_mapping_ownership.sql': 'EXECUTE only re-creates a view; the one privilege statement is REVOKE ... FROM PUBLIC',
+    '032_secret_table_public_grants.sql': 'dynamic REVOKE FROM PUBLIC and metabase_readonly; grants only cmdb_user and metabase_readonly',
+    '033_public_business_service_audit_acl.sql': 'dynamic REVOKE FROM PUBLIC; grants only cmdb_user and metabase_readonly',
+    '041_discovery_definition_migration_ledger.sql': 'EXECUTE only in trigger EXECUTE FUNCTION; the privilege statements are REVOKE ... FROM PUBLIC',
+    '050_bi_cost_view_grants.sql': 'dynamic REVOKE and GRANT, but the grantee is the literal metabase_readonly',
+    '051_bi_view_security_barrier.sql': 'dynamic REVOKE and GRANT, but the grantee is the literal metabase_readonly',
+    '053_business_service_lineage_read_acl.sql': 'names cmdb_app only in a comment; its one GRANT is to cmdb_user',
+  };
+  const APP_LOGIN_ACL = '045_staging_app_login_acl.sql';
+  /**
+   * Every `.sql` of the directory except 045 itself, in the migrator's order (migrator.ts `discoverMigrations`: non-recursive, UTF-16
+   * sort). The migrator applies any unrecorded file wherever it sorts and app-login creates cmdb_app before it runs, so a file that sorts
+   * before 045 can grant or revoke cmdb_app just as a later one can.
+   */
+  const scannedMigrations = (names: string[]) => names.filter(name => name.endsWith('.sql') && name !== APP_LOGIN_ACL).sort();
+  /** A migration's SQL without `--` comments. It cuts from the first `--` even inside a block comment or a string, so it can hide code: only the GRANT table parse and the stale-listing check use it. */
   const stripComments = (sql: string) => sql.replace(/--.*$/gm, '');
   const code = (name: string) => stripComments(migration(name));
-  const later = laterThan045(readdirSync(MIGRATIONS)); // files only: no rollback/ or __tests__/
+  const scanned = scannedMigrations(readdirSync(MIGRATIONS)); // files only: no rollback/ or __tests__/
+  // Everything below that decides whether a file is dangerous reads the RAW text: a comment mention is a (loud) false positive, never a hidden grant.
   const namesApp = (sql: string) => /\bcmdb_app\b/i.test(sql);
-  const DYNAMIC_GRANTEE = /\bTO\s*(?:%I|%s|quote_ident\(|['"]\s*\|\|)/i;
+  const GRANTEE_MARKER = String.raw`(?:%(?:\d+\$)?[IsL]|quote_ident\(|U&\s*"|['"]\s*(?:\|\||,))`;
+  const DYNAMIC_GRANTEE = new RegExp(String.raw`\b(?:TO|FROM)\s*${GRANTEE_MARKER}`, 'i');
+  const DYNAMIC_GRANT = new RegExp(String.raw`\bGRANT\b[^;]*\bTO\s*${GRANTEE_MARKER}`, 'i');
   const revokesApp = (sql: string) => /\bREVOKE\b[^;]*\bcmdb_app\b/i.test(sql);
+  /** Dynamic SQL next to a privilege statement: any spelling of the grantee can be built at run time, so no text check can read it. */
+  const dynamicPrivileges = (sql: string) =>
+    /\bEXECUTE\b/i.test(sql) && /\b(?:GRANT|REVOKE)\b|\bALTER\s+DEFAULT\s+PRIVILEGES\b/i.test(sql);
+  /** A real grant to the app role: a literal GRANT ... TO ... cmdb_app, an ARRAY[... 'cmdb_app' ...] grantee list beside a GRANT, or a dynamic grantee inside a GRANT. */
+  const grantsApp = (sql: string) => {
+    const text = stripComments(sql);
+    return /\bGRANT\b[^;]*\bTO\b[^;]*\bcmdb_app\b/i.test(text)
+      || (/\bARRAY\s*\[[^\]]*\bcmdb_app\b[^\]]*\]/i.test(text) && /\bGRANT\b/i.test(text))
+      || DYNAMIC_GRANT.test(text);
+  };
 
-  /** What is wrong with the listing of `sources` (comment-stripped later migrations by name): one message per problem, empty when none. */
+  /** What is wrong with the listing of `sources` (raw scanned migrations by name): one message per problem, empty when none. */
   const listingProblems = (sources: Record<string, string>, listed: string[], nonApp: Record<string, string>): string[] => {
     const problems: string[] = [];
     for (const name of listed) {
-      if (!(name in sources)) problems.push(`${name} is in TABLE_MIGRATIONS but is not a migration after 045`);
-      else if (!namesApp(sources[name]!) && !DYNAMIC_GRANTEE.test(sources[name]!)) problems.push(`${name} is in TABLE_MIGRATIONS but no longer names cmdb_app`);
+      if (!(name in sources)) problems.push(`${name} is in TABLE_MIGRATIONS but is not a migration`);
+      else if (!grantsApp(sources[name]!)) problems.push(`${name} is in TABLE_MIGRATIONS but no longer grants to cmdb_app`);
     }
     for (const name of Object.keys(nonApp)) {
-      if (!(name in sources)) problems.push(`${name} is in NON_APP_GRANTING but is not a migration after 045`);
+      if (!(name in sources)) problems.push(`${name} is in NON_APP_GRANTING but is not a migration`);
       if (listed.includes(name)) problems.push(`${name} is in both TABLE_MIGRATIONS and NON_APP_GRANTING: list it in one place only`);
     }
     for (const [name, sql] of Object.entries(sources)) {
@@ -229,19 +259,36 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
         problems.push(`${name} names cmdb_app but is not in TABLE_MIGRATIONS (list it in TABLE_MIGRATIONS, or in NON_APP_GRANTING with a reason `
           + `if it grants cmdb_app nothing): ${FIX}`);
       } else if (DYNAMIC_GRANTEE.test(sql)) {
-        problems.push(`${name} grants to a dynamic grantee (TO %I, %s, quote_ident or a concatenation) but is in neither TABLE_MIGRATIONS nor `
-          + `NON_APP_GRANTING: list it in one place or the other; ${FIX}`);
+        problems.push(`${name} uses a dynamic grantee (TO or FROM %I, %s, %L, quote_ident, U& or a concatenation) but is in neither TABLE_MIGRATIONS `
+          + `nor NON_APP_GRANTING: list it in one place or the other; ${FIX}`);
+      } else if (dynamicPrivileges(sql)) {
+        problems.push(`${name} runs EXECUTE beside a GRANT, REVOKE or ALTER DEFAULT PRIVILEGES, so its grantee can be built at run time and no `
+          + 'text check can read it: list it in TABLE_MIGRATIONS, or in NON_APP_GRANTING with a reason if it grants cmdb_app nothing; '
+          + FIX);
       }
     }
     return problems;
   };
-  const sources = () => Object.fromEntries(later.map(name => [name, code(name)]));
+  const sources = () => Object.fromEntries(scanned.map(name => [name, migration(name)]));
 
-  /** The block's `(table, privileges)` tuples, and how many VALUES tuples of any shape the block holds. */
-  const blockText = () => stripComments(grantBlock());
-  const blockRowList = () => [...blockText().matchAll(/\('(public\.[a-z_]+)',\s*'([A-Z, ]+)'\)/g)]
+  /** The block's `(table, privileges)` tuples, how many VALUES tuples of any shape it holds, and its EXECUTE statements. Raw text: nothing is stripped out of sight. */
+  const blockText = () => grantBlock();
+  const rowListOf = (text: string) => [...text.matchAll(/\('(public\.[a-z_]+)',\s*'([A-Z, ]+)'\)/g)]
     .map(match => [match[1]!, match[2]!.split(',').map(p => p.trim())] as const);
+  const tuplesOf = (text: string) => [...text.matchAll(/\('([^']+)',\s*'([^']+)'\)/g)].map(match => match[0]);
+  const executesOf = (text: string) => text.match(/\bEXECUTE\b/g) ?? [];
+  const blockRowList = () => rowListOf(blockText());
   const blockRows = () => Object.fromEntries(blockRowList());
+  /** What is wrong with the shape of a block beyond its rows: a table twice, a tuple of another shape (`('cmdb.x', 'SELECT, DELETE')`, a lower-case privilege), anything but one EXECUTE. */
+  const blockShapeProblems = (text: string): string[] => {
+    const problems: string[] = [];
+    const rows = rowListOf(text);
+    if (Object.keys(Object.fromEntries(rows)).length !== rows.length) problems.push('a table appears twice in the VALUES rows');
+    if (tuplesOf(text).length !== rows.length) problems.push('a VALUES tuple has another shape than (public.<table>, UPPER-CASE privileges)');
+    const executes = executesOf(text).length;
+    if (executes !== 1) problems.push(`${executes} EXECUTE statements, not the one \`EXECUTE format('GRANT %s ON %s TO cmdb_app', ...)\` over the VALUES rows`);
+    return problems;
+  };
 
   /** Tables of every `GRANT ... ON <tables> TO` statement of `sql`, and the first 80 characters of each GRANT whose table cannot be named. */
   const grantStatements = (sql: string): { tables: string[]; unparsed: string[] } => {
@@ -255,47 +302,140 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
     }
     return { tables, unparsed };
   };
-
-  it('takes the files the migrator runs after 045, in its order', () => {
-    expect(laterThan045(['045_staging_app_login_acl.sql', '045a_x.sql', '046_a.sql', 'hotfix_grants.sql', '044_x.sql', 'README.md']))
-      .toEqual(['045a_x.sql', '046_a.sql', 'hotfix_grants.sql']);
-  });
-
-  it('lists every migration after 045 that names cmdb_app, and only those', () => {
-    expect(later.length).toBeGreaterThan(TABLE_MIGRATIONS.length);
-    expect(listingProblems(sources(), TABLE_MIGRATIONS, NON_APP_GRANTING)).toEqual([]);
-    for (const prose of ['053_business_service_lineage_read_acl.sql', '055_auth_credential_events_scope_events.sql']) {
-      expect(later).toContain(prose);
-      expect(namesApp(code(prose))).toBe(false); // 053 names cmdb_app only in a comment, 055 not at all
+  /** Throws unless every GRANT of the (comment-stripped) listed migration `name` names a table that the block `rows` restore. */
+  const assertGrantsRestored = (name: string, sql: string, rows: Record<string, string[]>): void => {
+    const { tables, unparsed } = grantStatements(sql);
+    if (unparsed.length) {
+      throw new Error(`${name} has a GRANT whose table the extraction cannot name (${unparsed.map(s => `"${s}"`).join(', ')}): make `
+        + `grantStatements understand it, then ${FIX}`);
     }
+    if (tables.length === 0) throw new Error(`${name} is in TABLE_MIGRATIONS but no GRANT ... ON <table> TO statement was found in it`);
+    for (const table of tables) {
+      if (!(table in rows)) throw new Error(`${name} grants ${table}, which the $hap2126$ block does not restore: ${FIX}`);
+    }
+  };
+
+  it('takes every .sql file but 045 itself, wherever it sorts, in the migrator order', () => {
+    expect(scannedMigrations(['045_staging_app_login_acl.sql', '045a_x.sql', '046_a.sql', 'hotfix_grants.sql', '044_x.sql', '044a_hotfix.sql',
+      '000_grants.sql', '045_a.sql', 'README.md', 'rollback']))
+      .toEqual(['000_grants.sql', '044_x.sql', '044a_hotfix.sql', '045_a.sql', '045a_x.sql', '046_a.sql', 'hotfix_grants.sql']);
   });
 
-  it('refuses a dynamic grantee, a REVOKE and an unlisted file in a later migration', () => {
+  it('lists every migration that names cmdb_app, builds a grantee at run time or runs EXECUTE beside a privilege statement, and only those', () => {
+    expect(scanned).toContain('001_complete_schema.sql');
+    expect(scanned).not.toContain(APP_LOGIN_ACL);
+    expect(scanned.length).toBeGreaterThan(TABLE_MIGRATIONS.length);
+    expect(listingProblems(sources(), TABLE_MIGRATIONS, NON_APP_GRANTING)).toEqual([]);
+    // The reason for 053 is checked, not trusted: cmdb_app is only in a comment of 053, and not at all in 055.
+    const lineage = '053_business_service_lineage_read_acl.sql';
+    expect(NON_APP_GRANTING).toHaveProperty([lineage]);
+    expect(namesApp(migration(lineage))).toBe(true);
+    expect(namesApp(code(lineage))).toBe(false);
+    expect(scanned).toContain('055_auth_credential_events_scope_events.sql');
+    expect(namesApp(migration('055_auth_credential_events_scope_events.sql'))).toBe(false);
+  });
+
+  it('refuses a dynamic grantee, a REVOKE and an unlisted file in any migration', () => {
     const dynamic = `DO $$ DECLARE login text := 'cmdb_app'; BEGIN EXECUTE format('GRANT SELECT ON public.x TO %I', login); END $$;`;
     const concatenated = `DO $$ BEGIN EXECUTE 'GRANT SELECT ON public.x TO ' || 'cmdb_' || 'app'; END $$;`;
     const placeholder = `DO $$ BEGIN EXECUTE format('GRANT SELECT ON public.x TO %I', 'cmdb_' || 'app'); END $$;`;
     const revoke = 'REVOKE UPDATE ON public.service_offerings FROM cmdb_app;';
     const problems = (body: string, listed: string[] = [], nonApp: Record<string, string> = {}) =>
-      listingProblems({ '057_probe.sql': stripComments(body) }, listed, nonApp);
+      listingProblems({ '057_probe.sql': body }, listed, nonApp);
     expect(problems(dynamic)).toEqual([expect.stringContaining('057_probe.sql names cmdb_app but is not in TABLE_MIGRATIONS')]);
-    expect(problems(concatenated)).toEqual([expect.stringContaining('057_probe.sql grants to a dynamic grantee')]);
-    expect(problems(placeholder)).toEqual([expect.stringContaining('057_probe.sql grants to a dynamic grantee')]);
+    expect(problems(concatenated)).toEqual([expect.stringContaining('057_probe.sql uses a dynamic grantee')]);
+    expect(problems(placeholder)).toEqual([expect.stringContaining('057_probe.sql uses a dynamic grantee')]);
     expect(problems(revoke)).toEqual([expect.stringMatching(/057_probe\.sql revokes from cmdb_app.*reflected in.*\$hap2126\$ block/)]);
     expect(problems(revoke, [], { '057_probe.sql': 'no' })).toHaveLength(1); // a REVOKE cannot be waved through as non-granting
     for (const body of [dynamic, concatenated]) {
       expect(problems(body, ['057_probe.sql'])).toEqual([]);
       expect(problems(body, [], { '057_probe.sql': 'grants cmdb_user only' })).toEqual([]);
     }
-    expect(problems('-- GRANT SELECT ON public.x TO cmdb_app\nSELECT 1;')).toEqual([]);
     expect(problems(dynamic, ['057_probe.sql'], { '057_probe.sql': 'both' })).toEqual([expect.stringContaining('both TABLE_MIGRATIONS and NON_APP_GRANTING')]);
+    // A mention in a comment is a loud false positive that NON_APP_GRANTING answers with a reason, not a silent pass.
+    expect(problems('-- GRANT SELECT ON public.x TO cmdb_app\nSELECT 1;')).toEqual([expect.stringContaining('names cmdb_app')]);
+    expect(problems('-- GRANT SELECT ON public.x TO cmdb_app\nSELECT 1;', [], { '057_probe.sql': 'comment only' })).toEqual([]);
+  });
+
+  it('scans a file that sorts before 045, or after it, with the same rules', () => {
+    const grant = 'GRANT SELECT ON public.x TO cmdb_app;';
+    for (const early of ['000_grants.sql', '044a_hotfix.sql', '045_a.sql']) {
+      const files = scannedMigrations(['045_staging_app_login_acl.sql', early]);
+      expect(listingProblems(Object.fromEntries(files.map(name => [name, grant])), [], {}))
+        .toEqual([expect.stringContaining(`${early} names cmdb_app but is not in TABLE_MIGRATIONS`)]);
+    }
+  });
+
+  it('sees code that the comment stripper would hide: a block comment or a string holding two dashes', () => {
+    const problems = (body: string) => listingProblems({ '057_probe.sql': body }, [], {});
+    const grants = ['/* -- */ GRANT SELECT ON public.x TO cmdb_app;', `SELECT '--'; GRANT SELECT ON public.x TO cmdb_app;`];
+    for (const body of grants) {
+      expect(stripComments(body)).not.toMatch(/cmdb_app/); // the old pipeline lost it
+      expect(problems(body)).toEqual([expect.stringContaining('057_probe.sql names cmdb_app but is not in TABLE_MIGRATIONS')]);
+    }
+    expect(problems(`SELECT '--'; REVOKE UPDATE ON public.x FROM cmdb_app;`)).toEqual([expect.stringContaining('revokes from cmdb_app')]);
+    expect(problems(`/* -- */ DO $$ BEGIN EXECUTE format('GRANT SELECT ON public.x TO %I', 'r'); END $$;`))
+      .toEqual([expect.stringContaining('uses a dynamic grantee')]);
+  });
+
+  it('refuses every spelling of a grantee built at run time, and any EXECUTE beside a GRANT, REVOKE or ALTER DEFAULT PRIVILEGES', () => {
+    const cases: Array<[string, string]> = [
+      ['numbered placeholder', `DO $$ BEGIN EXECUTE format('GRANT SELECT ON public.x TO %1$I', r); END $$;`],
+      ['concat call', `DO $$ BEGIN EXECUTE concat('GRANT SELECT ON public.x TO ', r); END $$;`],
+      ['split literal', `DO $$ BEGIN EXECUTE 'GRANT SELECT ON public.x TO cmdb' || '_app'; END $$;`],
+      ['replace call', `DO $$ BEGIN EXECUTE replace('GRANT SELECT ON public.x TO R', 'R', r); END $$;`],
+      ['unicode escape in EXECUTE', `DO $$ BEGIN EXECUTE 'GRANT SELECT ON public.x TO U&"cmdb\\005Fapp"'; END $$;`],
+      ['unicode escape, static', 'GRANT SELECT ON public.x TO U&"cmdb\\005Fapp";'],
+      ['REVOKE placeholder', `DO $$ BEGIN EXECUTE format('REVOKE SELECT ON public.x FROM %I', r); END $$;`],
+      ['default privileges placeholder', `DO $$ BEGIN EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO %1$I', r); END $$;`],
+      ['default privileges, split literal', `DO $$ BEGIN EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO cmdb' || '_app'; END $$;`],
+      ['quoted literal placeholder', `DO $$ BEGIN EXECUTE format('GRANT SELECT ON public.x TO %L', r); END $$;`],
+    ];
+    for (const [label, body] of cases) {
+      const found = listingProblems({ '057_probe.sql': body }, [], {});
+      expect([label, found.length]).toEqual([label, 1]);
+      expect(listingProblems({ '057_probe.sql': body }, [], { '057_probe.sql': 'reviewed' })).toEqual([]);
+    }
+    // EXECUTE alone, or a privilege statement alone, is not a finding.
+    expect(listingProblems({ '057_probe.sql': `DO $$ BEGIN EXECUTE 'SELECT 1'; END $$;` }, [], {})).toEqual([]);
+    expect(listingProblems({ '057_probe.sql': 'GRANT SELECT ON public.x TO cmdb_user;' }, [], {})).toEqual([]);
+    // Only the EXECUTE rule can name a grantee that is never spelled out.
+    expect(listingProblems({ '057_probe.sql': cases[2]![1] }, [], {})).toEqual([expect.stringContaining('runs EXECUTE beside a GRANT, REVOKE')]);
+    expect(listingProblems({ '057_probe.sql': cases[0]![1] }, [], {})).toEqual([expect.stringContaining('uses a dynamic grantee')]);
+  });
+
+  it('refuses a listing entry that is not a migration, no longer grants cmdb_app, or sits in both lists', () => {
+    const probe = 'DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = \'cmdb_app\') THEN GRANT SELECT ON public.x TO cmdb_user; END IF; END $$;';
+    expect(listingProblems({}, ['058_gone.sql'], {})).toEqual(['058_gone.sql is in TABLE_MIGRATIONS but is not a migration']);
+    expect(listingProblems({}, [], { '058_gone.sql': 'reason' })).toEqual(['058_gone.sql is in NON_APP_GRANTING but is not a migration']);
+    // cmdb_app in a role probe only is not a grant, and neither is a GRANT in a comment.
+    expect(listingProblems({ '058_probe.sql': probe }, ['058_probe.sql'], {})).toEqual(['058_probe.sql is in TABLE_MIGRATIONS but no longer grants to cmdb_app']);
+    expect(listingProblems({ '058_probe.sql': '-- GRANT SELECT ON public.x TO cmdb_app\nSELECT 1;' }, ['058_probe.sql'], {}))
+      .toEqual(['058_probe.sql is in TABLE_MIGRATIONS but no longer grants to cmdb_app']);
+    for (const grant of [
+      'GRANT SELECT ON public.x TO cmdb_user, cmdb_app;',
+      `DO $$ BEGIN FOREACH r IN ARRAY ARRAY['cmdb_user', 'cmdb_app'] LOOP EXECUTE format('GRANT SELECT ON public.x TO %I', r); END LOOP; END $$;`,
+      `DO $$ BEGIN FOREACH r IN ARRAY ARRAY['cmdb_user', 'cmdb_app'] LOOP EXECUTE 'GRANT SELECT ON public.x TO ' || r; END LOOP; END $$;`,
+    ]) {
+      expect(listingProblems({ '058_ok.sql': grant }, ['058_ok.sql'], {})).toEqual([]);
+    }
   });
 
   it('carries exactly the EXPECTED tables and privileges in the block, and no other row or statement', () => {
     expect(blockRows()).toEqual(EXPECTED);
-    expect(Object.keys(blockRows())).toHaveLength(blockRowList().length); // no table twice
-    const tuples = [...blockText().matchAll(/\('([^']+)',\s*'([^']+)'\)/g)];
-    expect(tuples.map(match => match[0])).toHaveLength(blockRowList().length); // a ('cmdb.x', 'SELECT, DELETE') or a lower-case privilege row is extra
-    expect(blockText().match(/\bEXECUTE\b/g) ?? []).toHaveLength(1); // one `EXECUTE format('GRANT %s ON %s TO cmdb_app', ...)` over the VALUES rows
+    expect(blockShapeProblems(blockText())).toEqual([]);
+  });
+
+  it('flags a block sample with a table twice, a tuple of another shape or a second EXECUTE, through the real block check', () => {
+    const sample = (values: string[], executes = 1) => `FOR g IN SELECT * FROM (VALUES ${values.join(', ')}) AS t(rel, privs) LOOP `
+      + Array.from({ length: executes }, () => `EXECUTE format('GRANT %s ON %s TO cmdb_app', g.privs, g.rel);`).join(' ') + ' END LOOP;';
+    expect(blockShapeProblems(sample(["('public.a', 'SELECT')", "('public.b', 'SELECT, INSERT')"]))).toEqual([]);
+    for (const stray of ["('cmdb.c', 'SELECT')", "('public.c', 'select')", "('public.C', 'SELECT')"]) {
+      expect(blockShapeProblems(sample(["('public.a', 'SELECT')", stray]))).toEqual([expect.stringContaining('another shape')]);
+    }
+    expect(blockShapeProblems(sample(["('public.a', 'SELECT')", "('public.a', 'SELECT')"]))).toEqual([expect.stringContaining('twice')]);
+    expect(blockShapeProblems(sample(["('public.a', 'SELECT')"], 2))).toEqual([expect.stringContaining('2 EXECUTE')]);
+    expect(blockShapeProblems(sample(["('public.a', 'SELECT')"], 0))).toEqual([expect.stringContaining('0 EXECUTE')]);
   });
 
   it('names every table of every GRANT of the granting migrations, and the block restores each', () => {
@@ -304,16 +444,14 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
     expect(grantStatements(`EXECUTE format('GRANT SELECT ON %s TO %I', t, r); GRANT ALL ON ALL TABLES IN SCHEMA public TO cmdb_app;`).unparsed)
       .toEqual([`GRANT SELECT ON %s TO %I', t, r)`, 'GRANT ALL ON ALL TABLES IN SCHEMA public TO cmdb_app']);
     const rows = blockRows();
-    for (const name of TABLE_MIGRATIONS) {
-      const { tables, unparsed } = grantStatements(code(name));
-      if (unparsed.length) {
-        throw new Error(`${name} has a GRANT whose table the extraction cannot name (${unparsed.map(s => `"${s}"`).join(', ')}): make `
-          + `grantStatements understand it, then ${FIX}`);
-      }
-      if (tables.length === 0) throw new Error(`${name} is in TABLE_MIGRATIONS but no GRANT ... ON <table> TO statement was found in it`);
-      for (const table of tables) {
-        if (!(table in rows)) throw new Error(`${name} grants ${table}, which the $hap2126$ block does not restore: ${FIX}`);
-      }
-    }
+    for (const name of TABLE_MIGRATIONS) assertGrantsRestored(name, code(name), rows);
+  });
+
+  it('refuses a listed migration whose GRANT cannot be read, names no table, or names a table the block does not restore', () => {
+    const rows = { 'public.a': ['SELECT'] };
+    expect(() => assertGrantsRestored('057_probe.sql', 'GRANT SELECT ON public.a TO cmdb_app;', rows)).not.toThrow();
+    expect(() => assertGrantsRestored('057_probe.sql', 'SELECT 1;', rows)).toThrow('no GRANT ... ON <table> TO statement was found');
+    expect(() => assertGrantsRestored('057_probe.sql', 'GRANT SELECT ON public.b TO cmdb_app;', rows)).toThrow('grants public.b, which the $hap2126$ block does not restore');
+    expect(() => assertGrantsRestored('057_probe.sql', 'GRANT ALL ON ALL TABLES IN SCHEMA public TO cmdb_app;', rows)).toThrow('cannot name');
   });
 });

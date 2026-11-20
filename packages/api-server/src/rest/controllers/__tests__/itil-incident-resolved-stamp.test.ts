@@ -68,6 +68,13 @@ async function patch(org: string, id: string, body: Record<string, unknown>) {
     { user: { _organizationId: org }, params: { id }, body } as unknown as Request, out as unknown as Response);
   return out;
 }
+async function resolve(org: string, id: string, body: Record<string, unknown>) {
+  (getPostgresClient as jest.Mock).mockReturnValue({ pool });
+  const out = res();
+  await new ITILController().resolveIncident(
+    { user: { _organizationId: org }, params: { id }, body } as unknown as Request, out as unknown as Response);
+  return out;
+}
 const row = async (id: string) => (await sql('SELECT * FROM itil_incidents WHERE id = $1', [id]))[0];
 /** Moves a stamp or timestamp explicitly, so no test depends on wall-clock spacing between statements. */
 const setStamps = (id: string, set: string) => sql(`UPDATE itil_incidents SET ${set} WHERE id = $1`, [id]);
@@ -280,5 +287,102 @@ describe('MTTR of a reopened incident', () => {
     await patch(ORG_A, id, { status: 'RESOLVED' });
     // Re-resolved now: reported 60 minutes ago, so 1.00 h.
     expect(await mttr()).toBe('1.00');
+  });
+});
+
+describe('POST /itil/incidents/:id/resolve stamps resolved_at once', () => {
+  const FIRST = { resolution: 'Restarted the checkout pool', resolvedBy: 'alice' };
+  const SECOND = { resolution: 'Replaced the failing node', resolvedBy: 'bob' };
+
+  it('the first resolve of an open incident stamps resolved_at, sets the status and stores the resolution', async () => {
+    const id = await addIncident(ORG_A);
+    const before = Date.now();
+    const out = await resolve(ORG_A, id, FIRST);
+    const after = Date.now();
+    expect(out.statusCode).toBe(200);
+    const stored = await row(id);
+    expect(stored['status']).toBe('resolved');
+    expect(stored['resolution']).toBe(FIRST.resolution);
+    expect((stored['resolved_at'] as Date).getTime()).toBeGreaterThanOrEqual(before);
+    expect((stored['resolved_at'] as Date).getTime()).toBeLessThanOrEqual(after);
+    expect(stored['closed_at']).toBeNull();
+  });
+
+  it('a second resolve keeps resolved_at but updates the resolution and updated_at', async () => {
+    const id = await addIncident(ORG_A);
+    await resolve(ORG_A, id, FIRST);
+    await setStamps(id, `resolved_at = '${FIXED_RESOLVED}', updated_at = '${FIXED_RESOLVED}'`);
+    const out = await resolve(ORG_A, id, SECOND);
+    expect(out.statusCode).toBe(200);
+    const stored = await row(id);
+    expect(stored['resolved_at']).toEqual(new Date(FIXED_RESOLVED));
+    expect(stored['resolution']).toBe(SECOND.resolution);
+    expect(stored['updated_at'].getTime()).toBeGreaterThan(new Date(FIXED_RESOLVED).getTime());
+    expect(out.body.data.resolved_at).toEqual(new Date(FIXED_RESOLVED));
+  });
+
+  it('a PATCH reopen followed by a resolve stamps a fresh resolved_at', async () => {
+    const id = await addIncident(ORG_A);
+    await resolve(ORG_A, id, FIRST);
+    await setStamps(id, `resolved_at = '${FIXED_RESOLVED}'`);
+    await patch(ORG_A, id, { status: 'IN_PROGRESS' });
+    expect((await row(id))['resolved_at']).toBeNull();
+    const before = Date.now();
+    await resolve(ORG_A, id, SECOND);
+    const stamped = (await row(id))['resolved_at'] as Date;
+    expect(stamped.getTime()).toBeGreaterThanOrEqual(before);
+    expect(stamped).not.toEqual(new Date(FIXED_RESOLVED));
+  });
+
+  it('a resolve after a PATCH RESOLVED keeps the stamp the PATCH wrote', async () => {
+    const id = await addIncident(ORG_A);
+    await patch(ORG_A, id, { status: 'RESOLVED' });
+    await setStamps(id, `resolved_at = '${FIXED_RESOLVED}'`);
+    await resolve(ORG_A, id, SECOND);
+    const stored = await row(id);
+    expect(stored['resolved_at']).toEqual(new Date(FIXED_RESOLVED));
+    expect(stored['resolution']).toBe(SECOND.resolution);
+  });
+
+  it('answers 404 for another organization and leaves the incident unmodified', async () => {
+    const id = await addIncident(ORG_A);
+    await resolve(ORG_A, id, FIRST);
+    await setStamps(id, `resolved_at = '${FIXED_RESOLVED}'`);
+    const before = await row(id);
+    const out = await resolve(ORG_B, id, SECOND);
+    expect(out.statusCode).toBe(404);
+    const stored = await row(id);
+    expect(stored).toEqual(before);
+    expect(stored['status']).toBe('resolved');
+    expect(stored['resolved_at']).toEqual(new Date(FIXED_RESOLVED));
+    expect(stored['resolution']).toBe(FIRST.resolution);
+  });
+
+  it('another organization cannot resolve an open incident either', async () => {
+    const id = await addIncident(ORG_A);
+    const before = await row(id);
+    const out = await resolve(ORG_B, id, SECOND);
+    expect(out.statusCode).toBe(404);
+    expect(await row(id)).toEqual(before);
+  });
+
+  it('a repeat resolve does not grow the counted downtime of the mapped service', async () => {
+    await sql(
+      `INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower, business_criticality,
+         operational_status, organization_id, lifecycle)
+       VALUES ('bs-resolve-endpoint', 'Checkout', 'application', 'application', 'critical', 'active', $1::uuid, 'live')`, [ORG_A]);
+    await sql(`INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type) VALUES ('ci-1', 'bs-resolve-endpoint', 'supports')`);
+    const downtime = async () => (await readServiceAvailability(pool, ORG_A, 5)).services[0]!.downtime_minutes_24h;
+
+    const id = await addIncident(ORG_A);
+    await resolve(ORG_A, id, FIRST);
+    // Resolved 30 minutes ago: 30 of the 60 minutes since the report are counted.
+    await setStamps(id, `resolved_at = now() - interval '30 minutes'`);
+    const counted = await downtime();
+    expect(counted).toBeGreaterThan(29.9);
+    expect(counted).toBeLessThan(30.1);
+
+    await resolve(ORG_A, id, SECOND);
+    expect(await downtime()).toBe(counted);
   });
 });

@@ -29,12 +29,37 @@ function run(handler: (req: never, res: never, next: never) => Promise<void>, he
 // Every level method of the shared winston logger (read from the instance, so a level
 // added later is covered) plus the generic `log(level, ...)` entry point.
 const LOGGER_METHODS = [...Object.keys(logger.levels), 'log'] as Array<keyof typeof logger & string>;
+const CONSOLE_METHODS = ['log', 'info', 'warn', 'error', 'debug', 'trace'] as const;
 let spies: Record<string, jest.SpyInstance>;
+let consoleSpies: Record<string, jest.SpyInstance>;
 let warn: jest.SpyInstance;
 
-/** Serialized calls of every logger method that received any call. */
+/** Serialized calls of every logger and console method that received any call. */
 const loggedAnywhere = (): string =>
-  JSON.stringify(Object.entries(spies).filter(([, spy]) => spy.mock.calls.length > 0).map(([name, spy]) => [name, spy.mock.calls]));
+  JSON.stringify(
+    [
+      ...Object.entries(spies).map(([name, spy]) => [`logger.${name}`, spy] as const),
+      ...Object.entries(consoleSpies).map(([name, spy]) => [`console.${name}`, spy] as const),
+    ]
+      .filter(([, spy]) => spy.mock.calls.length > 0)
+      .map(([name, spy]) => [name, spy.mock.calls]),
+  );
+
+/**
+ * The refusal logged for a key-only request: exactly one warn call (message and
+ * metadata), no call on any other logger method, none on console, and the key
+ * value nowhere in anything logged.
+ */
+function expectOnlyApiKeysDisabledRefusal(secret: string): void {
+  expect(warn.mock.calls).toEqual([['Authentication failed', { credentialType: 'api-key', reason: 'api_keys_disabled' }]]);
+  for (const [name, spy] of Object.entries(spies).filter(([name]) => name !== 'warn')) {
+    expect([`logger.${name}`, spy.mock.calls.length]).toEqual([`logger.${name}`, 0]);
+  }
+  for (const [name, spy] of Object.entries(consoleSpies)) {
+    expect([`console.${name}`, spy.mock.calls.length]).toEqual([`console.${name}`, 0]);
+  }
+  expect(loggedAnywhere()).not.toContain(secret);
+}
 beforeEach(() => {
   // jest.config.unit.js sets resetMocks, so implementations are installed per test.
   verifyToken.mockImplementation(async (token: string) => {
@@ -49,8 +74,11 @@ beforeEach(() => {
     LOGGER_METHODS.map((name) => [name, jest.spyOn(logger, name as 'warn').mockImplementation(() => logger)]),
   );
   warn = spies['warn'];
+  consoleSpies = Object.fromEntries(
+    CONSOLE_METHODS.map((name) => [name, jest.spyOn(console, name).mockImplementation(() => undefined)]),
+  );
 });
-afterEach(() => Object.values(spies).forEach((spy) => spy.mockRestore()));
+afterEach(() => [...Object.values(spies), ...Object.values(consoleSpies)].forEach((spy) => spy.mockRestore()));
 
 describe('AuthMiddleware with apiKeys.enabled === false', () => {
   const disabled = () => build({ headerName: 'X-API-Key', enabled: false });
@@ -95,9 +123,7 @@ describe('AuthMiddleware with apiKeys.enabled === false', () => {
 
     expect(result.status).toHaveBeenCalledWith(401);
     expect(result.json.mock.calls[0][0]).toEqual({ _error: 'Unauthorized', _message: 'Authentication failed' });
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][1]).toEqual({ credentialType: 'api-key', reason: 'api_keys_disabled' });
-    expect(loggedAnywhere()).not.toContain(secret);
+    expectOnlyApiKeysDisabledRefusal(secret);
     expect(result.setHeader).not.toHaveBeenCalled();
     expect(result.set).not.toHaveBeenCalled();
   });
@@ -115,9 +141,7 @@ describe('AuthMiddleware with apiKeys.enabled === false', () => {
 
     expect(result.req.user).toBeUndefined();
     expect(result.next).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][1]).toEqual({ credentialType: 'api-key', reason: 'api_keys_disabled' });
-    expect(loggedAnywhere()).not.toContain(secret);
+    expectOnlyApiKeysDisabledRefusal(secret);
   });
 
   it('authenticate(): an empty key header is not a key-only request: logs none/invalid once, same 401 as no credentials', async () => {

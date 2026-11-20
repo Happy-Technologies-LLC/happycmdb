@@ -477,7 +477,7 @@ describe('AuthService profile/password/account lifecycle', () => {
       const failure = await disabled.verifyApiKey('opaque').catch((error: unknown) => error);
 
       expect(failure).toBeInstanceOf(AuthFailureError);
-      expect(failure).toMatchObject({ reason: 'disabled', message: 'Authentication failed' });
+      expect(failure).toMatchObject({ reason: 'api_keys_disabled', message: 'Authentication failed' });
       expect(key).not.toHaveBeenCalled();
       expect(user).not.toHaveBeenCalled();
       expect(used).not.toHaveBeenCalled();
@@ -487,7 +487,7 @@ describe('AuthService profile/password/account lifecycle', () => {
       const disabled = withApiKeys({ ...authConfig.apiKeys, enabled: false });
       const { key } = spies();
 
-      await expect(disabled.verifyApiKey('never-issued')).rejects.toMatchObject({ reason: 'disabled', message: 'Authentication failed' });
+      await expect(disabled.verifyApiKey('never-issued')).rejects.toMatchObject({ reason: 'api_keys_disabled', message: 'Authentication failed' });
 
       expect(key).not.toHaveBeenCalled();
     });

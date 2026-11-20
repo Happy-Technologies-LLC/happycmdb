@@ -219,27 +219,33 @@ echo 'Disposable generation-94 upgrade and 045 rollback + re-up passed'
 # HAP-2126: a cmdb_app dropped and re-created by app-login (045 plus the per-table grants of 046-048, 054 and 056, re-applied
 # because the migrator never re-runs a recorded migration) must hold exactly what it holds after a fresh migration. The
 # matrix is every privilege of cmdb_app on every relation, schema and function of public and cmdb, plus the column-only
-# privileges (held on a column, not on its table: has_table_privilege ignores column ACLs). Keep the SQL identical to
-# grantMatrix() in staging-app-login-receipts-grant.test.ts apart from the role literal.
+# privileges (held on a column, not on its table: has_table_privilege ignores column ACLs). The last field is g (held WITH GRANT
+# OPTION), t (held without it) or f (not held). Keep the SQL identical to grantMatrixSql() in
+# staging-app-login-receipts-grant.test.ts apart from the role literal (that test compares the two texts).
 grant_matrix() {
   owner_psql -c "
     SELECT n.nspname || '.' || c.relname || '|' || p.privilege || '|'
-        || CASE WHEN CASE WHEN c.relkind = 'S' THEN has_sequence_privilege('cmdb_app', c.oid, p.privilege)
-                     ELSE has_table_privilege('cmdb_app', c.oid, p.privilege) END THEN 't' ELSE 'f' END
+        || CASE WHEN CASE WHEN c.relkind = 'S' THEN has_sequence_privilege('cmdb_app', c.oid, p.privilege || ' WITH GRANT OPTION')
+                     ELSE has_table_privilege('cmdb_app', c.oid, p.privilege || ' WITH GRANT OPTION') END THEN 'g'
+                WHEN CASE WHEN c.relkind = 'S' THEN has_sequence_privilege('cmdb_app', c.oid, p.privilege)
+                     ELSE has_table_privilege('cmdb_app', c.oid, p.privilege) END THEN 't' ELSE 'f' END AS row
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       CROSS JOIN LATERAL unnest(CASE WHEN c.relkind = 'S' THEN ARRAY['USAGE', 'SELECT', 'UPDATE']
         ELSE ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'] END) AS p(privilege)
       WHERE n.nspname IN ('public', 'cmdb') AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
     UNION ALL
     SELECT 'schema ' || n.nspname || '|' || p.privilege || '|'
-        || CASE WHEN has_schema_privilege('cmdb_app', n.oid, p.privilege) THEN 't' ELSE 'f' END
+        || CASE WHEN has_schema_privilege('cmdb_app', n.oid, p.privilege || ' WITH GRANT OPTION') THEN 'g'
+                WHEN has_schema_privilege('cmdb_app', n.oid, p.privilege) THEN 't' ELSE 'f' END
       FROM pg_namespace n CROSS JOIN (VALUES ('USAGE'), ('CREATE')) AS p(privilege) WHERE n.nspname IN ('public', 'cmdb')
     UNION ALL
     SELECT 'function ' || f.oid::regprocedure::text || '|EXECUTE|'
-        || CASE WHEN has_function_privilege('cmdb_app', f.oid, 'EXECUTE') THEN 't' ELSE 'f' END
+        || CASE WHEN has_function_privilege('cmdb_app', f.oid, 'EXECUTE WITH GRANT OPTION') THEN 'g'
+                WHEN has_function_privilege('cmdb_app', f.oid, 'EXECUTE') THEN 't' ELSE 'f' END
       FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace WHERE n.nspname IN ('public', 'cmdb')
     UNION ALL
-    SELECT 'column ' || n.nspname || '.' || c.relname || '.' || a.attname || '|' || p.privilege || '|t'
+    SELECT 'column ' || n.nspname || '.' || c.relname || '.' || a.attname || '|' || p.privilege || '|'
+        || CASE WHEN has_column_privilege('cmdb_app', a.attrelid, a.attnum, p.privilege || ' WITH GRANT OPTION') THEN 'g' ELSE 't' END
       FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
       CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('REFERENCES')) AS p(privilege)
       WHERE n.nspname IN ('public', 'cmdb') AND c.relkind IN ('r', 'p', 'v', 'm') AND a.attnum > 0 AND NOT a.attisdropped
@@ -249,6 +255,8 @@ grant_matrix() {
 grant_matrix > "$scratch/matrix_baseline"
 # Non-empty and carrying the six per-table grants of the app-login block, so an empty diff cannot pass.
 [ "$(wc -l < "$scratch/matrix_baseline")" -gt 100 ] || { echo 'cmdb_app grant matrix is unexpectedly small' >&2; exit 1; }
+# No privilege may be held WITH GRANT OPTION (no migration or deploy SQL grants one).
+! grep -q '|g$' "$scratch/matrix_baseline" || { echo 'cmdb_app holds a privilege WITH GRANT OPTION' >&2; exit 1; }
 for entry in service_offerings:SELECT,INSERT,UPDATE ai_sync_cursors:SELECT,INSERT,UPDATE portfolio_imports:SELECT,INSERT \
   portfolio_import_map:SELECT,INSERT relationship_evidence_receipts:SELECT,INSERT estate_kpi_snapshots:SELECT,INSERT; do
   for privilege in SELECT INSERT UPDATE DELETE TRUNCATE REFERENCES TRIGGER; do

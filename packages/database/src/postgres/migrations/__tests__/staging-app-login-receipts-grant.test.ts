@@ -134,7 +134,7 @@ const held = async (query: (sql: string) => Promise<Array<Record<string, any>>>,
 /**
  * Every `<schema>.<relation>|<PRIVILEGE>` of every relation in public and cmdb on which `role` holds the privilege WITH GRANT OPTION (it
  * could re-grant it to any role), sorted. Not limited to the tables the block restores: a grant option on any other relation counts. The
- * relation and privilege sets are those of `grantMatrix`, whose own query stays untouched (it is mirrored in the hosted matrix).
+ * relation and privilege sets are those of `grantMatrix`, which reports the same grant options as `g` rows (this sweep also covers 'f' relations).
  */
 const grantOptionsSweep = async (query: (sql: string) => Promise<Array<Record<string, any>>>, role: string): Promise<string[]> =>
   (await query(`
@@ -205,14 +205,15 @@ describe('the $hap2126$ block in the app-login script', () => {
 });
 
 /**
- * Every privilege of `role` on every relation, schema and function of public and cmdb, as sorted `object|privilege|t/f` rows, plus
- * the column-only privileges (`column <schema>.<table>.<column>|<PRIVILEGE>|t`: held on the column, not on the table). The
- * same query runs against a real server in `grant_matrix()` of deploy/test-staging-migrations.sh: keep the two texts identical.
+ * The query of `grantMatrix`. The same query runs against a real server in `grant_matrix()` of deploy/test-staging-migrations.sh with the
+ * role literal `cmdb_app`; a test below compares the two texts, so an edit made to one copy only fails there.
  */
-async function grantMatrix(query: (sql: string) => Promise<Array<Record<string, any>>>, role: string): Promise<string[]> {
-  const rows = await query(`
+function grantMatrixSql(role: string): string {
+  return `
     SELECT n.nspname || '.' || c.relname || '|' || p.privilege || '|'
-        || CASE WHEN CASE WHEN c.relkind = 'S' THEN has_sequence_privilege('${role}', c.oid, p.privilege)
+        || CASE WHEN CASE WHEN c.relkind = 'S' THEN has_sequence_privilege('${role}', c.oid, p.privilege || ' WITH GRANT OPTION')
+                     ELSE has_table_privilege('${role}', c.oid, p.privilege || ' WITH GRANT OPTION') END THEN 'g'
+                WHEN CASE WHEN c.relkind = 'S' THEN has_sequence_privilege('${role}', c.oid, p.privilege)
                      ELSE has_table_privilege('${role}', c.oid, p.privilege) END THEN 't' ELSE 'f' END AS row
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       CROSS JOIN LATERAL unnest(CASE WHEN c.relkind = 'S' THEN ARRAY['USAGE', 'SELECT', 'UPDATE']
@@ -220,19 +221,31 @@ async function grantMatrix(query: (sql: string) => Promise<Array<Record<string, 
       WHERE n.nspname IN ('public', 'cmdb') AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
     UNION ALL
     SELECT 'schema ' || n.nspname || '|' || p.privilege || '|'
-        || CASE WHEN has_schema_privilege('${role}', n.oid, p.privilege) THEN 't' ELSE 'f' END
+        || CASE WHEN has_schema_privilege('${role}', n.oid, p.privilege || ' WITH GRANT OPTION') THEN 'g'
+                WHEN has_schema_privilege('${role}', n.oid, p.privilege) THEN 't' ELSE 'f' END
       FROM pg_namespace n CROSS JOIN (VALUES ('USAGE'), ('CREATE')) AS p(privilege) WHERE n.nspname IN ('public', 'cmdb')
     UNION ALL
     SELECT 'function ' || f.oid::regprocedure::text || '|EXECUTE|'
-        || CASE WHEN has_function_privilege('${role}', f.oid, 'EXECUTE') THEN 't' ELSE 'f' END
+        || CASE WHEN has_function_privilege('${role}', f.oid, 'EXECUTE WITH GRANT OPTION') THEN 'g'
+                WHEN has_function_privilege('${role}', f.oid, 'EXECUTE') THEN 't' ELSE 'f' END
       FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace WHERE n.nspname IN ('public', 'cmdb')
     UNION ALL
-    SELECT 'column ' || n.nspname || '.' || c.relname || '.' || a.attname || '|' || p.privilege || '|t'
+    SELECT 'column ' || n.nspname || '.' || c.relname || '.' || a.attname || '|' || p.privilege || '|'
+        || CASE WHEN has_column_privilege('${role}', a.attrelid, a.attnum, p.privilege || ' WITH GRANT OPTION') THEN 'g' ELSE 't' END
       FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
       CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('REFERENCES')) AS p(privilege)
       WHERE n.nspname IN ('public', 'cmdb') AND c.relkind IN ('r', 'p', 'v', 'm') AND a.attnum > 0 AND NOT a.attisdropped
         AND has_column_privilege('${role}', a.attrelid, a.attnum, p.privilege)
-        AND NOT has_table_privilege('${role}', a.attrelid, p.privilege)`);
+        AND NOT has_table_privilege('${role}', a.attrelid, p.privilege)`;
+}
+
+/**
+ * Every privilege of `role` on every relation, schema and function of public and cmdb, as sorted `object|privilege|g/t/f` rows (`g`:
+ * held WITH GRANT OPTION, `t`: held without it, `f`: not held), plus the column-only privileges (`column <schema>.<table>.<column>|
+ * <PRIVILEGE>|g/t`: held on the column, not on the table).
+ */
+async function grantMatrix(query: (sql: string) => Promise<Array<Record<string, any>>>, role: string): Promise<string[]> {
+  const rows = await query(grantMatrixSql(role));
   return rows.map(row => row['row'] as string).sort();
 }
 
@@ -267,6 +280,13 @@ describe('whole-grant matrix: a re-created cmdb_app equals a freshly migrated on
     expect({ onlyInFresh: fresh.filter(row => !again.includes(row)), onlyInRecreated: again.filter(row => !fresh.includes(row)) })
       .toEqual({ onlyInFresh: [], onlyInRecreated: [] });
     expect(again).toEqual(fresh);
+
+    // A grant option on a table the block restores is a one-row difference: ...|SELECT|t becomes ...|SELECT|g, and nothing else moves.
+    expect(fresh.filter(row => row.endsWith('|g'))).toEqual([]);
+    await recreated('GRANT SELECT ON public.estate_kpi_snapshots TO cmdb_app WITH GRANT OPTION');
+    const grantable = await grantMatrix(recreated, 'cmdb_app');
+    expect({ onlyInFresh: fresh.filter(row => !grantable.includes(row)), onlyInGrantable: grantable.filter(row => !fresh.includes(row)) })
+      .toEqual({ onlyInFresh: ['public.estate_kpi_snapshots|SELECT|t'], onlyInGrantable: ['public.estate_kpi_snapshots|SELECT|g'] });
   }, 120000);
 });
 
@@ -283,6 +303,46 @@ describe('the column section of the grant matrix', () => {
     await query('REVOKE SELECT (id) ON public.t FROM cmdb_app');
     expect((await grantMatrix(query, 'cmdb_app')).filter(row => row.startsWith('column '))).toEqual([]);
   }, 60000);
+});
+
+describe('the grant option field of the grant matrix', () => {
+  /** One privilege on one object kind per case: the grant, the matrix row it reads as, and the field that kind reads when nothing is held (a column row exists only while held). */
+  const CASES: Array<{ kind: string; target: string; privilege: string; row: string; none: string | null }> = [
+    { kind: 'table', target: 'ON TABLE public.t', privilege: 'SELECT', row: 'public.t|SELECT|', none: 'f' },
+    { kind: 'sequence', target: 'ON SEQUENCE public.s', privilege: 'USAGE', row: 'public.s|USAGE|', none: 'f' },
+    { kind: 'schema', target: 'ON SCHEMA cmdb', privilege: 'CREATE', row: 'schema cmdb|CREATE|', none: 'f' },
+    { kind: 'function', target: 'ON FUNCTION public.fn()', privilege: 'EXECUTE', row: 'function fn()|EXECUTE|', none: 'f' },
+    { kind: 'column', target: 'ON public.u', privilege: 'SELECT (id)', row: 'column public.u.id|SELECT|', none: null },
+  ];
+
+  it.each(CASES)('reads $kind: t when held, g with the grant option, t after REVOKE GRANT OPTION FOR, not held after REVOKE', async c => {
+    const query = open();
+    await query('CREATE ROLE cmdb_app LOGIN; CREATE SCHEMA cmdb');
+    await query(`CREATE TABLE public.t (id int); CREATE TABLE public.u (id int, name text); CREATE SEQUENCE public.s;
+      CREATE FUNCTION public.fn() RETURNS int LANGUAGE sql AS 'SELECT 1'; REVOKE EXECUTE ON FUNCTION public.fn() FROM PUBLIC`);
+    const reads = async () => (await grantMatrix(query, 'cmdb_app')).filter(row => row.startsWith(c.row));
+    const unheld = c.none === null ? [] : [`${c.row}${c.none}`];
+    expect(await reads()).toEqual(unheld);
+    await query(`GRANT ${c.privilege} ${c.target} TO cmdb_app`);
+    expect(await reads()).toEqual([`${c.row}t`]);
+    await query(`GRANT ${c.privilege} ${c.target} TO cmdb_app WITH GRANT OPTION`);
+    expect(await reads()).toEqual([`${c.row}g`]);
+    await query(`REVOKE GRANT OPTION FOR ${c.privilege} ${c.target} FROM cmdb_app`);
+    expect(await reads()).toEqual([`${c.row}t`]);
+    await query(`REVOKE ${c.privilege} ${c.target} FROM cmdb_app`);
+    expect(await reads()).toEqual(unheld);
+  }, 60000);
+});
+
+describe('the two copies of the grant matrix query', () => {
+  const collapse = (sql: string) => sql.replace(/\s+/g, ' ').trim();
+
+  it('are the same text: grantMatrixSql for cmdb_app equals the SQL of grant_matrix() in the staging migration contract script', () => {
+    const script = readFileSync(join(__dirname, '../../../../../../deploy/test-staging-migrations.sh'), 'utf8');
+    const shellSql = /\ngrant_matrix\(\) \{\n\s*owner_psql -c "([^"]*)" \| LC_ALL=C sort\n\}/.exec(script)?.[1];
+    expect(shellSql).toBeDefined();
+    expect(collapse(shellSql!)).toEqual(collapse(grantMatrixSql('cmdb_app')));
+  });
 });
 
 describe('the $hap2126$ block cannot silently drift from the migrations (grants, dynamic grantees, REVOKE, every file)', () => {

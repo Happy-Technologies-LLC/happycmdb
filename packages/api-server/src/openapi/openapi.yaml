@@ -2024,23 +2024,49 @@ paths:
     get:
       tags: [Relationships]
       summary: Get relationships by type
-      description: Retrieve all relationships of a specific type
+      description: >-
+        Page through the relationships of one type between CIs of the caller's organization, ordered by source then target
+        name. The envelope carries the page and its totals; each row is a flat record with un-prefixed keys, not the
+        `Relationship` schema. `limit` and `offset` are validated by the route: a value outside the bounds below is a 400 before
+        the graph is read. The path accepts the nine types the REST write accepts (`RestRelationshipType`), not the set
+        `RelationshipType` lists.
       operationId: getRelationshipsByType
       parameters:
         - name: type
           in: path
           required: true
           schema:
-            $ref: '#/components/schemas/RelationshipType'
+            $ref: '#/components/schemas/RestRelationshipType'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
       responses:
         '200':
-          description: Relationships of specified type
+          description: One page of relationships of the requested type
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Relationship'
+                $ref: '#/components/schemas/RelationshipsByTypeResponse'
+        '400':
+          description: >-
+            The path type is not one of the nine accepted types (`RelationshipTypeRefusal`), or `limit` or `offset` is out of
+            range or not an integer (`MiddlewareError`, from the query validation).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/RelationshipTypeRefusal'
+                  - $ref: '#/components/schemas/MiddlewareError'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -6645,6 +6671,99 @@ components:
           type: object
           additionalProperties: true
           description: Additional relationship metadata
+
+    RestRelationshipType:
+      type: string
+      description: >-
+        The relationship types the REST routes accept (the allow-list of `GET /relationships/type/{type}` and the `type` rule of
+        the relationship write and evidence routes). Not the same set as `RelationshipType`, which lists types no REST route
+        accepts and omits `INSTANCE_OF`.
+      enum: [DEPENDS_ON, HOSTS, CONNECTS_TO, USES, OWNED_BY, PART_OF, DEPLOYED_ON, BACKED_UP_BY, INSTANCE_OF]
+
+    TypedRelationshipRow:
+      type: object
+      description: >-
+        One relationship as `GET /relationships/type/{type}` sends it: flat, un-prefixed keys (not the `Relationship` schema).
+        The names and types are the endpoints' stored CI values and are omitted when a CI node has none.
+      additionalProperties: false
+      required: [from_id, to_id, type, properties]
+      properties:
+        from_id:
+          type: string
+        from_name:
+          type: string
+        from_type:
+          type: string
+        to_id:
+          type: string
+        to_name:
+          type: string
+        to_type:
+          type: string
+        type:
+          $ref: '#/components/schemas/RestRelationshipType'
+        properties:
+          type: object
+          additionalProperties: true
+          description: Every property stored on the relationship, `created_at` and `updated_at` included
+        created_at:
+          type: object
+          additionalProperties: true
+          description: >-
+            The relationship's stored `created_at`, omitted when the edge has none. It is a Neo4j `datetime()` passed through
+            unconverted, so JSON carries the driver's component object (`year`, `month`, `day`, `hour`, `minute`, `second`,
+            `nanosecond`, `timeZoneOffsetSeconds`, each a `{low, high}` integer pair), not an ISO string.
+        updated_at:
+          type: object
+          additionalProperties: true
+          description: The relationship's stored `updated_at`, omitted when the edge has none; same representation as `created_at`
+
+    RelationshipsByTypeResponse:
+      type: object
+      additionalProperties: false
+      required: [success, data, pagination, type]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/TypedRelationshipRow'
+        pagination:
+          type: object
+          additionalProperties: false
+          required: [total, count, offset, limit]
+          properties:
+            total:
+              type: integer
+              description: Relationships of this type in the organization, whatever the page
+            count:
+              type: integer
+              description: Rows in `data`
+            offset:
+              type: integer
+            limit:
+              type: integer
+              description: The limit applied, at most 1000
+        type:
+          $ref: '#/components/schemas/RestRelationshipType'
+
+    RelationshipTypeRefusal:
+      type: object
+      description: Body of the 400 for a path type outside `RestRelationshipType`
+      additionalProperties: false
+      required: [success, error, message]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          enum: [Bad Request]
+        message:
+          type: string
+          example: 'Invalid relationship type. Must be one of: DEPENDS_ON, HOSTS, CONNECTS_TO, USES, OWNED_BY, PART_OF, DEPLOYED_ON, BACKED_UP_BY, INSTANCE_OF'
 
     RelationshipInput:
       type: object

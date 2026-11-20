@@ -14,16 +14,12 @@ import { join } from 'path';
 import { ConfigurationLoader } from '../../src/config/config.loader';
 import { getLogger } from '../../src/logging/logger';
 
-const ENV_KEYS = [
-  'API_DOCS_ENABLED', 'JWT_SECRET', 'NEO4J_URI', 'NEO4J_USERNAME', 'NEO4J_PASSWORD',
-  'POSTGRES_HOST', 'POSTGRES_DB', 'POSTGRES_USER', 'POSTGRES_PASSWORD',
-  'REDIS_HOST', 'KAFKA_CLIENT_ID', 'KAFKA_GROUP_ID',
-];
-const savedEnv: Record<string, string | undefined> = {};
+let savedEnv: NodeJS.ProcessEnv;
 let dir: string;
 
 beforeEach(() => {
-  for (const key of ENV_KEYS) savedEnv[key] = process.env[key];
+  // Snapshot the whole environment: the loader's dotenv step may write any key into process.env.
+  savedEnv = { ...process.env };
   // Placeholder config so validation passes; nothing connects. The secret is random per run.
   Object.assign(process.env, {
     JWT_SECRET: randomBytes(32).toString('hex'),
@@ -33,15 +29,15 @@ beforeEach(() => {
   });
   delete process.env['API_DOCS_ENABLED'];
   dir = mkdtempSync(join(tmpdir(), 'hap1881-'));
+  // The loader reads .env and config/<NODE_ENV>.json relative to the cwd; point it at the empty scratch dir.
+  jest.spyOn(process, 'cwd').mockReturnValue(dir);
 });
 
 afterEach(() => {
-  for (const key of ENV_KEYS) {
-    if (savedEnv[key] === undefined) delete process.env[key];
-    else process.env[key] = savedEnv[key];
-  }
-  rmSync(dir, { recursive: true, force: true });
   jest.restoreAllMocks();
+  for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
+  Object.assign(process.env, savedEnv);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 function loadWithFile(server: Record<string, unknown>) {

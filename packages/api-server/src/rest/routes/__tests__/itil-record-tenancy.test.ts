@@ -55,8 +55,9 @@ import { itilRoutes } from '../itil.routes';
 import { processSyncIncidentsToDatamart } from '../../../../../etl-processor/src/jobs/sync-incidents-to-datamart.job';
 const app = express();
 app.use(express.json());
-app.use((req: Request & { user?: { _organizationId?: string } }, _res, next) => {
-  req.user = { _organizationId: req.get('x-org') === 'A' ? A : req.get('x-org') === 'B' ? B : undefined };
+app.use((req: Request & { user?: { _userId?: string; _organizationId?: string } }, _res, next) => {
+  // _userId: the verified caller; POST /changes/:id/approve answers 401 without an identity.
+  req.user = { _userId: 'tenancy-test-user', _organizationId: req.get('x-org') === 'A' ? A : req.get('x-org') === 'B' ? B : undefined };
   next();
 });
 app.use('/itil', itilRoutes);

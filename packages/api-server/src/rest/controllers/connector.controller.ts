@@ -5,6 +5,7 @@ import { Request, Response } from 'express';
 import { getPostgresClient } from '@cmdb/database';
 import { logger, validateConnectorSortField, validateSortDirection } from '@cmdb/common';
 import { publicInstalledConnector } from '../../services/public-installed-connector';
+import { sanitizeRegistryRowUrls } from '../../utils/safe-manifest-url';
 
 /**
  * Read-only connector registry and installed-template discovery.
@@ -69,7 +70,7 @@ export class ConnectorController {
 
       res.json({
         success: true,
-        data: result.rows,
+        data: result.rows.map(sanitizeRegistryRowUrls),
         pagination: {
           total,
           count: result.rows.length,
@@ -108,7 +109,7 @@ export class ConnectorController {
 
       res.json({
         success: true,
-        data: result.rows[0],
+        data: sanitizeRegistryRowUrls(result.rows[0]),
       });
     } catch {
       logger.error('Error fetching connector details');
@@ -144,7 +145,7 @@ export class ConnectorController {
 
       res.json({
         success: true,
-        data: result.rows,
+        data: result.rows.map(sanitizeRegistryRowUrls),
         count: result.rows.length,
         query: q,
       });

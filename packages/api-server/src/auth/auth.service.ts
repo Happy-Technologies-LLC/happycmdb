@@ -548,9 +548,13 @@ export class AuthService {
   }
 
   /**
-   * Verify API key and return associated user info
+   * Verify API key and return associated user info. Refused with AuthFailureError('disabled') before any hash or
+   * repository read while auth.apiKeys.enabled is false, so the kill switch holds for every caller, not only the middleware.
    */
   async verifyApiKey(apiKey: string): Promise<TokenPayload> {
+    if (!this.apiKeysEnabled) {
+      throw new AuthFailureError('disabled');
+    }
     try {
       const keyHash = this.hashKey(apiKey);
       const apiKeyRecord = await this.repository.findApiKeyByKey(keyHash);

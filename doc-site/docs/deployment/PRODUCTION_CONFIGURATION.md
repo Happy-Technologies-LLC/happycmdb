@@ -200,7 +200,12 @@ POSTGRES_SSL_ENABLED=on
 POSTGRES_SSL_MODE=verify-full
 # verify-full only: CA bundle to trust (default: the Node.js trust store). Must be readable by the api-server process.
 POSTGRES_SSL_CA_FILE=/ssl/ca.crt
+
+# Startup guard on the API's PostgreSQL login
+# REQUIRE_NON_SUPERUSER_DB=true  # only with a non-superuser POSTGRES_USER, see environment-variables.md
 ```
+
+Only the string `true` (case-insensitive, surrounding whitespace ignored) enforces `REQUIRE_NON_SUPERUSER_DB`: the API then exits non-zero before it listens when its PostgreSQL login is privileged, and also when the probe cannot run; `1`, `yes`, empty and unset only log an `error` line for a privileged login. The shipped compose logs in as the superuser `cmdb_user`, so enforcing there would stop the API; see [Environment Variables](../configuration/environment-variables.md#postgresql-configuration).
 
 The Postgres client reads only `POSTGRES_SSL_MODE`, `POSTGRES_SSL_ENABLED` and `POSTGRES_SSL_CA_FILE` (`resolveSsl` in
 `packages/database/src/postgres/client.ts`). `POSTGRES_SSL_ENABLED` is consulted only when `POSTGRES_SSL_MODE` is unset

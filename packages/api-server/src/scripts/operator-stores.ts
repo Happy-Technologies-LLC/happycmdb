@@ -163,18 +163,23 @@ return;
 }
 
 /**
- * Scheme `bolt` or `neo4j` exactly (lower case), a hostname/IPv4 or a bracketed IPv6 literal, then an optional
- * `:port` of 1 to 5 digits (the driver range-checks it). No `m` flag: `$` matches only at the very end of the input,
- * so a trailing newline is refused.
+ * Scheme `bolt` or `neo4j` exactly (lower case), a hostname/IPv4 or a bracketed IPv6 literal (it must contain a `:`,
+ * which every IPv6 literal does), then an optional `:port` of 1 to 5 digits. No `m` flag: `$` matches only at the very
+ * end of the input, so a trailing newline is refused. The grammar does not bound the port: `neo4j.driver` constructs
+ * with `:99999` and the range error comes only at connect time, so `assertPlainNeo4jUri` also refuses port 0 and
+ * anything above 65535.
  */
-const PLAIN_NEO4J_URI = /^(bolt|neo4j):\/\/([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(:\d{1,5})?$/;
+const PLAIN_NEO4J_URI =
+  /^(?:bolt|neo4j):\/\/(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[(?=[0-9A-Fa-f.]*:)[0-9A-Fa-f:.]+\])(?::(?<port>\d{1,5}))?$/;
 
 /**
  * Only a plain scheme: TLS comes from `<encryptedVariable>` (system-CA verified), never from a +s/+ssc scheme (+ssc
  * trusts any certificate). The message is fixed and never carries the value: a URI can carry credentials.
  */
 export function assertPlainNeo4jUri(uri: string, variable: string, encryptedVariable: string): void {
-  if (!PLAIN_NEO4J_URI.test(uri)) {
+  const match = PLAIN_NEO4J_URI.exec(uri);
+  const port = match?.groups?.['port'];
+  if (match === null || (port !== undefined && (Number(port) < 1 || Number(port) > 65535))) {
     throw new Error(`${variable} must be bolt://<host>[:port] or neo4j://<host>[:port] (use ${encryptedVariable}=true for TLS)`);
   }
 }
@@ -220,6 +225,7 @@ throw new Error('CMDB_ROTATE_POSTGRES_SSL must be require or verify-full when se
 export const API_SERVER_CLIENT_ENV_NAMES: readonly string[] = [
   'POSTGRES_SSL_MODE',
   'POSTGRES_SSL_ENABLED',
+  'POSTGRES_SSL_CA_FILE',
   'NEO4J_SSL_ENABLED',
   'NEO4J_ENCRYPTION',
   'NEO4J_ENCRYPTED',

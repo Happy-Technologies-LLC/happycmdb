@@ -76,6 +76,10 @@ const CREATE = '/auth/api-key';
 const LIST = '/auth/api-keys';
 const REVOKE = '/auth/api-key/{keyId}';
 
+const METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'];
+/** `/auth/api-key`, `/auth/api-key/*`, `/auth/api-keys` and `/auth/api-keys/*`; nothing else under /auth (`/auth/api-keyring` is not one). */
+const isKeyPath = (path: string): boolean => /^\/auth\/api-keys?(\/|$)/.test(path);
+
 const authConfig = {
   jwt: { secret: 'test-secret-at-least-32-characters-long', accessTokenExpiresIn: '15m', refreshTokenExpiresIn: '7d', issuer: 'happycmdb-test', audience: 'happycmdb-test' },
   bcrypt: { rounds: 4 },
@@ -122,7 +126,7 @@ function build(enabled: boolean) {
   app.use('/api/v1/auth', controller.getRouter());
   const session = new JWTService(authConfig.jwt as never).generateAccessToken('user-1', 'alice', 'operator', undefined, 0, Math.floor(Date.now() / 1000));
   const bearer = (req: request.Test): request.Test => req.set('Authorization', `Bearer ${session}`);
-  return { app, repository, bearer };
+  return { app, controller, repository, bearer };
 }
 
 beforeEach(() => {
@@ -240,10 +244,9 @@ describe('API-key operations in openapi.yaml', () => {
 
   it('declares JWT-only security on every API-key operation in the spec and keeps the documented defaults', () => {
     // Derived from the spec so a new key operation (a rotate endpoint, say) is caught here instead of passing unchecked.
-    const methods = ['get', 'post', 'put', 'patch', 'delete'];
     const keyOperations = Object.entries(spec.paths)
-      .filter(([path]) => path === '/auth/api-key' || path.startsWith('/auth/api-key/') || path === '/auth/api-keys')
-      .flatMap(([path, item]) => methods.filter(method => item[method]).map(method => [path, method] as const));
+      .filter(([path]) => isKeyPath(path))
+      .flatMap(([path, item]) => METHODS.filter(method => item[method]).map(method => [path, method] as const));
     const instruction = 'A new API-key operation is in openapi.yaml: decide its security (JWT-only like the others, or deliberately different), add a runtime refusal test for it, then extend this list.';
     expect({ instruction, operations: keyOperations.map(([path, method]) => `${method.toUpperCase()} ${path}`).sort() })
       .toEqual({ instruction, operations: [`DELETE ${REVOKE}`, `GET ${LIST}`, `POST ${CREATE}`] });
@@ -258,6 +261,24 @@ describe('API-key operations in openapi.yaml', () => {
     expect(spec.components.securitySchemes['ApiKeyAuth']).toEqual(expect.objectContaining({ type: 'apiKey', in: 'header', name: 'X-API-Key' }));
     expect(spec.components.securitySchemes['BearerAuth']).toEqual(expect.objectContaining({ type: 'http', scheme: 'bearer' }));
     // The runtime refusal of an X-API-Key-only caller on each route is pinned by the first test.
+  });
+
+  it('documents exactly the key-management routes the AuthController registers', () => {
+    // The spec-derived test above only sees what the spec documents; a route added to the controller alone is invisible to it.
+    // Express's ILayer/IRoute typings omit route.methods, which is set at runtime.
+    type Layer = { route?: { path: string; methods: Record<string, boolean> } };
+    const MOUNT = '/auth'; // server.ts: /api/v1 + this; spec servers carry /api/v1
+    const router = build(true).controller.getRouter() as unknown as { stack: Layer[] };
+    const registered = router.stack
+      .flatMap(layer => (layer.route ? Object.entries(layer.route.methods).filter(([, on]) => on).map(([method]) => `${method.toUpperCase()} ${MOUNT + layer.route!.path}`.replace(/:(\w+)/g, '{$1}')) : []))
+      .filter(operation => isKeyPath(operation.slice(operation.indexOf(' ') + 1)))
+      .sort();
+    const documented = Object.entries(spec.paths)
+      .filter(([path]) => isKeyPath(path))
+      .flatMap(([path, item]) => METHODS.filter(method => item[method]).map(method => `${method.toUpperCase()} ${path}`))
+      .sort();
+    expect(registered).toEqual([`DELETE ${REVOKE}`, `GET ${LIST}`, `POST ${CREATE}`]);
+    expect(documented).toEqual(registered);
   });
 
   it('every 401 and 403 body the stack sends on the three routes satisfies the declared response schema', async () => {

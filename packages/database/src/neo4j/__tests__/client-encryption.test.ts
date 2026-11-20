@@ -51,10 +51,33 @@ describe('plain bolt:// and neo4j:// URIs', () => {
     expect(mainConfig().encrypted).toBe('ENCRYPTION_ON');
   });
 
-  it.each(['false', '1', '', 'TRUE'])('NEO4J_ENCRYPTED=%p leaves encryption off', value => {
+  it.each(['false', ''])('NEO4J_ENCRYPTED=%p leaves encryption off', value => {
     process.env['NEO4J_ENCRYPTED'] = value;
     new Neo4jClient('neo4j://x', 'u', 'p');
     expect(mainConfig().encrypted).toBe('ENCRYPTION_OFF');
+  });
+
+  describe.each(['NEO4J_ENCRYPTED', 'NEO4J_SSL_ENABLED', 'NEO4J_ENCRYPTION'])('%s with an unrecognised value', name => {
+    it.each(['TRUE', 'True', '1', 'yes', ' true', 'true ', 'on'])('%p refuses to start, names the variable and builds no driver', value => {
+      process.env[name] = value;
+      let error: Error | undefined;
+      try { new Neo4jClient('bolt://x', 'u', 'p'); } catch (e) { error = e as Error; }
+      expect(error?.message).toBe(`${name} must be true or false when set`);
+      expect(driverMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses to start next to a valid true in another toggle', () => {
+      process.env['NEO4J_SSL_ENABLED'] = 'true';
+      process.env[name] = 'yes';
+      expect(() => new Neo4jClient('bolt://x', 'u', 'p')).toThrow(`${name} must be true or false when set`);
+      expect(driverMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses to start with a TLS-carrying URI too', () => {
+      process.env[name] = 'TRUE';
+      expect(() => new Neo4jClient('neo4j+s://x', 'u', 'p')).toThrow(`${name} must be true or false when set`);
+      expect(driverMock).not.toHaveBeenCalled();
+    });
   });
 
   it('unset variables leave encryption off and warn', () => {
@@ -106,10 +129,15 @@ describe.each(['neo4j+s://h', 'neo4j+ssc://h', 'bolt+s://h'])('TLS-carrying URI 
     expect(config).toHaveProperty('connectionAcquisitionTimeout', 5_000);
   });
 
-  it('logs that the URI scheme sets encryption and does not warn about plaintext', () => {
+  it('does not warn about plaintext; only +ssc warns, about certificate verification', () => {
     new Neo4jClient(uri, 'u', 'p');
-    expect(logger.info).toHaveBeenCalledWith('Neo4j client initialized with encryption set by the URI scheme');
-    expect(logger.warn).not.toHaveBeenCalled();
+    if (uri.includes('+ssc')) {
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect((logger.warn as jest.Mock).mock.calls[0][0]).toContain('certificate verification is disabled');
+    } else {
+      expect(logger.info).toHaveBeenCalledWith('Neo4j client initialized with encryption set by the URI scheme');
+      expect(logger.warn).not.toHaveBeenCalled();
+    }
   });
 });
 
@@ -118,4 +146,36 @@ it('never logs the URI, whose userinfo can carry a password', () => {
   new Neo4jClient('bolt://user:sentinel-pw@h', 'u', 'p');
   expect(loggedText()).not.toContain('sentinel-pw');
   expect(loggedText()).not.toContain('user:');
+});
+
+describe.each(['neo4j+ssc://h', 'bolt+ssc://h'])('%s trusts any certificate', uri => {
+  const stricter = 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES';
+  const refusal = 'A +ssc Neo4j URI trusts any certificate and conflicts with an explicit certificate trust strategy';
+
+  it('refuses an explicit stricter trust strategy from NEO4J_SSL_TRUST_STRATEGY and builds no driver', () => {
+    process.env['NEO4J_SSL_TRUST_STRATEGY'] = stricter;
+    expect(() => new Neo4jClient(uri, 'u', 'p')).toThrow(refusal);
+    expect(driverMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an explicit stricter trust strategy from the constructor option and builds no driver', () => {
+    expect(() => new Neo4jClient(uri, 'u', 'p', { encrypted: true, trust: stricter })).toThrow(refusal);
+    expect(driverMock).not.toHaveBeenCalled();
+  });
+
+  it('connects with no explicit trust setting and warns once, without the URI', () => {
+    new Neo4jClient('neo4j+ssc://user:sentinel-pw@h', 'u', 'p');
+    new Neo4jClient(uri, 'u', 'p');
+    expect(driverMock).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+    expect((logger.warn as jest.Mock).mock.calls[1]).toEqual([
+      'Neo4j client initialized with encryption set by the URI scheme; certificate verification is disabled by the +ssc scheme',
+    ]);
+    expect(loggedText()).not.toContain('sentinel-pw');
+  });
+
+  it('accepts an explicit trust-all strategy', () => {
+    process.env['NEO4J_SSL_TRUST_STRATEGY'] = 'TRUST_ALL_CERTIFICATES';
+    expect(() => new Neo4jClient(uri, 'u', 'p')).not.toThrow();
+  });
 });

@@ -32,17 +32,17 @@ TZ=UTC
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `NEO4J_URI` | Yes | - | Neo4j connection URI (`bolt://hostname:7687`). The schemes `bolt+s://`, `bolt+ssc://`, `neo4j+s://` and `neo4j+ssc://` select TLS from the URL (`+s` verifies the certificate chain, `+ssc` accepts any certificate: no chain or hostname check, the driver sets `TRUST_ALL_CERTIFICATES`, so it is not for production); the client then sets neither encryption nor trust itself, so `NEO4J_ENCRYPTED`, `NEO4J_SSL_ENABLED`, `NEO4J_ENCRYPTION` and `NEO4J_SSL_TRUST_STRATEGY` are not used |
+| `NEO4J_URI` | Yes | - | Neo4j connection URI (`bolt://hostname:7687`). The schemes `bolt+s://`, `bolt+ssc://`, `neo4j+s://` and `neo4j+ssc://` select TLS from the URL (`+s` verifies the certificate chain, `+ssc` accepts any certificate: no chain or hostname check, the driver sets `TRUST_ALL_CERTIFICATES`, so it is not for production, and the client logs a warning that certificate verification is disabled; an explicit `NEO4J_SSL_TRUST_STRATEGY` other than `TRUST_ALL_CERTIFICATES` next to a `+ssc` URI refuses to start); the client then sets neither encryption nor trust itself, so `NEO4J_ENCRYPTED`, `NEO4J_SSL_ENABLED`, `NEO4J_ENCRYPTION` and `NEO4J_SSL_TRUST_STRATEGY` do not change the connection (a malformed toggle still refuses to start) |
 | `NEO4J_USERNAME` | Yes | `neo4j` | Neo4j username |
 | `NEO4J_PASSWORD` | Yes | - | Neo4j password (use secrets management) |
 | `NEO4J_DATABASE` | No | `neo4j` | Database name |
 | `NEO4J_MAX_CONNECTION_POOL_SIZE` | No | `50` | Maximum connection pool size |
 | `NEO4J_ACQUISITION_TIMEOUT` | No | `60000` | Connection acquisition timeout (ms) |
 | `NEO4J_MAX_TRANSACTION_RETRY_TIME` | No | `30000` | Max transaction retry time (ms) |
-| `NEO4J_ENCRYPTED` | No | `false` | Alias of `NEO4J_SSL_ENABLED` and `NEO4J_ENCRYPTION`: any of the three set to the exact string `true` turns TLS on for a plain `bolt://` or `neo4j://` URI (`packages/database/src/neo4j/client.ts`); any other value, `TRUE` and `1` included, leaves it off. With none set the connection is plaintext Bolt and the API only logs the warning `Neo4j client initialized WITHOUT encryption (development mode)`; it does not refuse to start. Not used with a `+s`/`+ssc` URI |
+| `NEO4J_ENCRYPTED` | No | `false` | Alias of `NEO4J_SSL_ENABLED` and `NEO4J_ENCRYPTION`: any of the three set to the exact string `true` turns TLS on for a plain `bolt://` or `neo4j://` URI (`packages/database/src/neo4j/client.ts`); any other value (`TRUE`, `True`, `1`, `yes`, a value with surrounding whitespace) refuses to start: the client throws `<VARIABLE> must be true or false when set` before it builds a driver, whatever the URI scheme. Unset or empty leaves it off. With none set the connection is plaintext Bolt and the API only logs the warning `Neo4j client initialized WITHOUT encryption (development mode)`; it does not refuse to start. Not used with a `+s` URI; with a `+ssc` URI only `TRUST_ALL_CERTIFICATES` is accepted, any other value refuses to start |
 | `NEO4J_SSL_ENABLED` | No | `false` | See `NEO4J_ENCRYPTED` |
 | `NEO4J_ENCRYPTION` | No | `false` | See `NEO4J_ENCRYPTED` |
-| `NEO4J_SSL_TRUST_STRATEGY` | No | `TRUST_SYSTEM_CA_SIGNED_CERTIFICATES` | Certificate trust when TLS is turned on by the variables above: the server certificate must be signed by a CA in the system trust store. The other value the driver takes is `TRUST_ALL_CERTIFICATES`, which disables certificate verification: not for production. Not used with a `+s`/`+ssc` URI |
+| `NEO4J_SSL_TRUST_STRATEGY` | No | `TRUST_SYSTEM_CA_SIGNED_CERTIFICATES` | Certificate trust when TLS is turned on by the variables above: the server certificate must be signed by a CA in the system trust store. The other value the driver takes is `TRUST_ALL_CERTIFICATES`, which disables certificate verification: not for production. Not used with a `+s` URI; with a `+ssc` URI only `TRUST_ALL_CERTIFICATES` is accepted and any other value refuses to start |
 
 **Example:**
 

@@ -165,6 +165,21 @@ const edgeRef = (edge: TraversalEdge): CIEdgeRef => ({ from: edge.startNodeId, t
 /** True for the URL schemes that carry encryption and trust themselves; reads the scheme prefix only, never the rest of the URI. */
 const uriSchemeSelectsTls = (uri: string): boolean => /^(?:bolt|neo4j)\+s(?:sc)?:/i.test(uri);
 
+/** True for the `+ssc` schemes, which make the driver trust any certificate. Reads the scheme prefix only. */
+const uriSchemeTrustsAll = (uri: string): boolean => /^(?:bolt|neo4j)\+ssc:/i.test(uri);
+
+/**
+ * Strict TLS toggle: unset or empty is off, exactly `true` is on, exactly `false` is off, anything else throws.
+ * A value such as `TRUE` or `1` must never silently leave the connection in plaintext. The error names the variable
+ * and never echoes the value.
+ */
+const readTlsToggle = (name: string): boolean => {
+  const value = process.env[name];
+  if (value === undefined || value === '') return false;
+  if (value !== 'true' && value !== 'false') throw new Error(`${name} must be true or false when set`);
+  return value === 'true';
+};
+
 export class Neo4jClient {
   private driver: Driver;
   private activeCIAnalyticsReads = 0;
@@ -191,16 +206,19 @@ export class Neo4jClient {
     trust?: 'TRUST_ALL_CERTIFICATES' | 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES';
   }) {
     const schemeSelectsTls = uriSchemeSelectsTls(uri);
-    // Determine if encryption should be enabled
-    const sslEnabled = process.env['NEO4J_SSL_ENABLED'] === 'true' ||
-                       process.env['NEO4J_ENCRYPTION'] === 'true' ||
-                       process.env['NEO4J_ENCRYPTED'] === 'true' ||
-                       config?.encrypted === true;
+    // Every toggle is parsed (no short-circuit) so a malformed one refuses to start whatever the others say.
+    const toggles = ['NEO4J_SSL_ENABLED', 'NEO4J_ENCRYPTION', 'NEO4J_ENCRYPTED'].map(readTlsToggle);
+    const sslEnabled = toggles.some(Boolean) || config?.encrypted === true;
 
     // Determine trust strategy
-    const trustStrategy = config?.trust ||
-                         (process.env['NEO4J_SSL_TRUST_STRATEGY'] as any) ||
-                         'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES';
+    const explicitTrust = config?.trust || process.env['NEO4J_SSL_TRUST_STRATEGY'] || undefined;
+    const trustStrategy = (explicitTrust || 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES') as NonNullable<Config['trust']>;
+
+    // A `+ssc` scheme trusts any certificate: an explicit stricter trust strategy is a conflict, not an override.
+    const trustsAll = uriSchemeTrustsAll(uri);
+    if (trustsAll && explicitTrust && explicitTrust !== 'TRUST_ALL_CERTIFICATES') {
+      throw new Error('A +ssc Neo4j URI trusts any certificate and conflicts with an explicit certificate trust strategy');
+    }
 
     // neo4j-driver throws when `encrypted`/`trust` are given next to a scheme that already carries them.
     this.driverConfig = {
@@ -217,7 +235,9 @@ export class Neo4jClient {
       connectionAcquisitionTimeout: 2 * 60 * 1000, // 2 minutes
     });
 
-    if (schemeSelectsTls) {
+    if (trustsAll) {
+      logger.warn('Neo4j client initialized with encryption set by the URI scheme; certificate verification is disabled by the +ssc scheme');
+    } else if (schemeSelectsTls) {
       logger.info('Neo4j client initialized with encryption set by the URI scheme');
     } else if (sslEnabled) {
       logger.info('Neo4j client initialized with SSL/TLS encryption enabled');

@@ -449,21 +449,40 @@ Get detailed risk assessment for a change.
 
 ### POST /changes/:id/approve
 
-Approve a change request (requires `itil:approve` permission).
+Approve a change request. Requires the `write` permission; there is no separate approve permission. The request takes no body: the approver is the authenticated caller (`_userId`, or the username when the token has no user id), never a request field.
+
+The first approval wins. The change gets `status` and `approval_status` set to `approved`, and `approved_by` and `approved_at` record the approver and the time. A repeat call answers 200 with the same row and keeps the original approver and time.
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "change": {
-    "id": "CHG0009876",
-    "status": "APPROVED",
-    "approvedBy": "cab@company.com",
-    "approvedAt": "2025-11-18T14:30:00Z"
-  }
+  "data": {
+    "id": "9bceed1e-3505-45a9-b4b6-fcdacebd1750",
+    "change_number": "CHG-AP-1",
+    "title": "Patch the checkout pool",
+    "change_type": "normal",
+    "approval_status": "approved",
+    "approved_by": "u-1",
+    "approved_at": "2026-11-20T19:06:18.392Z",
+    "status": "approved",
+    "requested_by": "alice",
+    "created_at": "2026-11-20T19:06:18.384Z",
+    "updated_at": "2026-11-20T19:06:18.392Z",
+    "organization_id": "11111111-1111-4111-8111-111111111111"
+  },
+  "message": "Change approved successfully"
 }
 ```
+
+`data` is the full change row; the example lists the fields that matter here.
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Change approved (or already approved; the original approver and time are kept) |
+| 401 | `Unauthorized`: the request carries no user identity; nothing is written |
+| 404 | `Not Found`: no change with this id in the caller's organization |
 
 ---
 

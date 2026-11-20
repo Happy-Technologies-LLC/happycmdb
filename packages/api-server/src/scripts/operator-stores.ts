@@ -221,6 +221,9 @@ throw new Error('CMDB_ROTATE_POSTGRES_SSL must be require or verify-full when se
  * The API server's own TLS toggles that `PostgresClient` / `Neo4jClient` read from `process.env`. Every operator tool
  * (rotation, identity window, backfill, seed) defines its connections only through its own `CMDB_*` variables, so it
  * drops all of these before any client exists. A new ambient client variable MUST be added here, once.
+ *
+ * `NODE_EXTRA_CA_CERTS` is deliberately not in this list: it is a process-level Node setting that only adds trust to
+ * the public store, and it is the supported way to trust a private Postgres CA under `verify-full`. Do not add it.
  */
 export const API_SERVER_CLIENT_ENV_NAMES: readonly string[] = [
   'POSTGRES_SSL_MODE',

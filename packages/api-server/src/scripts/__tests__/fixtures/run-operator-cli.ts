@@ -10,8 +10,6 @@
 import { spawn } from 'child_process';
 import { join } from 'path';
 
-import { API_SERVER_CLIENT_ENV_NAMES } from '../../operator-stores';
-
 const REGISTER = join(__dirname, 'ts-source-register.cjs');
 const DRIVER_STUB = join(__dirname, 'stub-neo4j-driver.cjs');
 const CONFIG_LINE = /^neo4j-driver-config (.*)$/;
@@ -24,10 +22,20 @@ export interface CliRun {
   driverConfigs: Array<Record<string, unknown>>;
 }
 
-/** Every API-server TLS toggle (`API_SERVER_CLIENT_ENV_NAMES`, the source of truth), malformed: any of them read ambiently refuses to start. */
-export const MALFORMED_AMBIENT_TLS_ENV: Record<string, string> = Object.fromEntries(
-  API_SERVER_CLIENT_ENV_NAMES.map(name => [name, 'bogus']),
-);
+/**
+ * Every API-server TLS toggle, malformed: any of them read ambiently refuses to start. The seven names are spelled out
+ * on purpose, not derived from the guard list under test: a name dropped from the guard leaves its bogus value visible
+ * to the CLI, so the child-process tests fail end to end.
+ */
+export const MALFORMED_AMBIENT_TLS_ENV: Record<string, string> = {
+  POSTGRES_SSL_MODE: 'bogus',
+  POSTGRES_SSL_ENABLED: 'bogus',
+  POSTGRES_SSL_CA_FILE: 'bogus',
+  NEO4J_SSL_ENABLED: 'bogus',
+  NEO4J_ENCRYPTION: 'bogus',
+  NEO4J_ENCRYPTED: 'bogus',
+  NEO4J_SSL_TRUST_STRATEGY: 'bogus',
+};
 
 /** Ambient toggles that would turn TLS on and trust every certificate if the CLI read them. */
 export const PERMISSIVE_AMBIENT_TLS_ENV = {

@@ -2,15 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * The operator-CLI child harness itself: its deadline kills a hung child, and the malformed ambient TLS fixture covers
- * a literal list of names (not `API_SERVER_CLIENT_ENV_NAMES`, which the fixture is built from).
+ * The operator-CLI child harness itself: its deadline kills a hung child.
  */
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { MALFORMED_AMBIENT_TLS_ENV, runOperatorCli } from '../run-operator-cli';
+import { runOperatorCli } from '../run-operator-cli';
 
 function isAlive(pid: number): boolean {
   try {
@@ -20,22 +19,6 @@ function isAlive(pid: number): boolean {
     return false;
   }
 }
-
-describe('MALFORMED_AMBIENT_TLS_ENV', () => {
-  // Independent of the guard list: dropping a name from `API_SERVER_CLIENT_ENV_NAMES` shrinks the fixture too, and
-  // only this literal notices.
-  it('covers exactly the seven API-server client variables, each malformed', () => {
-    expect(MALFORMED_AMBIENT_TLS_ENV).toEqual({
-      POSTGRES_SSL_MODE: 'bogus',
-      POSTGRES_SSL_ENABLED: 'bogus',
-      POSTGRES_SSL_CA_FILE: 'bogus',
-      NEO4J_SSL_ENABLED: 'bogus',
-      NEO4J_ENCRYPTION: 'bogus',
-      NEO4J_ENCRYPTED: 'bogus',
-      NEO4J_SSL_TRUST_STRATEGY: 'bogus',
-    });
-  });
-});
 
 describe('runOperatorCli deadline', () => {
   let dir: string;

@@ -6,7 +6,7 @@ import { dec, enc, getNeo4jClient, getPostgresClient, isStorableString, PlanUnre
 import { logger, ciIncarnationId } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
 import neo4j from 'neo4j-driver';
-import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { requestOrganizationId, type AuthenticatedRequest } from '../../middleware/auth.middleware';
 import {
   assertNoCIGap, CIGapError, CI_GAP_RESPONSE, readSingleCI, readCIList, CIListUnavailableError,
   CI_LIST_UNAVAILABLE_RESPONSE, writeReferencedCIs,
@@ -900,17 +900,32 @@ export class ITILController {
   async approveChange(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
+      // The verified caller, never a body field. No 'system' fallback: an approval attributed to no one defeats the record.
+      const user = (req as AuthenticatedRequest).user;
+      const approver = user?._userId || user?._username;
+      if (!approver) {
+        res.status(401).json({
+          success: false,
+          error: 'Unauthorized',
+          message: 'An authenticated user is required to approve a change',
+        });
+        return;
+      }
 
       const pool = this.postgresClient.pool;
+      // First approval wins: a repeat call keeps the original approver and time.
       const result = await pool.query(
         `
         UPDATE itil_changes
         SET status = 'approved',
+            approval_status = 'approved',
+            approved_by = COALESCE(approved_by, $3),
+            approved_at = COALESCE(approved_at, NOW()),
             updated_at = NOW()
         WHERE id = $1 AND organization_id = $2
         RETURNING *
         `,
-        [id, requestOrganizationId(req)]
+        [id, requestOrganizationId(req), approver]
       );
 
       if (result.rows.length === 0) {

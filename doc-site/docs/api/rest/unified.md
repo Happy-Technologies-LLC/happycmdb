@@ -351,7 +351,7 @@ Find the best matching credential for a given context using affinity scoring.
 - `404 Not Found` - No credential of the caller passes the protocol/scope filters, or every one that does fails to decrypt or decode (each such candidate is skipped; the server log names its error class only)
 - `400 Bad Request` - Invalid context data
 - `401 Unauthorized` - Missing or invalid JWT token
-- `403 Forbidden` - Caller lacks the `write` permission: `{"_error": "Forbidden", "_message": "Permission 'write' required"}`
+- `403 Forbidden` - Caller lacks the `write` permission: `{"success": false, "error": "Forbidden", "message": "Permission 'write' required", "_error": "Forbidden", "_message": "Permission 'write' required", "code": "PERMISSION_REQUIRED", "required": {"permission": "write"}, "role": "viewer"}` (`role` is the caller's own role; read `code`, show `message`)
 
 ---
 
@@ -458,7 +458,7 @@ Rank all credentials by match score for a given context.
 **Error Responses**:
 - `400 Bad Request` - Invalid context data
 - `401 Unauthorized` - Missing or invalid JWT token
-- `403 Forbidden` - Caller lacks the `write` permission: `{"_error": "Forbidden", "_message": "Permission 'write' required"}`
+- `403 Forbidden` - Caller lacks the `write` permission: the same `PERMISSION_REQUIRED` body as [Match Credential](#match-credential)
 
 ---
 
@@ -736,7 +736,7 @@ Select credentials from a set using the configured strategy and context.
 **Error Responses**:
 - `400 Bad Request` - Invalid `context` or `strategy`
 - `401 Unauthorized` - Missing or invalid JWT token
-- `403 Forbidden` - Caller lacks the `write` permission: `{"_error": "Forbidden", "_message": "Permission 'write' required"}`
+- `403 Forbidden` - Caller lacks the `write` permission: the same `PERMISSION_REQUIRED` body as [Match Credential](#match-credential)
 - `404 Not Found` - The set does not exist
 - `500 Internal Server Error` - A member credential cannot be decrypted or decoded: `{"success": false, "error": "Failed to select credentials", "message": "Internal error"}`. The whole select fails (no partial list); the server log names the error class only, never its message (HAP-1814).
 

@@ -10,7 +10,7 @@
 // grants (read from 045 itself), then runs 045 to 048, 054 and 056 verbatim. The same matrix is proven on a real server, over the
 // full migration set, by the "role re-creation" step of deploy/test-staging-migrations.sh (hosted CI job `staging-migrations`).
 import { fork } from 'child_process';
-import { readFileSync } from 'fs';
+import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 const HOST = join(__dirname, '../../../../../api-server/src/rest/routes/__tests__/fixtures/pglite-host.cjs');
@@ -164,4 +164,49 @@ describe('whole-grant matrix: a re-created cmdb_app equals a freshly migrated on
       .toEqual({ onlyInFresh: [], onlyInRecreated: [] });
     expect(again).toEqual(fresh);
   }, 120000);
+});
+
+describe('the $hap2126$ block cannot drift from the migrations', () => {
+  const FIX = 'add the table to the $hap2126$ block in deploy/build01-staging-app-login.sql, to TABLE_MIGRATIONS and EXPECTED in '
+    + 'staging-app-login-receipts-grant.test.ts, and to deploy/BUILD01-STAGING.md';
+  /** A migration's SQL without `--` comments (full-line and trailing), so a mention of cmdb_app in prose selects nothing. */
+  const code = (name: string) => migration(name).replace(/--.*$/gm, '');
+  const later = readdirSync(MIGRATIONS).filter(name => name.endsWith('.sql') && Number.parseInt(name, 10) > 45).sort(); // files only: no rollback/ or __tests__/
+  const grantsApp = (name: string) => /\bGRANT\b[^;]*\bTO\b[^;]*\bcmdb_app\b/i.test(code(name)) || /ARRAY\[[^\]]*'cmdb_app'[^\]]*\]/i.test(code(name));
+  /** The block's `(table, privileges)` rows as a map. */
+  const blockRows = () => Object.fromEntries([...grantBlock().matchAll(/\('(public\.[a-z_]+)',\s*'([A-Z, ]+)'\)/g)]
+    .map(match => [match[1]!, match[2]!.split(',').map(p => p.trim())]));
+
+  it('lists every migration after 045 that grants cmdb_app, and only those', () => {
+    expect(later.length).toBeGreaterThan(TABLE_MIGRATIONS.length);
+    const granting = later.filter(grantsApp);
+    const unlisted = granting.filter(name => !TABLE_MIGRATIONS.includes(name));
+    const stale = TABLE_MIGRATIONS.filter(name => !granting.includes(name));
+    if (unlisted.length || stale.length) {
+      throw new Error(`${unlisted.length ? `${unlisted.join(', ')} grants cmdb_app but is not in TABLE_MIGRATIONS: ${FIX}. ` : ''}`
+        + `${stale.length ? `${stale.join(', ')} is in TABLE_MIGRATIONS but no longer grants cmdb_app. ` : ''}`);
+    }
+    expect(granting).toEqual([...TABLE_MIGRATIONS].sort());
+    for (const prose of ['053_business_service_lineage_read_acl.sql', '055_auth_credential_events_scope_events.sql']) {
+      expect(later).toContain(prose);
+      expect(granting).not.toContain(prose); // 053 names cmdb_app only in a comment, 055 not at all
+    }
+  });
+
+  it('carries exactly the EXPECTED tables and privileges in the block', () => {
+    expect(blockRows()).toEqual(EXPECTED);
+  });
+
+  it('has a block row for every table the granting migrations name', () => {
+    const rows = blockRows();
+    for (const name of TABLE_MIGRATIONS) {
+      // `GRANT <privileges> ON <table>[, <table>] TO ...`, plain or inside the format() string of a FOREACH body
+      const tables = [...code(name).matchAll(/\bGRANT\b[^;']*?\bON\s+([a-z_.,\s]+?)\s+TO\b/gi)]
+        .flatMap(match => match[1]!.split(',').map(table => table.trim()));
+      expect([name, tables.length]).not.toEqual([name, 0]);
+      for (const table of tables) {
+        if (!(table in rows)) throw new Error(`${name} grants ${table}, which the $hap2126$ block does not restore: ${FIX}`);
+      }
+    }
+  });
 });

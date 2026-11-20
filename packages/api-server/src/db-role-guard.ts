@@ -30,6 +30,14 @@ export interface DbRoleRow {
    * pg_read_server_files, pg_read_all_data or pg_write_all_data (those that exist on this server): the first three
    * reach the database host (programs, files); pg_read_all_data and pg_write_all_data skip the table grant checks
    * for reads and writes on every table, which voids the login's least-privilege grants. Neither bypasses RLS.
+   *
+   * DELIBERATELY not flagged (none breaks the tenant boundary; flagging them is advisory noise that trains
+   * operators to ignore the error line): pg_monitor, pg_read_all_stats and pg_read_all_settings read other
+   * sessions' query text (pg_stat_activity, pg_stat_statements) and every setting; pg_signal_backend can cancel or
+   * terminate other non-superuser backends (a denial of service); pg_create_subscription (16+), with CREATE on the
+   * database, makes outbound connections from the database host; pg_maintain (17+) runs LOCK, VACUUM, REINDEX and
+   * REFRESH on every relation (a denial of service); pg_checkpoint (15+) runs CHECKPOINT; pg_use_reserved_connections
+   * (16+) uses the connection slots reserved by reserved_connections.
    */
   dangerous_builtin_role_member: boolean;
   /**
@@ -39,7 +47,13 @@ export interface DbRoleRow {
   createrole_escalation: boolean;
   /**
    * current_user or session_user is a member (itself included) of a role with REPLICATION, so it holds or can SET
-   * ROLE to a role that streams every row through a replication slot or a base backup without grants or RLS.
+   * ROLE to a role that has the attribute. A walsender (pg_basebackup, the replication protocol) checks REPLICATION
+   * on the authenticated login at connect time, so a member that only gets the attribute through SET ROLE gets the
+   * SQL slot functions (pg_create_logical_replication_slot, pg_logical_slot_get_changes), which need
+   * wal_level=logical and return only changes made after the slot exists; only a login that holds REPLICATION
+   * itself gets a base backup or the replication protocol (subject to the pg_hba.conf `replication` entries).
+   * On 16+ a membership granted WITH SET FALSE, INHERIT FALSE confers nothing usable but is still flagged (a
+   * deliberate conservative false positive that fails safe).
    */
   replication_escalation: boolean;
 }
@@ -98,10 +112,12 @@ export function bypassesRowSecurity(row: GuardFlags): boolean {
  *   current_user or session_user is a member of is flagged. On 16+ CREATEROLE alone only grants roles the creator
  *   holds with ADMIN OPTION, so it is not flagged there.
  * - The five built-in roles are looked up by name in pg_roles, so a server that lacks one (pg_write_all_data and
- *   pg_read_all_data are 14+) simply does not match it.
+ *   pg_read_all_data are 14+) simply does not match it. The other predefined roles are DELIBERATELY not in that
+ *   list (see dangerous_builtin_role_member); a test pins the list, so adding a name is a deliberate change.
  * - replication_escalation: REPLICATION is not inherited either, but a member can SET ROLE to the holder, so any
  *   REPLICATION role that current_user or session_user is a member of is flagged (a superuser has the attribute
- *   too, already flagged).
+ *   too, already flagged). On PostgreSQL 16+ a REPLICATION membership granted WITH SET FALSE, INHERIT FALSE confers
+ *   nothing usable but is still flagged: a deliberate conservative false positive that fails safe.
  */
 function probeSql(serverVersionNum: number): string {
   const hasSystemUser = serverVersionNum >= SYSTEM_USER_MIN_VERSION;
@@ -151,6 +167,9 @@ export async function probeDbRole(pool: DbRolePool): Promise<DbRoleRow> {
     await client.query('BEGIN READ ONLY');
     try {
       await client.query(`SET LOCAL statement_timeout = ${PROBE_STATEMENT_TIMEOUT_MS}`);
+      // Pin the lookups to the catalog (pg_temp last): a role's own search_path could otherwise resolve pg_roles,
+      // pg_has_role, bool_or, substr or strpos to objects the probed role created, hiding what the probe exists to find.
+      await client.query('SET LOCAL search_path = pg_catalog, pg_temp');
       const { rows } = await client.query(probeSql(await serverVersionNum(client)));
       if (rows.length !== 1) {
         throw new Error('role row missing');

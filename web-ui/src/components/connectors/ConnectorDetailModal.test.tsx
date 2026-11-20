@@ -31,6 +31,19 @@ const CONNECTOR = {
   metadata: { requirements: 'ServiceNow Tokyo or later', supported_platforms: ['linux', 'windows'] },
 } as unknown as ConnectorRegistry;
 
+// Userinfo is rejected, not stripped: the status bar would show a host the link does not go to.
+const USERINFO_URLS = [
+  'https://user:pw@host/',
+  'https://cmdb.example@evil.test/',
+  'https://user@host/',
+  'https://:pw@host/',
+  'https://%75ser@host/',
+  'https:\\\\user:pw@host',
+  'HTTP://u:p@host',
+];
+const UNSAFE_HOMEPAGES = ['javascript:alert(1)', ...USERINFO_URLS];
+const UNSAFE_REPOSITORIES = ['data:text/html,x', ...USERINFO_URLS];
+
 function Harness({ installedVersion, connector = CONNECTOR }: { installedVersion?: string; connector?: ConnectorRegistry }) {
   const [open, setOpen] = useState(false);
   return (
@@ -69,13 +82,16 @@ describe('connector detail modal', () => {
     expect(view.queryByText(/Installed \(v/)).not.toBeInTheDocument();
   });
 
-  it('renders no homepage link for an unsafe homepage and keeps the safe repository link', async () => {
-    const { dialog } = await openModal(undefined, { ...CONNECTOR, homepage: 'javascript:alert(1)' } as ConnectorRegistry);
-    const view = within(dialog);
+  it.each([...UNSAFE_HOMEPAGES])(
+    'renders no homepage link for the unsafe homepage %j and keeps the safe repository link',
+    async (homepage) => {
+      const { dialog } = await openModal(undefined, { ...CONNECTOR, homepage } as ConnectorRegistry);
+      const view = within(dialog);
 
-    expect(view.queryByRole('link', { name: 'Homepage' })).not.toBeInTheDocument();
-    expect(view.getByRole('link', { name: 'Repository' })).toHaveAttribute('href', 'https://example.test/servicenow.git');
-  });
+      expect(view.queryByRole('link', { name: 'Homepage' })).not.toBeInTheDocument();
+      expect(view.getByRole('link', { name: 'Repository' })).toHaveAttribute('href', 'https://example.test/servicenow.git');
+    },
+  );
 
   it('renders the validated absolute URL, not a page-relative one, for a homepage without slashes after the scheme', async () => {
     const { dialog } = await openModal(undefined, { ...CONNECTOR, homepage: 'https:/api/v1/x' } as ConnectorRegistry);
@@ -83,13 +99,16 @@ describe('connector detail modal', () => {
     expect(within(dialog).getByRole('link', { name: 'Homepage' })).toHaveAttribute('href', 'https://api/v1/x');
   });
 
-  it('renders no repository link for an unsafe repository and keeps the safe homepage link', async () => {
-    const { dialog } = await openModal(undefined, { ...CONNECTOR, repository: 'data:text/html,x' } as ConnectorRegistry);
-    const view = within(dialog);
+  it.each([...UNSAFE_REPOSITORIES])(
+    'renders no repository link for the unsafe repository %j and keeps the safe homepage link',
+    async (repository) => {
+      const { dialog } = await openModal(undefined, { ...CONNECTOR, repository } as ConnectorRegistry);
+      const view = within(dialog);
 
-    expect(view.queryByRole('link', { name: 'Repository' })).not.toBeInTheDocument();
-    expect(view.getByRole('link', { name: 'Homepage' })).toHaveAttribute('href', 'https://example.test/servicenow');
-  });
+      expect(view.queryByRole('link', { name: 'Repository' })).not.toBeInTheDocument();
+      expect(view.getByRole('link', { name: 'Homepage' })).toHaveAttribute('href', 'https://example.test/servicenow');
+    },
+  );
 
   it('marks the installed version, and an available update when it is not the latest', async () => {
     const { dialog } = await openModal('1.0.0');

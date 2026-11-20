@@ -32,14 +32,17 @@ TZ=UTC
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `NEO4J_URI` | Yes | - | Neo4j connection URI (`bolt://hostname:7687`) |
+| `NEO4J_URI` | Yes | - | Neo4j connection URI (`bolt://hostname:7687`). The schemes `bolt+s://`, `bolt+ssc://`, `neo4j+s://` and `neo4j+ssc://` select TLS from the URL (`+s` verifies the certificate chain, `+ssc` accepts any certificate: no chain or hostname check, the driver sets `TRUST_ALL_CERTIFICATES`, so it is not for production, and the client logs a warning that certificate verification is disabled; an explicit `NEO4J_SSL_TRUST_STRATEGY` other than `TRUST_ALL_CERTIFICATES` next to a `+ssc` URI refuses to start); the client then sets neither encryption nor trust itself, so `NEO4J_ENCRYPTED`, `NEO4J_SSL_ENABLED`, `NEO4J_ENCRYPTION` and `NEO4J_SSL_TRUST_STRATEGY` do not change the connection (a malformed toggle still refuses to start) |
 | `NEO4J_USERNAME` | Yes | `neo4j` | Neo4j username |
 | `NEO4J_PASSWORD` | Yes | - | Neo4j password (use secrets management) |
 | `NEO4J_DATABASE` | No | `neo4j` | Database name |
 | `NEO4J_MAX_CONNECTION_POOL_SIZE` | No | `50` | Maximum connection pool size |
 | `NEO4J_ACQUISITION_TIMEOUT` | No | `60000` | Connection acquisition timeout (ms) |
 | `NEO4J_MAX_TRANSACTION_RETRY_TIME` | No | `30000` | Max transaction retry time (ms) |
-| `NEO4J_ENCRYPTED` | No | `false` | Enable SSL/TLS for Neo4j connection |
+| `NEO4J_ENCRYPTED` | No | `false` | Alias of `NEO4J_SSL_ENABLED` and `NEO4J_ENCRYPTION`: any of the three set to the exact string `true` turns TLS on for a plain `bolt://` or `neo4j://` URI (`packages/database/src/neo4j/client.ts`); any other value (`TRUE`, `True`, `1`, `yes`, a value with surrounding whitespace) refuses to start: the client throws `<VARIABLE> must be true or false when set` before it builds a driver, whatever the URI scheme. Unset or empty leaves it off. With none set the connection is plaintext Bolt and the API only logs the warning `Neo4j client initialized WITHOUT encryption (development mode)`; it does not refuse to start. Not used with a `+s` URI; with a `+ssc` URI only `TRUST_ALL_CERTIFICATES` is accepted, any other value refuses to start |
+| `NEO4J_SSL_ENABLED` | No | `false` | See `NEO4J_ENCRYPTED` |
+| `NEO4J_ENCRYPTION` | No | `false` | See `NEO4J_ENCRYPTED` |
+| `NEO4J_SSL_TRUST_STRATEGY` | No | `TRUST_SYSTEM_CA_SIGNED_CERTIFICATES` | Certificate trust when TLS is turned on by the variables above: the server certificate must be signed by a CA in the system trust store. The other value the driver takes is `TRUST_ALL_CERTIFICATES`, which disables certificate verification: not for production. Not used with a `+s` URI; with a `+ssc` URI only `TRUST_ALL_CERTIFICATES` is accepted and any other value refuses to start |
 
 **Example:**
 
@@ -179,8 +182,8 @@ ETL_FULL_SYNC_SCHEDULE="0 3 * * *"  # 3 AM daily
 | `JWT_SECRET` | Yes | - | Secret key for JWT token signing (use secrets management) |
 | `JWT_ACCESS_TOKEN_EXPIRES_IN` | No | `15m` | Access token lifetime, a number plus one unit `s`, `m`, `h` or `d` (`15m`, `1h`); a bare number such as `3600` is rejected by `JwtService.getTokenExpiresIn`. Config key `auth.jwt.accessTokenExpiresIn` in `packages/common/src/config/config.loader.ts`. The web UI renews it from the refresh cookie before it expires |
 | `JWT_REFRESH_TOKEN_EXPIRES_IN` | No | `7d` | Refresh token lifetime (`auth.jwt.refreshTokenExpiresIn`); the refresh token travels only in the `__Secure-cmdb_rt` cookie, and `POST /api/v1/auth/refresh` refuses a session more than 7 days past its login whatever this is set to ([Authentication](/api/authentication#refresh-token)) |
-| `API_KEY` | No | - | Static API key (for backward compatibility) |
-| `API_KEY_HEADER` | No | `X-API-Key` | Header name for API key |
+| `API_KEY_HEADER_NAME` | No | `X-API-Key` | Header that carries an API key (`auth.apiKeys.headerName`, `packages/common/src/config/config.loader.ts`) |
+| `API_KEYS_ENABLED` | No | `true` | Config key `auth.apiKeys.enabled`. API keys are created per user through the API; there is no static API key variable (`API_KEY` and `API_KEY_HEADER` are not read by anything). As the loader reads it today the flag is `true` unless the config file sets `auth.apiKeys.enabled: false`; the variable can only force it on (the exact string `true`), any other value, `false` included, changes nothing; and no code consumes the flag yet, so it does not switch API key authentication on or off |
 | `SESSION_SECRET` | No | - | Session secret for cookie-based auth |
 | `RATE_LIMIT_REST_MAX` | No | `1000` | `POST /api/v1/auth/refresh` only (per client address, `rateLimit.endpoints.rest`); `0` mounts no limiter. Window: `RATE_LIMIT_REST_WINDOW_MS` (default `3600000`). The login and password-change variables are under [Proxy Trust & Login Rate Limiting](#proxy-trust-login-rate-limiting) |
 | `BCRYPT_ROUNDS` | No | `12` | Bcrypt cost, an integer 10-15 (`auth.bcrypt.rounds`); the one cost of the login dummy hash, every password create or change, and the operator scripts `rotate-user-password` and `seed-tenant-fixture` (which read only this variable, not the config file; `CMDB_ROTATE_BCRYPT_ROUNDS` is refused). A successful login rewrites a stored hash at another cost to this one, keeping sessions and API keys. Only `$2a$`/`$2b$` hashes of cost 04-30 are compared as stored; any other shape fails login at the cost of one dummy compare |
@@ -190,7 +193,6 @@ ETL_FULL_SYNC_SCHEDULE="0 3 * * *"  # 3 AM daily
 ```bash
 JWT_SECRET=${JWT_SECRET}  # From secrets - minimum 32 characters
 JWT_ACCESS_TOKEN_EXPIRES_IN=30m  # access token lifetime (default 15m)
-API_KEY=${API_KEY}        # From secrets
 RATE_LIMIT_AUTH_MAX=20    # login and password change, per client address
 RATE_LIMIT_REST_MAX=1000  # POST /api/v1/auth/refresh only
 BCRYPT_ROUNDS=12

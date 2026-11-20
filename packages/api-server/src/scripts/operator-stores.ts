@@ -193,9 +193,23 @@ throw new Error('CMDB_ROTATE_POSTGRES_SSL must be require or verify-full when se
   };
 }
 
-/** Drops the API server's own TLS toggles so only CMDB_ROTATE_* defines connections. */
+/**
+ * The API server's own TLS toggles that `PostgresClient` / `Neo4jClient` read from `process.env`. Every operator tool
+ * (rotation, identity window, backfill, seed) defines its connections only through its own `CMDB_*` variables, so it
+ * drops all of these before any client exists. A new ambient client variable MUST be added here, once.
+ */
+export const API_SERVER_CLIENT_ENV_NAMES: readonly string[] = [
+  'POSTGRES_SSL_MODE',
+  'POSTGRES_SSL_ENABLED',
+  'NEO4J_SSL_ENABLED',
+  'NEO4J_ENCRYPTION',
+  'NEO4J_ENCRYPTED',
+  'NEO4J_SSL_TRUST_STRATEGY',
+];
+
+/** Drops the API server's own TLS toggles so only the tool's CMDB_* variables define connections. */
 export function isolateOperatorEnvironment(env: NodeJS.ProcessEnv): void {
-  for (const name of ['POSTGRES_SSL_MODE', 'POSTGRES_SSL_ENABLED', 'NEO4J_SSL_ENABLED', 'NEO4J_ENCRYPTION', 'NEO4J_SSL_TRUST_STRATEGY']) {
+  for (const name of API_SERVER_CLIENT_ENV_NAMES) {
     delete env[name];
   }
 }

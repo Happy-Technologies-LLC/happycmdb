@@ -49,7 +49,7 @@ export function sanitizeManifestUrl(value: unknown): string {
  * copied as is and the input row is never mutated.
  */
 export function sanitizeRegistryRowUrls<T extends object>(row: T): T {
-  const copy: Record<string, unknown> = { ...row };
+  const copy: Record<string, unknown> = { ...(row as Record<string, unknown>) };
   for (const field of ['homepage', 'repository']) {
     const value = copy[field];
     if (value !== undefined && value !== null && value !== '') {

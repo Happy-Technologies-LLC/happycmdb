@@ -11,7 +11,7 @@
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { logger } from '@cmdb/common';
-import { ApiKeyNotFoundError, AUTH_TIME_TOLERANCE_SECONDS, AuthService, AuthRepository, OrganizationRequiredError, SESSION_ABSOLUTE_CAP_SECONDS, UserProfileUpdate } from '../auth.service';
+import { ApiKeyNotFoundError, ApiKeysDisabledError, AUTH_TIME_TOLERANCE_SECONDS, AuthService, AuthRepository, OrganizationRequiredError, SESSION_ABSOLUTE_CAP_SECONDS, UserProfileUpdate } from '../auth.service';
 import type { GuardedEpochBump, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite } from '../auth.service';
 import { AmbiguousUserIdentityError, User, ApiKey, UserNotFoundError } from '../types';
 import { PasswordService } from '../password.service';
@@ -425,6 +425,29 @@ describe('AuthService profile/password/account lifecycle', () => {
     it('throws for an unknown user id instead of silently succeeding', async () => {
       await expect(service.deleteAccount('ghost', 0)).rejects.toBeInstanceOf(UserNotFoundError);
       expect(repository.deletedUserIds).toEqual([]);
+    });
+  });
+
+  describe('generateApiKey with the API-key kill switch', () => {
+    it('refuses before any repository read or write when auth.apiKeys.enabled is false', async () => {
+      const disabled = new AuthService({ ...authConfig, apiKeys: { ...authConfig.apiKeys, enabled: false } } as any, repository);
+      const read = jest.spyOn(repository, 'findUserById');
+      const write = jest.spyOn(repository, 'createApiKey');
+
+      await expect(disabled.generateApiKey('user-1', { name: 'ci key' }, 0)).rejects.toThrow(ApiKeysDisabledError);
+      await expect(disabled.generateApiKey('user-1', { name: 'ci key' }, 0)).rejects.toMatchObject({ message: 'API keys are disabled' });
+
+      expect(read).not.toHaveBeenCalled();
+      expect(write).not.toHaveBeenCalled();
+    });
+
+    it('still issues a key when auth.apiKeys.enabled is true', async () => {
+      const write = jest.spyOn(repository, 'createApiKey');
+
+      const issued = await service.generateApiKey('user-1', { name: 'ci key' }, 0);
+
+      expect(issued._apiKey).toMatch(/^[0-9a-f]{64}$/);
+      expect(write).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -1721,6 +1721,46 @@ describe('AuthController profile/password/account routes', () => {
       expect(res.status).toBe(401);
     });
   });
+
+  describe('API-key kill switch (auth.apiKeys.enabled false)', () => {
+    const bearer = { Authorization: '' };
+    let disabledApp: express.Express;
+
+    beforeEach(() => {
+      const disabledConfig = { ...authConfig, apiKeys: { ...authConfig.apiKeys, enabled: false } };
+      const disabledService = new AuthService(disabledConfig as any, repository);
+      const controller = new AuthController(
+        disabledService, new ValidationMiddleware(), new AuthMiddleware(disabledService, disabledConfig as any), fakeRateLimiter());
+      disabledApp = express();
+      disabledApp.use(express.json());
+      disabledApp.use('/api/v1/auth', controller.getRouter());
+      bearer.Authorization = `Bearer ${victimToken}`;
+    });
+
+    it('refuses to mint a key for a valid JWT session with one fixed 403 and stores nothing', async () => {
+      const read = jest.spyOn(repository, 'findUserById');
+      const res = await request(disabledApp).post('/api/v1/auth/api-key').set(bearer).send({ name: 'secret-key-name', expiresInDays: 30 });
+
+      expect([res.status, res.body]).toEqual([403, { success: false, error: 'Forbidden', message: 'API keys are disabled' }]);
+      expect(JSON.stringify(res.body)).not.toContain('_apiKey');
+      expect(JSON.stringify(res.body)).not.toContain('secret-key-name');
+      expect(repository.issuedKeys.size).toBe(0);
+      expect(read.mock.calls.filter(([id]) => id === 'user-1').length).toBe(1); // the auth middleware's read only
+    });
+
+    it('still lists and revokes keys created while the switch was on', async () => {
+      const issued = await request(app).post('/api/v1/auth/api-key').set(bearer).send({ name: 'created while on' });
+      expect(issued.status).toBe(200);
+
+      const listed = await request(disabledApp).get('/api/v1/auth/api-keys').set(bearer);
+      expect(listed.status).toBe(200);
+      expect(listed.body.data).toEqual([expect.objectContaining({ _name: 'created while on' })]);
+
+      const revoked = await request(disabledApp).delete('/api/v1/auth/api-key/alice-key').set(bearer);
+      expect(revoked.status).toBe(200);
+      expect(repository.apiKeys.get('alice-key')?.revoked).toBe(true);
+    });
+  });
 });
 
 /** The sorted-set pipeline RateLimitMiddleware runs, in memory (no Redis). */

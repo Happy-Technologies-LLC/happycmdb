@@ -153,6 +153,9 @@ describe('assertPlainNeo4jUri', () => {
     'bolt://127.0.0.1:1',
     'bolt://[::1]:7687',
     'neo4j://[fe80::1]',
+    'bolt://[::ffff:127.0.0.1]',
+    'bolt://h:1',
+    'bolt://h:65535',
   ])('accepts %s', (uri) => {
     expect(() => assertPlainNeo4jUri(uri, 'V', 'E')).not.toThrow();
   });
@@ -167,6 +170,15 @@ describe('assertPlainNeo4jUri', () => {
     'bolt://h:abc',
     'bolt://h:',
     'bolt://h:123456',
+    'bolt://h:0',
+    'bolt://h:00000',
+    'bolt://h:65536',
+    'bolt://h:99999',
+    'bolt://[.]',
+    'bolt://[...]',
+    'bolt://[]',
+    'bolt://[1.2.3.4]',
+    'bolt://[1.2.3.4]:7687',
     'bolt://:7687',
     'bolt://',
     'BOLT://h',
@@ -187,5 +199,22 @@ describe('assertPlainNeo4jUri', () => {
     }
     // Exact equality with a text built from the variable names only: the value cannot be in it.
     expect(thrown).toBe(message('CMDB_X_NEO4J_URI', 'CMDB_X_NEO4J_ENCRYPTED'));
+  });
+});
+
+describe('API_SERVER_CLIENT_ENV_NAMES', () => {
+  // An independent literal: a removal or an addition in operator-stores.ts must be an explicit edit here.
+  const LITERAL_NAMES = [
+    'POSTGRES_SSL_MODE',
+    'POSTGRES_SSL_ENABLED',
+    'POSTGRES_SSL_CA_FILE',
+    'NEO4J_SSL_ENABLED',
+    'NEO4J_ENCRYPTION',
+    'NEO4J_ENCRYPTED',
+    'NEO4J_SSL_TRUST_STRATEGY',
+  ];
+
+  it('is exactly the seven ambient client variables', () => {
+    expect([...API_SERVER_CLIENT_ENV_NAMES].sort()).toEqual([...LITERAL_NAMES].sort());
   });
 });

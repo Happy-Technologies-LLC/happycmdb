@@ -238,25 +238,26 @@ describe('API-key operations in openapi.yaml', () => {
     expect((await bearer(request(app).get('/api/v1/auth/api-keys'))).body.data).toEqual([]);
   });
 
-  it('declares JWT-only security on the three key operations and keeps the documented defaults', async () => {
+  it('declares JWT-only security on every API-key operation in the spec and keeps the documented defaults', () => {
+    // Derived from the spec so a new key operation (a rotate endpoint, say) is caught here instead of passing unchecked.
+    const methods = ['get', 'post', 'put', 'patch', 'delete'];
+    const keyOperations = Object.entries(spec.paths)
+      .filter(([path]) => path === '/auth/api-key' || path.startsWith('/auth/api-key/') || path === '/auth/api-keys')
+      .flatMap(([path, item]) => methods.filter(method => item[method]).map(method => [path, method] as const));
+    const instruction = 'A new API-key operation is in openapi.yaml: decide its security (JWT-only like the others, or deliberately different), add a runtime refusal test for it, then extend this list.';
+    expect({ instruction, operations: keyOperations.map(([path, method]) => `${method.toUpperCase()} ${path}`).sort() })
+      .toEqual({ instruction, operations: [`DELETE ${REVOKE}`, `GET ${LIST}`, `POST ${CREATE}`] });
+
     // An own `security`, not inherited: deleting it would advertise the global list (API key accepted), `[]` would advertise a public route.
-    for (const [path, method] of [[CREATE, 'post'], [LIST, 'get'], [REVOKE, 'delete']] as const) {
-      expect(operation(path, method).security).toEqual([{ BearerAuth: [] }]);
+    for (const [path, method] of keyOperations) {
+      expect({ path, method, security: operation(path, method).security }).toEqual({ path, method, security: [{ BearerAuth: [] }] });
     }
     expect(spec.security).toEqual(expect.arrayContaining([{ BearerAuth: [] }, { ApiKeyAuth: [] }]));
+    // The literal is the documented default; the runtime default is API_KEY_HEADER_NAME in packages/common/src/config/config.loader.ts,
+    // pinned by packages/common/tests/unit/config.loader.api-keys-enabled.test.ts. Change all three together.
     expect(spec.components.securitySchemes['ApiKeyAuth']).toEqual(expect.objectContaining({ type: 'apiKey', in: 'header', name: 'X-API-Key' }));
     expect(spec.components.securitySchemes['BearerAuth']).toEqual(expect.objectContaining({ type: 'http', scheme: 'bearer' }));
-
-    // The declared list omits ApiKeyAuth, so the stack must refuse an X-API-Key-only caller on each route.
-    const { app, bearer } = build(true);
-    const created = await bearer(request(app).post('/api/v1/auth/api-key')).send({ name: 'ci key' });
-    const key = created.body.data._apiKey as string;
-    const refused = [
-      await request(app).post('/api/v1/auth/api-key').set('X-API-Key', key).send({ name: 'chained' }),
-      await request(app).get('/api/v1/auth/api-keys').set('X-API-Key', key),
-      await request(app).delete(`/api/v1/auth/api-key/${created.body.data._id}`).set('X-API-Key', key),
-    ];
-    expect(refused.map(res => res.status)).toEqual([403, 403, 403]);
+    // The runtime refusal of an X-API-Key-only caller on each route is pinned by the first test.
   });
 
   it('every 401 and 403 body the stack sends on the three routes satisfies the declared response schema', async () => {

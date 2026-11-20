@@ -180,6 +180,23 @@ const readTlsToggle = (name: string): boolean => {
   return value === 'true';
 };
 
+const TRUST_STRATEGIES = ['TRUST_SYSTEM_CA_SIGNED_CERTIFICATES', 'TRUST_ALL_CERTIFICATES'] as const;
+type TrustStrategy = (typeof TRUST_STRATEGIES)[number];
+
+/**
+ * Strict trust strategy: undefined or empty is not set, exactly one of the two accepted names passes, anything else
+ * throws (whitespace, case, and `TRUST_CUSTOM_CA_SIGNED_CERTIFICATES`, which this client cannot satisfy because it
+ * never passes `trustedCertificates`). The driver would only reject it at the first connection. The error names the
+ * setting and never echoes the value.
+ */
+const readTrustStrategy = (setting: string, value: unknown): TrustStrategy | undefined => {
+  if (value === undefined || value === '') return undefined;
+  if (!TRUST_STRATEGIES.includes(value as TrustStrategy)) {
+    throw new Error(`${setting} must be ${TRUST_STRATEGIES[0]} or ${TRUST_STRATEGIES[1]} when set`);
+  }
+  return value as TrustStrategy;
+};
+
 export class Neo4jClient {
   private driver: Driver;
   private activeCIAnalyticsReads = 0;
@@ -211,8 +228,11 @@ export class Neo4jClient {
     const sslEnabled = toggles.some(Boolean) || config?.encrypted === true;
 
     // Determine trust strategy
-    const explicitTrust = config?.trust || process.env['NEO4J_SSL_TRUST_STRATEGY'] || undefined;
-    const trustStrategy = (explicitTrust || 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES') as NonNullable<Config['trust']>;
+    // Both inputs are parsed (no short-circuit), whatever the URI scheme and TLS toggles say, before any driver exists.
+    const configTrust = readTrustStrategy('Neo4j trust', config?.trust);
+    const envTrust = readTrustStrategy('NEO4J_SSL_TRUST_STRATEGY', process.env['NEO4J_SSL_TRUST_STRATEGY']);
+    const explicitTrust = configTrust || envTrust;
+    const trustStrategy: NonNullable<Config['trust']> = explicitTrust || 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES';
 
     // A `+ssc` scheme trusts any certificate: an explicit stricter trust strategy is a conflict, not an override.
     const trustsAll = uriSchemeTrustsAll(uri);

@@ -179,3 +179,68 @@ describe.each(['neo4j+ssc://h', 'bolt+ssc://h'])('%s trusts any certificate', ur
     expect(() => new Neo4jClient(uri, 'u', 'p')).not.toThrow();
   });
 });
+
+describe('NEO4J_SSL_TRUST_STRATEGY and the trust option are validated at construction', () => {
+  const envMessage = 'NEO4J_SSL_TRUST_STRATEGY must be TRUST_SYSTEM_CA_SIGNED_CERTIFICATES or TRUST_ALL_CERTIFICATES when set';
+  const configMessage = 'Neo4j trust must be TRUST_SYSTEM_CA_SIGNED_CERTIFICATES or TRUST_ALL_CERTIFICATES when set';
+  const invalid = ['TRUST_ALL_CERTS', 'trust_all_certificates', ' TRUST_ALL_CERTIFICATES', 'TRUST_CUSTOM_CA_SIGNED_CERTIFICATES', '1'];
+  const thrown = (build: () => unknown): Error | undefined => {
+    try { build(); } catch (e) { return e as Error; }
+    return undefined;
+  };
+
+  it.each(invalid)('env %p refuses to start with the fixed message and builds no driver', value => {
+    process.env['NEO4J_SSL_TRUST_STRATEGY'] = value;
+    const error = thrown(() => new Neo4jClient('bolt://x', 'u', 'p'));
+    expect(error?.message).toBe(envMessage);
+    expect(driverMock).not.toHaveBeenCalled();
+  });
+
+  it.each(invalid)('config.trust %p refuses to start with the fixed message and builds no driver', value => {
+    const error = thrown(() => new Neo4jClient('bolt://x', 'u', 'p', { trust: value as never }));
+    expect(error?.message).toBe(configMessage);
+    expect(driverMock).not.toHaveBeenCalled();
+  });
+
+  it('never echoes the supplied value (a trimmed accepted name is itself part of the fixed message)', () => {
+    process.env['NEO4J_SSL_TRUST_STRATEGY'] = 'sentinel-trust-value';
+    expect(thrown(() => new Neo4jClient('bolt://x', 'u', 'p'))?.message).not.toContain('sentinel-trust-value');
+    delete process.env['NEO4J_SSL_TRUST_STRATEGY'];
+    expect(thrown(() => new Neo4jClient('bolt://x', 'u', 'p', { trust: 'sentinel-trust-value' as never }))?.message).not.toContain('sentinel-trust-value');
+  });
+
+  it('an invalid env value is refused next to a valid config.trust', () => {
+    process.env['NEO4J_SSL_TRUST_STRATEGY'] = 'TRUST_ALL_CERTS';
+    expect(() => new Neo4jClient('bolt://x', 'u', 'p', { trust: 'TRUST_ALL_CERTIFICATES' })).toThrow(envMessage);
+    expect(driverMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['TRUST_SYSTEM_CA_SIGNED_CERTIFICATES', 'TRUST_ALL_CERTIFICATES'])('env %s still constructs and reaches the driver', value => {
+    process.env['NEO4J_SSL_TRUST_STRATEGY'] = value;
+    new Neo4jClient('bolt://x', 'u', 'p');
+    expect(mainConfig().trust).toBe(value);
+  });
+
+  it.each(['TRUST_SYSTEM_CA_SIGNED_CERTIFICATES', 'TRUST_ALL_CERTIFICATES'] as const)('config.trust %s still constructs and reaches the driver', value => {
+    new Neo4jClient('bolt://x', 'u', 'p', { trust: value });
+    expect(mainConfig().trust).toBe(value);
+  });
+
+  it.each([undefined, ''])('env %p is not set and keeps the system CA default', value => {
+    if (value !== undefined) process.env['NEO4J_SSL_TRUST_STRATEGY'] = value;
+    expect(() => new Neo4jClient('bolt://x', 'u', 'p')).not.toThrow();
+    expect(mainConfig().trust).toBe('TRUST_SYSTEM_CA_SIGNED_CERTIFICATES');
+  });
+
+  it.each(['neo4j+s://h', 'neo4j+ssc://h', 'bolt+s://h', 'bolt://h'])('an invalid env value is refused next to %s', uri => {
+    process.env['NEO4J_SSL_TRUST_STRATEGY'] = 'TRUST_ALL_CERTS';
+    expect(() => new Neo4jClient(uri, 'u', 'p')).toThrow(envMessage);
+    expect(() => new Neo4jClient(uri, 'u', 'p', { encrypted: true })).toThrow(envMessage);
+    expect(driverMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['neo4j+s://h', 'bolt+s://h', 'bolt://h'])('an invalid config.trust is refused next to %s', uri => {
+    expect(() => new Neo4jClient(uri, 'u', 'p', { trust: 'TRUST_ALL_CERTS' as never })).toThrow(configMessage);
+    expect(driverMock).not.toHaveBeenCalled();
+  });
+});

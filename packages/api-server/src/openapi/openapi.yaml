@@ -357,7 +357,10 @@ paths:
           content:
             application/json:
               schema:
-                oneOf:
+                description: >-
+                  anyOf, not oneOf: a JWT_SESSION_REQUIRED body carries `success`/`error`/`message` too, so it satisfies
+                  both branches and oneOf would reject a body the server sends
+                anyOf:
                   - $ref: '#/components/schemas/ForbiddenError'
                   - type: object
                     required: [success, error, message]
@@ -709,6 +712,16 @@ paths:
                 success: false
                 error: Not Found
                 message: API key not found
+        '500':
+          description: Internal error (`error` is `API Key Revocation Failed`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                success: false
+                error: API Key Revocation Failed
+                message: Internal error
 
   # =============================================================================
   # CONFIGURATION ITEMS (CIs)

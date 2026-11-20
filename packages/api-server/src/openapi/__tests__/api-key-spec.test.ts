@@ -8,7 +8,7 @@ import * as YAML from 'yamljs';
 import express from 'express';
 import request from 'supertest';
 import { AuthController } from '../../rest/auth.controller';
-import { AuthService, type AuthRepository } from '../../auth/auth.service';
+import { AuthService, CredentialsChangedError, type AuthRepository } from '../../auth/auth.service';
 import { ValidationMiddleware } from '../../rest/middleware/validation.middleware';
 import { AuthMiddleware } from '../../middleware/auth.middleware';
 import type { RateLimitMiddleware } from '../../middleware/rate-limit.middleware';
@@ -19,8 +19,9 @@ import { logger } from '@cmdb/common';
 type Schema = {
   $ref?: string; type?: string; nullable?: boolean; required?: string[]; pattern?: string; example?: string;
   properties?: Record<string, Schema>; items?: Schema; minimum?: number; maximum?: number; minLength?: number; maxLength?: number;
+  enum?: unknown[]; anyOf?: Schema[]; oneOf?: Schema[];
 };
-type Response = { content?: { 'application/json': { schema?: Schema; example?: unknown; examples?: Record<string, { value: unknown }> } } };
+type Response = { $ref?: string; content?: { 'application/json': { schema?: Schema; example?: unknown; examples?: Record<string, { value: unknown }> } } };
 type Operation = {
   requestBody?: { content: { 'application/json': { schema: Schema } } };
   responses: Record<string, Response>;
@@ -29,13 +30,47 @@ type Operation = {
 const spec = YAML.load(join(__dirname, '../openapi.yaml')) as {
   paths: Record<string, Record<string, Operation>>;
   security: Array<Record<string, string[]>>;
-  components: { schemas: Record<string, Schema>; securitySchemes: Record<string, Record<string, unknown>> };
+  components: { schemas: Record<string, Schema>; responses: Record<string, Response>; securitySchemes: Record<string, Record<string, unknown>> };
 };
 const operation = (path: string, method: string): Operation => spec.paths[path]![method]!;
 const body = (path: string, method: string, status: string) => operation(path, method).responses[status]!.content!['application/json'];
 const declared = (path: string, method: string): string[] => Object.keys(operation(path, method).responses).sort();
 const exampleOf = (schema: Schema): string | undefined => schema.example;
 const keysOf = (schema: Schema): string[] => Object.keys(schema.properties!).sort();
+
+/** Follows `$ref` (any `#/a/b/c` pointer into the spec) until a node that is not one. */
+function deref<T extends { $ref?: string }>(node: T): T {
+  if (!node.$ref) return node;
+  return deref(node.$ref.replace('#/', '').split('/').reduce<any>((at, key) => at[key], spec));
+}
+/** The schema the spec declares for a response, whether the response is inline or a components/responses `$ref`. */
+const declaredSchema = (path: string, method: string, status: string): Schema => deref(deref(operation(path, method).responses[status]!).content!['application/json'].schema!);
+
+/**
+ * A small JSON-schema check, enough for the keywords these response schemas use: $ref, type, nullable, enum, required, properties,
+ * items, anyOf and oneOf (exactly one branch, as the spec means it). ajv is only a transitive dependency of the lint stack (v6), so it is
+ * not imported here. Returns the violations; empty means the value satisfies the schema.
+ */
+function violations(schema: Schema, value: unknown, at = '$'): string[] {
+  const node = deref(schema);
+  if (value === null && node.nullable) return [];
+  const found: string[] = [];
+  const kind = Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value;
+  if (node.type && !(node.type === kind || (node.type === 'integer' && Number.isInteger(value)))) found.push(`${at}: expected ${node.type}, got ${kind}`);
+  if (node.enum && !node.enum.includes(value)) found.push(`${at}: ${JSON.stringify(value)} is not in the enum`);
+  if (kind === 'object') {
+    const object = value as Record<string, unknown>;
+    for (const key of node.required ?? []) if (!(key in object)) found.push(`${at}: missing ${key}`);
+    for (const [key, child] of Object.entries(node.properties ?? {})) if (key in object) found.push(...violations(child, object[key], `${at}.${key}`));
+  }
+  if (kind === 'array' && node.items) (value as unknown[]).forEach((item, index) => found.push(...violations(node.items!, item, `${at}[${index}]`)));
+  if (node.anyOf && !node.anyOf.some(branch => violations(branch, value, at).length === 0)) found.push(`${at}: matches no anyOf branch`);
+  if (node.oneOf) {
+    const matched = node.oneOf.filter(branch => violations(branch, value, at).length === 0).length;
+    if (matched !== 1) found.push(`${at}: matches ${matched} oneOf branches, exactly 1 required`);
+  }
+  return found;
+}
 
 const CREATE = '/auth/api-key';
 const LIST = '/auth/api-keys';
@@ -135,7 +170,7 @@ describe('API-key operations in openapi.yaml', () => {
     const again = record('revoke', await bearer(request(app).delete(`/api/v1/auth/api-key/${created.body.data._id}`)));
     expect([again.status, again.body]).toEqual([404, body(REVOKE, 'delete', '404').example]);
 
-    // 500 is declared for create and list (a store failure) but not reachable here without breaking the fake: only check it is documented.
+    // A store failure (500) is not reachable with this fake; the next test breaks the fake to send it for revoke.
     for (const [kind, path, method] of [['create', CREATE, 'post'], ['list', LIST, 'get'], ['revoke', REVOKE, 'delete']] as const) {
       const missing = [...observed[kind]].map(String).filter(status => !declared(path, method).includes(status));
       expect(missing).toEqual([]);
@@ -143,6 +178,7 @@ describe('API-key operations in openapi.yaml', () => {
     expect(declared(CREATE, 'post')).toEqual(expect.arrayContaining(['200', '400', '401', '403']));
     expect(declared(CREATE, 'post')).not.toContain('201');
     expect(declared(REVOKE, 'delete')).toEqual(expect.arrayContaining(['200', '401', '403', '404']));
+    expect(declared(REVOKE, 'delete')).toContain('500');
     expect(declared(REVOKE, 'delete')).not.toContain('204');
   });
 
@@ -221,5 +257,54 @@ describe('API-key operations in openapi.yaml', () => {
       await request(app).delete(`/api/v1/auth/api-key/${created.body.data._id}`).set('X-API-Key', key),
     ];
     expect(refused.map(res => res.status)).toEqual([403, 403, 403]);
+  });
+
+  it('every 401 and 403 body the stack sends on the three routes satisfies the declared response schema', async () => {
+    const { app, bearer } = build(true);
+    const disabled = build(false);
+    const created = await bearer(request(app).post('/api/v1/auth/api-key')).send({ name: 'ci key' });
+    const key = created.body.data._apiKey as string;
+    const keyId = created.body.data._id as string;
+
+    // The middleware always stamps the credential generation from the stored user, so the service refusal is reached only by making
+    // the service throw it; the controller's own refusal mapping then answers.
+    const credentialsChanged = async () => {
+      const refusal = jest.spyOn(AuthService.prototype, 'generateApiKey').mockRejectedValueOnce(new CredentialsChangedError());
+      const res = await bearer(request(app).post('/api/v1/auth/api-key')).send({ name: 'ci key' });
+      refusal.mockRestore();
+      return res;
+    };
+    const sent: Array<[string, string, string, request.Response]> = [
+      [CREATE, 'post', '401', await request(app).post('/api/v1/auth/api-key').send({ name: 'ci key' })],
+      [LIST, 'get', '401', await request(app).get('/api/v1/auth/api-keys')],
+      [REVOKE, 'delete', '401', await request(app).delete(`/api/v1/auth/api-key/${keyId}`)],
+      [CREATE, 'post', '401', await credentialsChanged()],
+      [CREATE, 'post', '403', await request(app).post('/api/v1/auth/api-key').set('X-API-Key', key).send({ name: 'chained' })],
+      [LIST, 'get', '403', await request(app).get('/api/v1/auth/api-keys').set('X-API-Key', key)],
+      [REVOKE, 'delete', '403', await request(app).delete(`/api/v1/auth/api-key/${keyId}`).set('X-API-Key', key)],
+      [CREATE, 'post', '403', await disabled.bearer(request(disabled.app).post('/api/v1/auth/api-key')).send({ name: 'ci key' })],
+    ];
+    expect(sent.map(([, , status, res]) => [status, res.status])).toEqual(sent.map(([, , status]) => [status, Number(status)]));
+    expect(sent[3]![3].body).toEqual({ success: false, error: 'Unauthorized', message: 'Credentials changed' });
+    expect(sent[7]![3].body).toEqual({ success: false, error: 'Forbidden', message: 'API keys are disabled' });
+
+    for (const [path, method, status, res] of sent) {
+      expect({ path, status, violations: violations(declaredSchema(path, method, status), res.body) }).toEqual({ path, status, violations: [] });
+    }
+
+    // The check is not vacuous: a 403 that lost `code`, and a 401 that mixes both key families, are refused.
+    const jwtRequired = sent[5]![3].body as Record<string, unknown>;
+    const { code: _code, ...withoutCode } = jwtRequired;
+    expect(violations(declaredSchema(LIST, 'get', '403'), withoutCode)).not.toEqual([]);
+    expect(violations(declaredSchema(CREATE, 'post', '401'), { ...sent[3]![3].body, _error: 'Unauthorized', _message: 'x' })).not.toEqual([]);
+  });
+
+  it('revoke answers the declared 500 body when the store fails', async () => {
+    const { app, bearer, repository } = build(true);
+    repository.deleteApiKey = async () => { throw new Error('Failed to delete API key: invalid input syntax for type uuid: "none"'); };
+    const failed = await bearer(request(app).delete('/api/v1/auth/api-key/none'));
+    expect([failed.status, failed.body]).toEqual([500, body(REVOKE, 'delete', '500').example]);
+    expect(violations(declaredSchema(REVOKE, 'delete', '500'), failed.body)).toEqual([]);
+    expect(JSON.stringify(failed.body)).not.toContain('uuid');
   });
 });

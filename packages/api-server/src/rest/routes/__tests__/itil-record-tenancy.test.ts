@@ -230,6 +230,25 @@ it('HAP-922: PATCH persists implementedBy and actualDuration on an owned change;
   expect(await sql('SELECT * FROM itil_changes WHERE id = $1', [own])).toEqual([after]);
 });
 
+it('PATCH status APPROVED through the route records the principal, ignores body stamps, and 409s outside pre-approval', async () => {
+  const own = '14141414-1414-4141-8141-141414141414';
+  await sql(`INSERT INTO itil_changes(id, change_number, title, change_type, affected_ci_ids, requested_by, status, organization_id)
+    VALUES ('${own}', 'CHG-PA', 'A change', 'normal', ARRAY['ci-a'], 'alice', 'pending_approval', '${A}')`, [], 'exec');
+  const patch = (body: object) => request(app).patch(`/itil/changes/${own}`).set(auth('A')).send(body);
+  const stamp = async () => (await sql('SELECT status, approved_by, approved_at FROM itil_changes WHERE id = $1', [own]))[0] as
+    { status: string; approved_by: string | null; approved_at: Date | null };
+  const approved = await patch({ status: 'APPROVED', approved_by: 'mallory', approved_at: '1999-01-01T00:00:00Z' });
+  expect(approved.status).toBe(200);
+  const first = await stamp();
+  expect([first.status, first.approved_by]).toEqual(['approved', 'tenancy-test-user']);
+  expect(first.approved_at!.getFullYear()).toBeGreaterThan(2000);
+  const repeat = await patch({ status: 'APPROVED' });
+  expect([repeat.status, repeat.body.code]).toEqual([409, 'CHANGE_NOT_APPROVABLE']);
+  expect(await stamp()).toEqual(first);
+  expect((await patch({ status: 'PENDING_APPROVAL' })).status).toBe(200);
+  expect(await stamp()).toEqual({ status: 'pending_approval', approved_by: null, approved_at: null });
+});
+
 describe('HAP-702', () => {
   const seedChange = (id: string, number: string, type: string, ids: string) => sql(
     `INSERT INTO itil_changes(id, change_number, title, change_type, affected_ci_ids, requested_by, organization_id)

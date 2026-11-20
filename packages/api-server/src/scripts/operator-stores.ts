@@ -162,6 +162,23 @@ return;
   };
 }
 
+/**
+ * Scheme `bolt` or `neo4j` exactly (lower case), a hostname/IPv4 or a bracketed IPv6 literal, then an optional
+ * `:port` of 1 to 5 digits (the driver range-checks it). No `m` flag: `$` matches only at the very end of the input,
+ * so a trailing newline is refused.
+ */
+const PLAIN_NEO4J_URI = /^(bolt|neo4j):\/\/([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(:\d{1,5})?$/;
+
+/**
+ * Only a plain scheme: TLS comes from `<encryptedVariable>` (system-CA verified), never from a +s/+ssc scheme (+ssc
+ * trusts any certificate). The message is fixed and never carries the value: a URI can carry credentials.
+ */
+export function assertPlainNeo4jUri(uri: string, variable: string, encryptedVariable: string): void {
+  if (!PLAIN_NEO4J_URI.test(uri)) {
+    throw new Error(`${variable} must be bolt://<host>[:port] or neo4j://<host>[:port] (use ${encryptedVariable}=true for TLS)`);
+  }
+}
+
 export function openOperatorStores(env: NodeJS.ProcessEnv): OperatorStores {
   const port = Number(required(env, 'CMDB_ROTATE_POSTGRES_PORT'));
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
@@ -176,12 +193,8 @@ throw new Error('CMDB_ROTATE_POSTGRES_SSL must be require or verify-full when se
   if (encrypted !== undefined && encrypted !== 'true' && encrypted !== 'false') {
     throw new Error('CMDB_ROTATE_NEO4J_ENCRYPTED must be true or false when set');
   }
-  // Only a plain scheme: TLS comes from CMDB_ROTATE_NEO4J_ENCRYPTED (system-CA verified), never from a +s/+ssc scheme
-  // (+ssc trusts any certificate). The message is fixed: a URI can carry credentials.
   const neo4jUri = required(env, 'CMDB_ROTATE_NEO4J_URI');
-  if (!/^(bolt|neo4j):\/\/[^/@?#]+$/.test(neo4jUri)) {
-    throw new Error('CMDB_ROTATE_NEO4J_URI must be bolt://<host>[:port] or neo4j://<host>[:port] (use CMDB_ROTATE_NEO4J_ENCRYPTED=true for TLS)');
-  }
+  assertPlainNeo4jUri(neo4jUri, 'CMDB_ROTATE_NEO4J_URI', 'CMDB_ROTATE_NEO4J_ENCRYPTED');
   const postgres = new PostgresClient({
     _host: required(env, 'CMDB_ROTATE_POSTGRES_HOST'), _port: port, _database: required(env, 'CMDB_ROTATE_POSTGRES_DB'),
     _user: required(env, 'CMDB_ROTATE_POSTGRES_USER'), _password: required(env, 'CMDB_ROTATE_POSTGRES_PASSWORD'), ssl,

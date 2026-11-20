@@ -94,7 +94,7 @@ import { readFileSync } from 'fs';
 // connection at load time. These modules open nothing until a client is constructed.
 import { Neo4jClient } from '../../../database/src/neo4j/client';
 import { PostgresClient } from '../../../database/src/postgres/client';
-import { isolateOperatorEnvironment } from './operator-stores';
+import { assertPlainNeo4jUri, isolateOperatorEnvironment } from './operator-stores';
 
 /** Same shape the api-server accepts as an organization claim (auth.middleware.ts). */
 const ORGANIZATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -483,9 +483,7 @@ export async function main(
       throw new Error('CMDB_BACKFILL_NEO4J_ENCRYPTED must be true or false when set');
     }
     const uri = required(env, 'CMDB_BACKFILL_NEO4J_URI');
-    if (!/^(bolt|neo4j):\/\/[^/@?#]+$/.test(uri)) {
-      throw new Error('CMDB_BACKFILL_NEO4J_URI must be bolt://<host>[:port] or neo4j://<host>[:port] (use CMDB_BACKFILL_NEO4J_ENCRYPTED=true for TLS)');
-    }
+    assertPlainNeo4jUri(uri, 'CMDB_BACKFILL_NEO4J_URI', 'CMDB_BACKFILL_NEO4J_ENCRYPTED');
     const neo4jUsername = required(env, 'CMDB_BACKFILL_NEO4J_USERNAME');
     const neo4jPassword = required(env, 'CMDB_BACKFILL_NEO4J_PASSWORD');
     if (args.mode === 'backfill') {

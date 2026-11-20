@@ -704,6 +704,12 @@ describe('ImpactPredictionEngine', () => {
           const roots = rootLookups(calls);
           expect(roots).toHaveLength(1);
           expect(roots[0].cypher).toMatch(/\(ci:CI \{id: \$ciId\}\)\s*WHERE\s+ci\.organization_id\s*=\s*\$organizationId\b/);
+          // Nothing but whitespace may sit between the predicate and RETURN: an `OR true`, `OR ci.id = $ciId`,
+          // `AND ...` or a second WHERE would reopen the cross-tenant read of the root CI.
+          const clause = /\(ci:CI \{id: \$ciId\}\)\s*WHERE\s+([\s\S]*?)\s+RETURN\s+ci\.id\s+as\s+id\b/.exec(roots[0].cypher)?.[1];
+          expect(clause).toBeDefined();
+          expect(clause!.trim().replace(/\s+/g, ' ')).toBe('ci.organization_id = $organizationId');
+          expect(clause).not.toMatch(/\b(?:OR|AND|XOR|WHERE)\b/i);
           expect(roots[0].params).toMatchObject({ ciId: mockCIs.database.id, organizationId: organization });
         }
       });

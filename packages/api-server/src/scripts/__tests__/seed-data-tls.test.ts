@@ -123,6 +123,37 @@ describe('neo4jTlsConfig', () => {
   });
 });
 
+describe('neo4jTlsConfig on an explicit TRUST_ALL_CERTIFICATES', () => {
+  const { seed } = (() => loadSeed())();
+  const trustAllWarning = 'Neo4j client initialized with SSL/TLS encryption enabled; certificate verification is disabled by NEO4J_SSL_TRUST_STRATEGY=TRUST_ALL_CERTIFICATES';
+
+  it.each(['bolt://h', 'neo4j://user:sentinel-pw@host.example'])('warns once with fixed text on %s when encryption is on', uri => {
+    expect(seed.neo4jTlsConfig(uri, { NEO4J_ENCRYPTED: 'true', NEO4J_SSL_TRUST_STRATEGY: TRUST_ALL }))
+      .toEqual({ encrypted: 'ENCRYPTION_ON', trust: TRUST_ALL });
+    expect(warn.mock.calls).toEqual([[trustAllWarning]]);
+  });
+
+  it('does not warn under the default or the explicit system-CA strategy', () => {
+    expect(seed.neo4jTlsConfig('bolt://h', { NEO4J_ENCRYPTED: 'true' })).toEqual({ encrypted: 'ENCRYPTION_ON', trust: TRUST_SYSTEM });
+    expect(seed.neo4jTlsConfig('bolt://h', { NEO4J_ENCRYPTED: 'true', NEO4J_SSL_TRUST_STRATEGY: TRUST_SYSTEM }))
+      .toEqual({ encrypted: 'ENCRYPTION_ON', trust: TRUST_SYSTEM });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('does not warn with encryption off, where the trust strategy has no effect', () => {
+    expect(seed.neo4jTlsConfig('bolt://h', { NEO4J_SSL_TRUST_STRATEGY: TRUST_ALL }))
+      .toEqual({ encrypted: 'ENCRYPTION_OFF', trust: TRUST_ALL });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('leaves the +s and +ssc behaviour unchanged under an explicit trust-all', () => {
+    expect(seed.neo4jTlsConfig('neo4j+s://h', { NEO4J_ENCRYPTED: 'true', NEO4J_SSL_TRUST_STRATEGY: TRUST_ALL })).toEqual({});
+    expect(warn).not.toHaveBeenCalled();
+    expect(seed.neo4jTlsConfig('neo4j+ssc://h', { NEO4J_ENCRYPTED: 'true', NEO4J_SSL_TRUST_STRATEGY: TRUST_ALL })).toEqual({});
+    expect(warn.mock.calls).toEqual([['WARNING: the +ssc Neo4j URI scheme disables certificate verification']]);
+  });
+});
+
 describe('createDriver', () => {
   it('passes the TLS config to neo4j.driver next to its pool options', () => {
     const { seed, driver } = loadSeed({ NEO4J_URI: 'bolt://h:7687', NEO4J_ENCRYPTED: 'true' });

@@ -406,7 +406,7 @@ describe('health and genuine zeros', () => {
   const expectTileBadgeTone = (
     tile: HTMLElement,
     text: string,
-    tone: 'neutral' | 'success' | 'warning' | 'danger',
+    tone: (typeof TONES)[number],
   ) => {
     const badge = within(tile).getByText(text);
     const expected = badgeToneClasses(tone);

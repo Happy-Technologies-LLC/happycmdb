@@ -149,9 +149,13 @@ function neo4jTlsConfig(
     return {};
   }
 
+  const trust = explicitTrust ?? 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES';
+  if (sslEnabled && trust === 'TRUST_ALL_CERTIFICATES') {
+    console.warn('Neo4j client initialized with SSL/TLS encryption enabled; certificate verification is disabled by NEO4J_SSL_TRUST_STRATEGY=TRUST_ALL_CERTIFICATES');
+  }
   return {
     encrypted: sslEnabled ? 'ENCRYPTION_ON' : 'ENCRYPTION_OFF',
-    trust: explicitTrust ?? 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES',
+    trust,
   };
 }
 

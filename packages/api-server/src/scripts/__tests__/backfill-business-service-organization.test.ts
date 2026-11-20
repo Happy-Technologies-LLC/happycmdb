@@ -451,6 +451,9 @@ describe('backfill CLI', () => {
     [['--prepare', '--apply'], ENV, 'unexpected argument --prepare'],
     [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE, '--prepare'], ENV, 'unexpected argument --prepare'],
     [['--prepare'], { CMDB_BACKFILL_NEO4J_URI: 'bolt://127.0.0.1:1', CMDB_BACKFILL_NEO4J_USERNAME: 'unused' }, 'CMDB_BACKFILL_NEO4J_PASSWORD is required'],
+    ...['bolt+ssc://h', 'neo4j+s://h', 'bolt://h\n', 'bolt://h%41', 'bolt://u:p@h', 'bolt://h:abc'].map(uri =>
+      [['--prepare'], { ...ENV, CMDB_BACKFILL_NEO4J_URI: uri },
+        'CMDB_BACKFILL_NEO4J_URI must be bolt://<host>[:port] or neo4j://<host>[:port] (use CMDB_BACKFILL_NEO4J_ENCRYPTED=true for TLS)'] as [string[], Record<string, string>, string]),
   ] as Array<[string[], Record<string, string>, string]>)('refuses %j before reading any store', async (argv, env, message) => {
     const out: string[] = [];
     const err: string[] = [];

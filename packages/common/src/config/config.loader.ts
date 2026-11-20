@@ -45,6 +45,12 @@ function usableBypassSecret(raw: string | undefined): string | undefined {
   return undefined;
 }
 
+/** `true`/`false` after trim and lower-casing; any other value (unset, empty, `1`, `yes`) is undefined. */
+function parseBooleanEnv(raw: string | undefined): boolean | undefined {
+  const value = raw?.trim().toLowerCase();
+  return value === 'true' ? true : value === 'false' ? false : undefined;
+}
+
 export class ConfigurationLoader {
   private config: ConfigSchema | null = null;
   private configPath: string;
@@ -283,7 +289,10 @@ export class ConfigurationLoader {
             : fileConfig.auth?.bcrypt?.rounds,
         },
         apiKeys: {
-          enabled: env['API_KEYS_ENABLED'] === 'true' || fileConfig.auth?.apiKeys?.enabled !== false,
+          // Env wins when 'true'/'false' (trimmed, case-insensitive); else the file boolean; else true.
+          enabled:
+            parseBooleanEnv(env['API_KEYS_ENABLED']) ??
+            (typeof fileConfig.auth?.apiKeys?.enabled === 'boolean' ? fileConfig.auth.apiKeys.enabled : true),
           headerName: env['API_KEY_HEADER_NAME'] || fileConfig.auth?.apiKeys?.headerName || 'X-API-Key',
         },
       },

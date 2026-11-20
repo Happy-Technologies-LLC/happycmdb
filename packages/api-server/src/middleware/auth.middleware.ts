@@ -63,10 +63,13 @@ export function optionalRequestOrganizationId(req: Request): string | null {
 export class AuthMiddleware {
   private authService: AuthService;
   private apiKeyHeader: string;
+  /** Only an explicit `false` disables API keys; a config without `enabled` keeps them on. */
+  private apiKeysEnabled: boolean;
 
   constructor(authService: AuthService, config: ConfigSchema['auth']) {
     this.authService = authService;
     this.apiKeyHeader = config.apiKeys.headerName;
+    this.apiKeysEnabled = config.apiKeys.enabled !== false;
   }
 
   /**
@@ -294,6 +297,9 @@ export class AuthMiddleware {
    * Extract API key from request
    */
   private extractApiKey(req: Request): string | null {
+    if (!this.apiKeysEnabled) {
+      return null;
+    }
     const apiKey = req.headers[this.apiKeyHeader.toLowerCase()] as string | undefined;
     return apiKey ?? null;
   }

@@ -640,4 +640,18 @@ describe('rotate-user-password CLI process', () => {
     expect(driverConfigs[0]).toMatchObject({ encrypted: 'ENCRYPTION_OFF', trust: 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES' });
     expect(stderr).not.toContain('SSL/TLS encryption enabled');
   }, 10000);
+
+  it('does not read an ambient POSTGRES_SSL_CA_FILE when CMDB_ROTATE_POSTGRES_SSL=verify-full', async () => {
+    // resolveSsl reads POSTGRES_SSL_CA_FILE on verify-full; without the guard the child dies with ENOENT before Neo4j.
+    const { code, stderr, driverConfigs } = await runOperatorCli(SCRIPT, ARGV, {
+      ...ENV, CMDB_ROTATE_POSTGRES_SSL: 'verify-full', POSTGRES_SSL_CA_FILE: '/nonexistent/ambient-ca.pem',
+    });
+
+    expect(stderr).not.toContain('POSTGRES_SSL_CA_FILE');
+    expect(stderr).not.toContain('ENOENT');
+    expect(stderr).toContain('verify-full mode'); // the client was built with the system trust store
+    expect(driverConfigs).toHaveLength(1);
+    expect(code).toBe(1);
+    expect(stderr).toContain('rotate-user-password: stub neo4j driver: no connection');
+  }, 10000);
 });

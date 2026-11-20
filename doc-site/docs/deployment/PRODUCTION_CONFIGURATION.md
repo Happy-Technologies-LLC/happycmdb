@@ -111,7 +111,7 @@ NGINX_HSTS_PRELOAD=true
 
 ```bash
 # Connection
-NEO4J_URI=bolt://neo4j:7687  # Use neo4j+s:// for SSL
+NEO4J_URI=bolt://neo4j:7687  # neo4j+s:// selects TLS from the URL (then NEO4J_SSL_ENABLED is not used)
 NEO4J_USERNAME=neo4j
 NEO4J_PASSWORD=<strong-random-password>
 NEO4J_DATABASE=cmdb

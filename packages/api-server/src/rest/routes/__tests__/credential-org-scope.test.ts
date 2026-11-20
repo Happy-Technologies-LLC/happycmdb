@@ -59,6 +59,7 @@ const identities: Record<string, { _id: string; _username: string; _role: 'opera
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({ findUserById: async (id: string) => identities[id] ?? null })),
 }));
+import { declaredResponse, violations } from '../../../openapi/__tests__/spec-schema';
 import { loadConfig } from '@cmdb/common';
 import { logger, EncryptionService, getEncryptionService } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
@@ -546,4 +547,58 @@ it('HAP-1613: an org admin manages the happylab-c4 credential and the C4 sync re
   expect(await c4(A)).toEqual({ token: 'tok-rotated' });
   expect((await request(app).delete(`/api/v1/credentials/${id}`).set(as('admin'))).status).toBe(204);
   expect(await c4(A)).toEqual({ code: 'c4_no_credential' });
+});
+
+// Runtime counterpart of openapi/__tests__/forbidden-spec.test.ts: the real 403 bodies of every credential refusal (router, permission and
+// the HAP-1613 C4 rule) must satisfy the 403 response the spec declares for that very operation. The OAuth routes are not in the spec.
+describe('real 403 bodies against the openapi.yaml 403 of the same operation', () => {
+  const noUserId = express();
+  noUserId.use(express.json());
+  noUserId.use('/api/v1', (req, _res, next) => {
+    (req as unknown as { user: unknown }).user = { _id: '', _userId: '', _username: 'no-id', _role: 'operator', _enabled: true, _organizationId: A };
+    next();
+  });
+  noUserId.use('/api/v1', unifiedCredentialRoutes);
+
+  const specRows = routeTable.filter(row => row.kind !== 'oauth');
+  const send = (target: express.Express, row: (typeof routeTable)[number], headers: Record<string, string>) =>
+    request(target)[row.verb](`/api/v1${row.path.replace(':id', aId)}`).set(headers).send({});
+  const specPath = (row: (typeof routeTable)[number]) => row.path.replace(':id', '{id}');
+  const check = (row: (typeof routeTable)[number], body: unknown) =>
+    violations(declaredResponse(specPath(row), row.verb, '403').schema!, body);
+
+  it('router, permission and agent refusals on every credential and credential-set route', async () => {
+    const seen = new Set<string>();
+    for (const row of specRows) {
+      const label = `${row.verb.toUpperCase()} ${row.path}`;
+      const callers: Array<[string, express.Express, Record<string, string>]> = [
+        ['no organization', app, as('none')],
+        ['agent', app, as('agent')],
+        ['no verified user id', noUserId, {}],
+        ...(row.kind === 'write' ? [['viewer', app, as('viewer')] as [string, express.Express, Record<string, string>]] : []),
+      ];
+      for (const [caller, target, headers] of callers) {
+        const response = await send(target, row, headers);
+        expect({ label, caller, status: response.status, violations: check(row, response.body) }).toEqual({ label, caller, status: 403, violations: [] });
+        seen.add(String(response.body.code ?? response.body.message));
+      }
+    }
+    expect([...seen].sort()).toEqual(['Credential management requires a human user', 'ORGANIZATION_REQUIRED', 'PERMISSION_REQUIRED', 'Verified credential owner required']);
+  });
+
+  it('the happylab-c4 refusal on create, update and delete', async () => {
+    const id = '55555555-5555-4555-8555-555555555556';
+    await sql(`INSERT INTO credentials (id, name, protocol, scope, credentials, tags, created_by, organization_id) VALUES ($1, 'A-spec-c4', 'bearer', 'api', $2, $3, 'd', $4)`,
+      [id, JSON.stringify(getEncryptionService().encrypt('{"token":"spec-c4-token"}')), [C4], A]);
+    const own = await request(app).post('/api/v1/credentials').set(as('a')).send(bearer('A-spec-own', ['ops']));
+    const refusals = [
+      ['POST /credentials', { path: '/credentials', verb: 'post' }, await request(app).post('/api/v1/credentials').set(as('a')).send(bearer('A-spec-plant', [C4]))],
+      ['PUT /credentials/{id}', { path: '/credentials/{id}', verb: 'put' }, await request(app).put(`/api/v1/credentials/${own.body.data.id}`).set(as('a')).send({ tags: [C4] })],
+      ['DELETE /credentials/{id}', { path: '/credentials/{id}', verb: 'delete' }, await request(app).delete(`/api/v1/credentials/${id}`).set(as('d'))],
+    ] as const;
+    for (const [label, operation, response] of refusals) {
+      expect({ label, status: response.status, body: response.body, violations: violations(declaredResponse(operation.path, operation.verb, '403').schema!, response.body) })
+        .toEqual({ label, status: 403, body: c4Refusal, violations: [] });
+    }
+  });
 });

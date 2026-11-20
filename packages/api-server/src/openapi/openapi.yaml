@@ -2299,7 +2299,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/CredentialForbidden'
+          $ref: '#/components/responses/CredentialWriteForbidden'
 
   /credentials/{id}:
     get:
@@ -2380,7 +2380,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/CredentialForbidden'
+          $ref: '#/components/responses/CredentialWriteForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -2409,7 +2409,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/CredentialForbidden'
+          $ref: '#/components/responses/CredentialWriteForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -6202,14 +6202,17 @@ components:
 
     CredentialForbidden:
       description: >-
-        Refused before any credential or credential-set access. A caller
-        without an organization gets `ORGANIZATION_REQUIRED` (the
-        `ForbiddenError` body). A caller with no verified user id gets the bare
-        `Verified credential owner required` body. A caller with the `agent`
-        role gets the bare `Credential management requires a human user` body.
-        Every mutation (and match and rank) also needs the `write` permission
-        and gets `PERMISSION_REQUIRED` without it. The two bare bodies carry
-        no `code`: read `message`.
+        Refused by the credential router, before any credential or
+        credential-set lookup. A caller without an organization gets
+        `ORGANIZATION_REQUIRED` (the `ForbiddenError` body). A caller with no
+        verified user id gets the bare `Verified credential owner required`
+        body. A caller with the `agent` role gets the bare `Credential
+        management requires a human user` body. Every mutation (and match and
+        rank) also needs the `write` permission and gets `PERMISSION_REQUIRED`
+        without it. The two bare bodies carry no `code`: read `message`. The
+        one refusal that comes after a lookup, the happylab-c4 tag rule, is
+        possible only on POST /credentials, PUT /credentials/{id} and DELETE
+        /credentials/{id}: see CredentialWriteForbidden.
       content:
         application/json:
           schema:
@@ -6249,6 +6252,69 @@ components:
                 code: PERMISSION_REQUIRED
                 required: { permission: write }
                 role: viewer
+
+    CredentialWriteForbidden:
+      description: >-
+        POST /credentials, PUT /credentials/{id} and DELETE /credentials/{id}.
+        Every refusal of CredentialForbidden, which the credential router
+        sends before any lookup: `ORGANIZATION_REQUIRED` and
+        `PERMISSION_REQUIRED` (the `ForbiddenError` body with `code`), and the
+        two bare bodies without a `code`. Also (HAP-1613) a caller below the
+        `admin` permission that creates a credential carrying the
+        `happylab-c4` tag, or updates or deletes a credential that carries it
+        or whose update would add or remove it. That refusal comes from the
+        controller and the CRUD service after the router, on the owner's own
+        credential (a foreign or missing id is the 404 first), changes nothing,
+        and is a third body: `{success, error, code, message}` with the code
+        `c4_principal_admin_required`, which `ForbiddenError` does not define
+        and which has no underscore keys.
+      content:
+        application/json:
+          schema:
+            anyOf:
+              - $ref: '#/components/schemas/ForbiddenError'
+              - $ref: '#/components/schemas/CredentialRefusalError'
+              - $ref: '#/components/schemas/CredentialC4Refusal'
+          examples:
+            noOrganization:
+              summary: The caller has no organization
+              value:
+                success: false
+                error: Forbidden
+                message: Organization claim required
+                _error: Forbidden
+                _message: Organization claim required
+                code: ORGANIZATION_REQUIRED
+            agentRole:
+              summary: An agent-role caller (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: Credential management requires a human user
+            noVerifiedOwner:
+              summary: The caller has no verified user id (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: Verified credential owner required
+            permissionRequired:
+              summary: A viewer calls a write route
+              value:
+                success: false
+                error: Forbidden
+                message: Permission 'write' required
+                _error: Forbidden
+                _message: Permission 'write' required
+                code: PERMISSION_REQUIRED
+                required: { permission: write }
+                role: viewer
+            c4PrincipalAdminRequired:
+              summary: A non-admin manages the happylab-c4 credential tag
+              value:
+                success: false
+                error: Forbidden
+                code: c4_principal_admin_required
+                message: Only organization admins may manage the happylab-c4 credential tag
 
     BusinessServiceOwnerRequired:
       description: >-
@@ -7457,6 +7523,29 @@ components:
           enum:
             - Verified credential owner required
             - Credential management requires a human user
+
+    CredentialC4Refusal:
+      type: object
+      description: >-
+        The 403 body of the happylab-c4 credential tag rule (HAP-1613): the
+        one credential refusal that carries a `code` outside ForbiddenError's
+        enum, and no underscore keys. It names the rule only.
+      required: [success, error, code, message]
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          enum: [Forbidden]
+        code:
+          type: string
+          enum: [c4_principal_admin_required]
+        message:
+          type: string
+          enum:
+            - Only organization admins may manage the happylab-c4 credential tag
 
     MiddlewareError:
       type: object

@@ -53,3 +53,56 @@ it('returns 403 to a read-only viewer on relationship mutations before graph acc
   ]) expect(response.status).toBe(403);
   expect(getSession).not.toHaveBeenCalled();
 });
+
+describe('GET /relationships/type/:type paging', () => {
+  const run = jest.fn();
+  const close = jest.fn();
+  const total = { records: [{ get: () => ({ toNumber: () => 0 }) }] };
+  const get = (query: string, token = 'operator') =>
+    request(app).get(`/relationships/type/DEPENDS_ON${query}`).set('authorization', `Bearer ${token}`);
+
+  beforeEach(() => {
+    run.mockReset().mockResolvedValueOnce(total).mockResolvedValue({ records: [] });
+    close.mockReset().mockResolvedValue(undefined);
+    getSession.mockReturnValue({ run, close });
+  });
+
+  it.each([
+    '?limit=abc', '?limit=', '?limit=0', '?limit=-1', '?limit=1001', '?limit=1.5',
+    '?offset=-1', '?offset=-5', '?offset=abc', '?offset=1.5',
+  ])('refuses %s with a validation error before graph access', async (query) => {
+    const response = await get(query);
+    expect(response.status).toBe(400);
+    expect(response.body._error).toBe('Validation Error');
+    expect(getSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['', 100, 0],
+    ['?limit=1', 1, 0],
+    ['?limit=1000', 1000, 0],
+    ['?offset=0', 100, 0],
+    ['?offset=5', 100, 5],
+    ['?limit=25&offset=50', 25, 50],
+  ])('accepts %s and binds limit %i offset %i', async (query, limit, offset) => {
+    const response = await get(query);
+    expect(response.status).toBe(200);
+    expect(response.body.pagination).toMatchObject({ limit, offset });
+    const params = run.mock.calls[1]![1];
+    expect(params.limit.toNumber()).toBe(limit);
+    expect(params.offset.toNumber()).toBe(offset);
+  });
+
+  it('keeps the relationship type allow-list', async () => {
+    const response = await request(app).get('/relationships/type/NOPE').set('authorization', 'Bearer operator');
+    expect(response.status).toBe(400);
+    expect(response.body.message).toMatch(/Invalid relationship type/);
+    expect(getSession).not.toHaveBeenCalled();
+  });
+
+  it('lets a read-only viewer read a valid page', async () => {
+    const response = await get('?limit=25&offset=50', 'viewer');
+    expect(response.status).toBe(200);
+    expect(run.mock.calls[1]![1].limit.toNumber()).toBe(25);
+  });
+});

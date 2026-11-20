@@ -35,9 +35,9 @@ export interface DbRoleRow {
    * advisory noise that trains operators to ignore the error line). pg_read_all_settings (and pg_monitor, which
    * contains it) can break it INDIRECTLY where a setting holds a credential, for example primary_conninfo on a
    * standby, so the app login should hold none of these roles. The guard does not check them: they are advisory
-   * residuals an operator should review. pg_monitor and pg_read_all_stats read other sessions' query text (pg_stat_activity,
-   * pg_stat_statements); pg_read_all_settings (also part of pg_monitor) shows settings that are otherwise
-   * superuser-only: depending on the server version and the deployment these can include command lines
+   * residuals an operator should review. pg_monitor and pg_read_all_stats read other sessions' query text
+   * (pg_stat_activity, pg_stat_statements); pg_read_all_settings (also part of pg_monitor) shows settings that are
+   * otherwise superuser-only: depending on the server version and the deployment these can include command lines
    * (ssl_passphrase_command, and archive_command and restore_command where the server hides them from other roles)
    * and connection strings (primary_conninfo) that can carry credentials; pg_signal_backend can cancel or terminate
    * other non-superuser backends (a denial of service); pg_create_subscription (16+), with CREATE on the database,

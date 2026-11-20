@@ -45,10 +45,53 @@ function usableBypassSecret(raw: string | undefined): string | undefined {
   return undefined;
 }
 
-/** `true`/`false` after trim and lower-casing; any other value (unset, empty, `1`, `yes`) is undefined. */
-function parseBooleanEnv(raw: string | undefined): boolean | undefined {
-  const value = raw?.trim().toLowerCase();
+/** `true`/`false` after trim and lower-casing; anything else is undefined. */
+function parseTrueFalse(raw: string): boolean | undefined {
+  const value = raw.trim().toLowerCase();
   return value === 'true' ? true : value === 'false' ? false : undefined;
+}
+
+/**
+ * `API_KEYS_ENABLED` is the kill switch for API-key authentication, so an unrecognized value must not silently
+ * leave keys on. Unset or blank is undefined (fall through to the file, then the default `true`); `true`/`false`
+ * (trimmed, case-insensitive) is the boolean; anything else throws. The message names the key, never the value.
+ */
+function apiKeysEnabledFromEnv(raw: string | undefined): boolean | undefined {
+  if (raw === undefined || raw.trim() === '') {
+    return undefined;
+  }
+  const parsed = parseTrueFalse(raw);
+  if (parsed === undefined) {
+    throw new Error('Invalid configuration: API_KEYS_ENABLED must be "true" or "false" (case-insensitive)');
+  }
+  return parsed;
+}
+
+/**
+ * `auth.apiKeys.enabled` from the config file: absent is undefined (default `true`); a boolean, or the string
+ * "true"/"false" (trimmed, case-insensitive), is the boolean; any other present value throws. The message names
+ * the key, never the value.
+ */
+function apiKeysEnabledFromFile(value: unknown): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  const parsed = typeof value === 'string' ? parseTrueFalse(value) : undefined;
+  if (parsed === undefined) {
+    throw new Error(
+      'Invalid configuration: auth.apiKeys.enabled must be a boolean, "true" or "false" (case-insensitive)'
+    );
+  }
+  return parsed;
+}
+
+function resolveApiKeysEnabled(rawEnv: string | undefined, rawFile: unknown): boolean {
+  const fromEnv = apiKeysEnabledFromEnv(rawEnv);
+  const fromFile = apiKeysEnabledFromFile(rawFile);
+  return fromEnv ?? fromFile ?? true;
 }
 
 export class ConfigurationLoader {
@@ -289,10 +332,9 @@ export class ConfigurationLoader {
             : fileConfig.auth?.bcrypt?.rounds,
         },
         apiKeys: {
-          // Env wins when 'true'/'false' (trimmed, case-insensitive); else the file boolean; else true.
-          enabled:
-            parseBooleanEnv(env['API_KEYS_ENABLED']) ??
-            (typeof fileConfig.auth?.apiKeys?.enabled === 'boolean' ? fileConfig.auth.apiKeys.enabled : true),
+          // Env wins when set to true/false; else the file value; else true. Both are validated even when the
+          // other wins, so a malformed value never goes unnoticed.
+          enabled: resolveApiKeysEnabled(env['API_KEYS_ENABLED'], fileConfig.auth?.apiKeys?.enabled),
           headerName: env['API_KEY_HEADER_NAME'] || fileConfig.auth?.apiKeys?.headerName || 'X-API-Key',
         },
       },

@@ -4,7 +4,9 @@
 /**
  * `auth.apiKeys.enabled` is a security switch: API_KEYS_ENABLED=false must be able to turn API-key
  * authentication off. The environment wins when it is `true` or `false` (trimmed, case-insensitive);
- * any other value falls through to the config file boolean, else the default `true`.
+ * unset or blank falls through to the config file, else the default `true`. Any other env value, or a
+ * file value that is not a boolean or the string "true"/"false", fails the load with an error that
+ * names the key and not the value.
  */
 
 import { randomBytes } from 'crypto';
@@ -51,6 +53,15 @@ function load(envValue: string | undefined, apiKeys?: Record<string, unknown>) {
   return new ConfigurationLoader(path).load().auth.apiKeys;
 }
 
+function loadError(fn: () => unknown): Error {
+  try {
+    fn();
+  } catch (error) {
+    return error as Error;
+  }
+  throw new Error('expected the configuration load to throw');
+}
+
 describe('auth.apiKeys.enabled', () => {
   it('is turned off by API_KEYS_ENABLED=false with no config file', () => {
     expect(load('false').enabled).toBe(false);
@@ -72,13 +83,40 @@ describe('auth.apiKeys.enabled', () => {
     expect(load(value, { enabled: false }).enabled).toBe(true);
   });
 
-  it.each([undefined, '', '1', 'yes', '0'])('falls through to the file value when the env is %j', (value) => {
+  it.each([undefined, '', '   '])('falls through to the file value when the env is %j', (value) => {
     expect(load(value, { enabled: false }).enabled).toBe(false);
     expect(load(value, { enabled: true }).enabled).toBe(true);
   });
 
-  it.each([undefined, '', '1', 'yes', '0'])('defaults to true with no file when the env is %j', (value) => {
+  it.each([undefined, '', '   '])('defaults to true with no file when the env is %j', (value) => {
     expect(load(value).enabled).toBe(true);
+  });
+
+  it.each(['0', 'no', 'off', 'disabled', 'False.'])('refuses to load when API_KEYS_ENABLED is %j', (value) => {
+    const error = loadError(() => load(value));
+    expect(error.message).toContain('API_KEYS_ENABLED');
+    expect(error.message).toContain('"true" or "false"');
+    expect(error.message).not.toContain(value);
+  });
+
+  it('refuses an unrecognized env value even when the file says false', () => {
+    expect(loadError(() => load('off', { enabled: false })).message).toContain('API_KEYS_ENABLED');
+  });
+
+  it.each([0, 'off', {}, null])('refuses to load when auth.apiKeys.enabled in the file is %j', (value) => {
+    const error = loadError(() => load(undefined, { enabled: value }));
+    expect(error.message).toContain('auth.apiKeys.enabled');
+    expect(error.message).toContain('"true" or "false"');
+    expect(error.message).not.toContain(typeof value === 'string' ? value : JSON.stringify(value));
+  });
+
+  it('refuses a malformed file value even when a valid env value wins', () => {
+    expect(loadError(() => load('false', { enabled: 'off' })).message).toContain('auth.apiKeys.enabled');
+  });
+
+  it('accepts the strings "false" and " TRUE " in the file and normalizes them to booleans', () => {
+    expect(load(undefined, { enabled: 'false' }).enabled).toBe(false);
+    expect(load(undefined, { enabled: ' TRUE ' }).enabled).toBe(true);
   });
 
   it('defaults to true when the file has apiKeys without enabled', () => {

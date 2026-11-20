@@ -20,6 +20,7 @@ import { join } from 'path';
 import {
   inspectPostgres, main, parseSpec, parseTarget, seedBusinessServices, MIGRATIONS_DIR, type TenantFixtureSpec,
 } from '../seed-tenant-fixture';
+import { MALFORMED_AMBIENT_TLS_ENV } from './fixtures/run-operator-cli';
 
 const host = fork(join(__dirname, '../../rest/routes/__tests__/fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let nextId = 0;
@@ -305,9 +306,7 @@ describe('CLI process', () => {
   it('ignores malformed ambient API-server TLS toggles', async () => {
     // Without isolateOperatorEnvironment, `new Neo4jClient` refuses NEO4J_ENCRYPTED=bogus before the Postgres connect.
     const { code, stdout, stderr } = await run({
-      ...TARGET_ENV, CMDB_SEED_POSTGRES_PORT: '1',
-      NEO4J_ENCRYPTED: 'bogus', NEO4J_SSL_ENABLED: 'bogus', NEO4J_ENCRYPTION: 'bogus', NEO4J_SSL_TRUST_STRATEGY: 'bogus',
-      POSTGRES_SSL_MODE: 'bogus', POSTGRES_SSL_ENABLED: 'bogus',
+      ...TARGET_ENV, CMDB_SEED_POSTGRES_PORT: '1', ...MALFORMED_AMBIENT_TLS_ENV,
     });
 
     expect(stderr).not.toContain('must be true or false');

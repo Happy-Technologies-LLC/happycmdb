@@ -32,8 +32,8 @@ import {
   IDENTITY_CYPHER, applyRotation, parseArgs, prepareDecisionConstraint, prepareRotation, reconcileRotations, rotateUserPassword,
   RotationRefused, type RotationDeps, type RotationGraph, type RotationLock, type RotationSql,
 } from '../rotate-user-password';
-import { MALFORMED_AMBIENT_TLS_ENV, PERMISSIVE_AMBIENT_TLS_ENV, runOperatorCli } from './fixtures/run-operator-cli';
 import { lockOf } from '../operator-stores';
+import { MALFORMED_AMBIENT_TLS_ENV, PERMISSIVE_AMBIENT_TLS_ENV, runOperatorCli } from './fixtures/run-operator-cli';
 
 // ---------------------------------------------------------------------------
 // PostgreSQL: PGlite in a child process (fixtures/pglite-host.cjs)
@@ -608,7 +608,6 @@ describe('auth_credential_events is append-only with one outcome per intent', ()
       VALUES ('user-m', 'default_marker_cleared_login', 'x')`)).rejects.toMatchObject({ code: '23514' });
   });
 });
-
 
 /**
  * The `require.main === module` block as a real process: it must call isolateOperatorEnvironment before any client

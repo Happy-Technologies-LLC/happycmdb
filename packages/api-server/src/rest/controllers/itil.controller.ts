@@ -514,13 +514,15 @@ export class ITILController {
       const { id } = req.params;
       const { resolution } = req.body;
 
+      // resolved_at is stamped once, as in updateIncident: a repeat call keeps the downtime end; a reopen through
+      // PATCH clears it, so a later resolve stamps a fresh value.
       const pool = this.postgresClient.pool;
       const result = await pool.query(
         `
         UPDATE itil_incidents
         SET status = 'resolved',
             resolution = $1,
-            resolved_at = NOW(),
+            resolved_at = COALESCE(resolved_at, NOW()),
             updated_at = NOW()
         WHERE id = $2 AND organization_id = $3
         RETURNING *

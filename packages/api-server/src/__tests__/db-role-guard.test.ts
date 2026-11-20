@@ -190,17 +190,6 @@ describe('checkDbRole', () => {
       expect(release).toHaveBeenCalledWith(undefined);
     });
 
-  // The unflagged predefined roles (pg_monitor and its parts, pg_signal_backend, pg_create_subscription, pg_maintain,
-  // pg_checkpoint, pg_use_reserved_connections) are a settled decision: adding a name here is a deliberate change.
-  test.each(['150000', '170000'])('PG %s: the probe flags exactly the five dangerous built-in roles by name', async (version) => {
-    const { pool, statements } = fakePool({ ...role(false, false), version });
-    await checkDbRole(pool, OFF);
-    const list = /r\.rolname IN \(([^)]*)\)\s+AND \(pg_has_role/.exec(statements.find(text => /^SELECT\b/.test(text))!)?.[1];
-    expect(list?.split(',').map(name => name.trim())).toEqual([
-      "'pg_execute_server_program'", "'pg_write_server_files'", "'pg_read_server_files'", "'pg_read_all_data'", "'pg_write_all_data'",
-    ]);
-  });
-
   test.each(['', 'abc', '0', '-1', '16.0'])('an unreadable server_version_num (%j) is a probe failure, not a pass', async (version) => {
     await expect(checkDbRole(fakePool({ ...role(false, false), version }).pool, ON)).rejects.toThrow(/probe failed/);
     await expect(checkDbRole(fakePool({ ...role(false, false), version }).pool, OFF)).resolves.toBeUndefined();
@@ -242,14 +231,6 @@ describe('bypassesRowSecurity', () => {
     'flags set: %s', (_name, combo) => {
       expect(bypassesRowSecurity(combo)).toBe(FLAG_NAMES.some(name => combo[name]));
     });
-
-  test('a row that carries none of the eight flags is unflagged whatever else it says (no flag exists for the monitor-family roles)', () => {
-    const clean = Object.fromEntries(FLAG_NAMES.map(name => [name, false])) as Record<(typeof FLAG_NAMES)[number], boolean>;
-    const extra = { pg_monitor_member: true, pg_read_all_stats_member: true, pg_read_all_settings_member: true,
-      pg_signal_backend_member: true, pg_create_subscription_member: true, pg_maintain_member: true,
-      pg_checkpoint_member: true, pg_use_reserved_connections_member: true };
-    expect(bypassesRowSecurity({ ...clean, ...extra })).toBe(false);
-  });
 });
 
 describe('requireNonSuperuser', () => {
@@ -451,6 +432,8 @@ describe('probeDbRole against PostgreSQL', () => {
     expect(await exec('SELECT 1 AS one')).toEqual([{ one: 1 }]);
   });
 
+  // The unflagged predefined roles (pg_monitor and its parts, pg_signal_backend, pg_create_subscription, pg_maintain,
+  // pg_checkpoint, pg_use_reserved_connections) are a settled decision: adding a name here is a deliberate change.
   // The deliberately unflagged predefined roles (settled decision; see dangerous_builtin_role_member): none sets a flag.
   test('a member of pg_monitor, pg_read_all_stats, pg_read_all_settings, pg_stat_scan_tables, pg_signal_backend, pg_create_subscription, pg_maintain, pg_checkpoint and pg_use_reserved_connections is not flagged', async () => {
     const row = await probe('g_unflagged');

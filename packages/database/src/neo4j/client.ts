@@ -259,6 +259,8 @@ export class Neo4jClient {
       logger.warn('Neo4j client initialized with encryption set by the URI scheme; certificate verification is disabled by the +ssc scheme');
     } else if (schemeSelectsTls) {
       logger.info('Neo4j client initialized with encryption set by the URI scheme');
+    } else if (sslEnabled && trustStrategy === 'TRUST_ALL_CERTIFICATES') {
+      logger.warn('Neo4j client initialized with SSL/TLS encryption enabled; certificate verification is disabled by NEO4J_SSL_TRUST_STRATEGY=TRUST_ALL_CERTIFICATES');
     } else if (sslEnabled) {
       logger.info('Neo4j client initialized with SSL/TLS encryption enabled');
     } else {

@@ -16,17 +16,17 @@ Authorization: Bearer YOUR_JWT_TOKEN
 
 ### Refusals common to every credential and credential-set route
 
-Every route under `/credentials` and `/credential-sets` runs these checks first, in this order. The first one that fails answers; none of them looks anything up, so they say nothing about whether a credential or set exists (a credential or set of another organization stays `404`, as documented per endpoint).
+Every route under `/credentials` and `/credential-sets` runs these checks first, in this order. The first one that fails answers; none of them looks up a credential or a credential set, so they say nothing about whether one exists (a credential or set of another organization stays `404`, as documented per endpoint).
 
 1. `401 Unauthorized` - Missing or invalid token.
-2. `403 Forbidden` (`code: ORGANIZATION_REQUIRED`) - The token has no organization claim:
+2. `403 Forbidden` (`code: ORGANIZATION_REQUIRED`) - The caller has no well-formed organization claim (the claim is missing or is not a UUID; this holds for a token and for an API key alike):
    `{"success": false, "error": "Forbidden", "message": "Organization claim required", "_error": "Forbidden", "_message": "Organization claim required", "code": "ORGANIZATION_REQUIRED"}`
 3. `403 Forbidden` - The verified identity has no user id: `{"success": false, "error": "Forbidden", "message": "Verified credential owner required"}`
 4. `403 Forbidden` - The caller has the `agent` role (a service agent, not a human user): `{"success": false, "error": "Forbidden", "message": "Credential management requires a human user"}`
 
 The bodies in 3 and 4 carry no `code` and no `_error`/`_message` mirror. A client that reads `code` to pick a message will mis-render them: show `message`.
 
-The OAuth routes `POST /credentials/:id/oauth/authorize` and `GET /credentials/oauth/callback` are not an integration surface. They answer every authenticated caller with `403 {"success": false, "error": "Forbidden", "message": "Credential OAuth is unavailable"}` before the checks above and without looking up an id.
+The OAuth routes `POST /credentials/:id/oauth/authorize` and `GET /credentials/oauth/callback` are not an integration surface. They answer every authenticated caller with `403 {"success": false, "error": "Forbidden", "message": "Credential OAuth is unavailable"}` after the authentication check (1) and before checks 2 to 4, and without looking up an id.
 
 ## Base URL
 

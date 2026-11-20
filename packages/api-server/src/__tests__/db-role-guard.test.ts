@@ -432,9 +432,8 @@ describe('probeDbRole against PostgreSQL', () => {
     expect(await exec('SELECT 1 AS one')).toEqual([{ one: 1 }]);
   });
 
-  // The unflagged predefined roles (pg_monitor and its parts, pg_signal_backend, pg_create_subscription, pg_maintain,
-  // pg_checkpoint, pg_use_reserved_connections) are a settled decision: adding a name here is a deliberate change.
-  // The deliberately unflagged predefined roles (settled decision; see dangerous_builtin_role_member): none sets a flag.
+  // The predefined roles in this case are deliberately NOT flagged (settled decision, see dangerous_builtin_role_member
+  // in db-role-guard.ts): adding a name to the probe's IN list there is a deliberate change, and this case must change with it.
   test('a member of pg_monitor, pg_read_all_stats, pg_read_all_settings, pg_stat_scan_tables, pg_signal_backend, pg_create_subscription, pg_maintain, pg_checkpoint and pg_use_reserved_connections is not flagged', async () => {
     const row = await probe('g_unflagged');
     expect(pick(row)).toEqual(['g_unflagged', 'g_unflagged', false, false, false, false]);

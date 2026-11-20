@@ -7698,7 +7698,8 @@ components:
           type: number
           nullable: true
           description: >-
-            Sum of the services' `cost_per_hour`, rounded to cents (N3: annual revenue / 8760 per service). Null, never 0,
+            The sum of the priced services' annual revenue divided by 8760 and rounded to cents once (N3), so it may differ by a few
+            cents from the sum of the per-service `cost_per_hour` values, which are each rounded on their own. Null, never 0,
             when no affected service has revenue. When only some do, it is a lower bound: see `cost_per_hour_services_priced`.
         cost_per_hour_services_priced:
           type: integer

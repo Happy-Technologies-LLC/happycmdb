@@ -31,6 +31,7 @@ Authorization: Bearer <jwt_token>
 
 - **Read routes** (every `GET`) need no permission beyond authentication.
 - **Mutating routes** (every `POST`, `PATCH` and `DELETE`) require the `write` permission. Without it the API answers `403`.
+- **Check order on `/incidents`, `/changes` and `/baselines`**: two checks run before the `write` check, so a caller without `write` does not always see the `403`. First, `503 {"success": false, "error": "ITIL records unavailable"}` when the ITIL record tables are missing from the database. Second, for any route with an `:id`, `404 {"success": false, "error": "Not Found", "message": "Incident not found"}` (`Change not found` or `Baseline not found` on the other two families) when the id is not a UUID. The caller is still refused and nothing is written; only the status differs. A malformed id or a missing record table on a caller that holds `write` gets the same `404` or `503`. The `/configuration-items` routes have no such pre-check: they answer `403` first.
 - **Organization scope**: all records belong to the caller's organization, taken from the credential, never from the request. A caller whose credential carries no organization claim is refused with `403` (`code: ORGANIZATION_REQUIRED`, `message: "Organization claim required"`) before any route runs.
 
 The permissions are `read`, `write`, `discover` and `admin`; there are no `itil:read` or `itil:write` permissions.
@@ -65,36 +66,91 @@ Create a new incident for an affected Configuration Item.
 
 | Field | Required | Constraints |
 |-------|----------|-------------|
-| `affectedCIId` | Yes | Must be valid CI ID in CMDB |
-| `description` | Yes | Minimum 10 characters |
-| `reportedBy` | Yes | Email or username |
-| `symptoms` | No | Array of strings |
-| `detectedAt` | No | ISO 8601 timestamp (defaults to now) |
+| `affectedCIId` | Yes | Id of an existing CI in the caller's organization (404 otherwise) |
+| `description` | Yes | Minimum 10 characters. Stored in full as `description`; `title` is the same text cut to 500 characters (the last 3 replaced by `...` when longer) |
+| `reportedBy` | Yes | Email or username, stored as `reported_by` |
+| `symptoms` | No | Array of strings. Accepted and ignored: it is not stored and not returned |
+| `detectedAt` | No | ISO 8601 timestamp, stored as `reported_at` (defaults to now) |
 
-**Response:**
+**Response (201):**
 
 ```json
 {
   "success": true,
-  "incident": {
-    "id": "INC0012345",
-    "affectedCIId": "srv-web-prod-01",
-    "description": "Database connection pool exhausted...",
+  "data": {
+    "id": "5f0c2a9e-7d3b-4c1e-9a52-3b8e6f1d4a70",
+    "incident_number": "INC-5f0c2a9e-7d3b-4c1e-9a52-3b8e6f1d4a70",
+    "title": "Database connection pool exhausted, web application returning 503 errors",
+    "description": "Database connection pool exhausted, web application returning 503 errors",
+    "category": null,
+    "subcategory": null,
+    "impact": "high",
+    "urgency": "medium",
     "priority": 2,
-    "status": "NEW",
-    "reportedBy": "john.doe@company.com",
-    "createdAt": "2025-11-17T08:15:00Z",
-    "updatedAt": "2025-11-17T08:15:00Z"
-  }
+    "affected_ci_id": "srv-web-prod-01",
+    "affected_business_service_id": null,
+    "affected_application_service_id": null,
+    "business_impact": {
+      "estimated_user_impact": 2500,
+      "estimated_revenue_impact": null,
+      "revenue_per_hour": 114.15,
+      "estimated_cost_of_downtime": null,
+      "affected_services": [
+        { "service_id": "svc-checkout", "name": "Checkout" }
+      ]
+    },
+    "assigned_to": null,
+    "assigned_group": null,
+    "status": "new",
+    "resolution": null,
+    "resolution_code": null,
+    "reported_at": "2025-11-17T08:15:00.000Z",
+    "acknowledged_at": null,
+    "resolved_at": null,
+    "closed_at": null,
+    "time_to_acknowledge_minutes": null,
+    "time_to_resolve_minutes": null,
+    "reported_by": "john.doe@company.com",
+    "created_at": "2025-11-17T08:16:02.311Z",
+    "updated_at": "2025-11-17T08:16:02.311Z",
+    "organization_id": "11111111-1111-4111-8111-111111111111"
+  },
+  "priorityCalculation": {
+    "priority": 2,
+    "impact": "high",
+    "urgency": "medium",
+    "reasoning": "Basic calculation based on CI type and environment",
+    "estimatedUserImpact": 100,
+    "estimatedRevenueImpact": 1000
+  },
+  "message": "Incident created with priority P2"
 }
 ```
 
+`data` is the raw `itil_incidents` row, snake_case, with lower-case `status`. `id` is a UUID, and `incident_number` is `INC-` followed by that UUID. The timestamps are ISO 8601 strings. `category`, `subcategory`, `assigned_to` and the other columns this endpoint does not set stay `null`. Every other incident endpoint returns this same row shape.
+
 **Auto-Calculated Priority:**
 
-Incident priority (1-5, where 1 = critical) is automatically calculated based on:
-- Affected CI's business criticality (`bsm_attributes.business_criticality`)
-- Customer-facing status (`bsm_attributes.customer_facing`)
-- Number of dependent services
+`priority`, `impact` and `urgency` (and `priorityCalculation`) come from a basic rule on the affected CI, not from business criticality:
+
+| Affected CI | `priority` | `impact` | `urgency` |
+|-------------|-----------|----------|-----------|
+| Type `database`, `load-balancer` or `service` | 1 | `critical` | `high` |
+| Any other type, `environment` is `production` | 2 | `high` | `medium` |
+| Anything else | 3 | `medium` | `medium` |
+
+`priorityCalculation.estimatedUserImpact` and `estimatedRevenueImpact` are fixed values per priority (1000 and 10000 for P1, 100 and 1000 for P2, 10 and 100 for P3).
+
+`data.business_impact` is separate: it is derived from the business services the CI is mapped to. `estimated_user_impact` and `revenue_per_hour` come from the primary (most critical) mapped service and are `null` when no service or no figure backs them. `estimated_revenue_impact` and `estimated_cost_of_downtime` are always `null`. If the mapping cannot be read the incident is still created with `null` figures.
+
+| Status | Meaning |
+|--------|---------|
+| 201 | Incident created |
+| 400 | Request body failed validation |
+| 404 | `Not Found`, `CI with ID '<id>' not found` |
+| 409 | `Conflict`, `CI is temporarily unavailable`: a write to the affected CI is pending reconciliation; nothing is stored |
+| 503 | `Service Unavailable`, `CI write temporarily unavailable`: the write could not be admitted in time; nothing is stored |
+| 500 | `Failed to create incident` |
 
 ---
 
@@ -106,11 +162,13 @@ List all incidents with optional filtering.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `status` | string | - | Filter by status (NEW, ASSIGNED, IN_PROGRESS, RESOLVED, CLOSED) |
-| `priority` | number | - | Filter by priority (1-5) |
+| `status` | string | - | One of `NEW`, `ASSIGNED`, `IN_PROGRESS`, `RESOLVED`, `CLOSED` (upper case; the API compares it to the lower-case stored status) |
+| `priority` | integer | - | Filter by priority (1-5) |
 | `affectedCIId` | string | - | Filter by affected CI ID |
-| `page` | number | 1 | Page number |
-| `limit` | number | 50 | Results per page (max 1000) |
+| `page` | integer | 1 | Page number (minimum 1) |
+| `limit` | integer | 50 | Results per page (1-1000; a larger value is a 400, not clamped) |
+
+Results are newest first by `reported_at`. A value outside these lists answers 400.
 
 **Example Request:**
 
@@ -124,63 +182,100 @@ curl -X GET "http://localhost:3000/api/v1/itil/incidents?status=IN_PROGRESS&prio
 ```json
 {
   "success": true,
-  "incidents": [
+  "data": [
     {
-      "id": "INC0012345",
-      "affectedCIId": "srv-web-prod-01",
-      "description": "Database connection pool exhausted...",
+      "id": "5f0c2a9e-7d3b-4c1e-9a52-3b8e6f1d4a70",
+      "incident_number": "INC-5f0c2a9e-7d3b-4c1e-9a52-3b8e6f1d4a70",
+      "title": "Database connection pool exhausted, web application returning 503 errors",
       "priority": 1,
-      "status": "IN_PROGRESS",
-      "assignedTo": "sre-team@company.com",
-      "reportedBy": "john.doe@company.com",
-      "createdAt": "2025-11-17T08:15:00Z",
-      "updatedAt": "2025-11-17T08:45:00Z"
+      "impact": "critical",
+      "urgency": "high",
+      "affected_ci_id": "srv-web-prod-01",
+      "status": "in_progress",
+      "assigned_to": "sre-team@company.com",
+      "reported_by": "john.doe@company.com",
+      "reported_at": "2025-11-17T08:15:00.000Z",
+      "updated_at": "2025-11-17T08:45:00.000Z"
     }
   ],
   "pagination": {
+    "total": 42,
     "page": 1,
     "limit": 20,
-    "total": 42,
-    "totalPages": 3
+    "pages": 3
   }
 }
 ```
+
+Each element of `data` is the full incident row (see [POST /incidents](#post-incidents)); the example lists the fields that matter here. `pagination.pages` is `ceil(total / limit)`.
+
+Errors: `500` with `error: "Failed to retrieve incidents"`.
 
 ---
 
 ### GET /incidents/:id
 
-Get a specific incident by ID.
+Get a specific incident by ID. The id must be the incident's UUID (`data.id`), not the `incident_number`.
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "incident": {
-    "id": "INC0012345",
-    "affectedCIId": "srv-web-prod-01",
-    "affectedCIName": "Production Web Server 01",
-    "affectedCIType": "virtual-machine",
-    "description": "Database connection pool exhausted...",
+  "data": {
+    "id": "5f0c2a9e-7d3b-4c1e-9a52-3b8e6f1d4a70",
+    "incident_number": "INC-5f0c2a9e-7d3b-4c1e-9a52-3b8e6f1d4a70",
+    "title": "Database connection pool exhausted, web application returning 503 errors",
+    "description": "Database connection pool exhausted, web application returning 503 errors",
+    "category": null,
+    "subcategory": null,
+    "impact": "critical",
+    "urgency": "high",
     "priority": 1,
-    "status": "IN_PROGRESS",
-    "assignedTo": "sre-team@company.com",
-    "reportedBy": "john.doe@company.com",
-    "symptoms": ["HTTP 503", "Connection timeout"],
-    "detectedAt": "2025-11-17T08:15:00Z",
-    "createdAt": "2025-11-17T08:15:00Z",
-    "updatedAt": "2025-11-17T08:45:00Z",
-    "age": 120
+    "affected_ci_id": "srv-web-prod-01",
+    "affected_business_service_id": null,
+    "affected_application_service_id": null,
+    "business_impact": {
+      "estimated_user_impact": 2500,
+      "estimated_revenue_impact": null,
+      "revenue_per_hour": 114.15,
+      "estimated_cost_of_downtime": null,
+      "affected_services": [
+        { "service_id": "svc-checkout", "name": "Checkout" }
+      ]
+    },
+    "assigned_to": "sre-team@company.com",
+    "assigned_group": null,
+    "status": "in_progress",
+    "resolution": null,
+    "resolution_code": null,
+    "reported_at": "2025-11-17T08:15:00.000Z",
+    "acknowledged_at": null,
+    "resolved_at": null,
+    "closed_at": null,
+    "time_to_acknowledge_minutes": null,
+    "time_to_resolve_minutes": null,
+    "reported_by": "john.doe@company.com",
+    "created_at": "2025-11-17T08:16:02.311Z",
+    "updated_at": "2025-11-17T08:45:00.000Z",
+    "organization_id": "11111111-1111-4111-8111-111111111111"
   }
 }
 ```
+
+`data` is the stored row as is. The handler adds nothing to it: there is no CI name, CI type, symptoms or age field.
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Incident found |
+| 404 | `{"success": false, "error": "Not Found", "message": "Incident not found"}`: unknown id, an id in another organization, or an id that is not a UUID |
+| 500 | `Failed to retrieve incident` |
 
 ---
 
 ### PATCH /incidents/:id
 
-Update an incident's status or assignment.
+Update an incident's status, assignment or priority.
 
 **Request Body:**
 
@@ -192,28 +287,45 @@ Update an incident's status or assignment.
 }
 ```
 
-**Allowed Status Transitions:**
+| Field | Constraints |
+|-------|-------------|
+| `status` | `NEW`, `ASSIGNED`, `IN_PROGRESS`, `RESOLVED` or `CLOSED`; stored lower-case |
+| `assignedTo` | String, stored as `assigned_to` |
+| `priority` | Integer 1-5 |
 
-| From | To |
-|------|-----|
-| NEW | ASSIGNED, CLOSED |
-| ASSIGNED | IN_PROGRESS, CLOSED |
-| IN_PROGRESS | RESOLVED, CLOSED |
-| RESOLVED | CLOSED, IN_PROGRESS (reopen) |
+All fields are optional but at least one must be sent: an empty body answers `400 {"success": false, "error": "Bad Request", "message": "No fields to update"}`.
+
+**Status transitions:** none are enforced. Any of the five values can be set from any current status.
+
+**Timestamps set by a status change:** `RESOLVED` stamps `resolved_at` and `CLOSED` stamps `closed_at`, both only when still empty, so a repeat or later `PATCH` keeps the first value. Moving to `NEW`, `ASSIGNED` or `IN_PROGRESS` (reopen) clears both `resolved_at` and `closed_at`.
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "incident": {
-    "id": "INC0012345",
-    "status": "IN_PROGRESS",
-    "assignedTo": "sre-team@company.com",
-    "updatedAt": "2025-11-17T08:45:00Z"
-  }
+  "data": {
+    "id": "5f0c2a9e-7d3b-4c1e-9a52-3b8e6f1d4a70",
+    "incident_number": "INC-5f0c2a9e-7d3b-4c1e-9a52-3b8e6f1d4a70",
+    "priority": 1,
+    "status": "in_progress",
+    "assigned_to": "sre-team@company.com",
+    "resolved_at": null,
+    "closed_at": null,
+    "updated_at": "2025-11-17T08:45:00.000Z"
+  },
+  "message": "Incident updated successfully"
 }
 ```
+
+`data` is the full updated incident row; the example lists the fields that matter here.
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Incident updated |
+| 400 | Body failed validation, or `No fields to update` |
+| 404 | `Incident not found` (unknown id, other organization, or id not a UUID) |
+| 500 | `Failed to update incident` |
 
 ---
 
@@ -232,52 +344,62 @@ Mark an incident as resolved with resolution notes.
 
 **Validation:**
 
-- `resolution`: Minimum 10 characters
-- `resolvedBy`: Required (email or username)
+- `resolution`: required, minimum 10 characters, stored as `resolution`
+- `resolvedBy`: required string, but accepted and ignored: it is not stored and not returned
+
+The endpoint sets `status` to `resolved`, stores `resolution`, and stamps `resolved_at` only when it is still empty: a repeat call keeps the first resolution time. A reopen through [PATCH /incidents/:id](#patch-incidents-id) clears `resolved_at`, so a later resolve stamps a fresh value. It does not check the current status.
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "incident": {
-    "id": "INC0012345",
-    "status": "RESOLVED",
-    "resolution": "Increased database connection pool size...",
-    "resolvedBy": "jane.smith@company.com",
-    "resolvedAt": "2025-11-17T10:30:00Z",
-    "mttr": 135
-  }
+  "data": {
+    "id": "5f0c2a9e-7d3b-4c1e-9a52-3b8e6f1d4a70",
+    "incident_number": "INC-5f0c2a9e-7d3b-4c1e-9a52-3b8e6f1d4a70",
+    "status": "resolved",
+    "resolution": "Increased database connection pool size from 50 to 100. Restarted application servers. Monitoring shows stable connection pool usage at 60-70%.",
+    "resolved_at": "2025-11-17T10:30:00.000Z",
+    "time_to_resolve_minutes": null,
+    "updated_at": "2025-11-17T10:30:00.000Z"
+  },
+  "message": "Incident resolved successfully"
 }
 ```
 
-**MTTR Calculation:**
+`data` is the full updated incident row; the example lists the fields that matter here. There is no `mttr` or `resolvedBy` field, and `time_to_resolve_minutes` is not set by this endpoint. For the MTTR figure see [GET /metrics/mttr](#get-metrics-mttr).
 
-Mean Time To Repair (in minutes) = `resolvedAt - detectedAt`
+| Status | Meaning |
+|--------|---------|
+| 200 | Incident resolved |
+| 400 | Body failed validation |
+| 404 | `Incident not found` (unknown id, other organization, or id not a UUID) |
+| 500 | `Failed to resolve incident` |
 
 ---
 
 ### GET /incidents/:id/priority
 
-Get AI-calculated priority for an incident based on affected CI impact.
+Get the stored priority, impact and urgency of an incident. They are read from the incident row; nothing is recalculated.
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "priority": {
-    "calculatedPriority": 1,
-    "reason": "Tier 0 business service",
-    "factors": {
-      "businessCriticality": "tier_0",
-      "customerFacing": true,
-      "dependentServices": 12,
-      "revenueImpact": "high"
-    }
+  "data": {
+    "priority": 1,
+    "impact": "critical",
+    "urgency": "high"
   }
 }
 ```
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Incident found |
+| 404 | `Incident not found` (unknown id, other organization, or id not a UUID) |
+| 500 | `Failed to retrieve incident priority` |
 
 ---
 
@@ -311,53 +433,99 @@ Create a new change request.
 
 **Change Types:**
 
-| Type | Approval Required | Use Case |
-|------|-------------------|----------|
-| STANDARD | No | Pre-approved changes (e.g., daily backups) |
-| NORMAL | Yes | Planned changes requiring CAB approval |
-| EMERGENCY | Expedited | Critical fixes during outages |
+| Type | Description |
+|------|-------------|
+| STANDARD | Pre-approved changes (e.g., daily backups) |
+| NORMAL | Planned changes requiring CAB approval |
+| EMERGENCY | Critical fixes during outages |
+| MAJOR | Large-scope changes |
+
+The type is stored lower-case (`standard`, `normal`, `emergency`, `major`). This endpoint applies no type-specific rule: every new change starts as `draft` with `approval_status` `pending`, whatever its type.
 
 **Validation Rules:**
 
 | Field | Required | Constraints |
 |-------|----------|-------------|
-| `changeType` | Yes | STANDARD, NORMAL, EMERGENCY |
-| `description` | Yes | Minimum 10 characters |
-| `affectedCIIds` | Yes | Array of CI IDs (at least 1) |
-| `plannedStart` | Yes | ISO 8601 timestamp (future date) |
-| `plannedDuration` | Yes | Duration in minutes |
+| `changeType` | Yes | STANDARD, NORMAL, EMERGENCY, MAJOR |
+| `description` | Yes | Minimum 10 characters. Stored in full as `description`; `title` is the same text cut to 500 characters (the last 3 replaced by `...` when longer) |
+| `affectedCIIds` | Yes | Array of 1 to 100 CI ids, each 1-255 characters; every id must be an existing CI in the caller's organization |
+| `requestedBy` | Yes | Email or username, stored as `requested_by` |
+| `plannedStart` | Yes | ISO 8601 timestamp, stored as `scheduled_start`. Not required to be in the future |
+| `plannedDuration` | Yes | Integer, minutes, at least 1. `scheduled_end` is `plannedStart` plus this duration; the duration itself is not stored |
 | `implementationPlan` | Yes | Minimum 50 characters |
-| `backoutPlan` | No | Recommended for NORMAL and EMERGENCY |
-| `testPlan` | No | Recommended for all changes |
+| `backoutPlan` | No | Stored as `backout_plan`; an empty string when omitted |
+| `testPlan` | No | Stored as `test_plan`; an empty string when omitted |
 
-**Response:**
+**Response (201):**
 
 ```json
 {
   "success": true,
-  "change": {
-    "id": "CHG0009876",
-    "changeType": "NORMAL",
-    "status": "REQUESTED",
-    "riskScore": 7.5,
-    "riskLevel": "MEDIUM",
-    "description": "Upgrade Kubernetes cluster...",
-    "affectedCIIds": ["k8s-prod-master-01", "..."],
-    "plannedStart": "2025-11-20T02:00:00Z",
-    "plannedDuration": 180,
-    "requestedBy": "platform-engineering@company.com",
-    "createdAt": "2025-11-17T10:00:00Z"
-  }
+  "data": {
+    "id": "8d1b7e42-0c5a-4f36-b1d9-2a6e94c07f13",
+    "change_number": "CHG-8d1b7e42-0c5a-4f36-b1d9-2a6e94c07f13",
+    "title": "Upgrade Kubernetes cluster from v1.27 to v1.28",
+    "description": "Upgrade Kubernetes cluster from v1.27 to v1.28",
+    "change_type": "normal",
+    "category": null,
+    "risk_assessment": {
+      "overall_risk_score": 0,
+      "risk_level": "medium",
+      "requires_cab_approval": false
+    },
+    "business_impact": {
+      "critical_services_affected": [],
+      "estimated_downtime_minutes": 0,
+      "customer_impact": false,
+      "revenue_at_risk": 0
+    },
+    "financial_impact": {
+      "implementation_cost": 0,
+      "downtime_cost": 0,
+      "total_cost": 0
+    },
+    "affected_ci_ids": ["k8s-prod-master-01", "k8s-prod-master-02", "k8s-prod-master-03", "k8s-prod-worker-01", "k8s-prod-worker-02"],
+    "affected_business_service_ids": [],
+    "affected_application_service_ids": [],
+    "implementation_plan": "1. Drain worker nodes\n2. Upgrade master nodes sequentially\n3. Upgrade worker nodes\n4. Validate cluster health\n5. Re-enable workloads",
+    "backout_plan": "Roll back to v1.27 using etcd snapshot backup",
+    "test_plan": "Deploy canary application, verify pod scheduling, test networking",
+    "approval_status": "pending",
+    "approved_by": null,
+    "approved_at": null,
+    "assigned_to": null,
+    "assigned_group": null,
+    "status": "draft",
+    "scheduled_start": "2025-11-20T02:00:00.000Z",
+    "scheduled_end": "2025-11-20T05:00:00.000Z",
+    "actual_start": null,
+    "actual_end": null,
+    "outcome": null,
+    "closure_notes": null,
+    "requested_by": "platform-engineering@company.com",
+    "created_at": "2025-11-17T10:00:00.412Z",
+    "updated_at": "2025-11-17T10:00:00.412Z",
+    "closed_at": null,
+    "organization_id": "11111111-1111-4111-8111-111111111111",
+    "implemented_by": null,
+    "actual_duration": null
+  },
+  "message": "Change request created successfully"
 }
 ```
 
-**Auto-Calculated Risk Score:**
+`data` is the raw `itil_changes` row: snake_case, lower-case `status`, `change_type`, `approval_status` and `outcome`. `id` is a UUID and `change_number` is `CHG-` followed by that UUID. Every other change endpoint returns this same row shape.
 
-Risk score (0-10) is calculated based on:
-- Number of affected CIs
-- Business criticality of affected CIs
-- Change type (EMERGENCY = higher risk)
-- Time window (off-hours = lower risk)
+**No risk score at creation:** nothing is calculated when the change is created. `risk_assessment`, `business_impact` and `financial_impact` keep the column defaults shown above and no REST endpoint writes them. The live estimate is [GET /changes/:id/risk-assessment](#get-changes-id-risk-assessment).
+
+| Status | Meaning |
+|--------|---------|
+| 201 | Change created |
+| 400 | Body failed validation, or a CI id is empty, longer than 255 characters or not storable (`{"success": false, "error": "Bad Request", "message": "Invalid request"}`) |
+| 404 | `Not Found`, `CI with ID '<id>' not found` |
+| 409 | `Conflict`, `CI is temporarily unavailable`: a write to an affected CI is pending reconciliation; nothing is stored |
+| 503 | `Service Unavailable`, `CI write temporarily unavailable`: the write could not be admitted in time; nothing is stored |
+| 500 | `Failed to create change request` |
 
 ---
 
@@ -369,81 +537,217 @@ List all changes with optional filtering.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `status` | string | - | REQUESTED, APPROVED, SCHEDULED, IN_PROGRESS, IMPLEMENTED, CLOSED, CANCELLED |
-| `changeType` | string | - | STANDARD, NORMAL, EMERGENCY |
-| `page` | number | 1 | Page number |
-| `limit` | number | 50 | Results per page (max 1000) |
+| `status` | string | - | One of `DRAFT`, `PENDING_APPROVAL`, `APPROVED`, `SCHEDULED`, `IN_PROGRESS`, `IMPLEMENTED`, `CLOSED`, `CANCELLED` (upper case; compared to the lower-case stored status) |
+| `changeType` | string | - | `STANDARD`, `NORMAL`, `EMERGENCY` or `MAJOR` |
+| `requestedBy` | string | - | Exact match on `requested_by` |
+| `page` | integer | 1 | Page number (minimum 1) |
+| `limit` | integer | 50 | Results per page (1-1000; a larger value is a 400, not clamped) |
+
+Results are newest first by `created_at`. A value outside these lists answers 400. `REQUESTED` is not accepted over REST (the REST schema rejects it with 400), even though the controller itself maps it to `draft` plus `pending_approval` for the GraphQL entry point.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "8d1b7e42-0c5a-4f36-b1d9-2a6e94c07f13",
+      "change_number": "CHG-8d1b7e42-0c5a-4f36-b1d9-2a6e94c07f13",
+      "title": "Upgrade Kubernetes cluster from v1.27 to v1.28",
+      "change_type": "normal",
+      "status": "draft",
+      "approval_status": "pending",
+      "requested_by": "platform-engineering@company.com",
+      "scheduled_start": "2025-11-20T02:00:00.000Z",
+      "scheduled_end": "2025-11-20T05:00:00.000Z",
+      "created_at": "2025-11-17T10:00:00.412Z"
+    }
+  ],
+  "pagination": {
+    "total": 17,
+    "page": 1,
+    "limit": 50,
+    "pages": 1
+  }
+}
+```
+
+Each element of `data` is the full change row (see [POST /changes](#post-changes)); the example lists the fields that matter here. `pagination.pages` is `ceil(total / limit)`.
+
+Errors: `500` with `error: "Failed to retrieve changes"`.
 
 ---
 
 ### GET /changes/:id
 
-Get a specific change by ID.
+Get a specific change by ID. The id must be the change's UUID (`data.id`), not the `change_number`.
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "change": {
-    "id": "CHG0009876",
-    "changeType": "NORMAL",
-    "status": "APPROVED",
-    "riskScore": 7.5,
-    "riskLevel": "MEDIUM",
-    "description": "Upgrade Kubernetes cluster...",
-    "affectedCIIds": ["k8s-prod-master-01", "..."],
-    "affectedCIs": [
-      {
-        "ci_id": "k8s-prod-master-01",
-        "ci_name": "Kubernetes Master Node 01",
-        "ci_type": "virtual-machine",
-        "criticality": "tier_0"
-      }
-    ],
-    "plannedStart": "2025-11-20T02:00:00Z",
-    "plannedDuration": 180,
-    "implementationPlan": "1. Drain worker nodes...",
-    "backoutPlan": "Roll back to v1.27...",
-    "testPlan": "Deploy canary application...",
-    "requestedBy": "platform-engineering@company.com",
-    "approvedBy": "change-advisory-board@company.com",
-    "approvedAt": "2025-11-18T14:30:00Z",
-    "createdAt": "2025-11-17T10:00:00Z"
+  "data": {
+    "id": "8d1b7e42-0c5a-4f36-b1d9-2a6e94c07f13",
+    "change_number": "CHG-8d1b7e42-0c5a-4f36-b1d9-2a6e94c07f13",
+    "title": "Upgrade Kubernetes cluster from v1.27 to v1.28",
+    "description": "Upgrade Kubernetes cluster from v1.27 to v1.28",
+    "change_type": "normal",
+    "category": null,
+    "risk_assessment": {
+      "overall_risk_score": 0,
+      "risk_level": "medium",
+      "requires_cab_approval": false
+    },
+    "business_impact": {
+      "critical_services_affected": [],
+      "estimated_downtime_minutes": 0,
+      "customer_impact": false,
+      "revenue_at_risk": 0
+    },
+    "financial_impact": {
+      "implementation_cost": 0,
+      "downtime_cost": 0,
+      "total_cost": 0
+    },
+    "affected_ci_ids": ["k8s-prod-master-01", "k8s-prod-master-02", "k8s-prod-master-03", "k8s-prod-worker-01", "k8s-prod-worker-02"],
+    "affected_business_service_ids": [],
+    "affected_application_service_ids": [],
+    "implementation_plan": "1. Drain worker nodes\n2. Upgrade master nodes sequentially\n3. Upgrade worker nodes\n4. Validate cluster health\n5. Re-enable workloads",
+    "backout_plan": "Roll back to v1.27 using etcd snapshot backup",
+    "test_plan": "Deploy canary application, verify pod scheduling, test networking",
+    "approval_status": "approved",
+    "approved_by": "u-1042",
+    "approved_at": "2025-11-18T14:30:00.000Z",
+    "assigned_to": null,
+    "assigned_group": null,
+    "status": "approved",
+    "scheduled_start": "2025-11-20T02:00:00.000Z",
+    "scheduled_end": "2025-11-20T05:00:00.000Z",
+    "actual_start": null,
+    "actual_end": null,
+    "outcome": null,
+    "closure_notes": null,
+    "requested_by": "platform-engineering@company.com",
+    "created_at": "2025-11-17T10:00:00.412Z",
+    "updated_at": "2025-11-18T14:30:00.000Z",
+    "closed_at": null,
+    "organization_id": "11111111-1111-4111-8111-111111111111",
+    "implemented_by": null,
+    "actual_duration": null
   }
 }
 ```
+
+`data` is the stored row as is. The handler adds nothing to it: there is no risk score or level, no `affectedCIs` detail objects, and no planned-duration field (use `scheduled_start` and `scheduled_end`). `affected_ci_ids` is an array of CI id strings.
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Change found |
+| 404 | `{"success": false, "error": "Not Found", "message": "Change not found"}`: unknown id, an id in another organization, or an id that is not a UUID |
+| 500 | `Failed to retrieve change` |
+
+---
+
+### PATCH /changes/:id
+
+Update a change's status or implementation details.
+
+**Request Body:**
+
+```json
+{
+  "status": "IN_PROGRESS",
+  "implementedBy": "platform-engineering@company.com",
+  "actualDuration": 165
+}
+```
+
+| Field | Constraints |
+|-------|-------------|
+| `status` | `DRAFT`, `PENDING_APPROVAL`, `APPROVED`, `SCHEDULED`, `IN_PROGRESS`, `IMPLEMENTED`, `CLOSED` or `CANCELLED`; stored lower-case |
+| `implementedBy` | String, 1-255 characters, stored as `implemented_by` |
+| `actualDuration` | Integer minutes, 1 to 2147483647, stored as `actual_duration` |
+
+All fields are optional but at least one must be sent: an empty body answers `400 {"success": false, "error": "Bad Request", "message": "No fields to update"}`. A value outside the limits answers `400 {"success": false, "error": "Bad Request", "message": "Invalid request"}`.
+
+Only the named columns are written. No status transition is enforced, and a status change sets no other column: `approved` does not record an approver (use [POST /changes/:id/approve](#post-changes-id-approve)) and `closed` does not stamp `closed_at` (use [POST /changes/:id/close](#post-changes-id-close)).
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "8d1b7e42-0c5a-4f36-b1d9-2a6e94c07f13",
+    "change_number": "CHG-8d1b7e42-0c5a-4f36-b1d9-2a6e94c07f13",
+    "status": "in_progress",
+    "implemented_by": "platform-engineering@company.com",
+    "actual_duration": 165,
+    "updated_at": "2025-11-20T04:45:00.000Z"
+  },
+  "message": "Change updated successfully"
+}
+```
+
+`data` is the full updated change row; the example lists the fields that matter here.
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Change updated |
+| 400 | Body failed validation, `Invalid request`, or `No fields to update` |
+| 404 | `Change not found` (unknown id, other organization, or id not a UUID) |
+| 500 | `Failed to update change` |
 
 ---
 
 ### GET /changes/:id/risk-assessment
 
-Get detailed risk assessment for a change.
+Get a risk estimate for a change, computed on each call from the change's `affected_ci_ids`. It is not stored on the change.
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "riskAssessment": {
-    "overallRisk": 7.5,
+  "data": {
+    "riskScore": 0.6,
     "riskLevel": "MEDIUM",
-    "factors": {
-      "affectedCICount": 5,
-      "tier0CIs": 3,
-      "tier1CIs": 2,
-      "customerFacing": true,
-      "changeWindow": "off_hours",
-      "changeType": "NORMAL"
-    },
+    "requiresCABApproval": false,
+    "affectedCICount": 7,
+    "estimatedDowntime": 0,
+    "estimatedUserImpact": 70,
+    "estimatedRevenueAtRisk": 7000,
     "recommendations": [
-      "Consider splitting change into smaller increments",
+      "Review implementation plan thoroughly",
       "Ensure backout plan is tested",
-      "Schedule during maintenance window with customer notification"
+      "Schedule during maintenance window"
+    ],
+    "mitigationStrategies": [
+      "Perform change in stages",
+      "Have rollback procedures ready",
+      "Monitor closely during implementation"
     ]
   }
 }
 ```
+
+This is a basic estimate based only on the number of affected CIs; it does not read CI criticality, the change window or the change type:
+
+| Affected CIs | `riskScore` | `riskLevel` | `requiresCABApproval` (`riskScore` above 0.6) |
+|--------------|------------|-------------|------------------------------------------------|
+| 5 or fewer | 0.5 | `MEDIUM` | `false` |
+| 6 to 10 | 0.6 | `MEDIUM` | `false` |
+| 11 or more | 0.8 | `HIGH` | `true` |
+
+`riskScore` is between 0 and 1. `estimatedUserImpact` is 10 per CI and `estimatedRevenueAtRisk` is 1000 per CI. `estimatedDowntime` is always `0`: the handler reads a `planned_duration` field that the stored change row does not have. The `recommendations` and `mitigationStrategies` lists are fixed text.
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Estimate computed |
+| 404 | `Change not found` (unknown id, other organization, or id not a UUID) |
+| 500 | `Failed to assess change risk` |
 
 ---
 
@@ -488,26 +792,40 @@ The first approval wins. The change gets `status` and `approval_status` set to `
 
 ### POST /changes/:id/implement
 
-Mark a change as being implemented.
+Mark a change as implemented. The request takes no body.
+
+The endpoint sets `status` to `implemented`, stamps `actual_start` when it is still empty, and sets `actual_end` to now. It does not check the current status, and it does not require the change to be approved.
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "change": {
-    "id": "CHG0009876",
-    "status": "IN_PROGRESS",
-    "actualStart": "2025-11-20T02:00:00Z"
-  }
+  "data": {
+    "id": "8d1b7e42-0c5a-4f36-b1d9-2a6e94c07f13",
+    "change_number": "CHG-8d1b7e42-0c5a-4f36-b1d9-2a6e94c07f13",
+    "status": "implemented",
+    "actual_start": "2025-11-20T02:00:11.204Z",
+    "actual_end": "2025-11-20T04:45:09.870Z",
+    "updated_at": "2025-11-20T04:45:09.870Z"
+  },
+  "message": "Change implemented successfully"
 }
 ```
+
+`data` is the full updated change row; the example lists the fields that matter here.
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Change updated |
+| 404 | `Change not found` (unknown id, other organization, or id not a UUID) |
+| 500 | `Failed to implement change` |
 
 ---
 
 ### POST /changes/:id/close
 
-Close a change with success/failure result.
+Close a change with a result.
 
 **Request Body:**
 
@@ -519,30 +837,51 @@ Close a change with success/failure result.
 }
 ```
 
+| Field | Required | Constraints |
+|-------|----------|-------------|
+| `result` | Yes | `SUCCESS`, `PARTIAL_SUCCESS`, `FAILED` or `ROLLED_BACK` |
+| `notes` | No | String, stored as `closure_notes` (`null` when omitted) |
+| `closedBy` | Yes | String, but accepted and not stored: it is only written to the server log (the change row has no `closed_by` column) |
+
 **Result Values:**
 
-| Result | Description |
-|--------|-------------|
-| SUCCESS | Change completed as planned |
-| PARTIAL_SUCCESS | Change completed with minor issues |
-| FAILED | Change failed, backout plan executed |
-| ROLLED_BACK | Change rolled back due to issues |
+`result` is stored in `outcome`, lower-case:
+
+| Result | `outcome` | Description |
+|--------|-----------|-------------|
+| SUCCESS | `successful` | Change completed as planned |
+| PARTIAL_SUCCESS | `successful_with_issues` | Change completed with minor issues |
+| FAILED | `failed` | Change failed, backout plan executed |
+| ROLLED_BACK | `backed_out` | Change rolled back due to issues |
+
+The endpoint also sets `status` to `closed` and stamps `closed_at` with the current time. It does not check the current status.
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "change": {
-    "id": "CHG0009876",
-    "status": "CLOSED",
-    "result": "SUCCESS",
-    "actualDuration": 165,
-    "closedBy": "platform-engineering@company.com",
-    "closedAt": "2025-11-20T04:45:00Z"
-  }
+  "data": {
+    "id": "8d1b7e42-0c5a-4f36-b1d9-2a6e94c07f13",
+    "change_number": "CHG-8d1b7e42-0c5a-4f36-b1d9-2a6e94c07f13",
+    "status": "closed",
+    "outcome": "successful",
+    "closure_notes": "All 5 nodes upgraded successfully. Cluster health checks passed. Workloads running normally.",
+    "closed_at": "2025-11-20T04:45:00.000Z",
+    "updated_at": "2025-11-20T04:45:00.000Z"
+  },
+  "message": "Change closed successfully"
 }
 ```
+
+`data` is the full updated change row; the example lists the fields that matter here. There is no `result`, `actualDuration` or `closedBy` field, and `actual_duration` is not computed (set it with [PATCH /changes/:id](#patch-changes-id)).
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Change closed |
+| 400 | Body failed validation |
+| 404 | `Change not found` (unknown id, other organization, or id not a UUID) |
+| 500 | `Failed to close change` |
 
 ---
 

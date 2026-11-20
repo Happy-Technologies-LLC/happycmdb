@@ -121,7 +121,8 @@ export function bypassesRowSecurity(row: GuardFlags): boolean {
  *   holds with ADMIN OPTION, so it is not flagged there.
  * - The five built-in roles are looked up by name in pg_roles, so a server that lacks one (pg_write_all_data and
  *   pg_read_all_data are 14+) simply does not match it. The other predefined roles are DELIBERATELY not in that
- *   list (see dangerous_builtin_role_member); a test pins the list, so adding a name is a deliberate change.
+ *   list (see dangerous_builtin_role_member); the PGlite cases in src/__tests__/db-role-guard.test.ts pin the
+ *   list, so adding a name is a deliberate change.
  * - replication_escalation: REPLICATION is not inherited either, but a member can SET ROLE to the holder, so any
  *   REPLICATION role that current_user or session_user is a member of is flagged (a superuser has the attribute
  *   too, already flagged). On PostgreSQL 16+ a REPLICATION membership granted WITH SET FALSE, INHERIT FALSE confers

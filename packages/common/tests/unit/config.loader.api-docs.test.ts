@@ -29,7 +29,8 @@ beforeEach(() => {
   });
   delete process.env['API_DOCS_ENABLED'];
   dir = mkdtempSync(join(tmpdir(), 'hap1881-'));
-  // The loader reads .env and config/<NODE_ENV>.json relative to the cwd; point it at the empty scratch dir.
+  // The loader reads .env.<NODE_ENV>.local, .env.<NODE_ENV>, .env.local, .env and config/<NODE_ENV>.json (NODE_ENV is
+  // test under Jest) relative to the cwd; the cwd spy keeps the real repo's .env* and config/test.json out of the test.
   jest.spyOn(process, 'cwd').mockReturnValue(dir);
 });
 

@@ -55,6 +55,23 @@ describe('isolateOperatorEnvironment', () => {
     expect(env).toEqual({ PATH: '/usr/bin', CMDB_ROTATE_NEO4J_URI: 'bolt://h' });
   });
 
+  it('keeps NODE_EXTRA_CA_CERTS, the supported private-CA path, while dropping the guarded toggles', () => {
+    const env: NodeJS.ProcessEnv = {
+      NODE_EXTRA_CA_CERTS: '/ca.pem',
+      POSTGRES_SSL_MODE: 'verify-full',
+      POSTGRES_SSL_ENABLED: 'true',
+      POSTGRES_SSL_CA_FILE: '/other-ca.pem',
+      NEO4J_SSL_ENABLED: 'true',
+      NEO4J_ENCRYPTION: 'true',
+      NEO4J_ENCRYPTED: 'true',
+      NEO4J_SSL_TRUST_STRATEGY: 'TRUST_ALL_CERTIFICATES',
+    };
+
+    isolateOperatorEnvironment(env);
+
+    expect(env).toEqual({ NODE_EXTRA_CA_CERTS: '/ca.pem' });
+  });
+
   it('lets { encrypted: false } win over an ambient NEO4J_ENCRYPTED=true and TRUST_ALL_CERTIFICATES', () => {
     process.env['NEO4J_ENCRYPTED'] = 'true';
     process.env['NEO4J_SSL_TRUST_STRATEGY'] = 'TRUST_ALL_CERTIFICATES';

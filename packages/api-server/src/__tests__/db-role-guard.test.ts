@@ -512,15 +512,14 @@ describe('probeDbRole against PostgreSQL', () => {
 
     // system_user exists from PostgreSQL 16 on; the probe only reads substr and strpos there. PGlite reports no
     // authenticated identity, so system_user is replaced with a literal (see poolFor).
-    const systemUserAvailable = async (): Promise<boolean> => {
+    const requireSystemUser = async (): Promise<void> => {
       const [{ server_version_num: version }] = await exec('SHOW server_version_num') as Array<{ server_version_num: string }>;
-      if (Number(version) >= 160000) return true;
-      console.warn(`skipped: server_version_num ${version} has no system_user, so the probe never reads substr or strpos`);
-      return false;
+      if (Number(version) >= 160000) return;
+      throw new Error(`the shadow tests need PostgreSQL 16+ (system_user), but server_version_num is ${version}: the PGlite pin dropped below 16, and without system_user the probe never reads substr or strpos`);
     };
 
     test('a public.substr(text, int) that returns the session login does not hide a masked session login', async () => {
-      if (!await systemUserAvailable()) return;
+      await requireSystemUser();
       try {
         await exec(`SET SESSION AUTHORIZATION g_shadow;
           CREATE FUNCTION public.substr(text, int) RETURNS text LANGUAGE sql AS 'SELECT session_user::text';
@@ -542,7 +541,7 @@ describe('probeDbRole against PostgreSQL', () => {
     // g_shadow: masked. Cutting after the first colon leaves 'b:g_shadow'; a shadow strpos that points at the last colon
     // makes the remainder equal the session login.
     test('a public.strpos(text, text) that points past the identity prefix does not hide a masked session login', async () => {
-      if (!await systemUserAvailable()) return;
+      await requireSystemUser();
       try {
         await exec(`SET SESSION AUTHORIZATION g_shadow;
           CREATE FUNCTION public.strpos(text, text) RETURNS int LANGUAGE sql AS 'SELECT length($1) - length(session_user::text)';

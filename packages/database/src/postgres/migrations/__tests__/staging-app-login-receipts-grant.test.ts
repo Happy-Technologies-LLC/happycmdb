@@ -43,12 +43,33 @@ const APP_LOGIN_SCRIPT = readFileSync(join(__dirname, '../../../../../../deploy/
 const TABLE_MIGRATIONS = ['046_service_offerings.sql', '047_ai_sync_cursors.sql', '048_portfolio_import.sql',
   '054_relationship_evidence_receipts.sql', '056_estate_kpi_snapshots.sql'];
 
-/** The `$hap2126$` DO block of the script, exactly as psql would send it. */
-function grantBlock(): string {
-  const block = /DO \$hap2126\$[\s\S]*?\$hap2126\$;/.exec(APP_LOGIN_SCRIPT);
-  if (!block) throw new Error('deploy/build01-staging-app-login.sql has no $hap2126$ DO block: the per-table cmdb_app re-grant is missing');
-  return block[0];
+const TAG = '$hap2126$';
+/**
+ * The `$hap2126$` DO block of `script`, cut the way the PostgreSQL lexer cuts it: the dollar-quoted body ends at the FIRST `$hap2126$`
+ * after the opener, a `--` comment or a string included (plpgsql comments are invisible to the SQL lexer), and the statement ends with the
+ * `;` right after it. A first tag followed by anything else (a space, another token) is refused.
+ */
+function blockOfScript(script: string): string {
+  const open = script.indexOf(`DO ${TAG}`);
+  if (open < 0) throw new Error('deploy/build01-staging-app-login.sql has no $hap2126$ DO block: the per-table cmdb_app re-grant is missing');
+  const close = script.indexOf(TAG, open + `DO ${TAG}`.length);
+  if (close < 0 || script[close + TAG.length] !== ';') {
+    throw new Error('the first $hap2126$ after the DO block opener is not followed by `;`: PostgreSQL ends the block there, so the text after it is not part of the block');
+  }
+  return script.slice(open, close + TAG.length + 1);
 }
+/** A script must hold the tag exactly twice (opener and closer), in code or comment: a third one is a lexer-visible block end the text checks cannot see. */
+const tagCountProblem = (script: string): string | undefined => {
+  const count = script.split(TAG).length - 1;
+  return count === 2 ? undefined : `deploy/build01-staging-app-login.sql holds ${count} $hap2126$ tags, not the two of the DO block's opener and closer`;
+};
+function grantBlockOf(script: string): string {
+  const problem = tagCountProblem(script);
+  if (problem) throw new Error(problem);
+  return blockOfScript(script);
+}
+/** The $hap2126$ DO block of the real script, exactly as psql would send it. */
+const grantBlock = (): string => grantBlockOf(APP_LOGIN_SCRIPT);
 
 /**
  * The block with a WITH GRANT OPTION built in the FOR projection: the EXECUTE stays byte-identical to the canonical statement, and the
@@ -63,6 +84,21 @@ function withGrantOptionProjection(block: string): string {
     .replace(from, "FOR g IN SELECT t.rel || ' TO cmdb_app WITH GR' || 'ANT OPTION --' AS rel, t.privs FROM (VALUES")
     .replace(guard, "to_regclass(split_part(g.rel, ' ', 1))");
 }
+
+/**
+ * The second review's bypass, one whole `--` line between the block's last statement and its closing tag. PostgreSQL's SQL lexer does not
+ * know plpgsql comments, so the DO body ends at the comment's tag, the grant after it runs as a statement of its own, and the no-op DO
+ * consumes the real closing tag. A text lint that drops whole `--` lines sees an ordinary block.
+ */
+const COMMENTED_TAG_GRANT = `    -- ${TAG} ; GRANT SELECT ON public.dim_business_services TO cmdb_app WITH GRANT OPTION; DO ${TAG} BEGIN END`;
+function withCommentedTagGrant(script: string, line = COMMENTED_TAG_GRANT): string {
+  const closing = script.lastIndexOf(`${TAG};`);
+  const lineStart = script.lastIndexOf('\n', closing) + 1;
+  if (closing < 0 || script.slice(lineStart, closing).trim() !== '') throw new Error('the $hap2126$ closing tag is no longer alone on its line: adjust the fixture');
+  return `${script.slice(0, lineStart)}${line}\n${script.slice(lineStart)}`;
+}
+/** What psql sends to the server for the block: from its opener to the last tag of the script, as the server lexes it (any statement the comment turned into one included). */
+const psqlSends = (script: string): string => script.slice(script.indexOf(`DO ${TAG}`), script.lastIndexOf(`${TAG};`) + TAG.length + 1);
 
 const PRIVILEGES = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'];
 /** What the migrations 046, 047, 048, 054 and 056 give the app logins, table by table (never UPDATE on an append-only table). */
@@ -95,15 +131,23 @@ const migrate = (query: (sql: string) => Promise<Array<Record<string, any>>>, na
 const held = async (query: (sql: string) => Promise<Array<Record<string, any>>>, role: string, table: string) =>
   (await query(`SELECT ${PRIVILEGES.map(p => `has_table_privilege('${role}', '${table}', '${p}') AS "${p}"`).join(', ')}`))
     .flatMap(row => PRIVILEGES.filter(p => row[p] === true));
-/** The privileges of `role` on `table` that it holds WITH GRANT OPTION (it could re-grant them to any role). */
-const grantOptionsHeld = async (query: (sql: string) => Promise<Array<Record<string, any>>>, role: string, table: string) =>
-  (await query(`SELECT ${PRIVILEGES.map(p => `has_table_privilege('${role}', '${table}', '${p} WITH GRANT OPTION') AS "${p}"`).join(', ')}`))
-    .flatMap(row => PRIVILEGES.filter(p => row[p] === true));
-/** Every EXPECTED table (under `renamed`, when a test moved it away) to the privileges `role` holds on it WITH GRANT OPTION. */
-const grantOptionsOfExpected = async (query: (sql: string) => Promise<Array<Record<string, any>>>, role: string, renamed: Record<string, string> = {}) =>
-  Object.fromEntries(await Promise.all(Object.keys(EXPECTED).map(async table =>
-    [table, await grantOptionsHeld(query, role, renamed[table] ?? table)] as const)));
-const NO_GRANT_OPTIONS = Object.fromEntries(Object.keys(EXPECTED).map(table => [table, [] as string[]]));
+/**
+ * Every `<schema>.<relation>|<PRIVILEGE>` of every relation in public and cmdb on which `role` holds the privilege WITH GRANT OPTION (it
+ * could re-grant it to any role), sorted. Not limited to the tables the block restores: a grant option on any other relation counts. The
+ * relation and privilege sets are those of `grantMatrix`, whose own query stays untouched (it is mirrored in the hosted matrix).
+ */
+const grantOptionsSweep = async (query: (sql: string) => Promise<Array<Record<string, any>>>, role: string): Promise<string[]> =>
+  (await query(`
+    SELECT n.nspname || '.' || c.relname || '|' || p.privilege AS row
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      CROSS JOIN LATERAL unnest(CASE WHEN c.relkind = 'S' THEN ARRAY['USAGE', 'SELECT', 'UPDATE']
+        ELSE ARRAY['${PRIVILEGES.join("', '")}'] END) AS p(privilege)
+      WHERE n.nspname IN ('public', 'cmdb') AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+        AND CASE WHEN c.relkind = 'S' THEN has_sequence_privilege('${role}', c.oid, p.privilege || ' WITH GRANT OPTION')
+                 ELSE has_table_privilege('${role}', c.oid, p.privilege || ' WITH GRANT OPTION') END`))
+    .map(row => row['row'] as string).sort();
+/** `EXPECTED` as the sorted `<table>|<PRIVILEGE>` rows `grantOptionsSweep` reports when every restored privilege is re-grantable. */
+const EXPECTED_AS_GRANT_OPTIONS = Object.entries(EXPECTED).flatMap(([table, privileges]) => privileges.map(p => `${table}|${p}`)).sort();
 
 describe('the $hap2126$ block in the app-login script', () => {
   it('restores exactly the migrations\' grants on a re-created cmdb_app, never more, and re-runs cleanly', async () => {
@@ -117,10 +161,10 @@ describe('the $hap2126$ block in the app-login script', () => {
     const after = async () => Object.fromEntries(await Promise.all(Object.keys(EXPECTED).map(async table =>
       [table, await held(query, 'cmdb_app', table)] as const)));
     expect(await after()).toEqual(EXPECTED);
-    expect(await grantOptionsOfExpected(query, 'cmdb_app')).toEqual(NO_GRANT_OPTIONS); // restored, but never re-grantable
+    expect(await grantOptionsSweep(query, 'cmdb_app')).toEqual([]); // restored, but nothing in public or cmdb is re-grantable
     await query(grantBlock());
     expect(await after()).toEqual(EXPECTED);
-    expect(await grantOptionsOfExpected(query, 'cmdb_app')).toEqual(NO_GRANT_OPTIONS);
+    expect(await grantOptionsSweep(query, 'cmdb_app')).toEqual([]);
     expect(await grantMatrix(query, 'cmdb_user')).toEqual(userBefore); // cmdb_user's grants are not touched
   }, 60000);
 
@@ -135,7 +179,7 @@ describe('the $hap2126$ block in the app-login script', () => {
     expect(await held(query, 'cmdb_app', 'public.relationship_evidence_receipts')).toEqual(['SELECT', 'INSERT']);
     expect(await held(query, 'cmdb_app', 'public.estate_kpi_snapshots')).toEqual(['SELECT', 'INSERT']);
     expect(await held(query, 'cmdb_app', 'public.service_offerings')).toEqual(['SELECT', 'INSERT', 'UPDATE']);
-    expect(await grantOptionsOfExpected(query, 'cmdb_app', { 'public.portfolio_imports': 'public.portfolio_imports_away' })).toEqual(NO_GRANT_OPTIONS);
+    expect(await grantOptionsSweep(query, 'cmdb_app')).toEqual([]);
   }, 60000);
 
   it('a block that builds WITH GRANT OPTION in its FOR projection leaves cmdb_app holding the grant option, and the check sees it', async () => {
@@ -144,7 +188,19 @@ describe('the $hap2126$ block in the app-login script', () => {
     for (const name of TABLE_MIGRATIONS) await migrate(query, name);
     await query('CREATE ROLE cmdb_app LOGIN');
     await query(withGrantOptionProjection(grantBlock()));
-    expect(await grantOptionsOfExpected(query, 'cmdb_app')).toEqual(EXPECTED); // every restored privilege of every table is re-grantable
+    expect(await grantOptionsSweep(query, 'cmdb_app')).toEqual(EXPECTED_AS_GRANT_OPTIONS); // every restored privilege of every table is re-grantable, and nothing else
+  }, 60000);
+
+  it('a whole-line comment that holds the tag ends the block for PostgreSQL, so its GRANT ... WITH GRANT OPTION runs, and the sweep sees it on a table outside EXPECTED', async () => {
+    const query = open();
+    await prepare(query, false);
+    for (const name of TABLE_MIGRATIONS) await migrate(query, name);
+    await query('CREATE ROLE cmdb_app LOGIN');
+    const script = withCommentedTagGrant(APP_LOGIN_SCRIPT);
+    expect(script.split('\n').filter(line => /^\s*--/.test(line))).toContain(COMMENTED_TAG_GRANT); // to a text lint, and to a reader, a comment
+    await query(psqlSends(script));
+    expect(await held(query, 'cmdb_app', 'public.service_offerings')).toEqual(['SELECT', 'INSERT', 'UPDATE']); // the original block still ran
+    expect(await grantOptionsSweep(query, 'cmdb_app')).toEqual(['public.dim_business_services|SELECT']);
   }, 60000);
 });
 
@@ -200,8 +256,8 @@ describe('whole-grant matrix: a re-created cmdb_app equals a freshly migrated on
     await recreated('CREATE ROLE cmdb_app LOGIN NOSUPERUSER');
     await migrate(recreated, '045_staging_app_login_acl.sql');
     await recreated(grantBlock());
-    expect(await grantOptionsOfExpected(recreated, 'cmdb_app')).toEqual(NO_GRANT_OPTIONS);
-    expect(await grantOptionsOfExpected(baseline, 'cmdb_app')).toEqual(NO_GRANT_OPTIONS);
+    expect(await grantOptionsSweep(recreated, 'cmdb_app')).toEqual([]);
+    expect(await grantOptionsSweep(baseline, 'cmdb_app')).toEqual([]);
 
     const [fresh, again] = [await grantMatrix(baseline, 'cmdb_app'), await grantMatrix(recreated, 'cmdb_app')];
     for (const [table, privileges] of Object.entries(EXPECTED)) {
@@ -367,7 +423,7 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
     const rows = rowListOf(uncommented);
     if (Object.keys(Object.fromEntries(rows)).length !== rows.length) problems.push('a table appears twice in the VALUES rows');
     if (looseRowCount(uncommented) !== rows.length) problems.push('a VALUES row has another shape than (public.<table>, UPPER-CASE privileges)');
-    const executes = executesOf(text).length;
+    const executes = executesOf(uncommented).length;
     if (executes !== 1) problems.push(`${executes} EXECUTE statements, not the one \`${BLOCK_GRANT_EXECUTE}\` over the VALUES rows`);
     const statements = executeStatementsOf(uncommented);
     if (executes > 0 && statements.some(statement => statement !== BLOCK_GRANT_EXECUTE)) {
@@ -566,6 +622,31 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
     expect(blockShapeProblems(blockText())).toEqual([]);
   });
 
+  it('cuts the block where PostgreSQL does (the first tag, then `;`) and holds the script to exactly two tags, so a commented tag cannot smuggle a statement past the block checks', () => {
+    // The real script: opener and closer only, and the block ends at the closer.
+    expect(tagCountProblem(APP_LOGIN_SCRIPT)).toBeUndefined();
+    expect(grantBlockOf(APP_LOGIN_SCRIPT).endsWith(`END\n    ${TAG};`)).toBe(true);
+    // The reviewer's line: each of the two rules refuses it alone.
+    const smuggled = withCommentedTagGrant(APP_LOGIN_SCRIPT);
+    expect(() => blockOfScript(smuggled)).toThrow('not followed by `;`'); // the first tag is followed by a space
+    expect(tagCountProblem(smuggled)).toContain('holds 4 $hap2126$ tags');
+    expect(() => grantBlockOf(smuggled)).toThrow();
+    // With the `;` glued to the tag the extraction accepts the cut, but the cut block has lost its closing tag (its last line is the comment):
+    // the count rejects it, and so does the template, so no one rule is the only line of defence.
+    const glued = withCommentedTagGrant(APP_LOGIN_SCRIPT, COMMENTED_TAG_GRANT.replace(`${TAG} ;`, `${TAG};`));
+    const cut = blockOfScript(glued);
+    expect(cut.endsWith(`${TAG};`)).toBe(true);
+    expect(tagCountProblem(glued)).toContain('holds 4 $hap2126$ tags');
+    expect(blockShapeProblems(cut)).toEqual([expect.stringContaining('not the canonical template')]);
+    // A tag anywhere else, in a comment above the block or in a trailing comment, is refused by the count alone.
+    for (const extra of [`-- ${TAG}\n${APP_LOGIN_SCRIPT}`, `${APP_LOGIN_SCRIPT}\n-- ${TAG}\n`]) {
+      expect(tagCountProblem(extra)).toContain('holds 3 $hap2126$ tags');
+    }
+    // No block at all, or one that never closes with `;`, is refused by the extraction.
+    expect(() => blockOfScript('SELECT 1;')).toThrow('has no $hap2126$ DO block');
+    expect(() => blockOfScript(`DO ${TAG} BEGIN END ${TAG}\n;`)).toThrow('not followed by `;`');
+  });
+
   it('flags a block sample with a table twice, a tuple of another shape, a second EXECUTE or any GRANT or REVOKE outside the one EXECUTE, through the real block check', () => {
     const sample = (values: string[], executes = 1, extra = '') => canonicalBlock(values.join(', '),
       Array.from({ length: executes }, () => BLOCK_GRANT_EXECUTE).join(' '), extra);
@@ -586,6 +667,11 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
       .toEqual([expect.stringContaining('outside the one EXECUTE')]);
     // A comment mention is stripped, but a `--` inside a string does not hide the statement behind it.
     expect(blockShapeProblems(sample(one, 1, '-- GRANT is only mentioned here'))).toEqual([]);
+    // An EXECUTE in a whole-line comment is no EXECUTE: `executesOf` reads the same uncommented text as every other count.
+    const commentedExecute = sample(one, 1, '-- EXECUTE nothing');
+    expect(executesOf(commentedExecute)).toHaveLength(2);
+    expect(executesOf(uncommentedOf(commentedExecute))).toHaveLength(1);
+    expect(blockShapeProblems(commentedExecute)).toEqual([]);
     expect(blockShapeProblems(sample(one, 1, `SELECT '--'; GRANT DELETE ON public.api_keys TO cmdb_app;`))).toEqual([expect.stringContaining('outside the one EXECUTE')]);
     // The one EXECUTE must be the whole statement: text appended or concatenated after the grantee is a different grant (WITH GRANT OPTION).
     const withGrantOption = (tail: string) => canonicalBlock("('public.a', 'SELECT')",

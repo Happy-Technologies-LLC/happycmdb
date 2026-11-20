@@ -8,18 +8,20 @@ The Unified Credentials API provides a protocol-based authentication system that
 
 ## Authentication
 
-All API endpoints require authentication using a JWT bearer token:
+Every endpoint needs an authenticated caller: either a bearer JWT:
 
 ```bash
 Authorization: Bearer YOUR_JWT_TOKEN
 ```
 
+or, while API keys are enabled, an API key created through the API, sent in the key header (default `X-API-Key`; the header name is configurable). See [API Key Authentication](/api/authentication#api-key-authentication).
+
 ### Refusals common to every credential and credential-set route
 
 Every route under `/credentials` and `/credential-sets` runs these checks first, in this order. The first one that fails answers; none of them looks up a credential or a credential set, so they say nothing about whether one exists (a credential or set of another organization stays `404`, as documented per endpoint).
 
-1. `401 Unauthorized` - Missing or invalid token.
-2. `403 Forbidden` (`code: ORGANIZATION_REQUIRED`) - The caller has no well-formed organization claim (the claim is missing or is not a UUID; this holds for a token and for an API key alike):
+1. `401 Unauthorized` - No credential, or a credential that does not verify (an invalid, expired or wrong-type token, or an unknown, disabled, expired or revoked API key). When API keys are switched off (`auth.apiKeys.enabled` false), a request that carries only an API key is refused the same way. Every case has the same body, `{"_error": "Unauthorized", "_message": "Authentication failed"}`, so the response does not say which.
+2. `403 Forbidden` (`code: ORGANIZATION_REQUIRED`) - The caller has no well-formed organization claim (the claim is missing or is not UUID-shaped; the check is on shape only, so any 8-4-4-4-12 hexadecimal value passes, the nil UUID included; this holds for a token and for an API key alike):
    `{"success": false, "error": "Forbidden", "message": "Organization claim required", "_error": "Forbidden", "_message": "Organization claim required", "code": "ORGANIZATION_REQUIRED"}`
 3. `403 Forbidden` - The verified identity has no user id: `{"success": false, "error": "Forbidden", "message": "Verified credential owner required"}`
 4. `403 Forbidden` - The caller has the `agent` role (a service agent, not a human user): `{"success": false, "error": "Forbidden", "message": "Credential management requires a human user"}`
@@ -126,7 +128,7 @@ Create a new credential with affinity matching rules.
 **Error Responses**:
 - `400 Bad Request` - Invalid credential data
 - `409 Conflict` - Credential name already exists
-- `401 Unauthorized` - Missing or invalid JWT token
+- `401 Unauthorized` - Missing or invalid credential (see [Refusals common to every credential and credential-set route](#refusals-common-to-every-credential-and-credential-set-route))
 - `403 Forbidden` (`code: c4_principal_admin_required`) - Non-admin sent the `happylab-c4` tag (see [The `happylab-c4` tag](#the-happylab-c4-tag))
 - `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 
@@ -224,7 +226,7 @@ curl "http://localhost:3000/api/v1/credentials/550e8400-e29b-41d4-a716-446655440
 
 **Error Responses**:
 - `404 Not Found` - Credential does not exist
-- `401 Unauthorized` - Missing or invalid JWT token
+- `401 Unauthorized` - Missing or invalid credential (see [Refusals common to every credential and credential-set route](#refusals-common-to-every-credential-and-credential-set-route))
 - `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 - `500 Internal Server Error` - The stored credential cannot be decrypted or decoded: `{"success": false, "error": "Failed to get credential", "message": "Internal error"}`. The server log names the error class only, never its message.
 
@@ -272,7 +274,7 @@ Update credential properties (name, affinity, tags, or credentials).
 - `400 Bad Request` - Invalid update data
   - A `credentials` value that is not an object, holds `***REDACTED***` anywhere, has an all-digit key (`0`, `1`, ...) or holds a string made only of `*` is refused with the fixed message `Invalid credentials update` before anything is written (HAP-1227, HAP-1279). These are the shapes the old edit dialog produced from the read placeholder.
 - `409 Conflict` - Another of your credentials already has the new name
-- `401 Unauthorized` - Missing or invalid JWT token
+- `401 Unauthorized` - Missing or invalid credential (see [Refusals common to every credential and credential-set route](#refusals-common-to-every-credential-and-credential-set-route))
 - `403 Forbidden` (`code: c4_principal_admin_required`) - Non-admin added the `happylab-c4` tag or edited a credential that carries it
 - `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 - `500 Internal Server Error` - The updated credential cannot be decrypted or decoded (a stored value that is not valid JSON, or a damaged envelope): `{"success": false, "error": "Failed to update credential", "message": "Internal error"}`. The update is rolled back, so nothing is changed (HAP-1814). Sending a new `credentials` object replaces the stored value and avoids this.
@@ -296,13 +298,13 @@ curl -X DELETE "http://localhost:3000/api/v1/credentials/550e8400-e29b-41d4-a716
 **Error Responses**:
 - `404 Not Found` - Credential does not exist
 - `409 Conflict` - Credential is in use by discovery definitions, connector configurations or credential sets. The message carries counts of same-organization references only; a reference from another organization (or with no organization) is not counted but still refuses the delete, with a count-free message (`Cannot delete credential: it is currently in use`)
-- `401 Unauthorized` - Missing or invalid JWT token
+- `401 Unauthorized` - Missing or invalid credential (see [Refusals common to every credential and credential-set route](#refusals-common-to-every-credential-and-credential-set-route))
 - `403 Forbidden` (`code: c4_principal_admin_required`) - Non-admin deleting a credential tagged `happylab-c4`
 - `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 
 ### The `happylab-c4` tag
 
-The organization's `bearer` credential tagged `happylab-c4` is its HappyLab C4 sync principal. Only org admins (role `admin`) may create a credential with this tag, add it on update, edit or rotate a credential that carries it, remove it or delete that credential. Other roles get `403` with `{"success": false, "error": "Forbidden", "code": "c4_principal_admin_required"}`; a missing or foreign credential is still `404`. Other tags (including case variants) are unaffected.
+The organization's `bearer` credential tagged `happylab-c4` is its HappyLab C4 sync principal. Only org admins (role `admin`) may create a credential with this tag, add it on update, edit or rotate a credential that carries it, remove it or delete that credential. Other roles get `403` with `{"success": false, "error": "Forbidden", "code": "c4_principal_admin_required", "message": "Only organization admins may manage the happylab-c4 credential tag"}`. The body names the rule only and echoes no input; a missing or foreign credential is still `404`. Other tags (including case variants) are unaffected.
 
 ---
 
@@ -368,7 +370,7 @@ Find the best matching credential for a given context using affinity scoring.
 **Error Responses**:
 - `404 Not Found` - No credential of the caller passes the protocol/scope filters, or every one that does fails to decrypt or decode (each such candidate is skipped; the server log names its error class only)
 - `400 Bad Request` - Invalid context data
-- `401 Unauthorized` - Missing or invalid JWT token
+- `401 Unauthorized` - Missing or invalid credential (see [Refusals common to every credential and credential-set route](#refusals-common-to-every-credential-and-credential-set-route))
 - `403 Forbidden` - Caller lacks the `write` permission: `{"success": false, "error": "Forbidden", "message": "Permission 'write' required", "_error": "Forbidden", "_message": "Permission 'write' required", "code": "PERMISSION_REQUIRED", "required": {"permission": "write"}, "role": "viewer"}` (`role` is the caller's own role; read `code`, show `message`)
 - `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 
@@ -476,7 +478,7 @@ Rank all credentials by match score for a given context.
 
 **Error Responses**:
 - `400 Bad Request` - Invalid context data
-- `401 Unauthorized` - Missing or invalid JWT token
+- `401 Unauthorized` - Missing or invalid credential (see [Refusals common to every credential and credential-set route](#refusals-common-to-every-credential-and-credential-set-route))
 - `403 Forbidden` - Caller lacks the `write` permission: the same `PERMISSION_REQUIRED` body as [Match Credential](#match-credential)
 - `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 
@@ -759,7 +761,7 @@ Select credentials from a set using the configured strategy and context.
 
 **Error Responses**:
 - `400 Bad Request` - Invalid `context` or `strategy`
-- `401 Unauthorized` - Missing or invalid JWT token
+- `401 Unauthorized` - Missing or invalid credential (see [Refusals common to every credential and credential-set route](#refusals-common-to-every-credential-and-credential-set-route))
 - `403 Forbidden` - Caller lacks the `write` permission: the same `PERMISSION_REQUIRED` body as [Match Credential](#match-credential)
 - `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 - `404 Not Found` - The set does not exist

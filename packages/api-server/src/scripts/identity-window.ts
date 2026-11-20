@@ -672,6 +672,20 @@ function assertFlagValues(argv: readonly string[]): void {
   }
 }
 
+/** The secret-naming keywords, shared by the key pass and by the scheme pass's key=value guard (one list, no copy). */
+const SECRET_KEYWORDS = 'password|passwd|pwd|token|secret|api[_-]?key';
+/** A key name (a run of name characters that contains a keyword) and its `=` or `:`, from the run start; lookahead is one lazy scan of the run. */
+const SECRET_KEY_NAME = `(?=[\\w.-]*?(?:${SECRET_KEYWORDS}))[\\w.-]+["']?\\s*[=:]\\s*`;
+/** URL userinfo: group 1 the scheme (kept), group 2 the userinfo with the `@` it stops at. */
+const SCHEME_USERINFO = /((?<![a-z0-9+.-])[\d+.-]*[a-z][a-z0-9+.-]*:\/\/)([^\s/]*@|[^\s/?#@:[]*:(?!\d+(?:[/?#\s]|$))(?:(?!\/\/)[^\s@])*@)/gi;
+/** The userinfo of a scheme token that is itself a secret-named key=value (`x_a://api_key=abc@def`). */
+const SECRET_KEY_HEAD = new RegExp(`^${SECRET_KEY_NAME}`, 'i');
+/** The key pass: group 1 the key and its `=`/`:`, group 2 the value (quoted values included). */
+const SECRET_KEY_VALUE = new RegExp(`((?<![\\w.-])${SECRET_KEY_NAME})("[^"]*"|'[^']*'|[^\\s,;&]+)`, 'gi');
+/** A quote that ends a quoted value: followed by whitespace, `,`, `;`, `&` or the end. */
+const VALUE_END_DOUBLE_QUOTE = /"(?=[\s,;&]|$)/g;
+const VALUE_END_SINGLE_QUOTE = /'(?=[\s,;&]|$)/g;
+
 const REDACTED = '***';
 /**
  * HAP-2136: credential-like content of an error text, replaced before it is printed. Best effort for driver and network
@@ -696,16 +710,64 @@ const REDACTED = '***';
  * follows), so a scheme glued after them (`.postgres://`, `-redis://`, `2x-postgres://`) or after an underscore
  * (`DB_URL.postgres://`, `_postgres://`, `x_postgres://`) is still found; it is the whole run that is printed back, only
  * its userinfo is replaced.
+ * A scheme token whose "userinfo" (the text between `://` and the `@` the pass stops at) itself starts with a secret-named
+ * key and `=` or `:` (`x_a://api_key=abc@def`, `.a://password=p@ss`, `postgres://password=p@ss`, `x_a://token="a@b c"`,
+ * `postgres://app_secret:pa;ss@db`) is a key=value as much as userinfo: the scheme pass prints the scheme and the key
+ * head (`api_key=`) and masks the rest of the userinfo through the `@` it stopped at, whatever `,`, `;`, `&` or quote it
+ * holds, so no byte that was masked as userinfo is printed. A value that opened with a quote not closed before the `@`
+ * is masked through its closing quote after the `@` (see redactSchemeUserinfo); the quote itself is never printed, so it
+ * cannot pair with a later quote of another key. The key pass then masks the text after the `@` as the key's value (to
+ * whitespace, `,`, `;` or `&`), so the host is not printed either (`x_a://api_key=***`, `postgres://app_secret:***`).
+ * This over-redacts the host of `https://token:pw@host` (a user named like a key), which is the ambiguous case.
  * The passes run in this order on purpose: the Basic value is replaced before the key pass, because a key pass first
  * would consume `Authorization:` as the value of an earlier key (`password: Authorization: Basic abc`) and leave `abc`.
  * Not covered: `Authorization=Basic%20...` (URL-encoded).
  */
 export function redactSecrets(text: string): string {
-  return text
-    .replace(/((?<![a-z0-9+.-])[\d+.-]*[a-z][a-z0-9+.-]*:\/\/)(?:[^\s/]*@|[^\s/?#@:[]*:(?!\d+(?:[/?#\s]|$))(?:(?!\/\/)[^\s@])*@)/gi, `$1${REDACTED}@`)
+  return redactSchemeUserinfo(text)
     .replace(/\bBearer\s+[^\s,;]+/gi, `Bearer ${REDACTED}`)
     .replace(/(\bauthorization["']?\s*[=:]\s*["']?basic\s+)[^\s,;"']+/gi, `$1${REDACTED}`)
-    .replace(/((?<![\w.-])(?=[\w.-]*?(?:password|passwd|pwd|token|secret|api[_-]?key))[\w.-]+["']?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)/gi, `$1${REDACTED}`);
+    .replace(SECRET_KEY_VALUE, `$1${REDACTED}`);
+}
+/**
+ * The scheme pass of redactSecrets. A plain userinfo becomes `***@`. A key=value userinfo keeps its scheme and key head and
+ * is masked through the `@` as one `***`; when its value opened with a quote that does not close before that `@`
+ * (`token="a@b c"`), the value goes on after the `@`, so the pass also consumes up to the first same-kind quote that
+ * ends a value (followed by whitespace, `,`, `;`, `&` or the end). The quote is never written back: the key pass must not
+ * see a quote it could close on a later one (`pwd:"Aa1@db token="Q7k"`). With no such closing quote, nothing more is
+ * consumed here and the key pass masks the host. Linear: each closing-quote search starts after the last consumed text, and
+ * a search that finds nothing is not repeated (no later start can find one either).
+ */
+function redactSchemeUserinfo(text: string): string {
+  const noClosing = new Set<string>();
+  let out = '';
+  let pos = 0;
+  SCHEME_USERINFO.lastIndex = 0;
+  for (let m = SCHEME_USERINFO.exec(text); m !== null; m = SCHEME_USERINFO.exec(text)) {
+    const prefix = m[1]!;
+    const userinfo = m[2]!;
+    out += text.slice(pos, m.index);
+    pos = m.index + m[0].length;
+    const head = SECRET_KEY_HEAD.exec(userinfo)?.[0];
+    if (head === undefined) {
+      out += `${prefix}${REDACTED}@`;
+    } else {
+      out += `${prefix}${head}${REDACTED}`;
+      const quote = userinfo.charAt(head.length);
+      if ((quote === '"' || quote === "'") && !noClosing.has(quote) && userinfo.indexOf(quote, head.length + 1) === -1) {
+        const closing = quote === '"' ? VALUE_END_DOUBLE_QUOTE : VALUE_END_SINGLE_QUOTE;
+        closing.lastIndex = pos;
+        const found = closing.exec(text);
+        if (found === null) {
+          noClosing.add(quote);
+        } else {
+          pos = found.index + 1;
+        }
+      }
+    }
+    SCHEME_USERINFO.lastIndex = pos;
+  }
+  return out + text.slice(pos);
 }
 /** HAP-2131: a bare flag (`--grant`, `--revoke`), matched only where it is a flag: the token after a value flag is that flag's value. */
 function hasFlag(argv: readonly string[], flag: string): boolean {

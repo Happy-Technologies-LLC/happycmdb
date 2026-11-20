@@ -32,12 +32,17 @@ export interface DbRoleRow {
    * for reads and writes on every table, which voids the login's least-privilege grants. Neither bypasses RLS.
    *
    * DELIBERATELY not flagged (none breaks the tenant boundary; flagging them is advisory noise that trains
-   * operators to ignore the error line): pg_monitor, pg_read_all_stats and pg_read_all_settings read other
-   * sessions' query text (pg_stat_activity, pg_stat_statements) and every setting; pg_signal_backend can cancel or
-   * terminate other non-superuser backends (a denial of service); pg_create_subscription (16+), with CREATE on the
-   * database, makes outbound connections from the database host; pg_maintain (17+) runs LOCK, VACUUM, REINDEX and
-   * REFRESH on every relation (a denial of service); pg_checkpoint (15+) runs CHECKPOINT; pg_use_reserved_connections
-   * (16+) uses the connection slots reserved by reserved_connections.
+   * operators to ignore the error line). The guard does not check them: they are advisory residuals an operator
+   * should review. pg_monitor and pg_read_all_stats read other sessions' query text (pg_stat_activity,
+   * pg_stat_statements); pg_read_all_settings (also part of pg_monitor) shows settings that are otherwise
+   * superuser-only: depending on the server version and the deployment these can include command lines
+   * (ssl_passphrase_command, and archive_command and restore_command where the server hides them from other roles)
+   * and connection strings (primary_conninfo) that can carry credentials; pg_signal_backend can cancel or terminate
+   * other non-superuser backends (a denial of service); pg_create_subscription (16+), with CREATE on the database,
+   * lets the member create a subscription that connects from the database server to a host of its choosing: a
+   * server-side outbound-connection (SSRF-style) primitive from the database host; pg_maintain (17+) runs LOCK,
+   * VACUUM, REINDEX and REFRESH on every relation (a denial of service); pg_checkpoint (15+) runs CHECKPOINT;
+   * pg_use_reserved_connections (16+) uses the connection slots reserved by reserved_connections.
    */
   dangerous_builtin_role_member: boolean;
   /**
@@ -52,8 +57,9 @@ export interface DbRoleRow {
    * SQL slot functions (pg_create_logical_replication_slot, pg_logical_slot_get_changes), which need
    * wal_level=logical and return only changes made after the slot exists; only a login that holds REPLICATION
    * itself gets a base backup or the replication protocol (subject to the pg_hba.conf `replication` entries).
-   * On 16+ a membership granted WITH SET FALSE, INHERIT FALSE confers nothing usable but is still flagged (a
-   * deliberate conservative false positive that fails safe).
+   * On 16+ a membership granted WITH SET FALSE, INHERIT FALSE confers no access by itself, but a holder of ADMIN
+   * OPTION on that role can re-grant it to itself WITH SET TRUE and then SET ROLE to it (observed on PostgreSQL
+   * 18.3): the flag stays raised, a deliberate conservative false positive without ADMIN OPTION that fails safe.
    */
   replication_escalation: boolean;
 }
@@ -117,7 +123,9 @@ export function bypassesRowSecurity(row: GuardFlags): boolean {
  * - replication_escalation: REPLICATION is not inherited either, but a member can SET ROLE to the holder, so any
  *   REPLICATION role that current_user or session_user is a member of is flagged (a superuser has the attribute
  *   too, already flagged). On PostgreSQL 16+ a REPLICATION membership granted WITH SET FALSE, INHERIT FALSE confers
- *   nothing usable but is still flagged: a deliberate conservative false positive that fails safe.
+ *   no access by itself, but a holder of ADMIN OPTION on that role can re-grant it to itself WITH SET TRUE and then
+ *   SET ROLE to it (observed on PostgreSQL 18.3): the flag stays raised, a deliberate conservative false positive
+ *   without ADMIN OPTION that fails safe.
  */
 function probeSql(serverVersionNum: number): string {
   const hasSystemUser = serverVersionNum >= SYSTEM_USER_MIN_VERSION;

@@ -347,7 +347,8 @@ describe('probeDbRole against PostgreSQL', () => {
         pg_stat_scan_tables, pg_signal_backend, pg_create_subscription, pg_maintain, pg_checkpoint, pg_use_reserved_connections;
       CREATE ROLE g_shadow_parent NOLOGIN NOSUPERUSER NOBYPASSRLS REPLICATION;
       CREATE ROLE g_shadow LOGIN NOSUPERUSER NOBYPASSRLS IN ROLE g_shadow_parent, pg_read_all_data;
-      GRANT CREATE ON SCHEMA public TO g_shadow;`);
+      CREATE ROLE g_shadow_bypass LOGIN NOSUPERUSER BYPASSRLS;
+      GRANT CREATE ON SCHEMA public TO g_shadow, g_shadow_bypass;`);
   }, 30000);
   afterAll(() => host.kill());
 
@@ -481,6 +482,80 @@ describe('probeDbRole against PostgreSQL', () => {
         expect(escalation(row)).toEqual([false, true, false, true]);
       } finally {
         await exec('RESET SESSION AUTHORIZATION; RESET search_path; DROP VIEW public.pg_roles; DROP FUNCTION public.pg_has_role(name, oid, text)');
+      }
+    });
+
+    // bool_or is resolved by name too. The shadow aggregate answers false whatever it is given. With it in the way the
+    // probe's row filter (HAVING bool_or(rolname = current_user)) drops the row, so an unpinned probe rejects with
+    // "role row missing" instead of reporting rolbypassrls and session_user_privileged: the pin is what keeps the real
+    // aggregate.
+    test('a public.bool_or(boolean) aggregate that always answers false does not hide rolbypassrls or session_user_privileged', async () => {
+      try {
+        await exec(`SET SESSION AUTHORIZATION g_shadow_bypass;
+          CREATE FUNCTION public.shadow_bool_or_step(boolean, boolean) RETURNS boolean LANGUAGE sql AS 'SELECT false';
+          CREATE AGGREGATE public.bool_or(boolean) (SFUNC = public.shadow_bool_or_step, STYPE = boolean, INITCOND = 'f');
+          RESET SESSION AUTHORIZATION`);
+        const pool = poolFor('g_shadow_bypass', undefined, { sessionSql: 'SET search_path = public, pg_catalog' });
+        // Control: in that session the shadow answers for the probe's name, the catalog aggregate does not.
+        const client = await pool.connect();
+        const flag = "FROM pg_catalog.pg_roles WHERE rolname = 'g_shadow_bypass'";
+        expect((await client.query(`SELECT bool_or(rolbypassrls) AS v ${flag}`)).rows).toEqual([{ v: false }]);
+        expect((await client.query(`SELECT pg_catalog.bool_or(rolbypassrls) AS v ${flag}`)).rows).toEqual([{ v: true }]);
+
+        const row = await probeDbRole(pool);
+        expect(pick(row)).toEqual(['g_shadow_bypass', 'g_shadow_bypass', false, true, true, false]);
+      } finally {
+        await exec(`RESET SESSION AUTHORIZATION; RESET search_path;
+          DROP AGGREGATE IF EXISTS public.bool_or(boolean); DROP FUNCTION IF EXISTS public.shadow_bool_or_step(boolean, boolean)`);
+      }
+    });
+
+    // system_user exists from PostgreSQL 16 on; the probe only reads substr and strpos there. PGlite reports no
+    // authenticated identity, so system_user is replaced with a literal (see poolFor).
+    const systemUserAvailable = async (): Promise<boolean> => {
+      const [{ server_version_num: version }] = await exec('SHOW server_version_num') as Array<{ server_version_num: string }>;
+      if (Number(version) >= 160000) return true;
+      console.warn(`skipped: server_version_num ${version} has no system_user, so the probe never reads substr or strpos`);
+      return false;
+    };
+
+    test('a public.substr(text, int) that returns the session login does not hide a masked session login', async () => {
+      if (!await systemUserAvailable()) return;
+      try {
+        await exec(`SET SESSION AUTHORIZATION g_shadow;
+          CREATE FUNCTION public.substr(text, int) RETURNS text LANGUAGE sql AS 'SELECT session_user::text';
+          RESET SESSION AUTHORIZATION`);
+        // The authenticated login is g_super, the session login g_shadow: masked.
+        const pool = poolFor('g_shadow', undefined,
+          { sessionSql: 'SET search_path = public, pg_catalog', systemUser: 'scram-sha-256:g_super' });
+        const client = await pool.connect();
+        expect((await client.query("SELECT substr('scram-sha-256:g_super'::text, 15) AS v")).rows).toEqual([{ v: 'g_shadow' }]);
+        expect((await client.query("SELECT pg_catalog.substr('scram-sha-256:g_super'::text, 15) AS v")).rows).toEqual([{ v: 'g_super' }]);
+
+        expect((await probeDbRole(pool)).session_authorization_masked).toBe(true);
+      } finally {
+        await exec('RESET SESSION AUTHORIZATION; RESET search_path; DROP FUNCTION IF EXISTS public.substr(text, int)');
+      }
+    });
+
+    // The authenticated identity 'a:b:g_shadow' (a method prefix and a colon inside the identity) is not the session login
+    // g_shadow: masked. Cutting after the first colon leaves 'b:g_shadow'; a shadow strpos that points at the last colon
+    // makes the remainder equal the session login.
+    test('a public.strpos(text, text) that points past the identity prefix does not hide a masked session login', async () => {
+      if (!await systemUserAvailable()) return;
+      try {
+        await exec(`SET SESSION AUTHORIZATION g_shadow;
+          CREATE FUNCTION public.strpos(text, text) RETURNS int LANGUAGE sql AS 'SELECT length($1) - length(session_user::text)';
+          RESET SESSION AUTHORIZATION`);
+        const pool = poolFor('g_shadow', undefined,
+          { sessionSql: 'SET search_path = public, pg_catalog', systemUser: 'a:b:g_shadow' });
+        const client = await pool.connect();
+        expect((await client.query("SELECT strpos('a:b:g_shadow'::text, ':') AS v")).rows).toEqual([{ v: 4 }]);
+        expect((await client.query("SELECT pg_catalog.strpos('a:b:g_shadow'::text, ':') AS v")).rows).toEqual([{ v: 2 }]);
+
+        expect((await probeDbRole(pool)).session_authorization_masked).toBe(true);
+      } finally {
+        await exec('RESET SESSION AUTHORIZATION; RESET search_path; DROP FUNCTION IF EXISTS public.strpos(text, text)');
       }
     });
 

@@ -9,6 +9,8 @@ import * as YAML from 'yamljs';
 export type Schema = {
   $ref?: string; type?: string; nullable?: boolean; required?: string[]; additionalProperties?: boolean;
   properties?: Record<string, Schema>; items?: Schema; enum?: unknown[]; anyOf?: Schema[]; oneOf?: Schema[];
+  // Declared for callers that read them; `violations` does not check these.
+  pattern?: string; example?: unknown; minimum?: number; maximum?: number; minLength?: number; maxLength?: number;
 };
 export type Media = { schema?: Schema; example?: unknown; examples?: Record<string, { value: unknown }> };
 export type Response = { $ref?: string; content?: { 'application/json': Media } };
@@ -24,6 +26,9 @@ export function deref<T extends { $ref?: string }>(node: T): T {
   return deref(node.$ref.replace('#/', '').split('/').reduce<any>((at, key) => at[key], spec));
 }
 
+/** Own-key test: `in` would also find inherited names (`constructor`, `toString`), which no JSON body or schema declares. */
+const has = (o: object, key: string): boolean => Object.prototype.hasOwnProperty.call(o, key);
+
 /**
  * A small JSON-schema check, enough for the keywords the 403 schemas use: $ref, type, nullable, enum, required, properties,
  * additionalProperties: false, items, anyOf and oneOf (exactly one branch). ajv is only a transitive dependency of the lint stack
@@ -38,9 +43,9 @@ export function violations(schema: Schema, value: unknown, at = '$'): string[] {
   if (node.enum && !node.enum.includes(value)) found.push(`${at}: ${JSON.stringify(value)} is not in the enum`);
   if (kind === 'object') {
     const object = value as Record<string, unknown>;
-    for (const key of node.required ?? []) if (!(key in object)) found.push(`${at}: missing ${key}`);
-    for (const [key, child] of Object.entries(node.properties ?? {})) if (key in object) found.push(...violations(child, object[key], `${at}.${key}`));
-    if (node.additionalProperties === false) for (const key of Object.keys(object)) if (!(key in (node.properties ?? {}))) found.push(`${at}: unexpected ${key}`);
+    for (const key of node.required ?? []) if (!has(object, key)) found.push(`${at}: missing ${key}`);
+    for (const [key, child] of Object.entries(node.properties ?? {})) if (has(object, key)) found.push(...violations(child, object[key], `${at}.${key}`));
+    if (node.additionalProperties === false) for (const key of Object.keys(object)) if (!has(node.properties ?? {}, key)) found.push(`${at}: unexpected ${key}`);
   }
   if (kind === 'array' && node.items) (value as unknown[]).forEach((item, index) => found.push(...violations(node.items!, item, `${at}[${index}]`)));
   if (node.anyOf && !node.anyOf.some(branch => violations(branch, value, at).length === 0)) found.push(`${at}: matches no anyOf branch`);

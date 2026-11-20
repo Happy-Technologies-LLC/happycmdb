@@ -14,6 +14,20 @@ All API endpoints require authentication using a JWT bearer token:
 Authorization: Bearer YOUR_JWT_TOKEN
 ```
 
+### Refusals common to every credential and credential-set route
+
+Every route under `/credentials` and `/credential-sets` runs these checks first, in this order. The first one that fails answers; none of them looks anything up, so they say nothing about whether a credential or set exists (a credential or set of another organization stays `404`, as documented per endpoint).
+
+1. `401 Unauthorized` - Missing or invalid token.
+2. `403 Forbidden` (`code: ORGANIZATION_REQUIRED`) - The token has no organization claim:
+   `{"success": false, "error": "Forbidden", "message": "Organization claim required", "_error": "Forbidden", "_message": "Organization claim required", "code": "ORGANIZATION_REQUIRED"}`
+3. `403 Forbidden` - The verified identity has no user id: `{"success": false, "error": "Forbidden", "message": "Verified credential owner required"}`
+4. `403 Forbidden` - The caller has the `agent` role (a service agent, not a human user): `{"success": false, "error": "Forbidden", "message": "Credential management requires a human user"}`
+
+The bodies in 3 and 4 carry no `code` and no `_error`/`_message` mirror. A client that reads `code` to pick a message will mis-render them: show `message`.
+
+The OAuth routes `POST /credentials/:id/oauth/authorize` and `GET /credentials/oauth/callback` are not an integration surface. They answer every authenticated caller with `403 {"success": false, "error": "Forbidden", "message": "Credential OAuth is unavailable"}` before the checks above and without looking up an id.
+
 ## Base URL
 
 ```
@@ -114,6 +128,7 @@ Create a new credential with affinity matching rules.
 - `409 Conflict` - Credential name already exists
 - `401 Unauthorized` - Missing or invalid JWT token
 - `403 Forbidden` (`code: c4_principal_admin_required`) - Non-admin sent the `happylab-c4` tag (see [The `happylab-c4` tag](#the-happylab-c4-tag))
+- `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 
 ---
 
@@ -210,6 +225,7 @@ curl "http://localhost:3000/api/v1/credentials/550e8400-e29b-41d4-a716-446655440
 **Error Responses**:
 - `404 Not Found` - Credential does not exist
 - `401 Unauthorized` - Missing or invalid JWT token
+- `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 - `500 Internal Server Error` - The stored credential cannot be decrypted or decoded: `{"success": false, "error": "Failed to get credential", "message": "Internal error"}`. The server log names the error class only, never its message.
 
 ---
@@ -258,6 +274,7 @@ Update credential properties (name, affinity, tags, or credentials).
 - `409 Conflict` - Another of your credentials already has the new name
 - `401 Unauthorized` - Missing or invalid JWT token
 - `403 Forbidden` (`code: c4_principal_admin_required`) - Non-admin added the `happylab-c4` tag or edited a credential that carries it
+- `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 - `500 Internal Server Error` - The updated credential cannot be decrypted or decoded (a stored value that is not valid JSON, or a damaged envelope): `{"success": false, "error": "Failed to update credential", "message": "Internal error"}`. The update is rolled back, so nothing is changed (HAP-1814). Sending a new `credentials` object replaces the stored value and avoids this.
 
 ---
@@ -281,6 +298,7 @@ curl -X DELETE "http://localhost:3000/api/v1/credentials/550e8400-e29b-41d4-a716
 - `409 Conflict` - Credential is in use by discovery definitions, connector configurations or credential sets. The message carries counts of same-organization references only; a reference from another organization (or with no organization) is not counted but still refuses the delete, with a count-free message (`Cannot delete credential: it is currently in use`)
 - `401 Unauthorized` - Missing or invalid JWT token
 - `403 Forbidden` (`code: c4_principal_admin_required`) - Non-admin deleting a credential tagged `happylab-c4`
+- `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 
 ### The `happylab-c4` tag
 
@@ -352,6 +370,7 @@ Find the best matching credential for a given context using affinity scoring.
 - `400 Bad Request` - Invalid context data
 - `401 Unauthorized` - Missing or invalid JWT token
 - `403 Forbidden` - Caller lacks the `write` permission: `{"success": false, "error": "Forbidden", "message": "Permission 'write' required", "_error": "Forbidden", "_message": "Permission 'write' required", "code": "PERMISSION_REQUIRED", "required": {"permission": "write"}, "role": "viewer"}` (`role` is the caller's own role; read `code`, show `message`)
+- `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 
 ---
 
@@ -459,6 +478,7 @@ Rank all credentials by match score for a given context.
 - `400 Bad Request` - Invalid context data
 - `401 Unauthorized` - Missing or invalid JWT token
 - `403 Forbidden` - Caller lacks the `write` permission: the same `PERMISSION_REQUIRED` body as [Match Credential](#match-credential)
+- `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 
 ---
 
@@ -562,6 +582,7 @@ Credential sets allow trying multiple credentials in sequence with configurable 
 **Error Responses**:
 - `400 Bad Request` - Invalid body, or one or more `credential_ids` are not your credentials
 - `409 Conflict` - You already have a credential set with this name
+- `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 
 ---
 
@@ -626,6 +647,7 @@ Credential sets allow trying multiple credentials in sequence with configurable 
 
 **Error Responses**:
 - `404 Not Found` - The set does not exist
+- `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 
 ---
 
@@ -673,6 +695,7 @@ Credential sets allow trying multiple credentials in sequence with configurable 
 - `400 Bad Request` - Invalid body, or one or more `credential_ids` are not your credentials
 - `404 Not Found` - The set does not exist
 - `409 Conflict` - You already have a credential set with the new name
+- `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 
 ---
 
@@ -685,6 +708,7 @@ Credential sets allow trying multiple credentials in sequence with configurable 
 **Error Responses**:
 - `404 Not Found` - The set does not exist
 - `409 Conflict` - The set is used by a discovery definition. The message carries the count of same-organization references only; a reference from another organization (or with no organization) is not counted but still refuses the delete, with a count-free message (`Cannot delete credential set: it is currently in use`)
+- `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 
 ---
 
@@ -737,6 +761,7 @@ Select credentials from a set using the configured strategy and context.
 - `400 Bad Request` - Invalid `context` or `strategy`
 - `401 Unauthorized` - Missing or invalid JWT token
 - `403 Forbidden` - Caller lacks the `write` permission: the same `PERMISSION_REQUIRED` body as [Match Credential](#match-credential)
+- `403 Forbidden` - Also the refusals listed under [Authentication](#authentication)
 - `404 Not Found` - The set does not exist
 - `500 Internal Server Error` - A member credential cannot be decrypted or decoded: `{"success": false, "error": "Failed to select credentials", "message": "Internal error"}`. The whole select fails (no partial list); the server log names the error class only, never its message (HAP-1814).
 

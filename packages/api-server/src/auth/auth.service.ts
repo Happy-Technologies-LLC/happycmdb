@@ -247,8 +247,8 @@ export class ApiKeyNotFoundError extends Error {
  * password refused outside development; `ambiguous_identity` is an
  * identifier matching more than one :User node. `api_keys_disabled` is an API
  * key header with no Bearer token while `auth.apiKeys.enabled` is false (logged
- * with credentialType `api-key`, never the key; also logged by the service guard
- * in `verifyApiKey`). Callers send all of these the same response as any other
+ * with credentialType `api-key`, never the key; also the reason the
+ * `verifyApiKey` guard throws). Callers send all of these the same response as any other
  * failure.
  */
 export type AuthFailureReason =

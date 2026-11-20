@@ -709,7 +709,13 @@ describe('ImpactPredictionEngine', () => {
           const clause = /\(ci:CI \{id: \$ciId\}\)\s*WHERE\s+([\s\S]*?)\s+RETURN\s+ci\.id\s+as\s+id\b/.exec(roots[0].cypher)?.[1];
           expect(clause).toBeDefined();
           expect(clause!.trim().replace(/\s+/g, ' ')).toBe('ci.organization_id = $organizationId');
-          expect(clause).not.toMatch(/\b(?:OR|AND|XOR|WHERE)\b/i);
+          // The whole statement, anchored at both ends: also rejects a trailing `UNION MATCH (ci:CI {id: $ciId}) RETURN ...`
+          // (a second read of the root CI with no organization predicate), a second MATCH, WITH, OPTIONAL MATCH and `;`.
+          // A legitimate edit of the RETURN column list in the engine fails here by design: the predicate has no real-Neo4j coverage.
+          const statement = roots[0].cypher.trim().replace(/\s+/g, ' ');
+          expect(statement).toMatch(
+            /^MATCH \(ci:CI \{id: \$ciId\}\) WHERE ci\.organization_id = \$organizationId RETURN ci\.id as id, ci\.name as name, ci\.ci_type as ci_type$/
+          );
           expect(roots[0].params).toMatchObject({ ciId: mockCIs.database.id, organizationId: organization });
         }
       });

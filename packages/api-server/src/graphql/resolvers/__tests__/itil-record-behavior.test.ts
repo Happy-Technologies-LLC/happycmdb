@@ -49,7 +49,7 @@ jest.mock('../../../auth/auth-bootstrap', () => ({
 }));
 
 import { createGraphQLServer } from '../../server';
-import { itilNestedRecords } from '../itil-record.resolvers';
+import { itilNestedRecords, itilRecordQueries } from '../itil-record.resolvers';
 import type { GraphQLContext } from '../index';
 
 const migrationDir = join(__dirname, '../../../../../database/src/postgres/migrations');
@@ -203,4 +203,87 @@ it('HAP-922: updateChange persists implementedBy and actualDuration; change and 
   }
   expect(rejected).toEqual(['BAD_USER_INPUT', 'BAD_USER_INPUT', 'BAD_USER_INPUT']);
   expect(await sql('SELECT * FROM itil_changes ORDER BY id')).toEqual(rows);
+});
+
+const seedIncident = (id: string, number: string, priority = 3, ci = 'ci-a', org = A) => sql(
+  `INSERT INTO itil_incidents(id, incident_number, title, impact, urgency, priority,
+    affected_ci_id, reported_by, organization_id) VALUES ($1, $2, 'paged incident',
+      'medium', 'medium', $3, $4, 'alice', $5)`, [id, number, priority, ci, org]);
+const INC = ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  'cccccccc-cccc-4ccc-8ccc-cccccccccccc'];
+const ctxA = { user: { _organizationId: A } } as GraphQLContext;
+
+describe('GraphQL paging and priority arguments are bounded like the REST Joi schemas', () => {
+  const badPages = ['page: 0', 'page: -3', 'limit: 0', 'limit: -1'];
+  const expectRefusal = (body: { data: unknown; errors?: { extensions?: { code?: string } }[] }) => {
+    expect(body.errors).toHaveLength(1);
+    expect(body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
+    expect(body.data).toBeNull();
+  };
+
+  it.each([...badPages, 'priority: 0', 'priority: 6'])('incidents(%s) is BAD_USER_INPUT', async (arg) => {
+    await seedIncident(INC[0], 'INC-1');
+    expectRefusal((await graphql(`{ incidents(${arg}) { total pages } }`)).body);
+  });
+
+  it.each(badPages)('changes(%s) is BAD_USER_INPUT', async (arg) => {
+    await seedChange(INC[0], 'draft');
+    expectRefusal((await graphql(`{ changes(${arg}) { total pages } }`)).body);
+  });
+
+  // The request-admission layer already answers HTTP limit > 100 (GRAPHQL_REQUEST_LIMIT_EXCEEDED), so the
+  // REST-mirrored 1..1000 bound is only reachable, and only asserted, at the resolver.
+  it.each(['incidents', 'changes'] as const)('%s resolver refuses limit 1001 and accepts limit 1000', async (name) => {
+    await seedIncident(INC[0], 'INC-1');
+    await seedChange(INC[0], 'draft');
+    await expect(itilRecordQueries[name](null, { limit: 1001 }, ctxA)).rejects
+      .toMatchObject({ extensions: { code: 'BAD_USER_INPUT' } });
+    const page = await itilRecordQueries[name](null, { page: 1, limit: 1000 }, ctxA);
+    expect(page).toMatchObject({ total: 1, page: 1, limit: 1000, pages: 1 });
+    expect(page.items).toHaveLength(1);
+  });
+
+  it('keeps valid paging, defaults and the priority filter working', async () => {
+    await seedIncident(INC[0], 'INC-1', 3);
+    await seedIncident(INC[1], 'INC-2', 1);
+    await seedIncident(INC[2], 'INC-B', 3, 'ci-b', B);
+    await seedChange(INC[0], 'draft');
+    await seedChange(INC[1], 'draft');
+    const page = (await graphql('{ incidents(page: 1, limit: 100) { total page limit pages items { id } } }')).body;
+    expect(page.errors).toBeUndefined();
+    expect(page.data.incidents).toMatchObject({ total: 2, page: 1, limit: 100, pages: 1 });
+    expect(page.data.incidents.items.map((row: { id: string }) => row.id).sort()).toEqual([INC[0], INC[1]]);
+    const defaults = (await graphql('{ incidents { total page limit pages } changes { total page limit pages } }')).body;
+    expect(defaults.data).toEqual({ incidents: { total: 2, page: 1, limit: 50, pages: 1 },
+      changes: { total: 2, page: 1, limit: 50, pages: 1 } });
+    const second = (await graphql('{ changes(page: 2, limit: 1) { total page limit pages items { id } } }')).body;
+    expect(second.errors).toBeUndefined();
+    expect(second.data.changes).toMatchObject({ total: 2, page: 2, limit: 1, pages: 2 });
+    expect(second.data.changes.items).toHaveLength(1);
+    expect(Number.isInteger(second.data.changes.pages)).toBe(true);
+    const filtered = (await graphql('{ incidents(priority: 3) { total items { id priority } } }')).body;
+    expect(filtered.data.incidents).toEqual({ total: 1, items: [{ id: INC[0], priority: 3 }] });
+    const orgB = (await graphql('{ incidents(page: 1, limit: 10) { total items { id } } }', 'B')).body;
+    expect(orgB.data.incidents).toEqual({ total: 1, items: [{ id: INC[2] }] });
+  });
+
+  it('nested CI incidents clamp the limit to 1..100 like nested changes', async () => {
+    await seedIncident(INC[0], 'INC-1');
+    await seedIncident(INC[1], 'INC-2');
+    expect(await itilNestedRecords.incidents('ci-a', { limit: -5 }, ctxA)).toHaveLength(1);
+    expect(await itilNestedRecords.incidents('ci-a', { limit: 500 }, ctxA)).toHaveLength(2);
+  });
+
+  it('updateIncident refuses priority outside 1..5 and leaves the row unchanged', async () => {
+    await seedIncident(INC[0], 'INC-1', 3);
+    const update = (priority: number) => graphql(`mutation { updateIncident(id: "${INC[0]}",
+      input: { priority: ${priority} }) { id priority } }`);
+    const before = await sql('SELECT * FROM itil_incidents ORDER BY id');
+    for (const bad of [9, 0, 6, -1]) expectRefusal((await update(bad)).body);
+    expect(await sql('SELECT * FROM itil_incidents ORDER BY id')).toEqual(before);
+    const ok = (await update(2)).body;
+    expect(ok.errors).toBeUndefined();
+    expect(ok.data.updateIncident).toEqual({ id: INC[0], priority: 2 });
+    expect(await sql('SELECT priority FROM itil_incidents WHERE id = $1', [INC[0]])).toEqual([{ priority: 2 }]);
+  });
 });

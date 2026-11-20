@@ -17,7 +17,7 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
  * A URL carrying a username or password is rejected, not stripped: `https://cmdb.example@evil.test/` reads
  * like the CMDB host in the status bar but navigates to `evil.test`, and a manifest with credentials in a
  * URL is wrong data that rewriting would hide. The server-side `sanitizeManifestUrl` in
- * `packages/api-server/src/utils/connector-loader.ts` applies the same rules and must stay in step.
+ * `packages/api-server/src/utils/safe-manifest-url.ts` applies the same rules and must stay in step.
  */
 export function safeExternalUrl(value: unknown): string | null {
   if (typeof value !== 'string') return null;

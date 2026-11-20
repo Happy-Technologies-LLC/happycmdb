@@ -12,6 +12,7 @@ import fs from 'fs';
 import path from 'path';
 import { getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
+import { sanitizeManifestUrl } from './safe-manifest-url';
 
 interface ConnectorMetadata {
   id: string;
@@ -51,43 +52,6 @@ interface ConnectorMetadata {
       default?: any;
     }>;
   };
-}
-
-// Connector manifests are third-party data and `homepage`/`repository` become links in the web UI.
-// This mirrors `safeExternalUrl` in `web-ui/src/lib/safe-external-url.ts`; the two must stay in step.
-// eslint-disable-next-line no-control-regex -- the point is to reject control characters
-const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
-
-/**
- * The normalised `href` when the trimmed value is a string that parses as an absolute http: or https: URL
- * with a host and no userinfo, otherwise `''`.
- *
- * Userinfo is rejected, not stripped: `https://cmdb.example@evil.test/` reads like the CMDB host on hover but
- * navigates to `evil.test`, and a manifest with credentials in a URL is wrong data that rewriting would hide.
- */
-export function sanitizeManifestUrl(value: unknown): string {
-  if (typeof value !== 'string') {
-    return '';
-  }
-  const trimmed = value.trim();
-  // URL parsing drops tabs and newlines inside the string, so reject them up front.
-  if (trimmed === '' || CONTROL_CHARS.test(trimmed)) {
-    return '';
-  }
-  try {
-    const url = new URL(trimmed);
-    if (
-      (url.protocol !== 'http:' && url.protocol !== 'https:') ||
-      url.username !== '' ||
-      url.password !== '' ||
-      url.hostname === ''
-    ) {
-      return '';
-    }
-    return url.href;
-  } catch {
-    return '';
-  }
 }
 
 /**
@@ -245,6 +209,8 @@ export class ConnectorLoader {
           description = EXCLUDED.description,
           latest_version = EXCLUDED.latest_version,
           versions = EXCLUDED.versions,
+          homepage = EXCLUDED.homepage,
+          repository = EXCLUDED.repository,
           fetched_at = NOW()`,
         [
           metadata.type,

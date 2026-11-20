@@ -4689,7 +4689,7 @@ paths:
         '403':
           $ref: '#/components/responses/BusinessServiceWriteForbidden'
         '422':
-          $ref: '#/components/responses/BusinessServiceOwnerRequired'
+          $ref: '#/components/responses/BusinessServiceOwnerRefused'
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
         '503':
@@ -4867,7 +4867,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/BusinessServiceError'
         '422':
-          $ref: '#/components/responses/BusinessServiceOwnerRequired'
+          $ref: '#/components/responses/BusinessServiceOwnerRefused'
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
         '503':
@@ -6359,23 +6359,40 @@ components:
                 code: c4_principal_admin_required
                 message: Only organization admins may manage the happylab-c4 credential tag
 
-    BusinessServiceOwnerRequired:
+    BusinessServiceOwnerRefused:
       description: >-
-        A live or retiring service needs owner_principal_id, the
-        identity-provider subject of its one accountable human owner (D15).
+        A 422 about owner_principal_id. A live or retiring service needs one,
+        the identity-provider subject of its one accountable human owner
+        (D15). A non-null owner_principal_id (POST and PATCH, after the admin
+        gate and body validation) must also be an enabled user of the caller's
+        organization: a user of another organization, an id that does not
+        exist and a disabled user are refused with the one same body, which
+        echoes nothing from the request, so it cannot tell which ids exist in
+        other tenants. Nothing is written and no audit row is appended. An
+        identity-store failure during that check is the write-unavailable 503.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/BusinessServiceError'
-          example:
-            success: false
-            error: Unprocessable Entity
-            message: owner_principal_id is required for a live or retiring service
+            $ref: '#/components/schemas/BusinessServiceOwnerRefusal'
+          examples:
+            ownerRequired:
+              summary: A live or retiring service without an owner
+              value:
+                success: false
+                error: Unprocessable Entity
+                message: owner_principal_id is required for a live or retiring service
+            ownerNotInOrganization:
+              summary: The owner is not an enabled user of the caller's organization
+              value:
+                success: false
+                error: Unprocessable Entity
+                message: owner_principal_id must be an enabled user of your organization
 
     BusinessServiceWriteUnavailable:
       description: >-
         The audit chain is unavailable (AUDIT_CHAIN_KEY unset, or the chain
-        lock timed out); nothing was written.
+        lock timed out), or the identity store could not verify a non-null
+        owner_principal_id; nothing was written.
       content:
         application/json:
           schema:
@@ -7656,6 +7673,26 @@ components:
           enum:
             - owner_principal_id can be set or changed only by an admin
 
+    BusinessServiceOwnerRefusal:
+      type: object
+      description: >-
+        The 422 body of the owner_principal_id refusals (POST and PATCH
+        /business-services): closed, exactly these two fixed messages.
+      required: [success, error, message]
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          enum: [Unprocessable Entity]
+        message:
+          type: string
+          enum:
+            - owner_principal_id is required for a live or retiring service
+            - owner_principal_id must be an enabled user of your organization
+
     PortfolioImportResult:
       type: object
       description: >-
@@ -8469,7 +8506,8 @@ components:
           maxLength: 255
           description: >-
             Identity-provider subject of the one accountable human owner
-            (trimmed). Admin role only (D38); null when omitted.
+            (trimmed). Admin role only (D38); null when omitted. Must be an
+            enabled user of the caller's organization (else 422).
         owner_group:
           type: string
           minLength: 1
@@ -8549,6 +8587,8 @@ components:
           description: >-
             Identity-provider subject of the one accountable human owner
             (trimmed); null clears it. Admin role only (D38), null included.
+            A non-null value must be an enabled user of the caller's
+            organization (else 422).
         owner_group:
           type: string
           nullable: true

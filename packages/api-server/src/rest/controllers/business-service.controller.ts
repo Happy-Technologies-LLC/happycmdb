@@ -15,6 +15,7 @@ import {
 } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { getAuthService } from '../../auth/auth-bootstrap';
 import { errorLogFields } from '../../utils/log-error';
 import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, filterOwnedDimensionRows, writeReferencedCIs } from '../../read-admission';
 import {
@@ -77,6 +78,30 @@ const NOT_FOUND_REFUSAL: WriteRefusal = { status: 404, body: { success: false, e
 const OWNER_REQUIRED = {
   success: false, error: 'Unprocessable Entity', message: 'owner_principal_id is required for a live or retiring service',
 };
+
+/**
+ * One fixed 422 for an owner_principal_id that does not resolve to an enabled user of the caller's organization:
+ * another organization's user, a missing or disabled one, or a stored node without an organization. Nothing from the
+ * request is echoed and every cause is the same bytes, so the response cannot tell which ids exist in other tenants.
+ */
+const OWNER_NOT_IN_ORGANIZATION = {
+  success: false, error: 'Unprocessable Entity', message: 'owner_principal_id must be an enabled user of your organization',
+};
+
+/**
+ * The refusal for `principal`, or null when it is an enabled user whose organization is the caller's (the identity
+ * store's user record, the same one token verification reads). An identity-store failure, an ambiguous user node
+ * included, is logged and refused as the write-unavailable 503: it never accepts an owner it could not verify.
+ */
+async function ownerPrincipalRefusal(organizationId: string, principal: string): Promise<WriteRefusal | null> {
+  try {
+    const user = await getAuthService().findEnabledUser(principal);
+    return user !== null && user._organizationId === organizationId ? null : { status: 422, body: OWNER_NOT_IN_ORGANIZATION };
+  } catch (error) {
+    logger.error('Business service owner lookup failed', { error: errorLogFields(error) });
+    return { status: 503, body: WRITE_UNAVAILABLE };
+  }
+}
 
 /*
  * The C1 service read of one dim_business_services row `s` (GET /:service_id and each item of the list): the child
@@ -283,10 +308,17 @@ export class BusinessServiceController {
         res.status(503).json(WRITE_UNAVAILABLE);
         return;
       }
-      const service_id = `bs-${randomUUID()}`;
-      // organization_id always comes from the token (the route's Joi schema
-      // rejects it in the body).
+      // organization_id always comes from the token (the route's Joi schema rejects it in the body).
       const organizationId = requestOrganizationId(req);
+      if (typeof owner_principal_id === 'string') {
+        // After the route's admin-only gate: a non-admin never reaches this lookup.
+        const refusal = await ownerPrincipalRefusal(organizationId, owner_principal_id);
+        if (refusal !== null) {
+          res.status(refusal.status).json(refusal.body);
+          return;
+        }
+      }
+      const service_id = `bs-${randomUUID()}`;
       const created = await this.pgClient.transaction(async client => {
         const result = await client.query(
           `INSERT INTO dim_business_services (
@@ -351,8 +383,17 @@ export class BusinessServiceController {
         res.status(503).json(WRITE_UNAVAILABLE);
         return;
       }
-
       const organizationId = requestOrganizationId(req);
+      const owner: unknown = updates.owner_principal_id;
+      if (typeof owner === 'string') {
+        // After the route's admin-only gate, before the transaction: no PostgreSQL connection is held on the identity store.
+        const refusal = await ownerPrincipalRefusal(organizationId, owner);
+        if (refusal !== null) {
+          res.status(refusal.status).json(refusal.body);
+          return;
+        }
+      }
+
       const setClause = fields.map((field, index) => `${field} = $${index + 3}`).join(', ');
       const values = [service_id, organizationId, ...fields.map(field => {
         // Stringify JSON fields

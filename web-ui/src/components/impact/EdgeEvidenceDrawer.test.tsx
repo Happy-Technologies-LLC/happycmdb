@@ -109,6 +109,39 @@ describe('EdgeEvidenceDrawer', () => {
     expect(within(row).getByText('future_class')).toBeInTheDocument();
   });
 
+  it.each([
+    ['the empty string', ''],
+    ['null', null],
+    ['a number', 42],
+    ['an object', {}],
+  ])('shows Unknown in the Class column when a malformed body carries %s as the class', async (_label, value) => {
+    request.get.mockResolvedValue(
+      evidencePage([receiptFixture(1, { evidence_class: value as unknown as 'declared' })], { total: 1, offset: 0 })
+    );
+    renderDrawer();
+
+    const dialog = await screen.findByRole('dialog');
+    const row = (await within(dialog).findByText('source-1 1.2.0')).closest('tr')!;
+    expect(within(row).getByText('Unknown')).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/function|\[native code\]|\[object Object\]|undefined|null/);
+  });
+
+  it.each([
+    ['the empty string', ''],
+    ['null', null],
+  ])('lists Unknown in the summary classes when a malformed body carries %s as a class', async (_label, value) => {
+    request.get.mockResolvedValue(evidencePage([], { total: 0, offset: 0 }));
+    renderDrawer(
+      edgeFixture('ci-a', 'ci-b', 'current', { classes: ['declared', value as unknown as 'declared'] })
+    );
+
+    const dialog = await screen.findByRole('dialog');
+    const summary = within(dialog).getByText('Evidence classes').nextElementSibling!;
+    expect(summary.tagName).toBe('DD');
+    expect(summary.textContent).toBe('Declared, Unknown');
+    expect(document.body.textContent).not.toMatch(/undefined|null/);
+  });
+
   it('says so when an edge has no receipts', async () => {
     request.get.mockResolvedValue(evidencePage([], { total: 0, offset: 0 }));
     renderDrawer(edgeFixture('ci-a', 'ci-b', 'unsupported', { classes: [], receipt_count: 0, last_supported_at: null }));

@@ -4,7 +4,7 @@ import type { Request, Response } from 'express';
 import { logger } from '@cmdb/common';
 import type { ConfigSchema } from '@cmdb/common';
 import { AuthMiddleware } from '../auth.middleware';
-import type { AuthService } from '../../auth/auth.service';
+import { AuthFailureError, type AuthService } from '../../auth/auth.service';
 
 const user = { _userId: 'u1', _username: 'owner', _role: 'operator', _type: 'access', _organizationId: '11111111-1111-4111-8111-111111111111' };
 const keyUser = { ...user, _userId: 'key-user' };
@@ -74,6 +74,54 @@ describe('AuthMiddleware with apiKeys.enabled === false', () => {
       expect(result.next).toHaveBeenCalledTimes(1);
     }
     expect(verifyApiKey).not.toHaveBeenCalled();
+  });
+
+  it('authenticate(): a key-only request logs only the api_keys_disabled reason, never the header value', async () => {
+    const secret = 'sk-secret-key-value-1234';
+    const result = await run(disabled().authenticate() as never, { 'x-api-key': secret });
+
+    expect(result.status).toHaveBeenCalledWith(401);
+    expect(result.json.mock.calls[0][0]).toEqual({ _error: 'Unauthorized', _message: 'Authentication failed' });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][1]).toEqual({ credentialType: 'api-key', reason: 'api_keys_disabled' });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
+  });
+
+  it('authenticate(): no credentials at all still logs none/invalid', async () => {
+    await run(disabled().authenticate() as never, {});
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][1]).toEqual({ credentialType: 'none', reason: 'invalid' });
+  });
+
+  it('optionalAuthenticate(): a key-only request logs api_keys_disabled once, sets no user and calls next', async () => {
+    const secret = 'sk-secret-key-value-1234';
+    const result = await run(disabled().optionalAuthenticate() as never, { 'x-api-key': secret });
+
+    expect(result.req.user).toBeUndefined();
+    expect(result.next).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][1]).toEqual({ credentialType: 'api-key', reason: 'api_keys_disabled' });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
+  });
+
+  it('a bearer token plus a key header: the token decides and nothing is logged', async () => {
+    const mw = disabled();
+    await run(mw.authenticate() as never, { authorization: 'Bearer valid', 'x-api-key': 'valid' });
+    await run(mw.optionalAuthenticate() as never, { authorization: 'Bearer valid', 'x-api-key': 'valid' });
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthMiddleware with apiKeys.enabled === true and a bad key', () => {
+  it('authenticate() keeps the invalid reason when verifyApiKey rejects the key', async () => {
+    verifyApiKey.mockImplementation(async () => { throw new AuthFailureError('invalid'); });
+    const result = await run(build({ headerName: 'X-API-Key', enabled: true }).authenticate() as never, { 'x-api-key': 'bad' });
+
+    expect(result.status).toHaveBeenCalledWith(401);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][1]).toEqual({ credentialType: 'api-key', reason: 'invalid' });
   });
 });
 

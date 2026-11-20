@@ -250,7 +250,7 @@ export class ApiKeyNotFoundError extends Error {
  */
 export type AuthFailureReason =
   | 'invalid' | 'expired' | 'wrong_type' | 'disabled' | 'revoked' | 'store_error' | 'default_credential_refused'
-  | 'ambiguous_identity';
+  | 'ambiguous_identity' | 'api_keys_disabled';
 
 export class AuthFailureError extends Error {
   override readonly cause: unknown;

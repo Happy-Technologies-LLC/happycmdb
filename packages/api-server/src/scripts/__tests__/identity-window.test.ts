@@ -33,6 +33,7 @@ jest.mock('../operator-stores', () => {
   const actual = jest.requireActual<typeof import('../operator-stores')>('../operator-stores');
   return { ...actual, openOperatorStores: jest.fn(actual.openOperatorStores) };
 });
+import { MALFORMED_AMBIENT_TLS_ENV, PERMISSIVE_AMBIENT_TLS_ENV, runOperatorCli } from './fixtures/run-operator-cli';
 import * as operatorStores from '../operator-stores';
 
 type Node = { elementId: string; props: Row };
@@ -1482,4 +1483,38 @@ describe('identity-window doc: pg_locks recipe for a stalled run', () => {
     await addLock(100, 'm', true);
     expect(await pids('m', 'a')).toEqual([]);
   });
+});
+
+
+/**
+ * The `require.main === module` block as a real process: it must call isolateOperatorEnvironment before any client
+ * exists. `main` takes `env` explicitly, so only a child process can see the ambient API-server TLS toggles.
+ */
+describe('identity-window CLI process', () => {
+  const SCRIPT = join(__dirname, '../identity-window.ts');
+  const ENV = {
+    CMDB_ROTATE_POSTGRES_HOST: '127.0.0.1', CMDB_ROTATE_POSTGRES_PORT: '1', CMDB_ROTATE_POSTGRES_DB: 'unused',
+    CMDB_ROTATE_POSTGRES_USER: 'unused', CMDB_ROTATE_POSTGRES_PASSWORD: 'pg-secret-value',
+    CMDB_ROTATE_NEO4J_URI: 'bolt://127.0.0.1:1', CMDB_ROTATE_NEO4J_USERNAME: 'unused', CMDB_ROTATE_NEO4J_PASSWORD: 'neo4j-secret-value',
+  };
+  const ARGV = ['inventory'];
+
+  it('ignores malformed ambient API-server TLS toggles', async () => {
+    const { code, stdout, stderr, driverConfigs } = await runOperatorCli(SCRIPT, ARGV, { ...ENV, ...MALFORMED_AMBIENT_TLS_ENV });
+
+    expect(stderr).not.toContain('must be true or false');
+    expect(stderr).not.toContain('Unsupported PostgreSQL TLS mode');
+    expect(driverConfigs).toHaveLength(1); // the Neo4jClient was constructed
+    expect(code).toBe(1);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('identity-window: stub neo4j driver: no connection');
+  }, 10000);
+
+  it('connects with its own { encrypted: false } whatever the ambient TLS toggles ask for', async () => {
+    const { driverConfigs, stderr } = await runOperatorCli(SCRIPT, ARGV, { ...ENV, ...PERMISSIVE_AMBIENT_TLS_ENV });
+
+    expect(driverConfigs).toHaveLength(1);
+    expect(driverConfigs[0]).toMatchObject({ encrypted: 'ENCRYPTION_OFF', trust: 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES' });
+    expect(stderr).not.toContain('SSL/TLS encryption enabled');
+  }, 10000);
 });

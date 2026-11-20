@@ -302,6 +302,31 @@ describe('CLI process', () => {
     expect(connections).toBe(0);
   }, 30000);
 
+  it('ignores malformed ambient API-server TLS toggles', async () => {
+    // Without isolateOperatorEnvironment, `new Neo4jClient` refuses NEO4J_ENCRYPTED=bogus before the Postgres connect.
+    const { code, stdout, stderr } = await run({
+      ...TARGET_ENV, CMDB_SEED_POSTGRES_PORT: '1',
+      NEO4J_ENCRYPTED: 'bogus', NEO4J_SSL_ENABLED: 'bogus', NEO4J_ENCRYPTION: 'bogus', NEO4J_SSL_TRUST_STRATEGY: 'bogus',
+      POSTGRES_SSL_MODE: 'bogus', POSTGRES_SSL_ENABLED: 'bogus',
+    });
+
+    expect(stderr).not.toContain('must be true or false');
+    expect(stderr).toContain('seed-tenant-fixture: connect ECONNREFUSED 127.0.0.1:1');
+    expect(code).toBe(1);
+    expect(stdout).toBe('');
+    expect(connections).toBe(0);
+  }, 30000);
+
+  it('connects without TLS whatever the ambient TLS toggles ask for', async () => {
+    const { stderr } = await run({
+      ...TARGET_ENV, CMDB_SEED_POSTGRES_PORT: '1', NEO4J_ENCRYPTED: 'true', NEO4J_SSL_TRUST_STRATEGY: 'TRUST_ALL_CERTIFICATES',
+    });
+
+    expect(stderr).toContain('Neo4j client initialized WITHOUT encryption');
+    expect(stderr).not.toContain('SSL/TLS encryption enabled');
+    expect(stderr).toContain('seed-tenant-fixture: connect ECONNREFUSED 127.0.0.1:1');
+  }, 30000);
+
   it('refuses a non-loopback endpoint before constructing any client', async () => {
     const { code, stdout, stderr } = await run({
       ...TARGET_ENV, CMDB_SEED_POSTGRES_PORT: String(port), CMDB_SEED_NEO4J_URI: 'bolt://neo4j.internal:7687',

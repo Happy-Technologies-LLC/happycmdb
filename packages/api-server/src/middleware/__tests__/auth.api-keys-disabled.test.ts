@@ -32,6 +32,7 @@ const LOGGER_METHODS = [...Object.keys(logger.levels), 'log'] as Array<keyof typ
 const CONSOLE_METHODS = ['log', 'info', 'warn', 'error', 'debug', 'trace'] as const;
 let spies: Record<string, jest.SpyInstance>;
 let consoleSpies: Record<string, jest.SpyInstance>;
+let streamSpies: Record<string, jest.SpyInstance>;
 let warn: jest.SpyInstance;
 
 /** Serialized calls of every logger and console method that received any call. */
@@ -40,6 +41,7 @@ const loggedAnywhere = (): string =>
     [
       ...Object.entries(spies).map(([name, spy]) => [`logger.${name}`, spy] as const),
       ...Object.entries(consoleSpies).map(([name, spy]) => [`console.${name}`, spy] as const),
+      ...Object.entries(streamSpies),
     ]
       .filter(([, spy]) => spy.mock.calls.length > 0)
       .map(([name, spy]) => [name, spy.mock.calls]),
@@ -57,6 +59,9 @@ function expectOnlyApiKeysDisabledRefusal(secret: string): void {
   }
   for (const [name, spy] of Object.entries(consoleSpies)) {
     expect([`console.${name}`, spy.mock.calls.length]).toEqual([`console.${name}`, 0]);
+  }
+  for (const [name, spy] of Object.entries(streamSpies)) {
+    expect([name, spy.mock.calls.length]).toEqual([name, 0]);
   }
   expect(loggedAnywhere()).not.toContain(secret);
 }
@@ -77,8 +82,16 @@ beforeEach(() => {
   consoleSpies = Object.fromEntries(
     CONSOLE_METHODS.map((name) => [name, jest.spyOn(console, name).mockImplementation(() => undefined)]),
   );
+  // Direct stream writes bypass logger and console; winston's console transport and
+  // console._stdout end up here too.
+  streamSpies = {
+    'process.stdout.write': jest.spyOn(process.stdout, 'write').mockImplementation(() => true),
+    'process.stderr.write': jest.spyOn(process.stderr, 'write').mockImplementation(() => true),
+  };
 });
-afterEach(() => [...Object.values(spies), ...Object.values(consoleSpies)].forEach((spy) => spy.mockRestore()));
+afterEach(() =>
+  [...Object.values(spies), ...Object.values(consoleSpies), ...Object.values(streamSpies)].forEach((spy) => spy.mockRestore()),
+);
 
 describe('AuthMiddleware with apiKeys.enabled === false', () => {
   const disabled = () => build({ headerName: 'X-API-Key', enabled: false });
@@ -88,7 +101,8 @@ describe('AuthMiddleware with apiKeys.enabled === false', () => {
     const none = await run(mw.authenticate() as never, {});
     const keyOnly = await run(mw.authenticate() as never, { 'x-api-key': 'valid' });
 
-    expect(keyOnly.status).toHaveBeenCalledWith(401);
+    expect(keyOnly.status.mock.calls).toEqual([[401]]);
+    expect(keyOnly.json).toHaveBeenCalledTimes(1);
     expect(keyOnly.json.mock.calls).toEqual(none.json.mock.calls);
     expect(keyOnly.json.mock.calls[0][0]).toEqual({ _error: 'Unauthorized', _message: 'Authentication failed' });
     expect(keyOnly.next).not.toHaveBeenCalled();
@@ -121,7 +135,8 @@ describe('AuthMiddleware with apiKeys.enabled === false', () => {
     const secret = 'sk-secret-key-value-1234';
     const result = await run(disabled().authenticate() as never, { 'x-api-key': secret });
 
-    expect(result.status).toHaveBeenCalledWith(401);
+    expect(result.status.mock.calls).toEqual([[401]]);
+    expect(result.json).toHaveBeenCalledTimes(1);
     expect(result.json.mock.calls[0][0]).toEqual({ _error: 'Unauthorized', _message: 'Authentication failed' });
     expectOnlyApiKeysDisabledRefusal(secret);
     expect(result.setHeader).not.toHaveBeenCalled();
@@ -150,7 +165,8 @@ describe('AuthMiddleware with apiKeys.enabled === false', () => {
     warn.mockClear();
     const empty = await run(mw.authenticate() as never, { 'x-api-key': '' });
 
-    expect(empty.status).toHaveBeenCalledWith(401);
+    expect(empty.status.mock.calls).toEqual([[401]]);
+    expect(empty.json).toHaveBeenCalledTimes(1);
     expect(empty.json.mock.calls).toEqual(none.json.mock.calls);
     expect(empty.json.mock.calls[0][0]).toEqual({ _error: 'Unauthorized', _message: 'Authentication failed' });
     expect(empty.next).not.toHaveBeenCalled();
@@ -184,7 +200,8 @@ describe('AuthMiddleware with apiKeys.enabled === true and a bad key', () => {
     verifyApiKey.mockImplementation(async () => { throw new AuthFailureError('invalid'); });
     const result = await run(build({ headerName: 'X-API-Key', enabled: true }).authenticate() as never, { 'x-api-key': 'bad' });
 
-    expect(result.status).toHaveBeenCalledWith(401);
+    expect(result.status.mock.calls).toEqual([[401]]);
+    expect(result.json).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0][1]).toEqual({ credentialType: 'api-key', reason: 'invalid' });
   });

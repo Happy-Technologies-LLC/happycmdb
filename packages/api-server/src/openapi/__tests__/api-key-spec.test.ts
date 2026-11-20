@@ -15,12 +15,8 @@ import type { RateLimitMiddleware } from '../../middleware/rate-limit.middleware
 import { JWTService } from '../../auth/jwt.service';
 import type { ApiKey, User } from '../../auth/types';
 import { logger } from '@cmdb/common';
+import { deref, violations, type Schema } from './spec-schema';
 
-type Schema = {
-  $ref?: string; type?: string; nullable?: boolean; required?: string[]; pattern?: string; example?: string;
-  properties?: Record<string, Schema>; items?: Schema; minimum?: number; maximum?: number; minLength?: number; maxLength?: number;
-  enum?: unknown[]; anyOf?: Schema[]; oneOf?: Schema[];
-};
 type Response = { $ref?: string; content?: { 'application/json': { schema?: Schema; example?: unknown; examples?: Record<string, { value: unknown }> } } };
 type Operation = {
   requestBody?: { content: { 'application/json': { schema: Schema } } };
@@ -35,42 +31,11 @@ const spec = YAML.load(join(__dirname, '../openapi.yaml')) as {
 const operation = (path: string, method: string): Operation => spec.paths[path]![method]!;
 const body = (path: string, method: string, status: string) => operation(path, method).responses[status]!.content!['application/json'];
 const declared = (path: string, method: string): string[] => Object.keys(operation(path, method).responses).sort();
-const exampleOf = (schema: Schema): string | undefined => schema.example;
+const exampleOf = (schema: Schema): string | undefined => schema.example as string | undefined;
 const keysOf = (schema: Schema): string[] => Object.keys(schema.properties!).sort();
 
-/** Follows `$ref` (any `#/a/b/c` pointer into the spec) until a node that is not one. */
-function deref<T extends { $ref?: string }>(node: T): T {
-  if (!node.$ref) return node;
-  return deref(node.$ref.replace('#/', '').split('/').reduce<any>((at, key) => at[key], spec));
-}
 /** The schema the spec declares for a response, whether the response is inline or a components/responses `$ref`. */
 const declaredSchema = (path: string, method: string, status: string): Schema => deref(deref(operation(path, method).responses[status]!).content!['application/json'].schema!);
-
-/**
- * A small JSON-schema check, enough for the keywords these response schemas use: $ref, type, nullable, enum, required, properties,
- * items, anyOf and oneOf (exactly one branch, as the spec means it). ajv is only a transitive dependency of the lint stack (v6), so it is
- * not imported here. Returns the violations; empty means the value satisfies the schema.
- */
-function violations(schema: Schema, value: unknown, at = '$'): string[] {
-  const node = deref(schema);
-  if (value === null && node.nullable) return [];
-  const found: string[] = [];
-  const kind = Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value;
-  if (node.type && !(node.type === kind || (node.type === 'integer' && Number.isInteger(value)))) found.push(`${at}: expected ${node.type}, got ${kind}`);
-  if (node.enum && !node.enum.includes(value)) found.push(`${at}: ${JSON.stringify(value)} is not in the enum`);
-  if (kind === 'object') {
-    const object = value as Record<string, unknown>;
-    for (const key of node.required ?? []) if (!(key in object)) found.push(`${at}: missing ${key}`);
-    for (const [key, child] of Object.entries(node.properties ?? {})) if (key in object) found.push(...violations(child, object[key], `${at}.${key}`));
-  }
-  if (kind === 'array' && node.items) (value as unknown[]).forEach((item, index) => found.push(...violations(node.items!, item, `${at}[${index}]`)));
-  if (node.anyOf && !node.anyOf.some(branch => violations(branch, value, at).length === 0)) found.push(`${at}: matches no anyOf branch`);
-  if (node.oneOf) {
-    const matched = node.oneOf.filter(branch => violations(branch, value, at).length === 0).length;
-    if (matched !== 1) found.push(`${at}: matches ${matched} oneOf branches, exactly 1 required`);
-  }
-  return found;
-}
 
 const CREATE = '/auth/api-key';
 const LIST = '/auth/api-keys';

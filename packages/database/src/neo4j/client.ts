@@ -162,6 +162,9 @@ type TraversalNode = { node: Node; distance: number };
 export interface CIEdgeRef { from: string; to: string; type: string }
 const edgeRef = (edge: TraversalEdge): CIEdgeRef => ({ from: edge.startNodeId, to: edge.endNodeId, type: edge.relationship.type });
 
+/** True for the URL schemes that carry encryption and trust themselves; reads the scheme prefix only, never the rest of the URI. */
+const uriSchemeSelectsTls = (uri: string): boolean => /^(?:bolt|neo4j)\+s(?:sc)?:/i.test(uri);
+
 export class Neo4jClient {
   private driver: Driver;
   private activeCIAnalyticsReads = 0;
@@ -187,9 +190,11 @@ export class Neo4jClient {
     encrypted?: boolean;
     trust?: 'TRUST_ALL_CERTIFICATES' | 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES';
   }) {
+    const schemeSelectsTls = uriSchemeSelectsTls(uri);
     // Determine if encryption should be enabled
     const sslEnabled = process.env['NEO4J_SSL_ENABLED'] === 'true' ||
                        process.env['NEO4J_ENCRYPTION'] === 'true' ||
+                       process.env['NEO4J_ENCRYPTED'] === 'true' ||
                        config?.encrypted === true;
 
     // Determine trust strategy
@@ -197,11 +202,14 @@ export class Neo4jClient {
                          (process.env['NEO4J_SSL_TRUST_STRATEGY'] as any) ||
                          'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES';
 
+    // neo4j-driver throws when `encrypted`/`trust` are given next to a scheme that already carries them.
     this.driverConfig = {
       maxConnectionLifetime: 3 * 60 * 60 * 1000, // 3 hours
       maxConnectionPoolSize: 50,
-      encrypted: sslEnabled ? 'ENCRYPTION_ON' : 'ENCRYPTION_OFF',
-      trust: trustStrategy,
+      ...(schemeSelectsTls ? {} : {
+        encrypted: sslEnabled ? 'ENCRYPTION_ON' : 'ENCRYPTION_OFF',
+        trust: trustStrategy,
+      }),
     };
     this.connection = { uri, auth: neo4j.auth.basic(username, password) };
     this.driver = neo4j.driver(uri, this.connection.auth, {
@@ -209,7 +217,9 @@ export class Neo4jClient {
       connectionAcquisitionTimeout: 2 * 60 * 1000, // 2 minutes
     });
 
-    if (sslEnabled) {
+    if (schemeSelectsTls) {
+      logger.info('Neo4j client initialized with encryption set by the URI scheme');
+    } else if (sslEnabled) {
       logger.info('Neo4j client initialized with SSL/TLS encryption enabled');
     } else {
       logger.warn('Neo4j client initialized WITHOUT encryption (development mode)');

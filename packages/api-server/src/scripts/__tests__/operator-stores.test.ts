@@ -6,6 +6,9 @@
  * A `+ssc` scheme would make the driver trust any certificate; TLS is selected only by
  * CMDB_ROTATE_NEO4J_ENCRYPTED=true (system-CA verification).
  */
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import neo4j from 'neo4j-driver';
 import { logger } from '@cmdb/common';
 import { PostgresClient } from '../../../../database/src/postgres/client';
@@ -29,7 +32,7 @@ const FIXED_MESSAGE =
 
 function envWith(uri: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
-    CMDB_ROTATE_POSTGRES_HOST: 'pg',
+    CMDB_ROTATE_POSTGRES_HOST: '127.0.0.1',
     CMDB_ROTATE_POSTGRES_PORT: '5432',
     CMDB_ROTATE_POSTGRES_DB: 'cmdb',
     CMDB_ROTATE_POSTGRES_USER: 'u',
@@ -95,7 +98,7 @@ describe('openOperatorStores CMDB_ROTATE_NEO4J_URI', () => {
     expect(driverMock).not.toHaveBeenCalled();
   });
 
-  it.each(['bolt://h:7687', 'neo4j://h'])('accepts %s', (uri) => {
+  it.each(['bolt://127.0.0.1:7687', 'neo4j://localhost'])('accepts %s', (uri) => {
     openOperatorStores(envWith(uri));
 
     expect(postgresMock).toHaveBeenCalledTimes(1);
@@ -127,7 +130,7 @@ describe('openOperatorStores CMDB_ROTATE_NEO4J_URI', () => {
 
     it('still connects plain: the suite scrubs them before each test', () => {
       expect(process.env['NEO4J_SSL_ENABLED']).toBeUndefined();
-      openOperatorStores(envWith('bolt://h:7687'));
+      openOperatorStores(envWith('bolt://127.0.0.1:7687'));
 
       expect(driverMock.mock.calls[0][2].encrypted).toBe('ENCRYPTION_OFF');
     });
@@ -199,5 +202,116 @@ describe('assertPlainNeo4jUri', () => {
     }
     // Exact equality with a text built from the variable names only: the value cannot be in it.
     expect(thrown).toBe(message('CMDB_X_NEO4J_URI', 'CMDB_X_NEO4J_ENCRYPTED'));
+  });
+});
+
+describe('openOperatorStores TLS settings (CMDB_ROTATE_*)', () => {
+  const PG_UNSET = 'CMDB_ROTATE_POSTGRES_SSL must be set for a non-loopback host';
+  const NEO4J_UNSET = 'CMDB_ROTATE_NEO4J_ENCRYPTED must be set for a non-loopback host';
+  const open = (uri: string, extra: NodeJS.ProcessEnv): void => void openOperatorStores(envWith(uri, extra));
+  const caDirectory = mkdtempSync(join(tmpdir(), 'operator-tls-'));
+  const caFile = (name: string, contents: string): string => {
+    const path = join(caDirectory, name);
+    writeFileSync(path, contents);
+    return path;
+  };
+  afterAll(() => rmSync(caDirectory, { recursive: true, force: true }));
+
+  it.each(['db.example', '192.0.2.10', '127.0.0.1.evil.com', 'localhost.example', '0.0.0.0', '::ffff:127.0.0.1'])(
+    'refuses an unset CMDB_ROTATE_POSTGRES_SSL for %s, before any client is built', (host) => {
+      expect(() => open('bolt://127.0.0.1:7687', { CMDB_ROTATE_POSTGRES_HOST: host })).toThrow(PG_UNSET);
+      expect(postgresMock).not.toHaveBeenCalled();
+      expect(driverMock).not.toHaveBeenCalled();
+    });
+
+  it.each(['bolt://db.example:7687', 'neo4j://192.0.2.10', 'bolt://127.0.0.1.evil.com', 'bolt://localhost.example', 'bolt://[fe80::1]'])(
+    'refuses an unset CMDB_ROTATE_NEO4J_ENCRYPTED for %s, before any client is built', (uri) => {
+      expect(() => open(uri, {})).toThrow(NEO4J_UNSET);
+      expect(postgresMock).not.toHaveBeenCalled();
+      expect(driverMock).not.toHaveBeenCalled();
+    });
+
+  it.each(['localhost', '127.0.0.1', '127.9.9.9', '::1', '/var/run/postgresql'])('allows an unset CMDB_ROTATE_POSTGRES_SSL for %s', (host) => {
+    open('bolt://127.0.0.1:7687', { CMDB_ROTATE_POSTGRES_HOST: host });
+    expect(postgresMock.mock.calls[0][0]).toMatchObject({ _host: host, ssl: false });
+  });
+
+  it.each(['bolt://localhost', 'bolt://127.0.0.1:7687', 'neo4j://127.1.2.3', 'bolt://[::1]:7687'])('allows an unset CMDB_ROTATE_NEO4J_ENCRYPTED for %s', (uri) => {
+    open(uri, {});
+    expect(driverMock.mock.calls[0][2].encrypted).toBe('ENCRYPTION_OFF');
+  });
+
+  const nonLoopbackWarnings = (): string[] =>
+    (logger.warn as jest.Mock).mock.calls.map(call => String(call[0])).filter(text => text.includes('non-loopback host'));
+
+  it('allows an explicit plaintext opt-out to a remote host and warns for each store', () => {
+    open('bolt://db.example:7687', {
+      CMDB_ROTATE_POSTGRES_HOST: 'db.example', CMDB_ROTATE_POSTGRES_SSL: 'disable', CMDB_ROTATE_NEO4J_ENCRYPTED: 'false',
+    });
+
+    expect(postgresMock.mock.calls[0][0]).toMatchObject({ _host: 'db.example', ssl: false });
+    expect(driverMock.mock.calls[0][2].encrypted).toBe('ENCRYPTION_OFF');
+    // The shared clients add their own "WITHOUT encryption" warnings; only the opt-out warnings are under test.
+    const warnings = nonLoopbackWarnings();
+    expect(warnings).toEqual([
+      'CMDB_ROTATE_POSTGRES_SSL=disable: the PostgreSQL connection to a non-loopback host is NOT encrypted',
+      'CMDB_ROTATE_NEO4J_ENCRYPTED=false: the Neo4j connection to a non-loopback host is NOT encrypted',
+    ]);
+  });
+
+  it('does not warn for an explicit opt-out on loopback or for TLS to a remote host', () => {
+    open('bolt://127.0.0.1:7687', { CMDB_ROTATE_POSTGRES_SSL: 'disable', CMDB_ROTATE_NEO4J_ENCRYPTED: 'false' });
+    open('bolt://db.example', {
+      CMDB_ROTATE_POSTGRES_HOST: 'db.example', CMDB_ROTATE_POSTGRES_SSL: 'verify-full', CMDB_ROTATE_NEO4J_ENCRYPTED: 'true',
+    });
+
+    expect(nonLoopbackWarnings()).toEqual([]);
+    expect(postgresMock.mock.calls[1][0]).toMatchObject({ ssl: 'verify-full' });
+  });
+
+  it.each(['', 'false', 'off', 'verify-ca', 'TRUE'])('refuses CMDB_ROTATE_POSTGRES_SSL=%j', (value) => {
+    expect(() => open('bolt://127.0.0.1:7687', { CMDB_ROTATE_POSTGRES_SSL: value }))
+      .toThrow('CMDB_ROTATE_POSTGRES_SSL must be require, verify-full or disable when set');
+  });
+
+  it('refuses a missing CMDB_ROTATE_POSTGRES_SSL_CA_FILE without naming the path or building a client', () => {
+    const missing = join(caDirectory, 'absent-ca.pem');
+    let message = '';
+    try {
+      open('bolt://127.0.0.1:7687', { CMDB_ROTATE_POSTGRES_SSL: 'verify-full', CMDB_ROTATE_POSTGRES_SSL_CA_FILE: missing });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+
+    expect(message).toBe('CMDB_ROTATE_POSTGRES_SSL_CA_FILE cannot be read');
+    expect(postgresMock).not.toHaveBeenCalled();
+    expect(driverMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unreadable CA path (a directory) and an empty CA file instead of widening trust', () => {
+    const env = { CMDB_ROTATE_POSTGRES_SSL: 'verify-full' };
+    expect(() => open('bolt://127.0.0.1:7687', { ...env, CMDB_ROTATE_POSTGRES_SSL_CA_FILE: caDirectory }))
+      .toThrow('CMDB_ROTATE_POSTGRES_SSL_CA_FILE cannot be read');
+    expect(() => open('bolt://127.0.0.1:7687', { ...env, CMDB_ROTATE_POSTGRES_SSL_CA_FILE: caFile('empty.pem', ' \n') }))
+      .toThrow('CMDB_ROTATE_POSTGRES_SSL_CA_FILE is empty or not a readable CA bundle');
+    expect(() => open('bolt://127.0.0.1:7687', { ...env, CMDB_ROTATE_POSTGRES_SSL_CA_FILE: '' }))
+      .toThrow('CMDB_ROTATE_POSTGRES_SSL_CA_FILE is empty or not a readable CA bundle');
+    expect(postgresMock).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, 'require', 'disable'])('refuses a CA file when CMDB_ROTATE_POSTGRES_SSL is %s: it would be silently unused', (ssl) => {
+    const extra: NodeJS.ProcessEnv = { CMDB_ROTATE_POSTGRES_SSL_CA_FILE: caFile('ca.pem', 'pem'), ...(ssl === undefined ? {} : { CMDB_ROTATE_POSTGRES_SSL: ssl }) };
+    expect(() => open('bolt://127.0.0.1:7687', extra))
+      .toThrow('CMDB_ROTATE_POSTGRES_SSL_CA_FILE needs CMDB_ROTATE_POSTGRES_SSL=verify-full');
+  });
+
+  it('passes the CA file contents to the Postgres client with verify-full', () => {
+    const pem = '-----BEGIN CERTIFICATE-----\nprivate\n-----END CERTIFICATE-----\n';
+    open('bolt://127.0.0.1:7687', {
+      CMDB_ROTATE_POSTGRES_HOST: 'db.example', CMDB_ROTATE_POSTGRES_SSL: 'verify-full',
+      CMDB_ROTATE_POSTGRES_SSL_CA_FILE: caFile('private-ca.pem', pem),
+    });
+
+    expect(postgresMock.mock.calls[0][0]).toMatchObject({ _host: 'db.example', ssl: 'verify-full', sslCa: pem });
   });
 });

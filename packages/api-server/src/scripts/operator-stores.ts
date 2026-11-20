@@ -13,6 +13,7 @@
 import { Neo4jClient } from '../../../database/src/neo4j/client';
 import { PostgresClient } from '../../../database/src/postgres/client';
 
+import { resolveOperatorNeo4jEncrypted, resolveOperatorPostgresTls } from './operator-tls';
 import type { RotationGraph, RotationLock, RotationSql, Row } from './rotate-user-password';
 
 const LOCK_KEY = 'hp1:credential-rotation';
@@ -189,24 +190,19 @@ export function openOperatorStores(env: NodeJS.ProcessEnv): OperatorStores {
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
 throw new Error('CMDB_ROTATE_POSTGRES_PORT must be a TCP port');
 }
-  const sslSetting = env['CMDB_ROTATE_POSTGRES_SSL'];
-  const ssl: 'require' | 'verify-full' | false = sslSetting === 'require' || sslSetting === 'verify-full' ? sslSetting : false;
-  if (sslSetting !== undefined && ssl === false) {
-throw new Error('CMDB_ROTATE_POSTGRES_SSL must be require or verify-full when set');
-}
-  const encrypted = env['CMDB_ROTATE_NEO4J_ENCRYPTED'];
-  if (encrypted !== undefined && encrypted !== 'true' && encrypted !== 'false') {
-    throw new Error('CMDB_ROTATE_NEO4J_ENCRYPTED must be true or false when set');
-  }
   const neo4jUri = required(env, 'CMDB_ROTATE_NEO4J_URI');
   assertPlainNeo4jUri(neo4jUri, 'CMDB_ROTATE_NEO4J_URI', 'CMDB_ROTATE_NEO4J_ENCRYPTED');
+  const postgresHost = required(env, 'CMDB_ROTATE_POSTGRES_HOST');
+  const { ssl, sslCa } = resolveOperatorPostgresTls(env, 'CMDB_ROTATE', postgresHost);
+  const encrypted = resolveOperatorNeo4jEncrypted(env, 'CMDB_ROTATE', neo4jUri);
   const postgres = new PostgresClient({
-    _host: required(env, 'CMDB_ROTATE_POSTGRES_HOST'), _port: port, _database: required(env, 'CMDB_ROTATE_POSTGRES_DB'),
+    _host: postgresHost, _port: port, _database: required(env, 'CMDB_ROTATE_POSTGRES_DB'),
     _user: required(env, 'CMDB_ROTATE_POSTGRES_USER'), _password: required(env, 'CMDB_ROTATE_POSTGRES_PASSWORD'), ssl,
+    ...(sslCa === undefined ? {} : { sslCa }),
   });
   const graph = new Neo4jClient(
     neo4jUri, required(env, 'CMDB_ROTATE_NEO4J_USERNAME'),
-    required(env, 'CMDB_ROTATE_NEO4J_PASSWORD'), { encrypted: encrypted === 'true' }
+    required(env, 'CMDB_ROTATE_NEO4J_PASSWORD'), { encrypted }
   );
   return {
     graph: graphOf(graph), sql: sqlOf(postgres), lock: lockOf(postgres),

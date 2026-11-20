@@ -44,7 +44,7 @@ const LOCAL_HOST = /^(localhost|127(\.\d{1,3}){3}|::1|\/.*)$/;
  * Fails closed: an unsupported value, or no mode at all under NODE_ENV=production for a non-local host, throws instead
  * of connecting in cleartext. An explicit disable stays allowed (the Build01 staging private-network choice, HAP-1643).
  */
-function resolveSsl(explicit: PostgresSslMode | undefined, host: string, env: NodeJS.ProcessEnv): false | ConnectionOptions {
+function resolveSsl(explicit: PostgresSslMode | undefined, host: string, env: NodeJS.ProcessEnv, explicitCa?: string): false | ConnectionOptions {
   const enabled = env['POSTGRES_SSL_ENABLED'] || undefined;
   const mode = explicit ?? (env['POSTGRES_SSL_MODE'] || undefined) ?? (enabled === 'on' ? 'require' : enabled);
   if (mode === undefined) {
@@ -69,15 +69,16 @@ function resolveSsl(explicit: PostgresSslMode | undefined, host: string, env: No
       logger.info('PostgreSQL SSL enabled (prefer behaves as require - TLS required, certificate not verified)');
       return { rejectUnauthorized: false };
     case 'verify-full': {
+      // An explicit CA (an operator tool's own, already read) wins over the ambient POSTGRES_SSL_CA_FILE.
       const caFile = env['POSTGRES_SSL_CA_FILE'];
       logger.info('PostgreSQL SSL enabled (verify-full mode - verifies certificate chain and host name)');
       // pg sets servername only for DNS hosts, so Node would check an IP literal against 'localhost'; pin the real host.
       const verify: ConnectionOptions = isIP(host) === 0 ? { rejectUnauthorized: true }
         : { rejectUnauthorized: true, checkServerIdentity: (_name, cert) => checkServerIdentity(host, cert) };
-      if (!caFile) return verify;
-      const ca = readFileSync(caFile, 'utf8');
+      if (explicitCa === undefined && !caFile) return verify;
+      const ca = explicitCa ?? readFileSync(caFile!, 'utf8');
       // An empty `ca` makes Node fall back to its public trust store; refuse instead of silently widening trust.
-      if (ca.trim() === '') throw new Error('POSTGRES_SSL_CA_FILE is empty: verify-full needs a CA bundle');
+      if (ca.trim() === '') throw new Error('PostgreSQL CA bundle is empty: verify-full needs a CA bundle');
       return { ...verify, ca };
     }
     default:
@@ -95,8 +96,10 @@ export class PostgresClient {
     _user: string;
     _password: string;
     ssl?: PostgresSslMode;
+    /** CA bundle contents for `ssl: 'verify-full'`; overrides POSTGRES_SSL_CA_FILE. Ignored by other modes. */
+    sslCa?: string;
   }) {
-    const sslConfig = resolveSsl(config.ssl, config._host, process.env);
+    const sslConfig = resolveSsl(config.ssl, config._host, process.env, config.sslCa);
 
     this.pool = new Pool({
       host: config._host,

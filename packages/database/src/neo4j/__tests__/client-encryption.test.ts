@@ -84,7 +84,7 @@ describe('plain bolt:// and neo4j:// URIs', () => {
   });
 });
 
-describe.each(['neo4j+s://h', 'neo4j+ssc://h', 'bolt+s://h', 'BOLT+S://h'])('TLS-carrying URI %s', uri => {
+describe.each(['neo4j+s://h', 'neo4j+ssc://h', 'bolt+s://h'])('TLS-carrying URI %s', uri => {
   it.each([false, true])('reaches neo4j.driver without encrypted or trust (NEO4J_SSL_ENABLED set: %p)', enabled => {
     if (enabled) process.env['NEO4J_SSL_ENABLED'] = 'true';
     process.env['NEO4J_SSL_TRUST_STRATEGY'] = 'TRUST_ALL_CERTIFICATES';

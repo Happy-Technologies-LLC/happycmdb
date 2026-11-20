@@ -32,7 +32,7 @@ TZ=UTC
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `NEO4J_URI` | Yes | - | Neo4j connection URI (`bolt://hostname:7687`). The schemes `bolt+s://`, `bolt+ssc://`, `neo4j+s://` and `neo4j+ssc://` select TLS from the URL (`+s` verifies the certificate chain, `+ssc` accepts a self-signed certificate); the client then sets neither encryption nor trust itself, so `NEO4J_ENCRYPTED`, `NEO4J_SSL_ENABLED`, `NEO4J_ENCRYPTION` and `NEO4J_SSL_TRUST_STRATEGY` are not used |
+| `NEO4J_URI` | Yes | - | Neo4j connection URI (`bolt://hostname:7687`). The schemes `bolt+s://`, `bolt+ssc://`, `neo4j+s://` and `neo4j+ssc://` select TLS from the URL (`+s` verifies the certificate chain, `+ssc` accepts any certificate: no chain or hostname check, the driver sets `TRUST_ALL_CERTIFICATES`, so it is not for production); the client then sets neither encryption nor trust itself, so `NEO4J_ENCRYPTED`, `NEO4J_SSL_ENABLED`, `NEO4J_ENCRYPTION` and `NEO4J_SSL_TRUST_STRATEGY` are not used |
 | `NEO4J_USERNAME` | Yes | `neo4j` | Neo4j username |
 | `NEO4J_PASSWORD` | Yes | - | Neo4j password (use secrets management) |
 | `NEO4J_DATABASE` | No | `neo4j` | Database name |

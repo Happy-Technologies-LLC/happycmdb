@@ -58,6 +58,7 @@ import { Neo4jClient } from '../../../database/src/neo4j/client';
 import { PostgresClient } from '../../../database/src/postgres/client';
 import { getMigrationStatus, runMigrations } from '../../../database/src/postgres/migrator';
 import { configuredBcryptRounds, PasswordService } from '../auth/password.service';
+import { isolateOperatorEnvironment } from './operator-stores';
 
 /** Same shape the api-server accepts as an organization claim (auth.middleware.ts). */
 const ORGANIZATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -508,10 +509,8 @@ if (require.main === module) {
   process.stdout.write = process.stderr.write.bind(process.stderr);
   // PostgresClient / Neo4jClient also read the api-server's own TLS toggles
   // from process.env. The seed's connections are defined only by CMDB_SEED_*,
-  // so drop those before any client exists.
-  for (const name of ['POSTGRES_SSL_MODE', 'POSTGRES_SSL_ENABLED', 'NEO4J_SSL_ENABLED', 'NEO4J_ENCRYPTION']) {
-    delete process.env[name];
-  }
+  // so drop all of them (API_SERVER_CLIENT_ENV_NAMES) before any client exists.
+  isolateOperatorEnvironment(process.env);
   // Explicit exit so a lingering driver socket cannot keep the process alive.
   void main(process.argv.slice(2), process.env, {
     stdout: line => writeSummary(`${line}\n`),

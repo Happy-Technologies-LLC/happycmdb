@@ -18,10 +18,10 @@ info:
 
     All API endpoints (except `/api/v1/auth/login`) require authentication via:
     - **JWT Token**: Include `Authorization: Bearer <token>` header
-    - **API Key**: Include `X-API-Key: <key>` header
+    - **API Key**: Include `X-API-Key: <key>` header (the default name; `API_KEY_HEADER_NAME` changes it)
     Account operations (`PUT /auth/profile`, `PUT /auth/password`, `POST /auth/sessions/revoke-others`,
     `DELETE /auth/account`, `GET /auth/api-keys`, `DELETE /auth/api-key/{keyId}`)
-    and API-key creation require a verified JWT user session. An authenticated
+    and API-key creation (`POST /auth/api-key`) require a verified JWT user session. An authenticated
     API key receives HTTP 403 with `_error: Forbidden` and
     `_message: JWT user session required`, before route validation.
     Missing or disabled users receive HTTP 401.
@@ -262,12 +262,19 @@ paths:
         '200':
           description: Set-Cookie expires __Secure-cmdb_rt (Max-Age=0)
 
-  /auth/api-keys:
+  /auth/api-key:
     post:
       tags: [Authentication]
       summary: Create API key
-      description: Generate a new API key for programmatic access
+      description: >-
+        Generates an API key for the calling user. The key is 64 lowercase hex characters, is returned once in
+        `data._apiKey` and only its hash is stored. The key carries the creating user's role (there is no `role`
+        field in the request); at use the effective role is the intersection of that stored role and the user's
+        current role. Requires a verified JWT user session. Refused with 403 while `auth.apiKeys.enabled`
+        (`API_KEYS_ENABLED`) is false.
       operationId: createApiKey
+      security:
+        - BearerAuth: []
       requestBody:
         required: true
         content:
@@ -278,89 +285,172 @@ paths:
               properties:
                 name:
                   type: string
+                  minLength: 3
+                  maxLength: 100
                   description: Descriptive name for the API key
                   example: Production Automation
-                expiresAt:
-                  type: string
-                  format: date-time
-                  description: Optional expiration date
+                expiresInDays:
+                  type: integer
+                  minimum: 1
+                  maximum: 365
+                  description: Days until the key expires; omitted means the key does not expire
       responses:
-        '201':
-          description: API key created
+        '200':
+          description: API key created (the status is 200, not 201)
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  apiKey:
-                    type: string
-                    description: The API key (only shown once)
-                    example: cmdb_prod_abc123xyz789
-                  id:
-                    type: string
-                    format: uuid
-                  name:
-                    type: string
-                  createdAt:
-                    type: string
-                    format: date-time
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          description: API keys are disabled on this deployment (auth.apiKeys.enabled is false)
-          content:
-            application/json:
-              schema:
-                type: object
+                required: [success, data, message]
                 properties:
                   success:
                     type: boolean
-                    example: false
-                  error:
-                    type: string
-                    example: Forbidden
+                    example: true
+                  data:
+                    type: object
+                    required: [_apiKey, _id, _name]
+                    properties:
+                      _apiKey:
+                        type: string
+                        description: The API key, 64 lowercase hex characters (shown once)
+                        pattern: '^[0-9a-f]{64}$'
+                      _id:
+                        type: string
+                        format: uuid
+                      _name:
+                        type: string
+                      expiresAt:
+                        type: string
+                        format: date-time
+                        nullable: true
+                        description: null when no expiresInDays was sent
                   message:
                     type: string
-                    example: API keys are disabled
+                    example: API key generated. Save it securely - it will not be shown again.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: >-
+            Not authenticated (the middleware body, `_error`/`_message`), or the authorizing credential carries no
+            credential generation (`success`/`error`/`message` with `message: Credentials changed`)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/MiddlewareError'
+                  - type: object
+                    required: [success, error, message]
+                    properties:
+                      success:
+                        type: boolean
+                        example: false
+                      error:
+                        type: string
+                        example: Unauthorized
+                      message:
+                        type: string
+                        example: Credentials changed
+        '403':
+          description: >-
+            Either an API key was used (a JWT user session is required; `code` is `JWT_SESSION_REQUIRED`), or API
+            keys are disabled on this deployment (`auth.apiKeys.enabled` is false; the body has no `code`)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ForbiddenError'
+                  - type: object
+                    required: [success, error, message]
+                    properties:
+                      success:
+                        type: boolean
+                        example: false
+                      error:
+                        type: string
+                        example: Forbidden
+                      message:
+                        type: string
+                        example: API keys are disabled
+              examples:
+                jwtSessionRequired:
+                  summary: An API key called the endpoint
+                  value:
+                    success: false
+                    error: Forbidden
+                    message: JWT user session required
+                    _error: Forbidden
+                    _message: JWT user session required
+                    code: JWT_SESSION_REQUIRED
+                apiKeysDisabled:
+                  summary: auth.apiKeys.enabled is false
+                  value:
+                    success: false
+                    error: Forbidden
+                    message: API keys are disabled
+        '500':
+          description: Internal error (`error` is `API Key Generation Failed`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                success: false
+                error: API Key Generation Failed
+                message: Internal error
 
+  /auth/api-keys:
     get:
       tags: [Authentication]
       summary: List API keys
-      description: Get the authenticated user's API keys that are not revoked. A password change revokes every key created before it (HAP-1669), so those are not listed; an older-generation key whose revoke failed is still listed with _enabled false and never authenticates (HAP-1285).
+      description: >-
+        Lists the authenticated user's API keys that are not revoked, newest first; the key value and its hash are
+        never returned. A password change revokes every key created before it (HAP-1669), so those are not listed;
+        an older-generation key whose revoke failed is still listed with `_enabled` false and never authenticates
+        (HAP-1285). Still works while `auth.apiKeys.enabled` is false. Requires a verified JWT user session.
       security:
         - BearerAuth: []
       operationId: listApiKeys
       responses:
         '200':
-          description: List of API keys
+          description: The caller's API keys (`data` is a bare array; there is no wrapper object and no total)
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ApiKey'
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiKey'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: API keys cannot access account-level operations; JWT user session required
-
-  /auth/api-keys/{keyId}:
-    delete:
-      tags: [Authentication]
-      summary: Revoke API key
-      description: Permanently revoke an API key
-      operationId: revokeApiKey
-      parameters:
-        - $ref: '#/components/parameters/KeyId'
-      responses:
-        '204':
-          description: API key revoked
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
+          description: An API key was used; a JWT user session is required (`code` is `JWT_SESSION_REQUIRED`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenError'
+              example:
+                success: false
+                error: Forbidden
+                message: JWT user session required
+                _error: Forbidden
+                _message: JWT user session required
+                code: JWT_SESSION_REQUIRED
+        '500':
+          description: Internal error (`error` is `Failed to List API Keys`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                success: false
+                error: Failed to List API Keys
+                message: Internal error
 
   /auth/me:
     get:
@@ -569,24 +659,56 @@ paths:
   /auth/api-key/{keyId}:
     delete:
       tags: [Authentication]
-      summary: Revoke own API key
+      summary: Revoke API key
+      description: >-
+        Revokes one of the caller's own API keys (soft delete: `revoked_at` is set and the key stops authenticating).
+        There is no administrator override: a key that belongs to another user, does not exist or is already revoked
+        is 404. Still works while `auth.apiKeys.enabled` is false. Requires a verified JWT user session.
+      operationId: revokeApiKey
       security:
         - BearerAuth: []
       parameters:
-        - name: keyId
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: '#/components/parameters/KeyId'
       responses:
         '200':
-          description: Own API key revoked
+          description: API key revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, message]
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: API key revoked successfully
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: JWT user session required
+          description: An API key was used; a JWT user session is required (`code` is `JWT_SESSION_REQUIRED`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenError'
+              example:
+                success: false
+                error: Forbidden
+                message: JWT user session required
+                _error: Forbidden
+                _message: JWT user session required
+                code: JWT_SESSION_REQUIRED
         '404':
-          $ref: '#/components/responses/NotFound'
+          description: The key is not the caller's, does not exist or is already revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                success: false
+                error: Not Found
+                message: API key not found
 
   # =============================================================================
   # CONFIGURATION ITEMS (CIs)
@@ -5699,7 +5821,10 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
-      description: API key from /auth/api-keys endpoint
+      description: >-
+        API key created by POST /auth/api-key. The header name is `X-API-Key` by default; the deployment can change
+        it with `API_KEY_HEADER_NAME` (or `auth.apiKeys.headerName`), so this scheme documents the default. While
+        `API_KEYS_ENABLED` is false the header is ignored and a key-only request is 401.
 
   parameters:
     CIId:
@@ -6408,25 +6533,36 @@ components:
 
     ApiKey:
       type: object
+      description: >-
+        One key of the caller as GET /auth/api-keys returns it: the key value, its hash and the credential generation
+        are never included. Dates are ISO 8601 strings; an absent expiry or last use is null.
       properties:
         _id:
           type: string
           format: uuid
+        _userId:
+          type: string
+          description: The owning user (always the caller)
         _name:
           type: string
         _role:
           type: string
+          enum: [admin, operator, viewer, agent]
+          description: The creating user's role at creation; the role at use is the intersection with the user's current role
         _enabled:
           type: boolean
+          description: false for a key of an older credential generation that is still listed; it never authenticates
         _createdAt:
           type: string
           format: date-time
         expiresAt:
           type: string
           format: date-time
+          nullable: true
         lastUsedAt:
           type: string
           format: date-time
+          nullable: true
 
     # =========================================================================
     # CREDENTIALS

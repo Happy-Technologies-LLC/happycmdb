@@ -170,21 +170,36 @@ describe('checkDbRole', () => {
   });
 
   test.each(['150000', '160000', '170000'])(
-    'PG %s: the probe runs in a read-only transaction with a 5 s statement_timeout, one probe SELECT, then ROLLBACK, and releases the client',
+    'PG %s: the probe runs in a read-only transaction with a 5 s statement_timeout and a pinned search_path (before the version read and the probe), one probe SELECT, then ROLLBACK, and releases the client',
     async (version) => {
       const { pool, statements, release } = fakePool({ ...role(false, false), version });
       await checkDbRole(pool, OFF);
       expect(statements[0]).toBe('BEGIN READ ONLY');
       expect(statements[1]).toBe('SET LOCAL statement_timeout = 5000');
+      expect(statements[2]).toBe('SET LOCAL search_path = pg_catalog, pg_temp');
+      expect(statements[3]).toBe('SHOW server_version_num');
+      expect(statements[4]).toMatch(/^SELECT\b/);
       expect(statements.at(-1)).toBe('ROLLBACK');
       const selects = statements.filter(text => /^SELECT\b/.test(text));
       expect(selects).toHaveLength(1);
       expect(selects[0]).not.toContain(';');
       expect(statements.filter(text => !/^SELECT\b/.test(text))).toEqual([
-        'BEGIN READ ONLY', 'SET LOCAL statement_timeout = 5000', 'SHOW server_version_num', 'ROLLBACK',
+        'BEGIN READ ONLY', 'SET LOCAL statement_timeout = 5000', 'SET LOCAL search_path = pg_catalog, pg_temp',
+        'SHOW server_version_num', 'ROLLBACK',
       ]);
       expect(release).toHaveBeenCalledWith(undefined);
     });
+
+  // The unflagged predefined roles (pg_monitor and its parts, pg_signal_backend, pg_create_subscription, pg_maintain,
+  // pg_checkpoint, pg_use_reserved_connections) are a settled decision: adding a name here is a deliberate change.
+  test.each(['150000', '170000'])('PG %s: the probe flags exactly the five dangerous built-in roles by name', async (version) => {
+    const { pool, statements } = fakePool({ ...role(false, false), version });
+    await checkDbRole(pool, OFF);
+    const list = /r\.rolname IN \(([^)]*)\)\s+AND \(pg_has_role/.exec(statements.find(text => /^SELECT\b/.test(text))!)?.[1];
+    expect(list?.split(',').map(name => name.trim())).toEqual([
+      "'pg_execute_server_program'", "'pg_write_server_files'", "'pg_read_server_files'", "'pg_read_all_data'", "'pg_write_all_data'",
+    ]);
+  });
 
   test.each(['', 'abc', '0', '-1', '16.0'])('an unreadable server_version_num (%j) is a probe failure, not a pass', async (version) => {
     await expect(checkDbRole(fakePool({ ...role(false, false), version }).pool, ON)).rejects.toThrow(/probe failed/);
@@ -227,6 +242,14 @@ describe('bypassesRowSecurity', () => {
     'flags set: %s', (_name, combo) => {
       expect(bypassesRowSecurity(combo)).toBe(FLAG_NAMES.some(name => combo[name]));
     });
+
+  test('a row that carries none of the eight flags is unflagged whatever else it says (no flag exists for the monitor-family roles)', () => {
+    const clean = Object.fromEntries(FLAG_NAMES.map(name => [name, false])) as Record<(typeof FLAG_NAMES)[number], boolean>;
+    const extra = { pg_monitor_member: true, pg_read_all_stats_member: true, pg_read_all_settings_member: true,
+      pg_signal_backend_member: true, pg_create_subscription_member: true, pg_maintain_member: true,
+      pg_checkpoint_member: true, pg_use_reserved_connections_member: true };
+    expect(bypassesRowSecurity({ ...clean, ...extra })).toBe(false);
+  });
 });
 
 describe('requireNonSuperuser', () => {
@@ -263,10 +286,12 @@ describe('probeDbRole against PostgreSQL', () => {
    * on a server that also accepts it. `systemUser` replaces the `system_user` token with a literal, standing in for
    * PG16+'s authenticated identity (PGlite's system_user is always NULL: no authentication step).
    */
-  const poolFor = (sessionRole: string, setRole?: string, opts: { version?: string; systemUser?: string } = {}): DbRolePool => ({
+  const poolFor = (sessionRole: string, setRole?: string,
+    opts: { version?: string; systemUser?: string; sessionSql?: string } = {}): DbRolePool => ({
     connect: async () => {
-      await exec('RESET SESSION AUTHORIZATION; RESET ROLE');
+      await exec('RESET SESSION AUTHORIZATION; RESET ROLE; RESET search_path');
       await exec(`SET SESSION AUTHORIZATION ${sessionRole}`);
+      if (opts.sessionSql) await exec(opts.sessionSql);
       if (setRole) await exec(`SET ROLE ${setRole}`);
       const query = async (text: string) => {
         if (opts.version && text === 'SHOW server_version_num') return { rows: [{ server_version_num: opts.version }] };
@@ -317,7 +342,12 @@ describe('probeDbRole against PostgreSQL', () => {
       CREATE ROLE g_opt_admin_both_false LOGIN NOSUPERUSER NOBYPASSRLS;
       GRANT pg_execute_server_program TO g_opt_inherit_false WITH INHERIT FALSE;
       GRANT pg_execute_server_program TO g_opt_set_false WITH SET FALSE;
-      GRANT pg_execute_server_program TO g_opt_admin_both_false WITH ADMIN OPTION, INHERIT FALSE, SET FALSE;`);
+      GRANT pg_execute_server_program TO g_opt_admin_both_false WITH ADMIN OPTION, INHERIT FALSE, SET FALSE;
+      CREATE ROLE g_unflagged LOGIN NOSUPERUSER NOBYPASSRLS IN ROLE pg_monitor, pg_read_all_stats, pg_read_all_settings,
+        pg_stat_scan_tables, pg_signal_backend, pg_create_subscription, pg_maintain, pg_checkpoint, pg_use_reserved_connections;
+      CREATE ROLE g_shadow_parent NOLOGIN NOSUPERUSER NOBYPASSRLS REPLICATION;
+      CREATE ROLE g_shadow LOGIN NOSUPERUSER NOBYPASSRLS IN ROLE g_shadow_parent, pg_read_all_data;
+      GRANT CREATE ON SCHEMA public TO g_shadow;`);
   }, 30000);
   afterAll(() => host.kill());
 
@@ -418,5 +448,58 @@ describe('probeDbRole against PostgreSQL', () => {
   test('is a read-only probe: the transaction is rolled back and the session is usable afterwards', async () => {
     await probe('g_plain');
     expect(await exec('SELECT 1 AS one')).toEqual([{ one: 1 }]);
+  });
+
+  // The deliberately unflagged predefined roles (settled decision; see dangerous_builtin_role_member): none sets a flag.
+  test('a member of pg_monitor, pg_read_all_stats, pg_read_all_settings, pg_stat_scan_tables, pg_signal_backend, pg_create_subscription, pg_maintain, pg_checkpoint and pg_use_reserved_connections is not flagged', async () => {
+    const row = await probe('g_unflagged');
+    expect(pick(row)).toEqual(['g_unflagged', 'g_unflagged', false, false, false, false]);
+    expect(escalation(row)).toEqual([false, false, false, false]);
+  });
+
+  // A role's own search_path (ALTER ROLE ... SET search_path) is applied when it logs in; PGlite has no login, so a
+  // session SET stands in for it. The probe must read the real catalog whatever the session says.
+  describe('names the probed role can shadow', () => {
+    const COLUMNS = 'oid, rolname, false AS rolsuper, false AS rolbypassrls, false AS rolcreaterole, false AS rolreplication';
+
+    test('public.pg_roles and public.pg_has_role created by a role with CREATE on public and its own search_path do not hide its memberships', async () => {
+      await exec(`SET SESSION AUTHORIZATION g_shadow;
+        CREATE VIEW public.pg_roles AS SELECT ${COLUMNS} FROM pg_catalog.pg_roles;
+        GRANT SELECT ON public.pg_roles TO PUBLIC;
+        CREATE FUNCTION public.pg_has_role(name, oid, text) RETURNS boolean LANGUAGE sql AS 'SELECT false';
+        RESET SESSION AUTHORIZATION`);
+      try {
+        const pool = poolFor('g_shadow', undefined, { sessionSql: 'SET search_path = public, pg_catalog' });
+        // Control: in that session the shadows answer for the probe's names.
+        const client = await pool.connect();
+        const parent = "(SELECT oid FROM pg_catalog.pg_roles WHERE rolname = 'g_shadow_parent')";
+        expect((await client.query('SELECT count(*)::int AS n FROM pg_roles WHERE rolreplication')).rows).toEqual([{ n: 0 }]);
+        expect((await client.query(`SELECT pg_has_role(current_user, ${parent}, 'MEMBER') AS member`)).rows).toEqual([{ member: false }]);
+        expect((await client.query(`SELECT pg_catalog.pg_has_role(current_user, ${parent}, 'MEMBER') AS member`)).rows).toEqual([{ member: true }]);
+
+        const row = await probeDbRole(pool);
+        expect(escalation(row)).toEqual([false, true, false, true]);
+      } finally {
+        await exec('RESET SESSION AUTHORIZATION; RESET search_path; DROP VIEW public.pg_roles; DROP FUNCTION public.pg_has_role(name, oid, text)');
+      }
+    });
+
+    // Without a search_path of its own a session still searches pg_temp before pg_catalog for relations, and TEMP on the
+    // database is granted to PUBLIC by default, so no CREATE on any schema is needed to shadow pg_roles this way.
+    // Functions are never resolved through pg_temp implicitly, so only the view can be shadowed.
+    test('a temp view named pg_roles does not hide a REPLICATION membership (pg_temp is searched last)', async () => {
+      await exec(`SET SESSION AUTHORIZATION g_repl_member;
+        CREATE TEMP VIEW pg_roles AS SELECT ${COLUMNS} FROM pg_catalog.pg_roles;
+        RESET SESSION AUTHORIZATION`);
+      try {
+        const pool = poolFor('g_repl_member');
+        const client = await pool.connect();
+        expect((await client.query('SELECT count(*)::int AS n FROM pg_roles WHERE rolreplication')).rows).toEqual([{ n: 0 }]);
+
+        expect(escalation(await probeDbRole(pool))).toEqual([false, false, false, true]);
+      } finally {
+        await exec('RESET SESSION AUTHORIZATION; DROP VIEW pg_temp.pg_roles');
+      }
+    });
   });
 });

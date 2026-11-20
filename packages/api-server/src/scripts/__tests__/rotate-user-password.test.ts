@@ -32,6 +32,7 @@ import {
   IDENTITY_CYPHER, applyRotation, parseArgs, prepareDecisionConstraint, prepareRotation, reconcileRotations, rotateUserPassword,
   RotationRefused, type RotationDeps, type RotationGraph, type RotationLock, type RotationSql,
 } from '../rotate-user-password';
+import { MALFORMED_AMBIENT_TLS_ENV, PERMISSIVE_AMBIENT_TLS_ENV, runOperatorCli } from './fixtures/run-operator-cli';
 import { lockOf } from '../operator-stores';
 
 // ---------------------------------------------------------------------------
@@ -606,4 +607,38 @@ describe('auth_credential_events is append-only with one outcome per intent', ()
     await expect(send('query', `INSERT INTO auth_credential_events (user_id, event, actor)
       VALUES ('user-m', 'default_marker_cleared_login', 'x')`)).rejects.toMatchObject({ code: '23514' });
   });
+});
+
+
+/**
+ * The `require.main === module` block as a real process: it must call isolateOperatorEnvironment before any client
+ * exists. `main` takes `env` explicitly, so only a child process can see the ambient API-server TLS toggles.
+ */
+describe('rotate-user-password CLI process', () => {
+  const SCRIPT = join(__dirname, '../rotate-user-password.ts');
+  const ENV = {
+    CMDB_ROTATE_POSTGRES_HOST: '127.0.0.1', CMDB_ROTATE_POSTGRES_PORT: '1', CMDB_ROTATE_POSTGRES_DB: 'unused',
+    CMDB_ROTATE_POSTGRES_USER: 'unused', CMDB_ROTATE_POSTGRES_PASSWORD: 'pg-secret-value',
+    CMDB_ROTATE_NEO4J_URI: 'bolt://127.0.0.1:1', CMDB_ROTATE_NEO4J_USERNAME: 'unused', CMDB_ROTATE_NEO4J_PASSWORD: 'neo4j-secret-value',
+  };
+  const ARGV = ['--prepare'];
+
+  it('ignores malformed ambient API-server TLS toggles', async () => {
+    const { code, stdout, stderr, driverConfigs } = await runOperatorCli(SCRIPT, ARGV, { ...ENV, ...MALFORMED_AMBIENT_TLS_ENV });
+
+    expect(stderr).not.toContain('must be true or false');
+    expect(stderr).not.toContain('Unsupported PostgreSQL TLS mode');
+    expect(driverConfigs).toHaveLength(1); // the Neo4jClient was constructed
+    expect(code).toBe(1);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('rotate-user-password: stub neo4j driver: no connection');
+  }, 10000);
+
+  it('connects with its own { encrypted: false } whatever the ambient TLS toggles ask for', async () => {
+    const { driverConfigs, stderr } = await runOperatorCli(SCRIPT, ARGV, { ...ENV, ...PERMISSIVE_AMBIENT_TLS_ENV });
+
+    expect(driverConfigs).toHaveLength(1);
+    expect(driverConfigs[0]).toMatchObject({ encrypted: 'ENCRYPTION_OFF', trust: 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES' });
+    expect(stderr).not.toContain('SSL/TLS encryption enabled');
+  }, 10000);
 });

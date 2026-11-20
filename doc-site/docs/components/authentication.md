@@ -232,26 +232,49 @@ packages/api-server/src/scripts/identity-window.ts assign-organization --user-id
   of the user gains it at once; `enabledApiKeys` counts them, so you can decide whether to revoke
   them with the operator rotation.
 
-### Postgres TLS for the operator tools
+### TLS for the operator tools
 
-The operator tools drop the API server's own `POSTGRES_SSL_*` variables before any client exists, so
-`POSTGRES_SSL_CA_FILE` has no effect on them. They read only their own variable, whose value is
-`require` or `verify-full`: `CMDB_ROTATE_POSTGRES_SSL` (the rotation and the identity window) and
-`CMDB_BACKFILL_POSTGRES_SSL` (the organization backfill). The tenant fixture seed has no such variable
-(loopback databases only).
+The operator tools drop the API server's own `POSTGRES_SSL_*` and `NEO4J_*` TLS variables before any
+client exists, so `POSTGRES_SSL_CA_FILE`, `NEO4J_ENCRYPTED` and the rest have no effect on them. Each
+tool reads only its own variables: prefix `CMDB_ROTATE` (the rotation and the identity window) or
+`CMDB_BACKFILL` (the organization backfill). `migrate-legacy-discovery-definitions` uses
+`CMDB_MIGRATION_POSTGRES_SSL` and accepts only `verify-full` off loopback. The tenant fixture seed has
+no such variable (loopback databases only).
+
+| Variable | Values | Unset |
+|----------|--------|-------|
+| `<PREFIX>_POSTGRES_SSL` | `verify-full`, `require`, `disable` | Refused for a non-loopback host; plaintext on loopback |
+| `<PREFIX>_POSTGRES_SSL_CA_FILE` | Path to a PEM CA bundle; needs `<PREFIX>_POSTGRES_SSL=verify-full` | The built-in public CA store (plus `NODE_EXTRA_CA_CERTS`) |
+| `<PREFIX>_NEO4J_ENCRYPTED` | `true`, `false` | Refused for a non-loopback host; plaintext on loopback |
+
+**A non-loopback host needs an explicit setting.** Loopback is `127.0.0.0/8`, `::1`, `localhost` and (Postgres
+only) a Unix socket directory; anything else, including `localhost.example`, `0.0.0.0` and
+`::ffff:127.0.0.1`, is remote. For a remote host an unset `<PREFIX>_POSTGRES_SSL` or
+`<PREFIX>_NEO4J_ENCRYPTED` makes the tool exit 1 before any connection opens, naming the variable. Plaintext
+to a remote host is possible only by spelling it out, `<PREFIX>_POSTGRES_SSL=disable` or
+`<PREFIX>_NEO4J_ENCRYPTED=false`; the tool then logs a warning that the connection is not encrypted. Use it
+only on a private network you control.
+
+**Trusting a private Postgres CA.**
 
 - `verify-full` checks the certificate chain and host name against Node's built-in public CA store.
   A database whose certificate was issued by a private CA fails with a certificate error
   (`UNABLE_TO_VERIFY_LEAF_SIGNATURE`) until that CA is trusted.
-- To trust a private CA, export `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` for the operator run. Node reads
-  it once at process start and **adds** the CA to the built-in store; it does not replace the store.
-  The file must hold the CA certificate only, never a private key.
+- Preferred: set `CMDB_ROTATE_POSTGRES_SSL_CA_FILE` (or `CMDB_BACKFILL_POSTGRES_SSL_CA_FILE`) to the CA
+  bundle. The file is read at start and handed to the client with `rejectUnauthorized: true`, so **only** that
+  bundle is trusted for the database. Fail-closed: a missing, unreadable or empty file, or a CA file next to
+  any mode other than `verify-full`, makes the tool exit 1 before connecting. The file must hold CA
+  certificates only, never a private key.
+- Alternative: export `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` for the run. Node reads it once at process start
+  and **adds** the CA to the built-in store; it does not replace the store, and it applies to every TLS
+  connection of the process. It works for every tool, `migrate-legacy-discovery-definitions` included.
 - Do not fall back to `require`: it encrypts the connection but does **not** verify the server
   certificate, so it gives no protection against an impersonated database.
 
 ```bash
-export NODE_EXTRA_CA_CERTS=/path/to/ca.pem
 export CMDB_ROTATE_POSTGRES_SSL=verify-full
+export CMDB_ROTATE_POSTGRES_SSL_CA_FILE=/path/to/ca.pem   # or: export NODE_EXTRA_CA_CERTS=/path/to/ca.pem
+export CMDB_ROTATE_NEO4J_ENCRYPTED=true
 ```
 
 ### Neo4j `:BusinessService.organization_id`

@@ -451,6 +451,10 @@ describe('backfill CLI', () => {
     [['--prepare', '--apply'], ENV, 'unexpected argument --prepare'],
     [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE, '--prepare'], ENV, 'unexpected argument --prepare'],
     [['--prepare'], { CMDB_BACKFILL_NEO4J_URI: 'bolt://127.0.0.1:1', CMDB_BACKFILL_NEO4J_USERNAME: 'unused' }, 'CMDB_BACKFILL_NEO4J_PASSWORD is required'],
+    [['--prepare'], { ...ENV, CMDB_BACKFILL_NEO4J_URI: 'bolt://db.example:7687' }, 'CMDB_BACKFILL_NEO4J_ENCRYPTED must be set for a non-loopback host'],
+    [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE], { ...ENV, CMDB_BACKFILL_POSTGRES_HOST: 'db.example' }, 'CMDB_BACKFILL_POSTGRES_SSL must be set for a non-loopback host'],
+    [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE], { ...ENV, CMDB_BACKFILL_POSTGRES_HOST: '127.0.0.1.evil.com' }, 'CMDB_BACKFILL_POSTGRES_SSL must be set for a non-loopback host'],
+    [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE], { ...ENV, CMDB_BACKFILL_POSTGRES_SSL: 'verify-full', CMDB_BACKFILL_POSTGRES_SSL_CA_FILE: '/nonexistent/ca.pem' }, 'CMDB_BACKFILL_POSTGRES_SSL_CA_FILE cannot be read'],
     ...['bolt+ssc://h', 'neo4j+s://h', 'bolt://h\n', 'bolt://h%41', 'bolt://u:p@h', 'bolt://h:abc', 'bolt://h:0', 'bolt://h:65536', 'bolt://[.]'].map(uri =>
       [['--prepare'], { ...ENV, CMDB_BACKFILL_NEO4J_URI: uri },
         'CMDB_BACKFILL_NEO4J_URI must be bolt://<host>[:port] or neo4j://<host>[:port] (use CMDB_BACKFILL_NEO4J_ENCRYPTED=true for TLS)'] as [string[], Record<string, string>, string]),

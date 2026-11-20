@@ -12,7 +12,7 @@ The ITIL Service Management API provides endpoints for:
 4. **Configuration Item Audits** - Verify CI accuracy and compliance
 5. **ITSM Metrics** - MTTR, MTBF, change success rates, and configuration accuracy
 
-All ITIL endpoints require authentication and automatically create audit trail entries.
+All ITIL endpoints require authentication. Audit coverage is partial. Writes to the CI graph (the lifecycle, configuration-status and audit routes under `/configuration-items`, and [baseline restore](#post-baselines-id-restore)) are journaled with the verified caller as actor, and append chained audit entries. Writes to incident, change and baseline records (the rows in `itil_incidents`, `itil_changes` and `itil_baselines`) are not audited yet: they leave no audit entry and no journal row.
 
 ## Base URL
 
@@ -31,7 +31,7 @@ Authorization: Bearer <jwt_token>
 
 - **Read routes** (every `GET`) need no permission beyond authentication.
 - **Mutating routes** (every `POST`, `PATCH` and `DELETE`) require the `write` permission. Without it the API answers `403`.
-- **Check order on `/incidents`, `/changes` and `/baselines`**: two checks run before the `write` check, so a caller without `write` does not always see the `403`. First, `503 {"success": false, "error": "ITIL records unavailable"}` when the ITIL record tables are missing from the database. Second, for any route with an `:id`, `404 {"success": false, "error": "Not Found", "message": "Incident not found"}` (`Change not found` or `Baseline not found` on the other two families) when the id is not a UUID. The caller is still refused and nothing is written; only the status differs. A malformed id or a missing record table on a caller that holds `write` gets the same `404` or `503`. The `/configuration-items` routes have no such pre-check: they answer `403` first.
+- **Check order on `/incidents`, `/changes` and `/baselines`**: two checks run before the `write` check, so a caller without `write` does not always see the `403`. First, `503 {"success": false, "error": "ITIL records unavailable"}` when the ITIL record tables are missing from the database, or when the record-table check itself fails (the catalog query errors). Second, for any route with an `:id`, `404 {"success": false, "error": "Not Found", "message": "Incident not found"}` (`Change not found` or `Baseline not found` on the other two families) when the id is not a UUID. The caller is still refused and nothing is written; only the status differs. A malformed id or a missing record table on a caller that holds `write` gets the same `404` or `503`. The `/configuration-items` routes have no such pre-check: they answer `403` first.
 - **Organization scope**: all records belong to the caller's organization, taken from the credential, never from the request. A caller whose credential carries no organization claim is refused with `403` (`code: ORGANIZATION_REQUIRED`, `message: "Organization claim required"`) before any route runs.
 
 The permissions are `read`, `write`, `discover` and `admin`; there are no `itil:read` or `itil:write` permissions.
@@ -1044,36 +1044,48 @@ Restore a CI to a baseline configuration.
 }
 ```
 
-::: danger Destructive Operation
+| Field | Required | Constraints |
+|-------|----------|-------------|
+| `ciId` | Yes | Id of a CI captured in the baseline |
+| `restoreAttributes` | No | Names of the snapshot attributes to restore; when omitted or empty, every attribute in the snapshot is restored |
+| `performedBy` | Yes | Accepted and ignored: validation requires a string, but it is never read. The change is credited to the authenticated caller, never to this value |
+
+The restore is journaled: the actor on the journal row and the audit entry is the verified caller taken from the credential.
+
+:::: danger Destructive Operation
 Baseline restoration updates CI attributes in Neo4j. This does NOT modify the actual infrastructure - it only updates the CMDB representation. Use with caution.
-:::
+::::
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "restored": {
-    "ci_id": "srv-web-prod-01",
-    "attributesRestored": 3,
-    "changes": [
-      {
-        "attribute": "hostname",
-        "old": "web-prod-01-new.company.com",
-        "new": "web-prod-01.company.com"
-      }
-    ],
-    "performedBy": "ops-team@company.com",
-    "restoredAt": "2025-11-20T10:15:00Z"
-  }
+  "data": {
+    "id": "srv-web-prod-01",
+    "hostname": "web-prod-01.company.com",
+    "ip_address": "10.0.1.11",
+    "environment": "production"
+  },
+  "message": "CI restored from baseline"
 }
 ```
+
+`data` is the restored CI as stored after the restore: its properties, with any leading underscore removed from the names. The example lists only a few of them. There is no `restored` object, change list, `performedBy` or `restoredAt`.
+
+| Status | Meaning |
+|--------|---------|
+| 200 | CI restored |
+| 404 | `Baseline not found` (unknown id, other organization, or id not a UUID), or `CI not found` (the CI is not in the baseline, or no longer exists in the caller's organization) |
+| 500 | `Failed to restore from baseline` |
+
+Journal refusals are answered as on the other CI writes: `409` (a write to the CI is pending reconciliation, or it could not be reconciled), `503` (`CI write temporarily unavailable`) and `422` (the snapshot cannot be restored through the audited path).
 
 ---
 
 ## ITSM Metrics
 
-All metrics are read-only `GET` routes, scoped to the caller's organization. Numeric results are returned as strings with two decimals. The incident and change metrics answer `503 {"success": false, "error": "ITIL records unavailable"}` when the ITIL record tables are missing from the database.
+All metrics are read-only `GET` routes, scoped to the caller's organization. Numeric results are returned as strings with two decimals. The incident and change metrics answer `503 {"success": false, "error": "ITIL records unavailable"}` when the ITIL record tables are missing from the database or the record-table check itself fails.
 
 ### GET /metrics/configuration-accuracy
 

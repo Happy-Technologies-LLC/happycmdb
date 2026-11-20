@@ -19,12 +19,22 @@ function run(handler: (req: never, res: never, next: never) => Promise<void>, he
   const req = { headers } as unknown as Request & { user?: unknown; credentialType?: string };
   const json = jest.fn();
   const status = jest.fn(() => ({ json }));
-  const res = { status } as unknown as Response;
+  const setHeader = jest.fn();
+  const set = jest.fn();
+  const res = { status, setHeader, set } as unknown as Response;
   const next = jest.fn();
-  return handler(req as never, res as never, next as never).then(() => ({ req, status, json, next }));
+  return handler(req as never, res as never, next as never).then(() => ({ req, status, json, setHeader, set, next }));
 }
 
+// Every level method of the shared winston logger (read from the instance, so a level
+// added later is covered) plus the generic `log(level, ...)` entry point.
+const LOGGER_METHODS = [...Object.keys(logger.levels), 'log'] as Array<keyof typeof logger & string>;
+let spies: Record<string, jest.SpyInstance>;
 let warn: jest.SpyInstance;
+
+/** Serialized calls of every logger method that received any call. */
+const loggedAnywhere = (): string =>
+  JSON.stringify(Object.entries(spies).filter(([, spy]) => spy.mock.calls.length > 0).map(([name, spy]) => [name, spy.mock.calls]));
 beforeEach(() => {
   // jest.config.unit.js sets resetMocks, so implementations are installed per test.
   verifyToken.mockImplementation(async (token: string) => {
@@ -35,9 +45,12 @@ beforeEach(() => {
     if (key === 'valid') return keyUser;
     throw new Error('bad key');
   });
-  warn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+  spies = Object.fromEntries(
+    LOGGER_METHODS.map((name) => [name, jest.spyOn(logger, name as 'warn').mockImplementation(() => logger)]),
+  );
+  warn = spies['warn'];
 });
-afterEach(() => warn.mockRestore());
+afterEach(() => Object.values(spies).forEach((spy) => spy.mockRestore()));
 
 describe('AuthMiddleware with apiKeys.enabled === false', () => {
   const disabled = () => build({ headerName: 'X-API-Key', enabled: false });
@@ -84,7 +97,9 @@ describe('AuthMiddleware with apiKeys.enabled === false', () => {
     expect(result.json.mock.calls[0][0]).toEqual({ _error: 'Unauthorized', _message: 'Authentication failed' });
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0][1]).toEqual({ credentialType: 'api-key', reason: 'api_keys_disabled' });
-    expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
+    expect(loggedAnywhere()).not.toContain(secret);
+    expect(result.setHeader).not.toHaveBeenCalled();
+    expect(result.set).not.toHaveBeenCalled();
   });
 
   it('authenticate(): no credentials at all still logs none/invalid', async () => {
@@ -102,7 +117,33 @@ describe('AuthMiddleware with apiKeys.enabled === false', () => {
     expect(result.next).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0][1]).toEqual({ credentialType: 'api-key', reason: 'api_keys_disabled' });
-    expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
+    expect(loggedAnywhere()).not.toContain(secret);
+  });
+
+  it('authenticate(): an empty key header is not a key-only request: logs none/invalid once, same 401 as no credentials', async () => {
+    const mw = disabled();
+    const none = await run(mw.authenticate() as never, {});
+    warn.mockClear();
+    const empty = await run(mw.authenticate() as never, { 'x-api-key': '' });
+
+    expect(empty.status).toHaveBeenCalledWith(401);
+    expect(empty.json.mock.calls).toEqual(none.json.mock.calls);
+    expect(empty.json.mock.calls[0][0]).toEqual({ _error: 'Unauthorized', _message: 'Authentication failed' });
+    expect(empty.next).not.toHaveBeenCalled();
+    expect(empty.setHeader).not.toHaveBeenCalled();
+    expect(empty.set).not.toHaveBeenCalled();
+    expect(verifyApiKey).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][1]).toEqual({ credentialType: 'none', reason: 'invalid' });
+  });
+
+  it('optionalAuthenticate(): an empty key header logs nothing (no refusal branch), sets no user and calls next', async () => {
+    const result = await run(disabled().optionalAuthenticate() as never, { 'x-api-key': '' });
+
+    expect(result.req.user).toBeUndefined();
+    expect(result.next).toHaveBeenCalledTimes(1);
+    expect(verifyApiKey).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('a bearer token plus a key header: the token decides and nothing is logged', async () => {

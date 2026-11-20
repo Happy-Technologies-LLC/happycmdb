@@ -245,8 +245,10 @@ export class ApiKeyNotFoundError extends Error {
  * Logged reason of an authentication failure; never part of a response.
  * `default_credential_refused` (v16 §15 N-21) is a default-equivalent login
  * password refused outside development; `ambiguous_identity` is an
- * identifier matching more than one :User node. Callers send both the same
- * response as any other failure.
+ * identifier matching more than one :User node. `api_keys_disabled` is a
+ * request carrying only a non-empty API key header while `auth.apiKeys.enabled`
+ * is false (logged with credentialType `api-key`, never the key). Callers send
+ * all of these the same response as any other failure.
  */
 export type AuthFailureReason =
   | 'invalid' | 'expired' | 'wrong_type' | 'disabled' | 'revoked' | 'store_error' | 'default_credential_refused'

@@ -21,6 +21,28 @@ import {
 } from '../../services/incident-business-impact';
 
 
+/** Statuses a change can be approved from: everything before `approved` in itil_changes_status_check (001). */
+const PRE_APPROVAL_STATUSES: readonly string[] = ['draft', 'pending_approval'];
+const PRE_APPROVAL_STATUS_LIST = PRE_APPROVAL_STATUSES.map(status => `'${status}'`).join(', ');
+
+/** The verified caller, never a body field. No 'system' fallback: an approval attributed to no one defeats the record. */
+function changeApprover(req: Request): string | undefined {
+  const user = (req as AuthenticatedRequest).user;
+  return [user?._userId, user?._username].find(name => typeof name === 'string' && name !== '');
+}
+function refuseUnauthenticatedApprover(res: Response): void {
+  res.status(401).json({
+    success: false,
+    error: 'Unauthorized',
+    message: 'An authenticated user is required to approve a change',
+  });
+}
+/** SET assignments for an approval; the stamp is overwritten, not COALESCEd: the status guard admits only unapproved changes. */
+function approvalAssignments(approver: string, params: unknown[]): string[] {
+  params.push(approver);
+  return ["status = 'approved'", "approval_status = 'approved'", `approved_by = $${params.length}`, 'approved_at = NOW()'];
+}
+
 /**
  * ITIL Controller
  *
@@ -794,26 +816,37 @@ export class ITILController {
         return;
       }
 
+      const statusValue = status ? String(status).toLowerCase() : undefined;
+      const approving = statusValue === 'approved';
       const updates: string[] = [];
-      const params: any[] = [];
-      let paramIndex = 1;
+      const params: unknown[] = [];
 
-      if (status) {
-        updates.push(`status = $${paramIndex++}`);
-        params.push(String(status).toLowerCase());
+      if (approving) {
+        // The verified caller, never a body approved_by/approved_at; same rules as POST /approve.
+        const approver = changeApprover(req);
+        if (!approver) {
+          refuseUnauthenticatedApprover(res);
+          return;
+        }
+        updates.push(...approvalAssignments(approver, params));
+      } else if (statusValue) {
+        params.push(statusValue);
+        updates.push(`status = $${params.length}`);
+        // Back to a pre-approval status: the earlier approval no longer stands, so a later approve records its own.
+        if (PRE_APPROVAL_STATUSES.includes(statusValue)) {
+          updates.push('approved_by = NULL', 'approved_at = NULL');
+        }
       }
       if (implementedBy != null) {
-        updates.push(`implemented_by = $${paramIndex++}`);
         params.push(implementedBy);
+        updates.push(`implemented_by = $${params.length}`);
       }
       if (actualDuration != null) {
-        updates.push(`actual_duration = $${paramIndex++}`);
         params.push(actualDuration);
+        updates.push(`actual_duration = $${params.length}`);
       }
 
-      updates.push(`updated_at = NOW()`);
-
-      if (updates.length === 1) {
+      if (updates.length === 0) {
         res.status(400).json({
           success: false,
           error: 'Bad Request',
@@ -821,33 +854,9 @@ export class ITILController {
         });
         return;
       }
+      updates.push('updated_at = NOW()');
 
-      params.push(id, requestOrganizationId(req));
-      const pool = this.postgresClient.pool;
-      const result = await pool.query(
-        `
-        UPDATE itil_changes
-        SET ${updates.join(', ')}
-        WHERE id = $${paramIndex} AND organization_id = $${paramIndex + 1}
-        RETURNING *
-        `,
-        params
-      );
-
-      if (result.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: 'Change not found',
-        });
-        return;
-      }
-
-      res.json({
-        success: true,
-        data: result.rows[0],
-        message: 'Change updated successfully',
-      });
+      await this.writeChange(req, res, id!, updates, params, approving, 'Change updated successfully');
     } catch (error) {
       logger.error('Error updating change', error);
       res.status(500).json({
@@ -900,48 +909,15 @@ export class ITILController {
   async approveChange(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
-      // The verified caller, never a body field. No 'system' fallback: an approval attributed to no one defeats the record.
-      const user = (req as AuthenticatedRequest).user;
-      const approver = user?._userId || user?._username;
+      const approver = changeApprover(req);
       if (!approver) {
-        res.status(401).json({
-          success: false,
-          error: 'Unauthorized',
-          message: 'An authenticated user is required to approve a change',
-        });
+        refuseUnauthenticatedApprover(res);
         return;
       }
 
-      const pool = this.postgresClient.pool;
-      // First approval wins: a repeat call keeps the original approver and time.
-      const result = await pool.query(
-        `
-        UPDATE itil_changes
-        SET status = 'approved',
-            approval_status = 'approved',
-            approved_by = COALESCE(approved_by, $3),
-            approved_at = COALESCE(approved_at, NOW()),
-            updated_at = NOW()
-        WHERE id = $1 AND organization_id = $2
-        RETURNING *
-        `,
-        [id, requestOrganizationId(req), approver]
-      );
-
-      if (result.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: 'Change not found',
-        });
-        return;
-      }
-
-      res.json({
-        success: true,
-        data: result.rows[0],
-        message: 'Change approved successfully',
-      });
+      const params: unknown[] = [];
+      const assignments = [...approvalAssignments(approver, params), 'updated_at = NOW()'];
+      await this.writeChange(req, res, id!, assignments, params, true, 'Change approved successfully');
     } catch (error) {
       logger.error('Error approving change', error);
       res.status(500).json({
@@ -950,6 +926,55 @@ export class ITILController {
         message: 'Internal error',
       });
     }
+  }
+
+  /**
+   * The one UPDATE behind approve and PATCH status=APPROVED. `approving` adds the pre-approval
+   * status guard to the same statement (race-free: a concurrent write serialises on the row lock
+   * and the guard is re-evaluated), then a 0-row result is a 404 (absent or another organization,
+   * nothing written) or a 409 (present, not approvable, nothing written).
+   */
+  private async writeChange(req: Request, res: Response, id: string, assignments: string[],
+    params: unknown[], approving: boolean, message: string): Promise<void> {
+    const pool = this.postgresClient.pool;
+    const organizationId = requestOrganizationId(req);
+    params.push(id, organizationId);
+    const result = await pool.query(
+      `
+      UPDATE itil_changes
+      SET ${assignments.join(', ')}
+      WHERE id = $${params.length - 1} AND organization_id = $${params.length}${approving ? `
+        AND status IN (${PRE_APPROVAL_STATUS_LIST})` : ''}
+      RETURNING *
+      `,
+      params
+    );
+
+    if (result.rows.length === 0) {
+      const exists = approving && (await pool.query(
+        'SELECT 1 FROM itil_changes WHERE id = $1 AND organization_id = $2', [id, organizationId])).rows.length > 0;
+      if (exists) {
+        res.status(409).json({
+          success: false,
+          error: 'Conflict',
+          code: 'CHANGE_NOT_APPROVABLE',
+          message: 'Only a draft or pending_approval change can be approved',
+        });
+        return;
+      }
+      res.status(404).json({
+        success: false,
+        error: 'Not Found',
+        message: 'Change not found',
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      data: result.rows[0],
+      message,
+    });
   }
 
   async implementChange(req: Request, res: Response): Promise<void> {

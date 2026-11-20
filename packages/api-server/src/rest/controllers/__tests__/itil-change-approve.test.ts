@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * POST /itil/changes/:id/approve records who approved and when (first approval wins).
+ * POST /itil/changes/:id/approve and PATCH /itil/changes/:id {status: APPROVED} record who approved and when,
+ * and only from a pre-approval status (draft, pending_approval); moving back to one clears the stamp.
  *
  * The SQL runs on real PostgreSQL (PGlite, hosted by ../../routes/__tests__/fixtures/pglite-host.cjs) over the
  * itil_changes DDL of 001_complete_schema.sql plus migrations 035 (organization_id) and 040. Timestamps are moved
- * explicitly by SQL; nothing waits on the wall clock. GraphQL `approveChange` calls the same controller method.
+ * explicitly by SQL; nothing waits on the wall clock. GraphQL `approveChange` and `updateChange` call the same
+ * controller methods.
  */
 
 import { describe, it, expect, jest, beforeAll, beforeEach, afterAll } from '@jest/globals';
@@ -19,7 +21,10 @@ jest.mock('@cmdb/common', () => ({
   ...jest.requireActual<object>('@cmdb/common'),
   logger: { info: jest.fn(), error: jest.fn(), debug: jest.fn(), warn: jest.fn() },
 }));
-jest.mock('@cmdb/database', () => ({ getNeo4jClient: jest.fn(), getPostgresClient: jest.fn() }));
+jest.mock('@cmdb/database', () => ({
+  getNeo4jClient: jest.fn(), getPostgresClient: jest.fn(),
+  isStorableString: (value: string) => !value.includes('\u0000'),
+}));
 jest.mock('bcrypt', () => ({}));
 
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
@@ -59,6 +64,13 @@ async function approve(user: Record<string, unknown>, id: string, body: Record<s
   (getPostgresClient as jest.Mock).mockReturnValue({ pool });
   const out = res();
   await new ITILController().approveChange(
+    { user, params: { id }, body } as unknown as Request, out as unknown as Response);
+  return out;
+}
+async function patch(user: Record<string, unknown>, id: string, body: Record<string, unknown>) {
+  (getPostgresClient as jest.Mock).mockReturnValue({ pool });
+  const out = res();
+  await new ITILController().updateChange(
     { user, params: { id }, body } as unknown as Request, out as unknown as Response);
   return out;
 }
@@ -117,19 +129,35 @@ describe('POST /itil/changes/:id/approve records the approver', () => {
     expect(out.body.data.approved_at).toEqual(stored['approved_at']);
   });
 
-  it('first approval wins: a repeat approval by another user keeps the approver and the time', async () => {
+  it('a repeat approval is refused 409 and keeps the approver and the time', async () => {
     const id = await addChange(ORG_A);
     await approve(U1, id);
     await sql(`UPDATE itil_changes SET approved_at = '${FIXED_APPROVED}' WHERE id = $1`, [id]);
+    const before = await row(id);
     const out = await approve(U2, id);
-    expect(out.statusCode).toBe(200);
-    const stored = await row(id);
-    expect(stored['approved_by']).toBe('u-1');
-    expect(stored['approved_at']).toEqual(new Date(FIXED_APPROVED));
-    expect(stored['status']).toBe('approved');
-    expect(out.body.data.approved_by).toBe('u-1');
-    expect(out.body.data.approved_at).toEqual(new Date(FIXED_APPROVED));
+    expect(out.statusCode).toBe(409);
+    expect(out.body.code).toBe('CHANGE_NOT_APPROVABLE');
+    expect(await row(id)).toEqual(before);
+    expect(before['approved_by']).toBe('u-1');
+    expect(before['approved_at']).toEqual(new Date(FIXED_APPROVED));
   });
+
+  it('approves from draft as well as pending_approval', async () => {
+    const id = await addChange(ORG_A, 'draft');
+    expect((await approve(U1, id)).statusCode).toBe(200);
+    expect((await row(id))['approved_by']).toBe('u-1');
+  });
+
+  it.each(['scheduled', 'in_progress', 'implemented', 'closed', 'cancelled'])(
+    'refuses approval of a %s change with 409 and writes nothing', async status => {
+      const id = await addChange(ORG_A, status);
+      const before = await row(id);
+      const out = await approve(U1, id);
+      expect(out.statusCode).toBe(409);
+      expect(out.body).toEqual({ success: false, error: 'Conflict', code: 'CHANGE_NOT_APPROVABLE',
+        message: 'Only a draft or pending_approval change can be approved' });
+      expect(await row(id)).toEqual(before);
+    });
 
   it('does not trust a body field for the approver', async () => {
     const id = await addChange(ORG_A);
@@ -174,5 +202,102 @@ describe('tenant boundary and unknown ids', () => {
     const out = await approve(U1, '33333333-3333-4333-8333-333333333333');
     expect(out.statusCode).toBe(404);
     expect(out.body.message).toBe('Change not found');
+  });
+});
+
+describe('moving back to a pre-approval status clears the approval stamp', () => {
+  it.each(['PENDING_APPROVAL', 'DRAFT'])('PATCH %s clears approved_by and approved_at; a later approve records the new approver',
+    async status => {
+      const id = await addChange(ORG_A);
+      await approve(U1, id);
+      await sql(`UPDATE itil_changes SET approved_at = '${FIXED_APPROVED}' WHERE id = $1`, [id]);
+
+      const back = await patch(U2, id, { status });
+      expect(back.statusCode).toBe(200);
+      const cleared = await row(id);
+      expect(cleared['status']).toBe(status.toLowerCase());
+      expect(cleared['approved_by']).toBeNull();
+      expect(cleared['approved_at']).toBeNull();
+      expect(back.body.data.approved_by).toBeNull();
+
+      const before = Date.now();
+      const again = await approve(U2, id);
+      expect(again.statusCode).toBe(200);
+      const stored = await row(id);
+      expect(stored['approved_by']).toBe('u-2');
+      expect((stored['approved_at'] as Date).getTime()).toBeGreaterThanOrEqual(before);
+    });
+
+  it('a later status that is not pre-approval keeps the stamp', async () => {
+    const id = await addChange(ORG_A);
+    await approve(U1, id);
+    expect((await patch(U2, id, { status: 'SCHEDULED' })).statusCode).toBe(200);
+    const stored = await row(id);
+    expect(stored['status']).toBe('scheduled');
+    expect(stored['approved_by']).toBe('u-1');
+    expect(stored['approved_at']).not.toBeNull();
+  });
+});
+
+describe('PATCH /itil/changes/:id with status APPROVED records the approver', () => {
+  it('stamps approved_by from the verified user and approved_at, like the approve endpoint', async () => {
+    const id = await addChange(ORG_A);
+    const before = Date.now();
+    const out = await patch(U1, id, { status: 'APPROVED' });
+    const after = Date.now();
+    expect(out.statusCode).toBe(200);
+    const stored = await row(id);
+    expect(stored['status']).toBe('approved');
+    expect(stored['approval_status']).toBe('approved');
+    expect(stored['approved_by']).toBe('u-1');
+    expect((stored['approved_at'] as Date).getTime()).toBeGreaterThanOrEqual(before);
+    expect((stored['approved_at'] as Date).getTime()).toBeLessThanOrEqual(after);
+    expect(out.body.data.approved_by).toBe('u-1');
+    expect(out.body.message).toBe('Change updated successfully');
+  });
+
+  it('ignores a forged approved_by and approved_at in the body', async () => {
+    const id = await addChange(ORG_A);
+    const out = await patch(U1, id, { status: 'APPROVED', approved_by: 'attacker', approvedBy: 'attacker',
+      approved_at: FIXED_APPROVED, approvedAt: FIXED_APPROVED });
+    expect(out.statusCode).toBe(200);
+    const stored = await row(id);
+    expect(stored['approved_by']).toBe('u-1');
+    expect((stored['approved_at'] as Date).getTime()).toBeGreaterThan(new Date(FIXED_APPROVED).getTime());
+  });
+
+  it('falls back to _username, and carries implementedBy in the same write', async () => {
+    const id = await addChange(ORG_A);
+    const out = await patch({ _username: 'alice', _organizationId: ORG_A }, id,
+      { status: 'APPROVED', implementedBy: 'bob' });
+    expect(out.statusCode).toBe(200);
+    const stored = await row(id);
+    expect([stored['approved_by'], stored['implemented_by']]).toEqual(['alice', 'bob']);
+  });
+
+  it('answers 401 without a usable identity and writes nothing', async () => {
+    const id = await addChange(ORG_A);
+    const before = await row(id);
+    const out = await patch({ _organizationId: ORG_A }, id, { status: 'APPROVED' });
+    expect(out.statusCode).toBe(401);
+    expect(await row(id)).toEqual(before);
+  });
+
+  it.each(['approved', 'closed', 'cancelled'])('refuses APPROVED on a %s change with 409 and writes nothing', async status => {
+    const id = await addChange(ORG_A, status);
+    const before = await row(id);
+    const out = await patch(U1, id, { status: 'APPROVED', implementedBy: 'bob' });
+    expect(out.statusCode).toBe(409);
+    expect(out.body.code).toBe('CHANGE_NOT_APPROVABLE');
+    expect(await row(id)).toEqual(before);
+  });
+
+  it('answers 404 for another organization change and writes nothing', async () => {
+    const id = await addChange(ORG_A);
+    const before = await row(id);
+    const out = await patch({ _userId: 'u-9', _organizationId: ORG_B }, id, { status: 'APPROVED' });
+    expect(out.statusCode).toBe(404);
+    expect(out.body).toEqual({ success: false, error: 'Not Found', message: 'Change not found' });
+    expect(await row(id)).toEqual(before);
   });
 });

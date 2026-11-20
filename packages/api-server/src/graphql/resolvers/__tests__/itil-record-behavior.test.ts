@@ -42,7 +42,7 @@ jest.mock('@cmdb/integration-framework', () => ({}));
 jest.mock('../../../auth/auth-bootstrap', () => ({
   getAuthMiddleware: () => ({
     authenticate: () => (req: Request & { user?: object }, _res: Response, next: NextFunction) => {
-      req.user = { _role: 'operator', _organizationId: req.headers.authorization === 'Bearer B' ? B : A };
+      req.user = { _userId: 'gql-user', _role: 'operator', _organizationId: req.headers.authorization === 'Bearer B' ? B : A };
       next();
     },
   }),
@@ -203,6 +203,26 @@ it('HAP-922: updateChange persists implementedBy and actualDuration; change and 
   }
   expect(rejected).toEqual(['BAD_USER_INPUT', 'BAD_USER_INPUT', 'BAD_USER_INPUT']);
   expect(await sql('SELECT * FROM itil_changes ORDER BY id')).toEqual(rows);
+});
+
+it('updateChange status APPROVED records the verified principal and refuses a non-pre-approval change', async () => {
+  const pending = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const closed = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  await seedChange(pending, 'pending_approval');
+  await seedChange(closed, 'closed');
+  const approve = (id: string) => graphql(`mutation { updateChange(id: "${id}", input: { status: APPROVED }) { id status } }`);
+  const refusedBefore = await sql('SELECT * FROM itil_changes WHERE id = $1', [closed]);
+  const refused = await approve(closed);
+  expect(refused.body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
+  expect(await sql('SELECT * FROM itil_changes WHERE id = $1', [closed])).toEqual(refusedBefore);
+  const approved = await approve(pending);
+  expect(approved.body).toEqual({ data: { updateChange: { id: pending, status: 'APPROVED' } } });
+  expect(await sql('SELECT status, approved_by, approved_at IS NOT NULL AS stamped FROM itil_changes WHERE id = $1', [pending]))
+    .toEqual([{ status: 'approved', approved_by: 'gql-user', stamped: true }]);
+  const back = await graphql(`mutation { updateChange(id: "${pending}", input: { status: REQUESTED }) { status } }`);
+  expect(back.body.data).toEqual({ updateChange: { status: 'REQUESTED' } });
+  expect(await sql('SELECT approved_by, approved_at FROM itil_changes WHERE id = $1', [pending]))
+    .toEqual([{ approved_by: null, approved_at: null }]);
 });
 
 const seedIncident = (id: string, number: string, priority = 3, ci = 'ci-a', org = A) => sql(

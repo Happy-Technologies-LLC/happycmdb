@@ -92,6 +92,9 @@ export class AuthMiddleware {
           req.user = payload;
           req.credentialType = 'api-key';
           next();
+        } else if (this.refusedForDisabledApiKey(req)) {
+          logAuthFailure('api-key', new AuthFailureError('api_keys_disabled'));
+          res.status(401).json(UNAUTHORIZED);
         } else {
           logAuthFailure('none', new AuthFailureError('invalid'));
           res.status(401).json(UNAUTHORIZED);
@@ -119,6 +122,8 @@ export class AuthMiddleware {
           const payload = await this.authService.verifyApiKey(apiKey);
           req.user = payload;
           req.credentialType = 'api-key';
+        } else if (this.refusedForDisabledApiKey(req)) {
+          logAuthFailure('api-key', new AuthFailureError('api_keys_disabled'));
         }
 
         next();
@@ -302,6 +307,20 @@ export class AuthMiddleware {
     }
     const apiKey = req.headers[this.apiKeyHeader.toLowerCase()] as string | undefined;
     return apiKey ?? null;
+  }
+
+  /**
+   * True when the request carries the API key header (non-empty).
+   * Only presence is read: the header value is never held, so it cannot be logged.
+   */
+  private hasApiKeyHeader(req: Request): boolean {
+    const header = req.headers[this.apiKeyHeader.toLowerCase()];
+    return header !== undefined && header.length > 0;
+  }
+
+  /** A key-only request (no bearer token) refused solely because API keys are disabled. */
+  private refusedForDisabledApiKey(req: Request): boolean {
+    return !this.apiKeysEnabled && this.hasApiKeyHeader(req);
   }
 }
 

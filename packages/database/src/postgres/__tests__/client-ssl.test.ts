@@ -50,4 +50,10 @@ describe('PostgresClient TLS mode', () => {
     process.env['POSTGRES_SSL_CA_FILE'] = caFile;
     expect(() => open()).toThrow();
   });
+
+  it('refuses verify-full when POSTGRES_SSL_CA_FILE cannot be read instead of falling back to the public trust store', () => {
+    process.env['POSTGRES_SSL_MODE'] = 'verify-full';
+    process.env['POSTGRES_SSL_CA_FILE'] = join(mkdtempSync(join(tmpdir(), 'hap1380-')), 'missing-ca.crt');
+    expect(() => open()).toThrow(/ENOENT/);
+  });
 });

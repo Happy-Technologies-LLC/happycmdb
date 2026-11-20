@@ -240,15 +240,29 @@ The operator tools drop the API server's own `POSTGRES_SSL_*` variables before a
 `CMDB_BACKFILL_POSTGRES_SSL` (the organization backfill). The tenant fixture seed has no such variable
 (loopback databases only).
 
+::: warning Unset means unencrypted
+Leaving `CMDB_ROTATE_POSTGRES_SSL` or `CMDB_BACKFILL_POSTGRES_SSL` unset gives an **unencrypted** Postgres
+connection, even when `NODE_ENV=production`: the operator tools pass `ssl: false` when the variable is absent,
+so the API server's production fail-closed check does not apply to them. Always set `verify-full`.
+:::
+
 - `verify-full` checks the certificate chain and host name against Node's built-in public CA store.
   A database whose certificate was issued by a private CA fails with a certificate error
   (`UNABLE_TO_VERIFY_LEAF_SIGNATURE`) until that CA is trusted.
 - To trust a private CA, set `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` on the operator command itself. Node
   reads it once at process start and **adds** the CA to the built-in store; it does not replace the store.
   The file must hold the CA certificate only, never a private key.
-- Check the CA before trusting it: print its fingerprint and compare it with a value you received out of
-  band (from the database operator, not from the same host or channel that gave you the file):
-  `openssl x509 -noout -fingerprint -sha256 -in ca.pem`.
+- Check the CA before trusting it. Do the three steps in this order, and stop without using the file if any
+  fails. Get the expected fingerprint out of band (from the database operator, not from the same host or
+  channel that gave you the file):
+  1. `grep -c 'BEGIN CERTIFICATE' ca.pem` must print `1`.
+  2. `openssl x509 -noout -fingerprint -sha256 -in ca.pem` must equal the expected fingerprint.
+  3. `openssl x509 -noout -ext basicConstraints -in ca.pem` must show `CA:TRUE`.
+
+  Step 1 is not optional. `openssl x509` reads only the **first** certificate in a file, but
+  `NODE_EXTRA_CA_CERTS` trusts **every** certificate in it. A file with the real CA first and an attacker's CA
+  second passes step 2 and still makes the tool trust the attacker's CA; under `verify-full` that attacker can
+  impersonate Postgres or Neo4j and receive the privileged `CMDB_ROTATE_*` / `CMDB_BACKFILL_*` passwords.
 - The CA file must be owned by the operator running the tool, mode `0644` or stricter, in a directory
   that other users cannot write to, and never under `/tmp`. Anyone who can replace the file can make the
   tool trust their own CA.
@@ -261,7 +275,8 @@ The operator tools drop the API server's own `POSTGRES_SSL_*` variables before a
   `NODE_TLS_REJECT_UNAUTHORIZED=0` and over `PGSSLMODE` in the environment.
 
 ```bash
-CMDB_ROTATE_POSTGRES_SSL=verify-full NODE_EXTRA_CA_CERTS=/path/to/ca.pem npx ts-node ...
+CMDB_ROTATE_POSTGRES_SSL=verify-full NODE_EXTRA_CA_CERTS=/path/to/ca.pem \
+  node packages/api-server/dist/tenant-fixture/api-server/src/scripts/rotate-user-password.js ...
 ```
 
 ### Neo4j `:BusinessService.organization_id`

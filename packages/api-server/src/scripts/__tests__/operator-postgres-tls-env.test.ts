@@ -10,6 +10,7 @@
  * The real PostgresClient and pg are used; only the Pool's network calls are cut off.
  */
 import pg from 'pg';
+import type tls from 'tls';
 import neo4j from 'neo4j-driver';
 import { logger } from '@cmdb/common';
 import { openOperatorStores, isolateOperatorEnvironment } from '../operator-stores';
@@ -146,5 +147,20 @@ describe.each(WEAKENING_ENVS)('verify-full with %s in the environment', (_label,
     expect(pools).toHaveLength(1);
     expect(pools[0].options.ssl).toEqual({ rejectUnauthorized: true });
     expect(connectionSsl(pools[0].options)).toEqual({ rejectUnauthorized: true });
+  });
+});
+
+describe('verify-full with an IP-address host', () => {
+  it('pins the identity check to the configured IP, not to the connection servername', async () => {
+    isolateOperatorEnvironment(process.env);
+
+    const stores = openOperatorStores({ ...rotateEnv(), CMDB_ROTATE_POSTGRES_HOST: '192.0.2.10' });
+
+    const ssl = pools[0].options.ssl as { rejectUnauthorized: boolean; checkServerIdentity: tls.CheckServerIdentityFunction };
+    expect(ssl.rejectUnauthorized).toBe(true);
+    const certFor = (san: string) => ({ subject: { CN: 'pg' }, subjectaltname: san }) as unknown as tls.PeerCertificate;
+    expect(ssl.checkServerIdentity('localhost', certFor('IP Address:192.0.2.10'))).toBeUndefined();
+    expect(ssl.checkServerIdentity('localhost', certFor('IP Address:192.0.2.99'))?.message).toContain('192.0.2.10');
+    await stores.close();
   });
 });

@@ -218,7 +218,9 @@ echo 'Disposable generation-94 upgrade and 045 rollback + re-up passed'
 
 # HAP-2126: a cmdb_app dropped and re-created by app-login (045 plus the per-table grants of 046-048, 054 and 056, re-applied
 # because the migrator never re-runs a recorded migration) must hold exactly what it holds after a fresh migration. The
-# matrix is every privilege of cmdb_app on every relation, schema and function of public and cmdb.
+# matrix is every privilege of cmdb_app on every relation, schema and function of public and cmdb, plus the column-only
+# privileges (held on a column, not on its table: has_table_privilege ignores column ACLs). Keep the SQL identical to
+# grantMatrix() in staging-app-login-receipts-grant.test.ts apart from the role literal.
 grant_matrix() {
   owner_psql -c "
     SELECT n.nspname || '.' || c.relname || '|' || p.privilege || '|'
@@ -235,7 +237,14 @@ grant_matrix() {
     UNION ALL
     SELECT 'function ' || f.oid::regprocedure::text || '|EXECUTE|'
         || CASE WHEN has_function_privilege('cmdb_app', f.oid, 'EXECUTE') THEN 't' ELSE 'f' END
-      FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace WHERE n.nspname IN ('public', 'cmdb')" | LC_ALL=C sort
+      FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace WHERE n.nspname IN ('public', 'cmdb')
+    UNION ALL
+    SELECT 'column ' || n.nspname || '.' || c.relname || '.' || a.attname || '|' || p.privilege || '|t'
+      FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+      CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('REFERENCES')) AS p(privilege)
+      WHERE n.nspname IN ('public', 'cmdb') AND c.relkind IN ('r', 'p', 'v', 'm') AND a.attnum > 0 AND NOT a.attisdropped
+        AND has_column_privilege('cmdb_app', a.attrelid, a.attnum, p.privilege)
+        AND NOT has_table_privilege('cmdb_app', a.attrelid, p.privilege)" | LC_ALL=C sort
 }
 grant_matrix > "$scratch/matrix_baseline"
 # Non-empty and carrying the six per-table grants of the app-login block, so an empty diff cannot pass.

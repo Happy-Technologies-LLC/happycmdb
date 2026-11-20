@@ -232,6 +232,28 @@ packages/api-server/src/scripts/identity-window.ts assign-organization --user-id
   of the user gains it at once; `enabledApiKeys` counts them, so you can decide whether to revoke
   them with the operator rotation.
 
+### Postgres TLS for the operator tools
+
+The operator tools drop the API server's own `POSTGRES_SSL_*` variables before any client exists, so
+`POSTGRES_SSL_CA_FILE` has no effect on them. They read only their own variable, whose value is
+`require` or `verify-full`: `CMDB_ROTATE_POSTGRES_SSL` (the rotation and the identity window) and
+`CMDB_BACKFILL_POSTGRES_SSL` (the organization backfill). The tenant fixture seed has no such variable
+(loopback databases only).
+
+- `verify-full` checks the certificate chain and host name against Node's built-in public CA store.
+  A database whose certificate was issued by a private CA fails with a certificate error
+  (`UNABLE_TO_VERIFY_LEAF_SIGNATURE`) until that CA is trusted.
+- To trust a private CA, export `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` for the operator run. Node reads
+  it once at process start and **adds** the CA to the built-in store; it does not replace the store.
+  The file must hold the CA certificate only, never a private key.
+- Do not fall back to `require`: it encrypts the connection but does **not** verify the server
+  certificate, so it gives no protection against an impersonated database.
+
+```bash
+export NODE_EXTRA_CA_CERTS=/path/to/ca.pem
+export CMDB_ROTATE_POSTGRES_SSL=verify-full
+```
+
 ### Neo4j `:BusinessService.organization_id`
 
 Service ids are chosen by the client, so an organization can own (in Postgres) an id

@@ -20,21 +20,20 @@ All ITIL endpoints require authentication and automatically create audit trail e
 http://localhost:3000/api/v1/itil
 ```
 
-::: warning ITIL Routes Status
-As of v3.0, ITIL routes are commented out in `api-server/src/rest/server.ts:93`. To enable ITIL functionality, uncomment the line:
-```typescript
-this.app.use('/api/v1/itil', itilRoutes);
-```
-:::
-
 ## Authentication
 
-All ITIL endpoints require JWT authentication with `itil:read` or `itil:write` permissions.
+Every `/api/v1/itil` request needs an authenticated caller: a JWT bearer token or an API key. Without one the API answers `401`.
 
 ```http
 POST /api/v1/itil/incidents
 Authorization: Bearer <jwt_token>
 ```
+
+- **Read routes** (every `GET`) need no permission beyond authentication.
+- **Mutating routes** (every `POST`, `PATCH` and `DELETE`) require the `write` permission. Without it the API answers `403`.
+- **Organization scope**: all records belong to the caller's organization, taken from the credential, never from the request. A caller whose credential carries no organization claim is refused with `403` (`code: ORGANIZATION_REQUIRED`, `message: "Organization claim required"`) before any route runs.
+
+The permissions are `read`, `write`, `discover` and `admin`; there are no `itil:read` or `itil:write` permissions.
 
 See [Authentication Guide](/api/authentication) for details.
 
@@ -716,140 +715,156 @@ Baseline restoration updates CI attributes in Neo4j. This does NOT modify the ac
 
 ## ITSM Metrics
 
+All metrics are read-only `GET` routes, scoped to the caller's organization. Numeric results are returned as strings with two decimals. The incident and change metrics answer `503 {"success": false, "error": "ITIL records unavailable"}` when the ITIL record tables are missing from the database.
+
 ### GET /metrics/configuration-accuracy
 
-Get CMDB configuration accuracy metrics.
+Get the share of audited CIs that are compliant. Only CIs with an ITIL audit status count; a CI never audited is ignored. A CI is compliant when its audit status is `COMPLIANT`.
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "metrics": {
-    "totalCIs": 8542,
-    "accurateCIs": 8120,
-    "accuracyPercentage": 95.06,
-    "driftDetected": 422,
-    "staleCIs": 58,
-    "lastAuditDate": "2025-11-15T10:30:00Z"
+  "data": {
+    "accuracy": "95.06",
+    "compliantCount": 8120,
+    "totalAudited": 8542
   }
 }
 ```
+
+`accuracy` is a percentage, `"0.00"` when no CI has been audited.
+
+**Errors:** `503 {"success": false, "error": "Service Unavailable", "message": "CI list temporarily unavailable"}` while CI writes are pending reconciliation; `500` on any other failure.
 
 ---
 
 ### GET /metrics/incident-summary
 
-Get incident volume and trends.
+Get incident counts grouped by status and priority.
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "summary": {
-    "total": 245,
-    "byPriority": {
-      "P1": 12,
-      "P2": 45,
-      "P3": 98,
-      "P4": 65,
-      "P5": 25
-    },
-    "byStatus": {
-      "NEW": 15,
-      "ASSIGNED": 28,
-      "IN_PROGRESS": 42,
-      "RESOLVED": 85,
-      "CLOSED": 75
-    },
-    "slaBreaches": 8
+  "data": [
+    { "status": "in_progress", "priority": 1, "count": "3" },
+    { "status": "new", "priority": 1, "count": "1" },
+    { "status": "resolved", "priority": 2, "count": "12" }
+  ]
+}
+```
+
+`data` is an array with one row per status and priority that has incidents, ordered by priority and then status. `status` is lower case. `count` is a numeric string, not a number. The array is empty when the organization has no incidents.
+
+---
+
+### GET /metrics/open-incidents
+
+Get the open incidents for the estate overview ribbon. An incident is open unless its status is `resolved`, `closed` or `cancelled`. Incidents are ordered by priority (P1 first), then newest `reported_at`.
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | integer | 5 | Incidents to return, 1 to 50 |
+
+An invalid `limit` is refused with `400 {"success": false, "error": "Bad Request", "message": "limit must be an integer from 1 to 50"}`; it is never clamped.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "incidents": [
+      {
+        "id": "5b0c9d2e-3f4a-4c1b-8e7d-0a1b2c3d4e5f",
+        "incident_number": "INC0001234",
+        "title": "Checkout API returning 500",
+        "priority": 1,
+        "status": "in_progress",
+        "affected_ci_id": "srv-web-prod-01",
+        "affected_service": { "service_id": "svc-checkout", "name": "Checkout" },
+        "opened_at": "2025-11-20T09:30:00.000Z",
+        "users_affected": 1200,
+        "revenue_per_hour": null,
+        "unavailable": ["revenue_per_hour"]
+      }
+    ],
+    "open_count": 7
   }
 }
 ```
+
+- `open_count` counts every open incident of the organization, not only the ones returned.
+- `affected_service` is `null` when no service is derived for the incident.
+- `users_affected` and `revenue_per_hour` are `null` when no data backs them, and each such field name is listed in `unavailable`.
+
+**Errors:** `503 {"success": false, "error": "Analytics resource limit exceeded"}` when the read exceeds its statement timeout.
 
 ---
 
 ### GET /metrics/change-success-rate
 
-Get change management success rate.
+Get the success rate of closed changes. Only changes with status `closed` count, and a change is successful when its outcome is `successful`.
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "metrics": {
-    "total": 150,
-    "successful": 142,
-    "failed": 8,
-    "rollbacks": 3,
-    "successRate": 94.67,
-    "byType": {
-      "STANDARD": {
-        "total": 85,
-        "successRate": 98.8
-      },
-      "NORMAL": {
-        "total": 58,
-        "successRate": 91.4
-      },
-      "EMERGENCY": {
-        "total": 7,
-        "successRate": 71.4
-      }
-    }
+  "data": {
+    "successRate": "94.67",
+    "successfulChanges": 142,
+    "totalClosedChanges": 150
   }
 }
 ```
+
+`successRate` is a percentage, `"0.00"` when no change is closed.
 
 ---
 
 ### GET /metrics/mttr
 
-Get Mean Time To Repair for incidents.
+Get Mean Time To Resolve, the average of `resolved_at - reported_at` over the organization's resolved incidents.
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "mttr": {
-    "overall": 78.5,
-    "byPriority": {
-      "P1": 25.4,
-      "P2": 48.2,
-      "P3": 92.1,
-      "P4": 145.6,
-      "P5": 220.3
-    },
-    "unit": "minutes"
+  "data": {
+    "mttr": "0.25",
+    "unit": "hours"
   }
 }
 ```
+
+`mttr` is in hours, `"0.00"` when there is no data. There is no per-priority breakdown.
 
 ---
 
 ### GET /metrics/mtbf
 
-Get Mean Time Between Failures for CIs.
+Get Mean Time Between Failures: the mean gap between consecutive incidents reported against the same CI, over incidents of every status.
 
 **Response:**
 
 ```json
 {
   "success": true,
-  "mtbf": {
-    "overall": 720,
-    "byTier": {
-      "tier_0": 1440,
-      "tier_1": 720,
-      "tier_2": 480
-    },
+  "data": {
+    "mtbf": "720.00",
     "unit": "hours"
   }
 }
 ```
+
+`mtbf` is in hours, `"0.00"` when no CI has two incidents. There is no per-tier breakdown.
 
 ---
 

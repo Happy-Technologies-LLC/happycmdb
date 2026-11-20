@@ -514,13 +514,15 @@ export class ITILController {
       const { id } = req.params;
       const { resolution } = req.body;
 
+      // resolved_at is stamped once, as in updateIncident: a repeat call keeps the downtime end; a reopen through
+      // PATCH clears it, so a later resolve stamps a fresh value.
       const pool = this.postgresClient.pool;
       const result = await pool.query(
         `
         UPDATE itil_incidents
         SET status = 'resolved',
             resolution = $1,
-            resolved_at = NOW(),
+            resolved_at = COALESCE(resolved_at, NOW()),
             updated_at = NOW()
         WHERE id = $2 AND organization_id = $3
         RETURNING *
@@ -1411,11 +1413,12 @@ export class ITILController {
   async getMeanTimeToResolve(req: Request, res: Response): Promise<void> {
     try {
       const pool = this.postgresClient.pool;
+      // Closed incidents keep their resolution stamp and stay in the mean; a reopen clears it.
       const result = await pool.query(`
         SELECT
           AVG(EXTRACT(EPOCH FROM (resolved_at - reported_at))/3600) as mttr_hours
         FROM itil_incidents
-        WHERE organization_id = $1 AND status = 'resolved'
+        WHERE organization_id = $1 AND status IN ('resolved', 'closed')
         AND resolved_at IS NOT NULL
       `, [requestOrganizationId(req)]);
 

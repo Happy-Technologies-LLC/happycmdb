@@ -245,10 +245,11 @@ export class ApiKeyNotFoundError extends Error {
  * Logged reason of an authentication failure; never part of a response.
  * `default_credential_refused` (v16 §15 N-21) is a default-equivalent login
  * password refused outside development; `ambiguous_identity` is an
- * identifier matching more than one :User node. `api_keys_disabled` is a
- * request carrying only a non-empty API key header while `auth.apiKeys.enabled`
- * is false (logged with credentialType `api-key`, never the key). Callers send
- * all of these the same response as any other failure.
+ * identifier matching more than one :User node. `api_keys_disabled` is an API
+ * key header with no Bearer token while `auth.apiKeys.enabled` is false (logged
+ * with credentialType `api-key`, never the key; also logged by the service guard
+ * in `verifyApiKey`). Callers send all of these the same response as any other
+ * failure.
  */
 export type AuthFailureReason =
   | 'invalid' | 'expired' | 'wrong_type' | 'disabled' | 'revoked' | 'store_error' | 'default_credential_refused'
@@ -550,12 +551,12 @@ export class AuthService {
   }
 
   /**
-   * Verify API key and return associated user info. Refused with AuthFailureError('disabled') before any hash or
+   * Verify API key and return associated user info. Refused with AuthFailureError('api_keys_disabled') before any hash or
    * repository read while auth.apiKeys.enabled is false, so the kill switch holds for every caller, not only the middleware.
    */
   async verifyApiKey(apiKey: string): Promise<TokenPayload> {
     if (!this.apiKeysEnabled) {
-      throw new AuthFailureError('disabled');
+      throw new AuthFailureError('api_keys_disabled');
     }
     try {
       const keyHash = this.hashKey(apiKey);

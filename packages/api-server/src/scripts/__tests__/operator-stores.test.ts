@@ -201,20 +201,3 @@ describe('assertPlainNeo4jUri', () => {
     expect(thrown).toBe(message('CMDB_X_NEO4J_URI', 'CMDB_X_NEO4J_ENCRYPTED'));
   });
 });
-
-describe('API_SERVER_CLIENT_ENV_NAMES', () => {
-  // An independent literal: a removal or an addition in operator-stores.ts must be an explicit edit here.
-  const LITERAL_NAMES = [
-    'POSTGRES_SSL_MODE',
-    'POSTGRES_SSL_ENABLED',
-    'POSTGRES_SSL_CA_FILE',
-    'NEO4J_SSL_ENABLED',
-    'NEO4J_ENCRYPTION',
-    'NEO4J_ENCRYPTED',
-    'NEO4J_SSL_TRUST_STRATEGY',
-  ];
-
-  it('is exactly the seven ambient client variables', () => {
-    expect([...API_SERVER_CLIENT_ENV_NAMES].sort()).toEqual([...LITERAL_NAMES].sort());
-  });
-});

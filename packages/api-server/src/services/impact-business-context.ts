@@ -13,8 +13,8 @@
  * CI in the traversal are listed.
  *
  * Cost per hour (decision N3 (a)): `annual revenue / 8760` (hours in a non-leap year). The total is the sum of the priced
- * services' annual revenue divided by 8760 and rounded to cents once, so it may differ by a few cents from the sum of the
- * per-service `cost_per_hour` values, which are each rounded on their own. Revenue and users are read from the service's free-form
+ * services' annual revenue divided by 8760 and rounded to cents once, so it may differ from the sum of the per-service
+ * `cost_per_hour` values, which are each rounded on their own, by up to half a cent per priced service. Revenue and users are read from the service's free-form
  * `metadata` JSON (`annual_revenue_supported`, `user_count`; a positive number or numeric string). There is no typed
  * column and no other organization-scoped source: the BSM `business_services.bsm_attributes` table has no organization
  * column and is not linked to `dim_business_services`. A value that is missing, not numeric or not positive (0 is the

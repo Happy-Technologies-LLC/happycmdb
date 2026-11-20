@@ -2243,6 +2243,8 @@ paths:
                     type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
 
     post:
       tags: [Credentials]
@@ -2296,6 +2298,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
 
   /credentials/{id}:
     get:
@@ -2319,6 +2323,8 @@ paths:
                 $ref: '#/components/schemas/Credential'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -2373,6 +2379,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -2400,6 +2408,8 @@ paths:
           description: Credential deleted
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -2447,14 +2457,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: The caller lacks the `write` permission; refused before any lookup
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MiddlewareError'
-              example:
-                _error: Forbidden
-                _message: Permission 'write' required
+          $ref: '#/components/responses/CredentialForbidden'
 
   /credentials/rank:
     post:
@@ -2499,14 +2502,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: The caller lacks the `write` permission; refused before any lookup
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MiddlewareError'
-              example:
-                _error: Forbidden
-                _message: Permission 'write' required
+          $ref: '#/components/responses/CredentialForbidden'
 
   /credentials/{id}/validate:
     post:
@@ -2538,6 +2534,8 @@ paths:
                     format: date-time
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -2561,6 +2559,8 @@ paths:
                   $ref: '#/components/schemas/CredentialSet'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
 
     post:
       tags: [Credential Sets]
@@ -2619,6 +2619,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
 
   /credential-sets/{id}:
     get:
@@ -2641,6 +2643,8 @@ paths:
                 $ref: '#/components/schemas/CredentialSet'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -2689,6 +2693,8 @@ paths:
                 $ref: '#/components/schemas/CredentialSet'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -2708,6 +2714,8 @@ paths:
           description: Credential set deleted
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -2759,6 +2767,8 @@ paths:
                     type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -5658,13 +5668,31 @@ paths:
             The authenticated user has no organization (`Organization claim
             required`) or does not hold the `portfolio:import` scope (`Scope
             'portfolio:import' required`, whatever the role). Nothing is written.
+            Read `code`; `message` is the text to show.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MiddlewareError'
-              example:
-                _error: Forbidden
-                _message: Scope 'portfolio:import' required
+                $ref: '#/components/schemas/ForbiddenError'
+              examples:
+                noOrganization:
+                  summary: The caller has no organization
+                  value:
+                    success: false
+                    error: Forbidden
+                    message: Organization claim required
+                    _error: Forbidden
+                    _message: Organization claim required
+                    code: ORGANIZATION_REQUIRED
+                scopeRequired:
+                  summary: The caller lacks the portfolio:import scope
+                  value:
+                    success: false
+                    error: Forbidden
+                    message: Scope 'portfolio:import' required
+                    _error: Forbidden
+                    _message: Scope 'portfolio:import' required
+                    code: SCOPE_REQUIRED
+                    required: { scope: 'portfolio:import' }
         '409':
           description: >-
             A CI is mid-write, a record the plan named is gone
@@ -5964,14 +5992,33 @@ components:
       description: >-
         The authenticated user has no organization: every /cis endpoint is
         tenant-scoped and rejects the request before any data access. Mutations
-        also return 403 without the `write` permission.
+        also return 403 without the `write` permission. Read `code`; `message`
+        is the text to show.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/MiddlewareError'
-          example:
-            _error: Forbidden
-            _message: Organization claim required
+            $ref: '#/components/schemas/ForbiddenError'
+          examples:
+            noOrganization:
+              summary: The caller has no organization
+              value:
+                success: false
+                error: Forbidden
+                message: Organization claim required
+                _error: Forbidden
+                _message: Organization claim required
+                code: ORGANIZATION_REQUIRED
+            permissionRequired:
+              summary: A viewer calls a mutation
+              value:
+                success: false
+                error: Forbidden
+                message: Permission 'write' required
+                _error: Forbidden
+                _message: Permission 'write' required
+                code: PERMISSION_REQUIRED
+                required: { permission: write }
+                role: viewer
 
     CIBodyBadRequest:
       description: >-
@@ -6041,14 +6088,33 @@ components:
         endpoint is tenant-scoped and rejects the request before any data
         access (`Organization claim required`). Mutations (POST, PATCH,
         DELETE) also return 403 without the `write` permission
-        (`Permission 'write' required`).
+        (`Permission 'write' required`). Read `code`; `message` is the text to
+        show.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/MiddlewareError'
-          example:
-            _error: Forbidden
-            _message: Organization claim required
+            $ref: '#/components/schemas/ForbiddenError'
+          examples:
+            noOrganization:
+              summary: The caller has no organization
+              value:
+                success: false
+                error: Forbidden
+                message: Organization claim required
+                _error: Forbidden
+                _message: Organization claim required
+                code: ORGANIZATION_REQUIRED
+            permissionRequired:
+              summary: A viewer calls a mutation
+              value:
+                success: false
+                error: Forbidden
+                message: Permission 'write' required
+                _error: Forbidden
+                _message: Permission 'write' required
+                code: PERMISSION_REQUIRED
+                required: { permission: write }
+                role: viewer
 
     BusinessServiceNotFound:
       description: >-
@@ -6093,22 +6159,96 @@ components:
     BusinessServiceWriteForbidden:
       description: >-
         As BusinessServiceForbidden (`Organization claim required`,
-        `Permission 'write' required`, middleware body). Also (D38, HAP-1565)
-        a valid body naming owner_principal_id (on PATCH, null included)
-        from a caller whose role lacks the `admin` permission (only the admin
-        role holds it): refused after body validation (an invalid body is
-        400 first), nothing written and no audit row. A create without
-        owner_principal_id leaves it null.
+        `Permission 'write' required`, the `ForbiddenError` body with `code`).
+        Also (D38, HAP-1565) a valid body naming owner_principal_id (on PATCH,
+        null included) from a caller whose role lacks the `admin` permission
+        (only the admin role holds it): refused after body validation (an
+        invalid body is 400 first), nothing written and no audit row. That
+        refusal is the bare `{success, error, message}` body, with no `code`.
+        A create without owner_principal_id leaves it null.
       content:
         application/json:
           schema:
-            oneOf:
-              - $ref: '#/components/schemas/MiddlewareError'
+            anyOf:
+              - $ref: '#/components/schemas/ForbiddenError'
               - $ref: '#/components/schemas/BusinessServiceError'
-          example:
-            success: false
-            error: Forbidden
-            message: owner_principal_id can be set or changed only by an admin
+          examples:
+            noOrganization:
+              summary: The caller has no organization
+              value:
+                success: false
+                error: Forbidden
+                message: Organization claim required
+                _error: Forbidden
+                _message: Organization claim required
+                code: ORGANIZATION_REQUIRED
+            permissionRequired:
+              summary: A viewer calls a mutation
+              value:
+                success: false
+                error: Forbidden
+                message: Permission 'write' required
+                _error: Forbidden
+                _message: Permission 'write' required
+                code: PERMISSION_REQUIRED
+                required: { permission: write }
+                role: viewer
+            ownerPrincipalAdminOnly:
+              summary: A non-admin names owner_principal_id (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: owner_principal_id can be set or changed only by an admin
+
+    CredentialForbidden:
+      description: >-
+        Refused before any credential or credential-set access. A caller
+        without an organization gets `ORGANIZATION_REQUIRED` (the
+        `ForbiddenError` body). A caller with no verified user id gets the bare
+        `Verified credential owner required` body. A caller with the `agent`
+        role gets the bare `Credential management requires a human user` body.
+        Every mutation (and match and rank) also needs the `write` permission
+        and gets `PERMISSION_REQUIRED` without it. The two bare bodies carry
+        no `code`: read `message`.
+      content:
+        application/json:
+          schema:
+            anyOf:
+              - $ref: '#/components/schemas/ForbiddenError'
+              - $ref: '#/components/schemas/CredentialRefusalError'
+          examples:
+            noOrganization:
+              summary: The caller has no organization
+              value:
+                success: false
+                error: Forbidden
+                message: Organization claim required
+                _error: Forbidden
+                _message: Organization claim required
+                code: ORGANIZATION_REQUIRED
+            agentRole:
+              summary: An agent-role caller (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: Credential management requires a human user
+            noVerifiedOwner:
+              summary: The caller has no verified user id (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: Verified credential owner required
+            permissionRequired:
+              summary: A viewer calls a write route
+              value:
+                success: false
+                error: Forbidden
+                message: Permission 'write' required
+                _error: Forbidden
+                _message: Permission 'write' required
+                code: PERMISSION_REQUIRED
+                required: { permission: write }
+                role: viewer
 
     BusinessServiceOwnerRequired:
       description: >-
@@ -7296,6 +7436,27 @@ components:
           type: string
           enum: [admin, operator, viewer, agent]
           description: The caller's own server role; present for permission and role refusals
+
+    CredentialRefusalError:
+      type: object
+      description: >-
+        The bare 403 body of the credential router's owner and agent-role
+        refusals: no `code` and no underscore keys (those come with
+        ForbiddenError).
+      required: [success, error, message]
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          enum: [Forbidden]
+        message:
+          type: string
+          enum:
+            - Verified credential owner required
+            - Credential management requires a human user
 
     MiddlewareError:
       type: object

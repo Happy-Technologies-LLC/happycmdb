@@ -50,6 +50,20 @@ function grantBlock(): string {
   return block[0];
 }
 
+/**
+ * The block with a WITH GRANT OPTION built in the FOR projection: the EXECUTE stays byte-identical to the canonical statement, and the
+ * grant keyword is split so no GRANT token and no `|| ' WITH GRANT OPTION'` appears in it. `--` comments out the rest of the
+ * format() string's `ON %s` tail; `split_part` lets the IF guard still see the bare table name.
+ */
+function withGrantOptionProjection(block: string): string {
+  const from = "FOR g IN SELECT * FROM (VALUES";
+  const guard = 'to_regclass(g.rel)';
+  if (!block.includes(from) || !block.includes(guard)) throw new Error('the $hap2126$ block no longer has the FOR / IF lines the projection fixture rewrites');
+  return block
+    .replace(from, "FOR g IN SELECT t.rel || ' TO cmdb_app WITH GR' || 'ANT OPTION --' AS rel, t.privs FROM (VALUES")
+    .replace(guard, "to_regclass(split_part(g.rel, ' ', 1))");
+}
+
 const PRIVILEGES = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'];
 /** What the migrations 046, 047, 048, 054 and 056 give the app logins, table by table (never UPDATE on an append-only table). */
 const EXPECTED: Record<string, string[]> = {
@@ -81,6 +95,15 @@ const migrate = (query: (sql: string) => Promise<Array<Record<string, any>>>, na
 const held = async (query: (sql: string) => Promise<Array<Record<string, any>>>, role: string, table: string) =>
   (await query(`SELECT ${PRIVILEGES.map(p => `has_table_privilege('${role}', '${table}', '${p}') AS "${p}"`).join(', ')}`))
     .flatMap(row => PRIVILEGES.filter(p => row[p] === true));
+/** The privileges of `role` on `table` that it holds WITH GRANT OPTION (it could re-grant them to any role). */
+const grantOptionsHeld = async (query: (sql: string) => Promise<Array<Record<string, any>>>, role: string, table: string) =>
+  (await query(`SELECT ${PRIVILEGES.map(p => `has_table_privilege('${role}', '${table}', '${p} WITH GRANT OPTION') AS "${p}"`).join(', ')}`))
+    .flatMap(row => PRIVILEGES.filter(p => row[p] === true));
+/** Every EXPECTED table (under `renamed`, when a test moved it away) to the privileges `role` holds on it WITH GRANT OPTION. */
+const grantOptionsOfExpected = async (query: (sql: string) => Promise<Array<Record<string, any>>>, role: string, renamed: Record<string, string> = {}) =>
+  Object.fromEntries(await Promise.all(Object.keys(EXPECTED).map(async table =>
+    [table, await grantOptionsHeld(query, role, renamed[table] ?? table)] as const)));
+const NO_GRANT_OPTIONS = Object.fromEntries(Object.keys(EXPECTED).map(table => [table, [] as string[]]));
 
 describe('the $hap2126$ block in the app-login script', () => {
   it('restores exactly the migrations\' grants on a re-created cmdb_app, never more, and re-runs cleanly', async () => {
@@ -94,8 +117,10 @@ describe('the $hap2126$ block in the app-login script', () => {
     const after = async () => Object.fromEntries(await Promise.all(Object.keys(EXPECTED).map(async table =>
       [table, await held(query, 'cmdb_app', table)] as const)));
     expect(await after()).toEqual(EXPECTED);
+    expect(await grantOptionsOfExpected(query, 'cmdb_app')).toEqual(NO_GRANT_OPTIONS); // restored, but never re-grantable
     await query(grantBlock());
     expect(await after()).toEqual(EXPECTED);
+    expect(await grantOptionsOfExpected(query, 'cmdb_app')).toEqual(NO_GRANT_OPTIONS);
     expect(await grantMatrix(query, 'cmdb_user')).toEqual(userBefore); // cmdb_user's grants are not touched
   }, 60000);
 
@@ -110,6 +135,16 @@ describe('the $hap2126$ block in the app-login script', () => {
     expect(await held(query, 'cmdb_app', 'public.relationship_evidence_receipts')).toEqual(['SELECT', 'INSERT']);
     expect(await held(query, 'cmdb_app', 'public.estate_kpi_snapshots')).toEqual(['SELECT', 'INSERT']);
     expect(await held(query, 'cmdb_app', 'public.service_offerings')).toEqual(['SELECT', 'INSERT', 'UPDATE']);
+    expect(await grantOptionsOfExpected(query, 'cmdb_app', { 'public.portfolio_imports': 'public.portfolio_imports_away' })).toEqual(NO_GRANT_OPTIONS);
+  }, 60000);
+
+  it('a block that builds WITH GRANT OPTION in its FOR projection leaves cmdb_app holding the grant option, and the check sees it', async () => {
+    const query = open();
+    await prepare(query, false);
+    for (const name of TABLE_MIGRATIONS) await migrate(query, name);
+    await query('CREATE ROLE cmdb_app LOGIN');
+    await query(withGrantOptionProjection(grantBlock()));
+    expect(await grantOptionsOfExpected(query, 'cmdb_app')).toEqual(EXPECTED); // every restored privilege of every table is re-grantable
   }, 60000);
 });
 
@@ -165,6 +200,8 @@ describe('whole-grant matrix: a re-created cmdb_app equals a freshly migrated on
     await recreated('CREATE ROLE cmdb_app LOGIN NOSUPERUSER');
     await migrate(recreated, '045_staging_app_login_acl.sql');
     await recreated(grantBlock());
+    expect(await grantOptionsOfExpected(recreated, 'cmdb_app')).toEqual(NO_GRANT_OPTIONS);
+    expect(await grantOptionsOfExpected(baseline, 'cmdb_app')).toEqual(NO_GRANT_OPTIONS);
 
     const [fresh, again] = [await grantMatrix(baseline, 'cmdb_app'), await grantMatrix(recreated, 'cmdb_app')];
     for (const [table, privileges] of Object.entries(EXPECTED)) {
@@ -278,7 +315,8 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
   };
   const sources = () => Object.fromEntries(scanned.map(name => [name, migration(name)]));
 
-  /** The block's `(table, privileges)` tuples, how many VALUES tuples of any shape it holds, and its EXECUTE statements. Raw text: nothing is stripped out of sight. */
+  /** The block's `(table, privileges)` tuples, how many VALUES tuples of any shape it holds, and its EXECUTE statements. Whole-line comments go first, and every count reads that one text. */
+  const uncommentedOf = (text: string) => text.replace(/^[ \t]*--.*$/gm, ''); // only whole lines: a `--` inside a string must not hide a statement behind it
   const blockText = () => grantBlock();
   const rowListOf = (text: string) => [...text.matchAll(/\('(public\.[a-z_]+)',\s*'([A-Z, ]+)'\)/g)]
     .map(match => [match[1]!, match[2]!.split(',').map(p => p.trim())] as const);
@@ -306,14 +344,27 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
   /** The one statement the block may run, in full: nothing before the closing parenthesis, nothing after it, so no `|| ' WITH GRANT OPTION'`. */
   const BLOCK_GRANT_EXECUTE = `EXECUTE format('GRANT %s ON %s TO cmdb_app', g.privs, g.rel);`;
   const executeStatementsOf = (text: string) => text.match(/\bEXECUTE\b[^;]*(?:;|$)/gi) ?? [];
-  const blockRowList = () => rowListOf(blockText());
+  const blockRowList = () => rowListOf(uncommentedOf(blockText()));
   const blockRows = () => Object.fromEntries(blockRowList());
-  /** What is wrong with the shape of a block beyond its rows: a table twice, a VALUES row that is not strictly `('public.<table>', 'UPPER, CASE')`, anything but one EXECUTE, and that one not exactly the full statement. */
+  /**
+   * The whole DO block, whitespace-normalised, with its VALUES rows as one placeholder: nothing else may differ. The FOR query is a bare
+   * `SELECT *` over the rows and the IF guard a bare `to_regclass(g.rel)`, so only the EXECUTE reads g.rel and g.privs, and no
+   * projection, cast or concatenation can rewrite them (a grant option spelled `WITH GR' || 'ANT OPTION` in the projection).
+   */
+  const ROWS = '\u0000';
+  const BLOCK_TEMPLATE = `DO $hap2126$ DECLARE g record; BEGIN FOR g IN SELECT * FROM (VALUES ${ROWS} ) AS t(rel, privs) LOOP `
+    + `IF to_regclass(g.rel) IS NOT NULL THEN ${BLOCK_GRANT_EXECUTE} END IF; END LOOP; END $hap2126$;`;
+  const templateOf = (uncommented: string) => uncommented.replace(/\s+/g, ' ').trim()
+    .replace(/\('public\.[a-z_]+',\s*'[A-Z, ]+'\)/g, ROWS).replace(new RegExp(`${ROWS}(?:, ${ROWS})*`, 'g'), ROWS);
+  /**
+   * What is wrong with the shape of a block beyond its rows: a table twice, a VALUES row that is not strictly `('public.<table>', 'UPPER, CASE')`,
+   * anything but one EXECUTE, that one not exactly the full statement, and, as the catch-all once none of those specific rules fired, any
+   * other difference from BLOCK_TEMPLATE.
+   */
   const blockShapeProblems = (text: string): string[] => {
     const problems: string[] = [];
-    // Only whole-line comments go (the block's own prose says "grant"): a `--` inside a string must not hide a statement behind it.
-    const uncommented = text.replace(/^[ \t]*--.*$/gm, '');
-    const rows = rowListOf(text);
+    const uncommented = uncommentedOf(text);
+    const rows = rowListOf(uncommented);
     if (Object.keys(Object.fromEntries(rows)).length !== rows.length) problems.push('a table appears twice in the VALUES rows');
     if (looseRowCount(uncommented) !== rows.length) problems.push('a VALUES row has another shape than (public.<table>, UPPER-CASE privileges)');
     const executes = executesOf(text).length;
@@ -326,8 +377,15 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
     if (/\b(?:GRANT|REVOKE)\b/i.test(statements.reduce((rest, statement) => rest.replace(statement, ''), uncommented))) {
       problems.push('a GRANT or REVOKE token outside the one EXECUTE format(...) statement');
     }
+    if (problems.length === 0 && templateOf(uncommented) !== BLOCK_TEMPLATE) {
+      problems.push('the DO block is not the canonical template apart from its VALUES rows: nothing outside the one EXECUTE may build or rewrite g.rel or g.privs');
+    }
     return problems;
   };
+  /** A whole `$hap2126$` block as the real script has it, with `values` as the rows, `execute` as the loop body and `extra` after the loop. */
+  const canonicalBlock = (values: string, execute: string, extra = '') =>
+    `DO $hap2126$\nDECLARE g record;\nBEGIN\n  FOR g IN SELECT * FROM (VALUES ${values}\n  ) AS t(rel, privs) LOOP\n    IF to_regclass(g.rel) IS NOT NULL THEN\n      ${execute}\n`
+    + `    END IF;\n  END LOOP;\n${extra}\nEND\n$hap2126$;`;
 
   /** Tables of every `GRANT ... ON <tables> TO` statement of `sql`, and the first 80 characters of each GRANT whose table cannot be named. */
   const grantStatements = (sql: string): { tables: string[]; unparsed: string[] } => {
@@ -509,8 +567,8 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
   });
 
   it('flags a block sample with a table twice, a tuple of another shape, a second EXECUTE or any GRANT or REVOKE outside the one EXECUTE, through the real block check', () => {
-    const sample = (values: string[], executes = 1, extra = '') => `FOR g IN SELECT * FROM (VALUES ${values.join(', ')}) AS t(rel, privs) LOOP `
-      + Array.from({ length: executes }, () => `EXECUTE format('GRANT %s ON %s TO cmdb_app', g.privs, g.rel);`).join(' ') + ` END LOOP;\n${extra}`;
+    const sample = (values: string[], executes = 1, extra = '') => canonicalBlock(values.join(', '),
+      Array.from({ length: executes }, () => BLOCK_GRANT_EXECUTE).join(' '), extra);
     expect(blockShapeProblems(sample(["('public.a', 'SELECT')", "('public.b', 'SELECT, INSERT')"]))).toEqual([]);
     for (const stray of ["('cmdb.c', 'SELECT')", "('public.c', 'select')", "('public.C', 'SELECT')"]) {
       expect(blockShapeProblems(sample(["('public.a', 'SELECT')", stray]))).toEqual([expect.stringContaining('another shape')]);
@@ -530,8 +588,8 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
     expect(blockShapeProblems(sample(one, 1, '-- GRANT is only mentioned here'))).toEqual([]);
     expect(blockShapeProblems(sample(one, 1, `SELECT '--'; GRANT DELETE ON public.api_keys TO cmdb_app;`))).toEqual([expect.stringContaining('outside the one EXECUTE')]);
     // The one EXECUTE must be the whole statement: text appended or concatenated after the grantee is a different grant (WITH GRANT OPTION).
-    const withGrantOption = (tail: string) => `FOR g IN SELECT * FROM (VALUES ('public.a', 'SELECT')) AS t(rel, privs) LOOP `
-      + `EXECUTE format('GRANT %s ON %s TO cmdb_app'${tail}, g.privs, g.rel); END LOOP;`;
+    const withGrantOption = (tail: string) => canonicalBlock("('public.a', 'SELECT')",
+      `EXECUTE format('GRANT %s ON %s TO cmdb_app'${tail}, g.privs, g.rel);`);
     expect(blockShapeProblems(withGrantOption(''))).toEqual([]);
     for (const tail of [` || ' WITH GR' || 'ANT OPTION'`, ` || ' WITH GRANT OPTION'`, ` || ', cmdb_user'`]) {
       expect([tail, blockShapeProblems(withGrantOption(tail))]).toEqual([tail, [expect.stringContaining('is not exactly')]]);
@@ -540,9 +598,48 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
       .toEqual([expect.stringContaining('is not exactly')]);
   });
 
+  it('refuses a block whose FOR projection or IF guard rewrites g.rel or g.privs, and the real block is the template', () => {
+    const real = blockText();
+    expect(blockShapeProblems(real)).toEqual([]);
+    // The WITH GRANT OPTION split across the FOR projection: the EXECUTE is byte-identical to the canonical statement, so only the template sees it.
+    const projected = withGrantOptionProjection(real);
+    expect(projected).toContain(BLOCK_GRANT_EXECUTE);
+    expect(blockShapeProblems(projected)).toEqual([expect.stringContaining('not the canonical template')]);
+    const mutations: Array<[string, (block: string) => string]> = [
+      ['projection concatenates the privileges', block => block.replace('FOR g IN SELECT * FROM (VALUES', "FOR g IN SELECT t.rel, t.privs || ' WITH GR' || 'ANT OPTION --' AS privs FROM (VALUES")],
+      ['a column list instead of *', block => block.replace('FOR g IN SELECT * FROM (VALUES', 'FOR g IN SELECT t.rel, t.privs FROM (VALUES')],
+      ['a WHERE clause on the rows', block => block.replace(') AS t(rel, privs) LOOP', ") AS t(rel, privs) WHERE privs <> '' LOOP")],
+      ['a different alias list', block => block.replace('AS t(rel, privs)', 'AS t(privs, rel)')],
+      ['the guard rewrites the relation', block => block.replace('to_regclass(g.rel)', "to_regclass(g.rel || '')")],
+      ['an extra statement in the loop', block => block.replace('END IF;', "END IF; g.rel := g.rel || ' ';")],
+      ['a statement before the loop', block => block.replace('FOR g IN', "PERFORM set_config('x', 'y', true); FOR g IN")],
+      ['a different DECLARE', block => block.replace('DECLARE g record;', 'DECLARE g record; x text := 1;')],
+    ];
+    for (const [label, mutate] of mutations) {
+      expect([label, mutate(real) === real]).toEqual([label, false]);
+      expect([label, blockShapeProblems(mutate(real))]).toEqual([label, [expect.stringContaining('not the canonical template')]]);
+    }
+    // Whitespace and whole-line comments are free; a row list of any length is one placeholder.
+    expect(blockShapeProblems(real.replace(/\n\s*/g, '\n').replace('BEGIN', 'BEGIN\n-- anything'))).toEqual([]);
+  });
+
+  it('runs the strict row parse and the loose row count on the same uncommented text, so a commented strict row cannot pay for a loose row', () => {
+    const real = blockText();
+    const estate = /\('public\.estate_kpi_snapshots',\s*'SELECT, INSERT'\)/;
+    expect(real).toMatch(estate);
+    // The estate row becomes a comment, and a loose row that no strict parse reads takes its place: raw-text counts see 6 strict, 6 loose.
+    const swapped = real.replace(estate, "-- ('public.estate_kpi_snapshots', 'SELECT, INSERT')\n        ('public.api_keys' ,'DELETE')");
+    expect(rowListOf(swapped)).toHaveLength(6);
+    expect(looseRowCount(uncommentedOf(swapped))).toBe(6);
+    expect(blockShapeProblems(swapped)).toEqual([expect.stringContaining('another shape')]);
+    // A commented row alone is no row: it is dropped from the parsed rows too.
+    const commented = real.replace(estate, "-- ('public.estate_kpi_snapshots', 'SELECT, INSERT')").replace(/'SELECT, INSERT'\),(\s*)-- /, "'SELECT, INSERT')$1-- ");
+    expect(rowListOf(uncommentedOf(commented))).toHaveLength(5);
+    expect(blockShapeProblems(commented)).toEqual([]);
+  });
+
   it('counts every VALUES row loosely, so a row that the two strict parsers both skip is still refused', () => {
-    const sample = (values: string[]) => `FOR g IN SELECT * FROM (VALUES ${values.join(', ')}) AS t(rel, privs) LOOP `
-      + `EXECUTE format('GRANT %s ON %s TO cmdb_app', g.privs, g.rel); END LOOP;`;
+    const sample = (values: string[]) => canonicalBlock(values.join(', '), BLOCK_GRANT_EXECUTE);
     const good = "('public.a', 'SELECT')";
     const loose: Array<[string, string]> = [
       ['space before the comma', "('public.api_keys' ,'DELETE')"],

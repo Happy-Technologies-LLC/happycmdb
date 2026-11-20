@@ -2,11 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState } from 'react';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { LiquidGlass } from '@/components/ui/liquid-glass';
-import { Eyebrow } from '@/components/ui/eyebrow';
-import { Button } from '@/components/ui/button';
-import { Icon } from '@happy-technologies/design-system';
+import { Button, IconButton, PageHeader, Spinner, TabPanel, Tabs } from '@happy-technologies/design-system';
 import { PatternLibrary } from '@/components/ai/PatternLibrary';
 import { DiscoverySessionsView } from '@/components/ai/DiscoverySessionsView';
 import { CostAnalyticsDashboard } from '@/components/ai/CostAnalyticsDashboard';
@@ -14,8 +10,18 @@ import { PatternLearningOverview } from '@/components/ai/PatternLearningOverview
 import { RequirePermission } from '@/components/common/RequirePermission';
 import { useDiscoverySessions } from '@/hooks/useDiscoverySessions';
 
+type TabValue = 'overview' | 'patterns' | 'sessions' | 'analytics';
+
+const TABS_ID = 'pattern-learning-tabs';
+const TAB_OPTIONS: Array<{ value: TabValue; label: string }> = [
+  { value: 'overview', label: 'Overview' },
+  { value: 'patterns', label: 'Pattern Library' },
+  { value: 'sessions', label: 'Discovery Sessions' },
+  { value: 'analytics', label: 'Cost Analytics' },
+];
+
 const PatternLearning: React.FC = () => {
-  const [tabValue, setTabValue] = useState('overview');
+  const [tabValue, setTabValue] = useState<TabValue>('overview');
   const { compileAndSubmitPatterns } = useDiscoverySessions();
   const [compiling, setCompiling] = useState(false);
 
@@ -28,67 +34,51 @@ const PatternLearning: React.FC = () => {
     }
   };
 
+  // Only the selected tab mounts its view: each one loads its own data.
+  const panel = (value: TabValue, view: React.ReactNode) => (
+    <TabPanel tabsId={TABS_ID} value={value} selected={tabValue === value} className="space-y-6">
+      {tabValue === value && view}
+    </TabPanel>
+  );
+
   return (
     <div className="space-y-6">
-      {/* Header */}
-        <div className="flex items-start justify-between">
-        <div>
-          <Eyebrow>AI · Pattern Learning</Eyebrow>
-          <h1 className="mt-3 text-[1.9rem]">AI Pattern Learning</h1>
-          <p className="mt-1.5 text-ink-soft">
-            Automatically learn and compile patterns from AI discoveries
-          </p>
-        </div>
-          <div className="flex gap-2">
+      <PageHeader
+        eyebrow="AI · Pattern Learning"
+        title="AI Pattern Learning"
+        lede="Automatically learn and compile patterns from AI discoveries"
+        actions={
+          <>
             {/* POST /ai/patterns/compile: requirePermission('write') */}
             <RequirePermission permission="write">
               <Button
                 variant="outline"
                 size="sm"
+                icon={compiling ? undefined : 'arrows-clockwise'}
                 onClick={handleCompilePatterns}
                 disabled={compiling}
               >
-                {compiling ? (
-                  <Icon name="arrows-clockwise" size={16} className="mr-2 animate-spin" />
-                ) : (
-                  <Icon name="arrows-clockwise" size={16} className="mr-2" />
-                )}
+                {compiling && <Spinner size={14} aria-hidden="true" />}
                 Compile Patterns
               </Button>
             </RequirePermission>
-            <Button variant="ghost" size="sm">
-              <Icon name="question" size={20} />
-            </Button>
-          </div>
-        </div>
+            <IconButton icon="question" variant="ghost" size="sm" aria-label="Help" />
+          </>
+        }
+      />
 
-        {/* Tabs */}
-        <Tabs value={tabValue} onValueChange={setTabValue} className="space-y-6">
-          <LiquidGlass size="sm" rounded="xl">
-            <TabsList className="w-full grid grid-cols-4">
-              <TabsTrigger value="overview">Overview</TabsTrigger>
-              <TabsTrigger value="patterns">Pattern Library</TabsTrigger>
-              <TabsTrigger value="sessions">Discovery Sessions</TabsTrigger>
-              <TabsTrigger value="analytics">Cost Analytics</TabsTrigger>
-            </TabsList>
-          </LiquidGlass>
+      <Tabs
+        id={TABS_ID}
+        aria-label="Pattern learning sections"
+        value={tabValue}
+        onChange={setTabValue}
+        options={TAB_OPTIONS}
+      />
 
-          <TabsContent value="overview" className="space-y-6">
-            <PatternLearningOverview />
-          </TabsContent>
-
-          <TabsContent value="patterns" className="space-y-6">
-            <PatternLibrary />
-          </TabsContent>
-
-          <TabsContent value="sessions" className="space-y-6">
-            <DiscoverySessionsView />
-          </TabsContent>
-
-          <TabsContent value="analytics" className="space-y-6">
-            <CostAnalyticsDashboard />
-          </TabsContent>
-        </Tabs>
+      {panel('overview', <PatternLearningOverview />)}
+      {panel('patterns', <PatternLibrary />)}
+      {panel('sessions', <DiscoverySessionsView />)}
+      {panel('analytics', <CostAnalyticsDashboard />)}
     </div>
   );
 };

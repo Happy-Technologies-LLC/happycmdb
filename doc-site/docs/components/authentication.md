@@ -166,8 +166,8 @@ Refresh tokens are accepted only by the refresh endpoint; as a bearer token they
 
 - `/api/v1/business-services/**` and `/api/v1/architecture/business-services/:serviceId/analysis`
   return **403** `{"success":false,"error":"Forbidden","message":"Organization claim required","_error":"Forbidden","_message":"Organization claim required","code":"ORGANIZATION_REQUIRED"}`
-  when the user has no organization or it is not a UUID; the same `Forbidden` body carries `code` on every
-  role-contract refusal, so read `code` and show `message`. The check runs before any data access.
+  when the user has no organization or it is not a UUID; every refusal built by the role-contract
+  middleware carries `code`, so read `code` and show `message`. The check runs before any data access.
 - Reads and writes only see rows whose `dim_business_services.organization_id`
   equals the tenant. Another organization's service returns the same **404**
   as a service that does not exist.
@@ -549,7 +549,8 @@ trends, and the 011-aware ETL fails its `cmdb.dim_ci` reads and writes.
 Neo4j `:CI` nodes carry an `organization_id` property, set only from the token's
 organization when a CI is created through `POST /api/v1/cis` or GraphQL `createCI`.
 
-- Every `/api/v1/cis/**` route returns the same **403** `ORGANIZATION_REQUIRED` body
+- Every `/api/v1/cis/**` route returns the same **403** `ORGANIZATION_REQUIRED` body as the
+  [business-services example](#tenant-scoping-organization-claim) above
   without an organization claim, before any Neo4j query.
 - List, search, read, update, delete, relationships, dependencies, impact and audit
   history only match CIs whose `organization_id` equals the tenant. Another

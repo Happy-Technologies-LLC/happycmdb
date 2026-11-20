@@ -504,7 +504,7 @@ authenticated user (`_organizationId`). A CI belonging to another organization i
 reported exactly like a missing one (the same 404 body), and the organization is
 set from the token on create, never from the request body.
 
-**Error Response (403)**, on every `/cis` endpoint when the user has no organization (before any data access). The same `Forbidden` body carries `code` on every role-contract refusal: read `code`, show `message`.
+**Error Response (403)**, on every `/cis` endpoint when the user has no organization (before any data access). Every refusal built by the role-contract middleware carries `code`: read `code`, show `message`.
 ```json
 {
   "success": false,

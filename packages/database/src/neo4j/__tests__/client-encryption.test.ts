@@ -183,6 +183,7 @@ describe.each(['neo4j+ssc://h', 'bolt+ssc://h'])('%s trusts any certificate', ur
 describe('an explicit TRUST_ALL_CERTIFICATES on a plain URI', () => {
   const info = 'Neo4j client initialized with SSL/TLS encryption enabled';
   const trustAllWarning = 'Neo4j client initialized with SSL/TLS encryption enabled; certificate verification is disabled by NEO4J_SSL_TRUST_STRATEGY=TRUST_ALL_CERTIFICATES';
+  const trustAllConfigWarning = 'Neo4j client initialized with SSL/TLS encryption enabled; certificate verification is disabled by the Neo4jClient trust option TRUST_ALL_CERTIFICATES';
   const plaintextWarning = 'Neo4j client initialized WITHOUT encryption (development mode)';
 
   it.each(['bolt://h', 'neo4j://h'])('warns once with fixed text instead of the info line for %s (env trust)', uri => {
@@ -194,10 +195,24 @@ describe('an explicit TRUST_ALL_CERTIFICATES on a plain URI', () => {
     expect(logger.info).not.toHaveBeenCalledWith(info);
   });
 
-  it('warns the same way when the trust comes from the constructor option', () => {
+  it('names the constructor option, not the environment variable, when the option decided the trust', () => {
     new Neo4jClient('bolt://h', 'u', 'p', { encrypted: true, trust: 'TRUST_ALL_CERTIFICATES' });
-    expect((logger.warn as jest.Mock).mock.calls).toEqual([[trustAllWarning]]);
+    expect((logger.warn as jest.Mock).mock.calls).toEqual([[trustAllConfigWarning]]);
     expect(logger.info).not.toHaveBeenCalledWith(info);
+  });
+
+  it('names the constructor option when it and the environment both say trust-all (the option wins)', () => {
+    process.env['NEO4J_SSL_TRUST_STRATEGY'] = 'TRUST_ALL_CERTIFICATES';
+    new Neo4jClient('bolt://h', 'u', 'p', { encrypted: true, trust: 'TRUST_ALL_CERTIFICATES' });
+    expect((logger.warn as jest.Mock).mock.calls).toEqual([[trustAllConfigWarning]]);
+  });
+
+  it('a system-CA constructor option overrides an environment trust-all: info line only, no warning', () => {
+    process.env['NEO4J_SSL_TRUST_STRATEGY'] = 'TRUST_ALL_CERTIFICATES';
+    new Neo4jClient('bolt://h', 'u', 'p', { encrypted: true, trust: 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES' });
+    expect(mainConfig().trust).toBe('TRUST_SYSTEM_CA_SIGNED_CERTIFICATES');
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect((logger.info as jest.Mock).mock.calls).toEqual([[info]]);
   });
 
   it('logs only the info line, with no warning, under the default and the explicit system-CA strategy', () => {

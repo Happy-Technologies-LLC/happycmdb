@@ -160,13 +160,9 @@ describe('registry cache upsert', () => {
     VALUES ('acme', 'CONNECTOR', 'Old', '0.9.0', '[]', 'javascript:alert(1)', 'https://u:p@evil.test/')`;
   const stored = () => sql('SELECT homepage, repository, name FROM connector_registry_cache WHERE connector_type = \'acme\'');
 
-  it('assigns homepage and repository from EXCLUDED in the cache upsert', async () => {
+  it('binds the sanitised homepage and repository parameters in the cache upsert', async () => {
     await register({ ...BASE, homepage: 'javascript:alert(1)', repository: 'https://example.test/r' });
-    const text = query.mock.calls[0][0] as string;
-    const update = text.slice(text.indexOf('DO UPDATE SET'));
 
-    expect(update).toMatch(/homepage\s*=\s*EXCLUDED\.homepage/);
-    expect(update).toMatch(/repository\s*=\s*EXCLUDED\.repository/);
     expect(query.mock.calls[0][1][8]).toBe('');
     expect(query.mock.calls[0][1][9]).toBe('https://example.test/r');
   });

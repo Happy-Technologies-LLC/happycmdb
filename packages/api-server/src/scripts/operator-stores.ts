@@ -176,12 +176,18 @@ throw new Error('CMDB_ROTATE_POSTGRES_SSL must be require or verify-full when se
   if (encrypted !== undefined && encrypted !== 'true' && encrypted !== 'false') {
     throw new Error('CMDB_ROTATE_NEO4J_ENCRYPTED must be true or false when set');
   }
+  // Only a plain scheme: TLS comes from CMDB_ROTATE_NEO4J_ENCRYPTED (system-CA verified), never from a +s/+ssc scheme
+  // (+ssc trusts any certificate). The message is fixed: a URI can carry credentials.
+  const neo4jUri = required(env, 'CMDB_ROTATE_NEO4J_URI');
+  if (!/^(bolt|neo4j):\/\/[^/@?#]+$/.test(neo4jUri)) {
+    throw new Error('CMDB_ROTATE_NEO4J_URI must be bolt://<host>[:port] or neo4j://<host>[:port] (use CMDB_ROTATE_NEO4J_ENCRYPTED=true for TLS)');
+  }
   const postgres = new PostgresClient({
     _host: required(env, 'CMDB_ROTATE_POSTGRES_HOST'), _port: port, _database: required(env, 'CMDB_ROTATE_POSTGRES_DB'),
     _user: required(env, 'CMDB_ROTATE_POSTGRES_USER'), _password: required(env, 'CMDB_ROTATE_POSTGRES_PASSWORD'), ssl,
   });
   const graph = new Neo4jClient(
-    required(env, 'CMDB_ROTATE_NEO4J_URI'), required(env, 'CMDB_ROTATE_NEO4J_USERNAME'),
+    neo4jUri, required(env, 'CMDB_ROTATE_NEO4J_USERNAME'),
     required(env, 'CMDB_ROTATE_NEO4J_PASSWORD'), { encrypted: encrypted === 'true' }
   );
   return {

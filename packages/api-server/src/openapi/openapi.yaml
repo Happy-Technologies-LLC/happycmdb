@@ -308,6 +308,22 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: API keys are disabled on this deployment (auth.apiKeys.enabled is false)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: false
+                  error:
+                    type: string
+                    example: Forbidden
+                  message:
+                    type: string
+                    example: API keys are disabled
 
     get:
       tags: [Authentication]

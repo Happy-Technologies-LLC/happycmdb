@@ -144,6 +144,14 @@ export class PasswordNotAllowedError extends Error {
   }
 }
 
+/** API key creation while `auth.apiKeys.enabled` is false (→ 403). */
+export class ApiKeysDisabledError extends Error {
+  constructor() {
+    super('API keys are disabled');
+    this.name = 'ApiKeysDisabledError';
+  }
+}
+
 /** The authorizing credential's generation is no longer current (→ 401). */
 export class CredentialsChangedError extends Error {
   constructor() {
@@ -279,6 +287,8 @@ export class AuthService {
   private passwordService: PasswordService;
   private repository: AuthRepository;
   private dummyHash: Promise<string> | undefined;
+  /** Same semantics as the middleware: only an explicit `false` disables API keys. */
+  private readonly apiKeysEnabled: boolean;
 
   constructor(
     _config: ConfigSchema['auth'],
@@ -287,6 +297,7 @@ export class AuthService {
     this.jwtService = new JWTService(_config.jwt);
     this.passwordService = new PasswordService(_config.bcrypt);
     this.repository = _repository;
+    this.apiKeysEnabled = _config.apiKeys?.enabled !== false;
   }
 
   /**
@@ -492,6 +503,9 @@ export class AuthService {
    * in flight by a pre-rotation credential is born dead.
    */
   async generateApiKey(userId: string, request: ApiKeyRequest, authorizingEpoch: number): Promise<ApiKeyResponse> {
+    if (!this.apiKeysEnabled) {
+      throw new ApiKeysDisabledError();
+    }
     const { name: _name, expiresInDays } = request;
     if (!Number.isSafeInteger(authorizingEpoch)) {
       throw new CredentialsChangedError();

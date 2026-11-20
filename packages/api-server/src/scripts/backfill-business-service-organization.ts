@@ -75,11 +75,11 @@
  *
  * Not run automatically, not part of schema initialization or db-init. Build
  * with `npm run build:tenant-fixture --workspace=packages/api-server`
- * (tsconfig.scripts.json compiles src/scripts), then:
+ * (tsconfig.scripts.json compiles src/scripts), then (for a private Postgres CA, add
+ * NODE_EXTRA_CA_CERTS=<ca.pem> to this same command, as shown; see the authentication doc):
  *   CMDB_BACKFILL_POSTGRES_HOST=... CMDB_BACKFILL_POSTGRES_PORT=5432 CMDB_BACKFILL_POSTGRES_DB=... \
  *   CMDB_BACKFILL_POSTGRES_USER=... CMDB_BACKFILL_POSTGRES_PASSWORD=... \
- *   [CMDB_BACKFILL_POSTGRES_SSL=require|verify-full] \
- *   # private CA: export NODE_EXTRA_CA_CERTS=<ca.pem>
+ *   [CMDB_BACKFILL_POSTGRES_SSL=require|verify-full] [NODE_EXTRA_CA_CERTS=<ca.pem>] \
  *   CMDB_BACKFILL_NEO4J_URI=bolt://<host>:7687 CMDB_BACKFILL_NEO4J_USERNAME=... CMDB_BACKFILL_NEO4J_PASSWORD=... \
  *   [CMDB_BACKFILL_NEO4J_ENCRYPTED=true|false] \
  *   node packages/api-server/dist/tenant-fixture/api-server/src/scripts/backfill-business-service-organization.js \

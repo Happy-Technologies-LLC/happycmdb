@@ -243,15 +243,25 @@ The operator tools drop the API server's own `POSTGRES_SSL_*` variables before a
 - `verify-full` checks the certificate chain and host name against Node's built-in public CA store.
   A database whose certificate was issued by a private CA fails with a certificate error
   (`UNABLE_TO_VERIFY_LEAF_SIGNATURE`) until that CA is trusted.
-- To trust a private CA, export `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` for the operator run. Node reads
-  it once at process start and **adds** the CA to the built-in store; it does not replace the store.
+- To trust a private CA, set `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` on the operator command itself. Node
+  reads it once at process start and **adds** the CA to the built-in store; it does not replace the store.
   The file must hold the CA certificate only, never a private key.
+- Check the CA before trusting it: print its fingerprint and compare it with a value you received out of
+  band (from the database operator, not from the same host or channel that gave you the file):
+  `openssl x509 -noout -fingerprint -sha256 -in ca.pem`.
+- The CA file must be owned by the operator running the tool, mode `0644` or stricter, in a directory
+  that other users cannot write to, and never under `/tmp`. Anyone who can replace the file can make the
+  tool trust their own CA.
+- `NODE_EXTRA_CA_CERTS` trusts that CA for **every** TLS connection the process makes, the Neo4j
+  connection included, not only Postgres. Set it on the single command, not with `export` in the shell
+  or a profile, so no other process inherits it.
 - Do not fall back to `require`: it encrypts the connection but does **not** verify the server
   certificate, so it gives no protection against an impersonated database.
+- With `verify-full` the tools pass `rejectUnauthorized: true` explicitly, which wins over
+  `NODE_TLS_REJECT_UNAUTHORIZED=0` and over `PGSSLMODE` in the environment.
 
 ```bash
-export NODE_EXTRA_CA_CERTS=/path/to/ca.pem
-export CMDB_ROTATE_POSTGRES_SSL=verify-full
+CMDB_ROTATE_POSTGRES_SSL=verify-full NODE_EXTRA_CA_CERTS=/path/to/ca.pem npx ts-node ...
 ```
 
 ### Neo4j `:BusinessService.organization_id`

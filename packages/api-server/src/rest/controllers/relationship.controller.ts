@@ -353,8 +353,8 @@ export class RelationshipController {
         const total = countResult.records[0]!.get('total').toNumber();
 
         // Get paginated results
-        const limitNum = Math.min(parseInt(limit as string), 1000);
-        const offsetNum = parseInt(offset as string);
+        const limitNum = Math.min(Number(limit), 1000);
+        const offsetNum = Number(offset);
 
         const query = `
           MATCH (from:CI)-[r:${type}]->(to:CI)

@@ -461,7 +461,7 @@ Authorization: Bearer YOUR_ACCESS_TOKEN
 
 ### Generate API Key
 
-Create a new API key for programmatic access.
+Create a new API key for programmatic access. Requires a JWT user session: an API key cannot create keys.
 
 **Endpoint**: `POST /api/v1/auth/api-key`
 
@@ -474,49 +474,49 @@ Authorization: Bearer YOUR_ACCESS_TOKEN
 ```json
 {
   "name": "Production Automation Script",
-  "expiresInDays": 365,
-  "role": "operator"
+  "expiresInDays": 365
 }
 ```
 
-**Supported Roles**:
-- `viewer` - Read-only access
-- `operator` - Read + discovery operations
-- `admin` - Full access (use sparingly)
+| Field | Type | Required | Rule |
+|-------|------|----------|------|
+| `name` | string | yes | 3-100 characters |
+| `expiresInDays` | integer | no | 1-365; omitted means the key does not expire |
 
-**Response** (201 Created):
+There is no `role` field. The key stores the role of the user who creates it. At use the effective role is the intersection of that stored role and the user's current role, so a user whose role was lowered cannot use a key for the old role's permissions.
+
+**Response** (200 OK, not 201):
 ```json
 {
   "success": true,
   "data": {
-    "_id": "apikey-123-abc",
+    "_apiKey": "<64 lowercase hex characters, shown once>",
+    "_id": "7d0c8c5e-3a52-4c5b-9a6e-1f2e3d4c5b6a",
     "_name": "Production Automation Script",
-    "_key": "cmdb_live_sk1_1a2b3c4d5e6f7g8h9i0j",
-    "_role": "operator",
-    "_enabled": true,
-    "_expiresAt": "2026-11-15T10:00:00Z",
-    "_createdAt": "2025-11-15T10:00:00Z",
-    "warning": "This API key will only be displayed once. Store it securely."
-  }
+    "expiresAt": "2026-11-20T10:00:00.000Z"
+  },
+  "message": "API key generated. Save it securely - it will not be shown again."
 }
 ```
 
-**IMPORTANT**: The API key (`_key`) is only shown once. Store it securely immediately.
+`expiresAt` is `null` when `expiresInDays` was not sent.
 
-**API Key Format**: `cmdb_{env}_{prefix}_{random_string}`
-- `env`: Environment (`test`, `live`)
-- `prefix`: Key type (`sk1` = secret key v1)
-- `random_string`: Cryptographically secure random string
+**IMPORTANT**: The API key (`data._apiKey`) is only shown once. Store it securely immediately. Only its SHA-256 hash is stored.
+
+**API Key Format**: 64 lowercase hexadecimal characters (32 random bytes). There is no prefix and no embedded environment or type marker.
 
 **Error Responses**:
-- `400 Bad Request` - Invalid expiration or role
-- `401 Unauthorized` - Missing or invalid access token
+- `400 Bad Request` - `name` or `expiresInDays` fails the rules above
+- `401 Unauthorized` - Missing or invalid access token, or `Credentials changed` (the authorizing credential carries no credential generation)
+- `403 Forbidden` - `code: JWT_SESSION_REQUIRED`, message `JWT user session required`: an API key called the endpoint (body: [The 403 body](#the-403-body))
+- `403 Forbidden` - `{ "success": false, "error": "Forbidden", "message": "API keys are disabled" }`: the [API key kill switch](#api-key-kill-switch) is off. This body has no `code`.
+- `500` - Internal error
 
 ---
 
 ### List API Keys
 
-Get all API keys for the current user.
+Get the API keys of the current user that are not revoked, newest first. Requires a JWT user session. Still works while the [API key kill switch](#api-key-kill-switch) is off.
 
 **Endpoint**: `GET /api/v1/auth/api-keys`
 
@@ -525,47 +525,47 @@ Get all API keys for the current user.
 Authorization: Bearer YOUR_ACCESS_TOKEN
 ```
 
-**Response** (200 OK):
+**Response** (200 OK): `data` is a bare array (no `apiKeys` wrapper, no `total`):
 ```json
 {
   "success": true,
-  "data": {
-    "apiKeys": [
-      {
-        "_id": "apikey-123-abc",
-        "_name": "Production Automation Script",
-        "_role": "operator",
-        "_enabled": true,
-        "_createdAt": "2025-11-15T10:00:00Z",
-        "_expiresAt": "2026-11-15T10:00:00Z",
-        "_lastUsedAt": "2025-11-15T14:30:00Z",
-        "keyPreview": "cmdb_live_sk1_1a2b...i0j",
-        "daysUntilExpiration": 365
-      },
-      {
-        "_id": "apikey-456-def",
-        "_name": "CI Import Script",
-        "_role": "operator",
-        "_enabled": true,
-        "_createdAt": "2025-10-01T10:00:00Z",
-        "_expiresAt": null,
-        "_lastUsedAt": null,
-        "keyPreview": "cmdb_live_sk1_9z8y...a1b",
-        "status": "never_used"
-      }
-    ],
-    "total": 2
-  }
+  "data": [
+    {
+      "_id": "7d0c8c5e-3a52-4c5b-9a6e-1f2e3d4c5b6a",
+      "_userId": "user-123",
+      "_name": "Production Automation Script",
+      "_role": "operator",
+      "_enabled": true,
+      "_createdAt": "2026-11-20T10:00:00.000Z",
+      "expiresAt": "2027-11-20T10:00:00.000Z",
+      "lastUsedAt": "2026-11-20T14:30:00.000Z"
+    },
+    {
+      "_id": "0b9f2a4c-6d1e-4f3a-8b7c-5e4d3c2b1a09",
+      "_userId": "user-123",
+      "_name": "CI Import Script",
+      "_role": "operator",
+      "_enabled": true,
+      "_createdAt": "2026-10-01T10:00:00.000Z",
+      "expiresAt": null,
+      "lastUsedAt": null
+    }
+  ]
 }
 ```
 
-**Note**: Full API keys are never returned in list operations for security.
+Each entry carries `_id`, `_userId`, `_name`, `_role`, `_enabled`, `_createdAt`, `expiresAt` and `lastUsedAt`. The key value and its hash are never returned, and there is no key preview or days-until-expiration field. A key that belongs to an older credential generation and was not revoked is listed with `_enabled: false`; it does not authenticate. A password change revokes the user's earlier keys, which are then not listed.
+
+**Error Responses**:
+- `401 Unauthorized` - Missing or invalid access token
+- `403 Forbidden` - `code: JWT_SESSION_REQUIRED`: an API key called the endpoint (body: [The 403 body](#the-403-body))
+- `500` - Internal error
 
 ---
 
 ### Revoke API Key
 
-Revoke (delete) an API key permanently.
+Revoke one of your own API keys. The row is kept with `revoked_at` set and the key stops authenticating. Requires a JWT user session. Still works while the [API key kill switch](#api-key-kill-switch) is off.
 
 **Endpoint**: `DELETE /api/v1/auth/api-key/:keyId`
 
@@ -576,11 +576,11 @@ Authorization: Bearer YOUR_ACCESS_TOKEN
 
 **Example Request**:
 ```bash
-curl -X DELETE "http://localhost:3000/api/v1/auth/api-key/apikey-123-abc" \
+curl -X DELETE "http://localhost:3000/api/v1/auth/api-key/7d0c8c5e-3a52-4c5b-9a6e-1f2e3d4c5b6a" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
 
-**Response** (200 OK):
+**Response** (200 OK, not 204):
 ```json
 {
   "success": true,
@@ -589,8 +589,54 @@ curl -X DELETE "http://localhost:3000/api/v1/auth/api-key/apikey-123-abc" \
 ```
 
 **Error Responses**:
-- `404 Not Found` - API key does not exist
-- `403 Forbidden` - Cannot revoke another user's API key (unless admin)
+- `401 Unauthorized` - Missing or invalid access token
+- `403 Forbidden` - `code: JWT_SESSION_REQUIRED`: an API key called the endpoint (body: [The 403 body](#the-403-body))
+- `404 Not Found` - `{ "success": false, "error": "Not Found", "message": "API key not found" }`: the key does not exist, is not yours or is already revoked. There is no administrator override, so a key can only be revoked by its owner through this endpoint.
+- `500` - Internal error
+
+---
+
+### API key kill switch
+
+`auth.apiKeys.enabled` (environment variable `API_KEYS_ENABLED`, default `true`) turns API-key authentication off for the whole deployment. It is read when the API server starts, so a change takes effect after a restart.
+
+**Accepted values**
+
+- Environment: `true` or `false`, case-insensitive, surrounding spaces ignored. An empty or unset variable falls through to the config-file value and then to `true`.
+- Config file (`auth.apiKeys.enabled`): a boolean, or the string `"true"` or `"false"`. The environment value wins when it is set.
+- Anything else makes startup fail with `Invalid configuration: API_KEYS_ENABLED must be "true" or "false" (case-insensitive)` (environment) or `Invalid configuration: auth.apiKeys.enabled must be a boolean, "true" or "false" (case-insensitive)` (file). Both values are validated even when the other one wins. The message never echoes the value.
+
+The header the key is read from is `API_KEY_HEADER_NAME`, then the config-file value `auth.apiKeys.headerName`, then `X-API-Key`.
+
+**What changes while the switch is off**
+
+- A request that carries only an API key gets the standard `401`: the API-key header is ignored, so the key is never checked, valid or not. This includes the three key-management routes, where a key-only caller gets `401` instead of the `403` above.
+- A request that carries a valid bearer token is authenticated by the token, whatever else it sends. A bearer token that is invalid is `401`; the server does not fall back to the key.
+- `POST /api/v1/auth/api-key` is refused with `403` and `API keys are disabled`.
+- `GET /api/v1/auth/api-keys` and `DELETE /api/v1/auth/api-key/:keyId` keep working for a JWT session.
+
+**Turning the switch off does not revoke keys.** Nothing is deleted or marked: every key that existed stays in the `api_keys` table unrevoked, and it authenticates again as soon as the switch is turned back on (subject to its own expiry, and to the credential generation check that a password change applies). Because creation is refused while the switch is off, a row whose `created_at` falls inside the off period was not written through the API.
+
+**Re-enable check.** Before turning the switch back on, review the keys that will start working, as the database owner:
+
+```sql
+-- Keys created since the switch was turned off (none expected: creation is refused while off)
+SELECT id, user_id, name, created_at
+FROM api_keys
+WHERE created_at >= '<time the switch was turned off>' AND revoked_at IS NULL;
+
+-- Every key that will authenticate again
+SELECT id, user_id, name, role, created_at, expires_at, last_used_at
+FROM api_keys
+WHERE enabled = TRUE AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())
+ORDER BY created_at;
+```
+
+Review the rows and revoke any you do not recognize. The owner can revoke through `DELETE /api/v1/auth/api-key/:keyId`; otherwise revoke by SQL, the same statement the endpoint runs without its owner filter:
+
+```sql
+UPDATE api_keys SET enabled = FALSE, revoked_at = NOW() WHERE id = '<key id>' AND revoked_at IS NULL;
+```
 
 ---
 
@@ -631,18 +677,18 @@ response = requests.get('http://localhost:3000/api/v1/cis', headers=headers)
 
 ### API Key Authentication
 
-Include the API key in the `X-API-Key` header:
+Include the API key in the `X-API-Key` header (the default name; the server reads the header named by `API_KEY_HEADER_NAME`). A request that carries a bearer token is authenticated by the token alone and the header is not consulted. `YOUR_API_KEY` below stands for the 64-hex value returned once by [Generate API Key](#generate-api-key):
 
 ```bash
 curl "http://localhost:3000/api/v1/cis" \
-  -H "X-API-Key: cmdb_live_sk1_1a2b3c4d5e6f7g8h9i0j"
+  -H "X-API-Key: YOUR_API_KEY"
 ```
 
 **Example (JavaScript)**:
 ```javascript
 const response = await fetch('http://localhost:3000/api/v1/cis', {
   headers: {
-    'X-API-Key': 'cmdb_live_sk1_1a2b3c4d5e6f7g8h9i0j',
+    'X-API-Key': 'YOUR_API_KEY',
     'Content-Type': 'application/json'
   }
 });
@@ -653,7 +699,7 @@ const response = await fetch('http://localhost:3000/api/v1/cis', {
 import requests
 
 headers = {
-    'X-API-Key': 'cmdb_live_sk1_1a2b3c4d5e6f7g8h9i0j',
+    'X-API-Key': 'YOUR_API_KEY',
     'Content-Type': 'application/json'
 }
 
@@ -774,10 +820,10 @@ per-user-and-session buckets of `POST /auth/sessions/revoke-others`.
 ### For API Keys
 
 1. **Secure Storage**: Store API keys in environment variables or secret managers (never in code).
-2. **Least Privilege**: Use the minimum required role (prefer `viewer` or `operator` over `admin`).
+2. **Least Privilege**: A key carries the role of the user who created it (there is no role choice at creation), and at use it gets only what both that role and the user's current role allow. Create keys from a user whose role is the minimum the integration needs.
 3. **Key Rotation**: Rotate API keys regularly (every 90-180 days).
-4. **Expiration**: Set expiration dates for API keys (avoid permanent keys).
-5. **Monitoring**: Monitor API key usage via `_lastUsedAt` field.
+4. **Expiration**: Set `expiresInDays` (1-365) for API keys (avoid permanent keys).
+5. **Monitoring**: Monitor API key usage via the `lastUsedAt` field of `GET /api/v1/auth/api-keys`.
 6. **Revocation**: Immediately revoke compromised keys.
 
 ### Password Requirements
@@ -862,9 +908,9 @@ curl -X POST "http://localhost:3000/api/v1/auth/refresh" -H "X-CMDB-Auth: 1" -b 
 
 ### "API key not found"
 
-**Cause**: API key has been revoked or never existed
+**Cause**: The API key has been revoked, has expired, never existed, belongs to a credential generation that a password change ended, or API keys are switched off (`API_KEYS_ENABLED=false`): with the switch off every API key gets `401`, valid or not (see [API key kill switch](#api-key-kill-switch))
 
-**Solution**: Generate a new API key via `POST /api/v1/auth/api-key`
+**Solution**: Check the switch first. Otherwise generate a new API key via `POST /api/v1/auth/api-key` (a JWT session is required). `DELETE /api/v1/auth/api-key/:keyId` answers `404` with `API key not found` when the key is not yours or is already revoked.
 
 ---
 
@@ -892,17 +938,17 @@ curl "http://localhost:3000/api/v1/cis" \
 ### Test API Key with cURL
 
 ```bash
-# Generate API key (requires logged-in access token first)
+# Generate API key (requires logged-in access token first; the key takes your user's role)
 curl -X POST "http://localhost:3000/api/v1/auth/api-key" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Test API Key",
-    "role": "operator"
+    "expiresInDays": 30
   }'
 
-# Save API key from response
-export API_KEY="cmdb_live_sk1_1a2b3c4d5e6f7g8h9i0j"
+# Save the 64-hex key from data._apiKey in the response
+export API_KEY="YOUR_API_KEY"
 
 # Test API key request
 curl "http://localhost:3000/api/v1/cis" \
@@ -920,8 +966,9 @@ Configure authentication behavior via environment variables:
 JWT_SECRET=your-super-secret-jwt-key-change-this-in-production-minimum-32-chars
 JWT_ACCESS_TOKEN_EXPIRES_IN=15m   # default; refresh token: JWT_REFRESH_TOKEN_EXPIRES_IN (default 7d)
 
-# API Key Configuration
-API_KEY=your-api-key-for-service-to-service-authentication
+# API Key Configuration (see "API key kill switch" above)
+API_KEYS_ENABLED=true                 # "true" or "false" (case-insensitive); default true
+API_KEY_HEADER_NAME=X-API-Key        # Header the API key is read from; default X-API-Key
 
 # Rate Limiting
 RATE_LIMIT_ENABLED=true

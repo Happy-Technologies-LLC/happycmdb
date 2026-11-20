@@ -1413,11 +1413,12 @@ export class ITILController {
   async getMeanTimeToResolve(req: Request, res: Response): Promise<void> {
     try {
       const pool = this.postgresClient.pool;
+      // Closed incidents keep their resolution stamp and stay in the mean; a reopen clears it.
       const result = await pool.query(`
         SELECT
           AVG(EXTRACT(EPOCH FROM (resolved_at - reported_at))/3600) as mttr_hours
         FROM itil_incidents
-        WHERE organization_id = $1 AND status = 'resolved'
+        WHERE organization_id = $1 AND status IN ('resolved', 'closed')
         AND resolved_at IS NOT NULL
       `, [requestOrganizationId(req)]);
 

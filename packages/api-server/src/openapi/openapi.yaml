@@ -2244,7 +2244,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/CredentialForbidden'
+          $ref: '#/components/responses/CredentialReadForbidden'
 
     post:
       tags: [Credentials]
@@ -2324,7 +2324,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/CredentialForbidden'
+          $ref: '#/components/responses/CredentialReadForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -2560,7 +2560,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/CredentialForbidden'
+          $ref: '#/components/responses/CredentialReadForbidden'
 
     post:
       tags: [Credential Sets]
@@ -2644,7 +2644,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/CredentialForbidden'
+          $ref: '#/components/responses/CredentialReadForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -6171,7 +6171,7 @@ components:
           schema:
             anyOf:
               - $ref: '#/components/schemas/ForbiddenError'
-              - $ref: '#/components/schemas/BusinessServiceError'
+              - $ref: '#/components/schemas/BusinessServiceOwnerPrincipalRefusal'
           examples:
             noOrganization:
               summary: The caller has no organization
@@ -6202,8 +6202,11 @@ components:
 
     CredentialForbidden:
       description: >-
-        Refused by the credential router, before any credential or
-        credential-set lookup. A caller without an organization gets
+        POST /credentials/match, /credentials/rank and
+        /credentials/{id}/validate and the credential-set writes (POST, PUT,
+        DELETE and select), refused by the credential router, before any
+        credential or credential-set lookup. The GET operations use
+        CredentialReadForbidden. A caller without an organization gets
         `ORGANIZATION_REQUIRED` (the `ForbiddenError` body). A caller with no
         verified user id gets the bare `Verified credential owner required`
         body. A caller with the `agent` role gets the bare `Credential
@@ -6252,6 +6255,46 @@ components:
                 code: PERMISSION_REQUIRED
                 required: { permission: write }
                 role: viewer
+
+    CredentialReadForbidden:
+      description: >-
+        GET /credentials, GET /credentials/{id}, GET /credential-sets and GET
+        /credential-sets/{id}. Reads need no `write` permission (a viewer who
+        owns the record reads it), so `PERMISSION_REQUIRED` is never sent
+        here. Refused by the credential router before any lookup: a caller
+        without an organization gets `ORGANIZATION_REQUIRED` (the
+        `ForbiddenError` body); a caller with no verified user id gets the bare
+        `Verified credential owner required` body; a caller with the `agent`
+        role gets the bare `Credential management requires a human user` body.
+        The two bare bodies carry no `code`: read `message`.
+      content:
+        application/json:
+          schema:
+            anyOf:
+              - $ref: '#/components/schemas/ForbiddenError'
+              - $ref: '#/components/schemas/CredentialRefusalError'
+          examples:
+            noOrganization:
+              summary: The caller has no organization
+              value:
+                success: false
+                error: Forbidden
+                message: Organization claim required
+                _error: Forbidden
+                _message: Organization claim required
+                code: ORGANIZATION_REQUIRED
+            agentRole:
+              summary: An agent-role caller (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: Credential management requires a human user
+            noVerifiedOwner:
+              summary: The caller has no verified user id (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: Verified credential owner required
 
     CredentialWriteForbidden:
       description: >-
@@ -7551,8 +7594,9 @@ components:
       type: object
       description: >-
         Error body produced by the auth and request-validation middleware and
-        the global error handler (underscore-prefixed keys), e.g. the /cis
-        403, the body-validation 400 and the malformed-body 400.
+        the global error handler (underscore-prefixed keys), e.g. the 401 for
+        missing or invalid credentials, the body-validation 400 and the
+        malformed-body 400.
       required: [_error, _message]
       properties:
         _success:
@@ -7590,6 +7634,27 @@ components:
         error:
           type: string
           example: Business service not found
+
+    BusinessServiceOwnerPrincipalRefusal:
+      type: object
+      description: >-
+        The bare 403 body of the D38 owner_principal_id refusal (POST and PATCH
+        /business-services): no `code` and no underscore keys (those come with
+        ForbiddenError). It is the only 403 the business-service routes send
+        without ForbiddenError.
+      required: [success, error, message]
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          enum: [Forbidden]
+        message:
+          type: string
+          enum:
+            - owner_principal_id can be set or changed only by an admin
 
     PortfolioImportResult:
       type: object

@@ -48,7 +48,7 @@ describe('403 responses in openapi.yaml', () => {
   });
 
   describe('every example validates against the schema its response declares', () => {
-    const named = ['Forbidden', 'CIForbidden', 'BusinessServiceForbidden', 'BusinessServiceWriteForbidden', 'CredentialForbidden', 'CredentialWriteForbidden'];
+    const named = ['Forbidden', 'CIForbidden', 'BusinessServiceForbidden', 'BusinessServiceWriteForbidden', 'CredentialForbidden', 'CredentialReadForbidden', 'CredentialWriteForbidden'];
     const responses: Array<[string, Response]> = [
       ...named.map(name => [`components/responses/${name}`, spec.components.responses[name]!] as [string, Response]),
       ...refusingOperations.map(({ name, operation }) => [name, operation.responses['403']!] as [string, Response]),
@@ -64,6 +64,14 @@ describe('403 responses in openapi.yaml', () => {
     it('rejects a bare body carrying a code that ForbiddenError does not define', () => {
       const body = { ...JSON.parse(JSON.stringify(mediaOf(spec.components.responses.CredentialForbidden!).examples!.noVerifiedOwner!.value)), code: 'NO_SUCH_CODE' };
       expect(violations(mediaOf(spec.components.responses.CredentialForbidden!).schema!, body)).not.toEqual([]);
+    });
+
+    it('closes the owner_principal_id refusal: the exact bare body validates, an extra key or another message does not', () => {
+      const schema = mediaOf(spec.components.responses.BusinessServiceWriteForbidden!).schema!;
+      const refusal = { success: false, error: 'Forbidden', message: BARE_BODIES.ownerPrincipalAdminOnly };
+      expect(violations(schema, refusal)).toEqual([]);
+      expect(violations(schema, { ...refusal, message: 'x' })).not.toEqual([]);
+      expect(violations(schema, { ...refusal, code: 'PERMISSION_REQUIRED' })).not.toEqual([]);
     });
   });
 
@@ -82,6 +90,18 @@ describe('403 responses in openapi.yaml', () => {
           expect({ exampleName, isForbiddenCode: forbiddenCodes.includes(body.code) }).toEqual({ exampleName, isForbiddenCode: true });
         }
       }
+    });
+  });
+
+  describe('a credential read is never refused for the write permission', () => {
+    const reads = credentialOperations.filter(({ method }) => method === 'get');
+    it('finds the GET credential operations', () => {
+      expect(reads.length).toBeGreaterThan(0);
+    });
+    it.each(reads.map(({ name, operation }) => [name, operation.responses['403']!] as [string, Response]))('%s', (_name, response) => {
+      const media = mediaOf(response);
+      expect(Object.keys(media.examples ?? {})).not.toContain('permissionRequired');
+      for (const [, value] of examplesOf(media)) expect((value as Record<string, unknown>).code).not.toBe('PERMISSION_REQUIRED');
     });
   });
 

@@ -20,6 +20,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
+import { declaredResponse, violations } from '../../../openapi/__tests__/spec-schema';
 
 const TENANT_T = '00000000-0000-0000-0000-000000000000';
 const TENANT_T2 = '22222222-2222-4222-8222-222222222222';
@@ -203,6 +204,9 @@ describe('D38 (HAP-1565): only an admin sets or changes owner_principal_id', () 
         .send('{"__proto__":{"owner_principal_id":"actor-o"}}')];
     expect(refusals.map(res => [res.status, res.body])).toEqual(Array(4).fill([403, {
       success: false, error: 'Forbidden', message: 'owner_principal_id can be set or changed only by an admin' }]));
+    // The real body also validates against the 403 schema the spec declares for each operation (a pin on the spec, not on runtime code).
+    expect(violations(declaredResponse('/business-services', 'post', '403').schema!, refusals[0]!.body)).toEqual([]);
+    for (const refusal of refusals.slice(1)) expect(violations(declaredResponse('/business-services/{service_id}', 'patch', '403').schema!, refusal.body)).toEqual([]);
     expect([await stored(id), await auditCount(), await rows(selfOwned)]).toEqual(before);
     expect((await patch(id, { description: 'no owner change' }, undefined, 'o')).status).toBe(200);
     expect((await audit(id)).map(row => row['actor'])).toEqual(['actor-o', 'actor-o']);

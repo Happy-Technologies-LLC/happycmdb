@@ -78,7 +78,31 @@ const REVOKE = '/auth/api-key/{keyId}';
 
 const METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'];
 /** `/auth/api-key`, `/auth/api-key/*`, `/auth/api-keys` and `/auth/api-keys/*`; nothing else under /auth (`/auth/api-keyring` is not one). */
-const isKeyPath = (path: string): boolean => /^\/auth\/api-keys?(\/|$)/.test(path);
+const isKeyPath = (path: string): boolean => /^\/auth\/api-keys?(\/|$)/i.test(path);
+
+/** Express's ILayer/IRoute typings omit route.methods and path shapes; both are set at runtime. `name` is the layer's handler name. */
+type Layer = { name: string; route?: { path: unknown; methods: Record<string, boolean> } };
+
+/**
+ * The `METHOD /mounted/path` of every key route on a router stack, `:param` written `{param}`. Throws on what it cannot list: any
+ * non-route layer other than the `noStore` middleware (a `router.use` sub-router could register key routes unseen), and any route
+ * whose path is not a plain string (a RegExp or array path would slip past the key-path filter).
+ */
+function registeredKeyOperations(stack: Layer[], mount: string): string[] {
+  const middleware = stack.filter(layer => !layer.route).map(layer => layer.name);
+  if (JSON.stringify(middleware) !== JSON.stringify(['noStore'])) {
+    throw new Error(`router middleware layers must be exactly [noStore], found ${JSON.stringify(middleware)}`);
+  }
+  return stack.flatMap(layer => {
+    if (!layer.route) return [];
+    if (typeof layer.route.path !== 'string') throw new Error(`route path is not a string: ${String(layer.route.path)}`);
+    const path = mount + layer.route.path;
+    if (!isKeyPath(path)) return [];
+    return Object.entries(layer.route.methods).filter(([, on]) => on).map(([method]) => `${method.toUpperCase()} ${path}`.replace(/:(\w+)/g, '{$1}'));
+  }).sort();
+}
+/** Routes are matched case-insensitively by Express, so compare operations the same way. */
+const fold = (operations: string[]): string[] => operations.map(operation => operation.toLowerCase());
 
 const authConfig = {
   jwt: { secret: 'test-secret-at-least-32-characters-long', accessTokenExpiresIn: '15m', refreshTokenExpiresIn: '7d', issuer: 'happycmdb-test', audience: 'happycmdb-test' },
@@ -174,7 +198,7 @@ describe('API-key operations in openapi.yaml', () => {
     const again = record('revoke', await bearer(request(app).delete(`/api/v1/auth/api-key/${created.body.data._id}`)));
     expect([again.status, again.body]).toEqual([404, body(REVOKE, 'delete', '404').example]);
 
-    // A store failure (500) is not reachable with this fake; the next test breaks the fake to send it for revoke.
+    // A store failure (500) is not reachable with this fake; the test 'revoke answers the declared 500 body when the store fails' breaks the fake to send it for revoke.
     for (const [kind, path, method] of [['create', CREATE, 'post'], ['list', LIST, 'get'], ['revoke', REVOKE, 'delete']] as const) {
       const missing = [...observed[kind]].map(String).filter(status => !declared(path, method).includes(status));
       expect(missing).toEqual([]);
@@ -265,20 +289,34 @@ describe('API-key operations in openapi.yaml', () => {
 
   it('documents exactly the key-management routes the AuthController registers', () => {
     // The spec-derived test above only sees what the spec documents; a route added to the controller alone is invisible to it.
-    // Express's ILayer/IRoute typings omit route.methods, which is set at runtime.
-    type Layer = { route?: { path: string; methods: Record<string, boolean> } };
     const MOUNT = '/auth'; // server.ts: /api/v1 + this; spec servers carry /api/v1
     const router = build(true).controller.getRouter() as unknown as { stack: Layer[] };
-    const registered = router.stack
-      .flatMap(layer => (layer.route ? Object.entries(layer.route.methods).filter(([, on]) => on).map(([method]) => `${method.toUpperCase()} ${MOUNT + layer.route!.path}`.replace(/:(\w+)/g, '{$1}')) : []))
-      .filter(operation => isKeyPath(operation.slice(operation.indexOf(' ') + 1)))
-      .sort();
+    const registered = registeredKeyOperations(router.stack, MOUNT);
     const documented = Object.entries(spec.paths)
       .filter(([path]) => isKeyPath(path))
       .flatMap(([path, item]) => METHODS.filter(method => item[method]).map(method => `${method.toUpperCase()} ${path}`))
       .sort();
-    expect(registered).toEqual([`DELETE ${REVOKE}`, `GET ${LIST}`, `POST ${CREATE}`]);
-    expect(documented).toEqual(registered);
+    expect(fold(registered)).toEqual(fold([`DELETE ${REVOKE}`, `GET ${LIST}`, `POST ${CREATE}`]));
+    expect(fold(documented)).toEqual(fold(registered));
+  });
+
+  it('the route listing refuses what it cannot see and still lists mixed-case key routes', () => {
+    const handler = { methods: { get: true } };
+    const noStore: Layer = { name: 'noStore' };
+    const route = (path: unknown): Layer => ({ name: 'bound dispatch', route: { path, ...handler } });
+    expect(registeredKeyOperations([noStore, route('/api-keys')], '/auth')).toEqual(['GET /auth/api-keys']);
+    // A sub-router, a second middleware or a missing noStore could hide key routes from the listing.
+    expect(() => registeredKeyOperations([noStore, { name: 'router' }, route('/api-keys')], '/auth')).toThrow(/exactly \[noStore\]/);
+    expect(() => registeredKeyOperations([noStore, { name: 'cors' }], '/auth')).toThrow(/exactly \[noStore\]/);
+    expect(() => registeredKeyOperations([route('/api-keys')], '/auth')).toThrow(/exactly \[noStore\]/);
+    // A RegExp or array path is not a string the key-path filter can read.
+    expect(() => registeredKeyOperations([noStore, route(/^\/api-keys/)], '/auth')).toThrow(/not a string/);
+    expect(() => registeredKeyOperations([noStore, route(['/api-keys', '/api-key'])], '/auth')).toThrow(/not a string/);
+    // Express matches paths case-insensitively, so /API-Keys is a key route, and it is compared with the spec's lowercase path.
+    expect(registeredKeyOperations([noStore, route('/API-Keys')], '/auth')).toEqual(['GET /auth/API-Keys']);
+    expect(fold(registeredKeyOperations([noStore, route('/API-Keys')], '/auth'))).toEqual(fold([`GET ${LIST}`]));
+    expect(isKeyPath('/Auth/API-Key/{keyId}')).toBe(true);
+    expect(isKeyPath('/auth/api-keyring')).toBe(false);
   });
 
   it('every 401 and 403 body the stack sends on the three routes satisfies the declared response schema', async () => {
@@ -292,33 +330,41 @@ describe('API-key operations in openapi.yaml', () => {
     // the service throw it; the controller's own refusal mapping then answers.
     const credentialsChanged = async () => {
       const refusal = jest.spyOn(AuthService.prototype, 'generateApiKey').mockRejectedValueOnce(new CredentialsChangedError());
-      const res = await bearer(request(app).post('/api/v1/auth/api-key')).send({ name: 'ci key' });
-      refusal.mockRestore();
-      return res;
+      try {
+        return await bearer(request(app).post('/api/v1/auth/api-key')).send({ name: 'ci key' });
+      } finally {
+        refusal.mockRestore();
+      }
     };
-    const sent: Array<[string, string, string, request.Response]> = [
-      [CREATE, 'post', '401', await request(app).post('/api/v1/auth/api-key').send({ name: 'ci key' })],
-      [LIST, 'get', '401', await request(app).get('/api/v1/auth/api-keys')],
-      [REVOKE, 'delete', '401', await request(app).delete(`/api/v1/auth/api-key/${keyId}`)],
-      [CREATE, 'post', '401', await credentialsChanged()],
-      [CREATE, 'post', '403', await request(app).post('/api/v1/auth/api-key').set('X-API-Key', key).send({ name: 'chained' })],
-      [LIST, 'get', '403', await request(app).get('/api/v1/auth/api-keys').set('X-API-Key', key)],
-      [REVOKE, 'delete', '403', await request(app).delete(`/api/v1/auth/api-key/${keyId}`).set('X-API-Key', key)],
-      [CREATE, 'post', '403', await disabled.bearer(request(disabled.app).post('/api/v1/auth/api-key')).send({ name: 'ci key' })],
+    const sent: Array<[string, string, string, string, request.Response]> = [
+      ['create-401-no-credentials', CREATE, 'post', '401', await request(app).post('/api/v1/auth/api-key').send({ name: 'ci key' })],
+      ['list-401-no-credentials', LIST, 'get', '401', await request(app).get('/api/v1/auth/api-keys')],
+      ['revoke-401-no-credentials', REVOKE, 'delete', '401', await request(app).delete(`/api/v1/auth/api-key/${keyId}`)],
+      ['create-401-credentials-changed', CREATE, 'post', '401', await credentialsChanged()],
+      ['create-403-api-key', CREATE, 'post', '403', await request(app).post('/api/v1/auth/api-key').set('X-API-Key', key).send({ name: 'chained' })],
+      ['list-403-api-key', LIST, 'get', '403', await request(app).get('/api/v1/auth/api-keys').set('X-API-Key', key)],
+      ['revoke-403-api-key', REVOKE, 'delete', '403', await request(app).delete(`/api/v1/auth/api-key/${keyId}`).set('X-API-Key', key)],
+      ['create-403-keys-disabled', CREATE, 'post', '403', await disabled.bearer(request(disabled.app).post('/api/v1/auth/api-key')).send({ name: 'ci key' })],
     ];
-    expect(sent.map(([, , status, res]) => [status, res.status])).toEqual(sent.map(([, , status]) => [status, Number(status)]));
-    expect(sent[3]![3].body).toEqual({ success: false, error: 'Unauthorized', message: 'Credentials changed' });
-    expect(sent[7]![3].body).toEqual({ success: false, error: 'Forbidden', message: 'API keys are disabled' });
+    // Rows are looked up by name, so inserting or reordering one cannot make an assertion read another row's response.
+    const byLabel = (label: string): request.Response => {
+      const rows = sent.filter(([name]) => name === label);
+      if (rows.length !== 1) throw new Error(`expected exactly one matrix row labelled ${label}, found ${rows.length}`);
+      return rows[0]![4];
+    };
+    expect(sent.map(([, , , status, res]) => [status, res.status])).toEqual(sent.map(([, , , status]) => [status, Number(status)]));
+    expect(byLabel('create-401-credentials-changed').body).toEqual({ success: false, error: 'Unauthorized', message: 'Credentials changed' });
+    expect(byLabel('create-403-keys-disabled').body).toEqual({ success: false, error: 'Forbidden', message: 'API keys are disabled' });
 
-    for (const [path, method, status, res] of sent) {
+    for (const [, path, method, status, res] of sent) {
       expect({ path, status, violations: violations(declaredSchema(path, method, status), res.body) }).toEqual({ path, status, violations: [] });
     }
 
     // The check is not vacuous: a 403 that lost `code`, and a 401 that mixes both key families, are refused.
-    const jwtRequired = sent[5]![3].body as Record<string, unknown>;
+    const jwtRequired = byLabel('list-403-api-key').body as Record<string, unknown>;
     const { code: _code, ...withoutCode } = jwtRequired;
     expect(violations(declaredSchema(LIST, 'get', '403'), withoutCode)).not.toEqual([]);
-    expect(violations(declaredSchema(CREATE, 'post', '401'), { ...sent[3]![3].body, _error: 'Unauthorized', _message: 'x' })).not.toEqual([]);
+    expect(violations(declaredSchema(CREATE, 'post', '401'), { ...byLabel('create-401-credentials-changed').body, _error: 'Unauthorized', _message: 'x' })).not.toEqual([]);
   });
 
   it('revoke answers the declared 500 body when the store fails', async () => {

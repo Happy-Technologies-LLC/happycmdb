@@ -447,11 +447,42 @@ Get detailed risk assessment for a change.
 
 ---
 
+### PATCH /changes/:id
+
+Update a change's `status`, `implementedBy` or `actualDuration`. Requires the `write` permission.
+
+**Request Body:**
+
+```json
+{
+  "status": "APPROVED",
+  "implementedBy": "platform-engineering@company.com"
+}
+```
+
+`status` takes `DRAFT`, `PENDING_APPROVAL`, `APPROVED`, `SCHEDULED`, `IN_PROGRESS`, `IMPLEMENTED`, `CLOSED` or `CANCELLED`. Status moves are not otherwise restricted, with two approval rules:
+
+- `status: APPROVED` follows the same rules and refusals as [`POST /changes/:id/approve`](#post-changes-id-approve): the approver and time are recorded in the same write, the approver is the authenticated caller, and a body `approved_by` or `approved_at` is ignored.
+- `status: DRAFT` or `PENDING_APPROVAL` clears `approved_by` and `approved_at` in the same write, so a later approval records its own approver and time. Any other status leaves the approval record as it is.
+
+**Response:** `200` with the full updated change row in `data` and `message: "Change updated successfully"`.
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Change updated |
+| 400 | `Bad Request`: no field to update, or a value out of range; nothing is written |
+| 401 | `Unauthorized`: `status` is `APPROVED` and the request carries no user identity; nothing is written |
+| 403 | The credential lacks the `write` permission, or carries no organization claim (`ORGANIZATION_REQUIRED`) |
+| 404 | `Not Found`: no change with this id in the caller's organization |
+| 409 | `Conflict`, `code: CHANGE_NOT_APPROVABLE`: `status` is `APPROVED` and the change is not in `draft` or `pending_approval`; nothing is written |
+
+---
+
 ### POST /changes/:id/approve
 
 Approve a change request. Requires the `write` permission; there is no separate approve permission. The request takes no body: the approver is the authenticated caller (`_userId`, or the username when the token has no user id), never a request field.
 
-The first approval wins. The change gets `status` and `approval_status` set to `approved`, and `approved_by` and `approved_at` record the approver and the time. A repeat call answers 200 with the same row and keeps the original approver and time.
+Only a change in `draft` or `pending_approval` can be approved. The change gets `status` and `approval_status` set to `approved`, and `approved_by` and `approved_at` record the approver and the time, in one statement. Any other status (`approved`, `scheduled`, `in_progress`, `implemented`, `closed`, `cancelled`) is refused with `409` and nothing is written, so the first approval is never overwritten. Moving the change back to `draft` or `pending_approval` through `PATCH /changes/:id` clears the record; the next approval then stores the new approver and time.
 
 **Response:**
 
@@ -480,9 +511,11 @@ The first approval wins. The change gets `status` and `approval_status` set to `
 
 | Status | Meaning |
 |--------|---------|
-| 200 | Change approved (or already approved; the original approver and time are kept) |
+| 200 | Change approved |
 | 401 | `Unauthorized`: the request carries no user identity; nothing is written |
-| 404 | `Not Found`: no change with this id in the caller's organization |
+| 403 | The credential lacks the `write` permission, or carries no organization claim (`ORGANIZATION_REQUIRED`) |
+| 404 | `Not Found`: no change with this id in the caller's organization; nothing is written |
+| 409 | `Conflict`, `code: CHANGE_NOT_APPROVABLE`: the change is not in `draft` or `pending_approval`; nothing is written |
 
 ---
 

@@ -53,6 +53,64 @@ interface ConnectorMetadata {
   };
 }
 
+// Connector manifests are third-party data and `homepage`/`repository` become links in the web UI.
+// This mirrors `safeExternalUrl` in `web-ui/src/lib/safe-external-url.ts`; the two must stay in step.
+// eslint-disable-next-line no-control-regex -- the point is to reject control characters
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
+/**
+ * The normalised `href` when the trimmed value is a string that parses as an absolute http: or https: URL
+ * with a host and no userinfo, otherwise `''`.
+ *
+ * Userinfo is rejected, not stripped: `https://cmdb.example@evil.test/` reads like the CMDB host on hover but
+ * navigates to `evil.test`, and a manifest with credentials in a URL is wrong data that rewriting would hide.
+ */
+export function sanitizeManifestUrl(value: unknown): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const trimmed = value.trim();
+  // URL parsing drops tabs and newlines inside the string, so reject them up front.
+  if (trimmed === '' || CONTROL_CHARS.test(trimmed)) {
+    return '';
+  }
+  try {
+    const url = new URL(trimmed);
+    if (
+      (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+      url.username !== '' ||
+      url.password !== '' ||
+      url.hostname === ''
+    ) {
+      return '';
+    }
+    return url.href;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * A shallow copy of the manifest whose `homepage` and `repository` have passed `sanitizeManifestUrl`, so the
+ * registry cache and the stored manifest agree. Empty and absent fields are left as they are; a non-empty
+ * value that is blanked logs one warning naming the field only, never the value. Loading never fails here.
+ */
+function withSanitizedManifestUrls(manifest: ConnectorMetadata): ConnectorMetadata {
+  const metadata: ConnectorMetadata = { ...manifest };
+  for (const field of ['homepage', 'repository'] as const) {
+    const raw: unknown = manifest[field];
+    if (raw === undefined || raw === null || raw === '') {
+      continue;
+    }
+    const clean = sanitizeManifestUrl(raw);
+    if (clean === '') {
+      logger.warn('Connector manifest URL rejected', { field });
+    }
+    metadata[field] = clean;
+  }
+  return metadata;
+}
+
 export class ConnectorLoader {
   private connectorsPath: string;
   private postgresClient = getPostgresClient();
@@ -167,10 +225,11 @@ export class ConnectorLoader {
    * Register connector metadata in PostgreSQL tables
    */
   private async registerConnectorInDatabase(
-    metadata: ConnectorMetadata,
+    manifest: ConnectorMetadata,
     installPath: string
   ): Promise<void> {
     const pool = this.postgresClient['pool'];
+    const metadata = withSanitizedManifestUrls(manifest);
 
     try {
       // 1. Register in connector_registry_cache (for catalog/discovery)

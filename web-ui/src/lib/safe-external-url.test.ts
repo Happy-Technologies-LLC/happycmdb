@@ -10,7 +10,10 @@ const ACCEPTED: Array<[string, string]> = [
   ['http://example.test', 'http://example.test/'],
   ['HTTPS://example.test', 'https://example.test/'],
   ['  https://Example.test  ', 'https://example.test/'],
-  ['https://user:pw@host/', 'https://user:pw@host/'],
+  // An `@` after the authority (path, query, fragment) is not userinfo.
+  ['https://host/@path', 'https://host/@path'],
+  ['https://host/?u=a@b', 'https://host/?u=a@b'],
+  ['https://host/#a@b', 'https://host/#a@b'],
   // No `//` after the scheme: a browser would resolve the raw string against the page, so only the href is returned.
   ['https:/api/v1/x', 'https://api/v1/x'],
   ['https:evil.test', 'https://evil.test/'],
@@ -54,6 +57,21 @@ describe('safeExternalUrl', () => {
   });
 
   it.each([undefined, null, 42, {}, ['https://example.test']])('rejects non-string %j', (value) => {
+    expect(safeExternalUrl(value)).toBeNull();
+  });
+});
+
+// Userinfo is rejected, not stripped: `https://cmdb.example@evil.test/` would read like the CMDB host on hover.
+describe('safeExternalUrl userinfo', () => {
+  it.each([
+    'https://user:pw@host/',
+    'https://cmdb.example@evil.test/',
+    'https://user@host/',
+    'https://:pw@host/',
+    'https://%75ser@host/',
+    'https:\\\\user:pw@host',
+    'HTTP://u:p@host',
+  ])('rejects the URL with userinfo %j', (value) => {
     expect(safeExternalUrl(value)).toBeNull();
   });
 });

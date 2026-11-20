@@ -89,7 +89,30 @@ describe('connector card', () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
-  it.each(['javascript:alert(1)', 'data:text/html,x', ' JaVaScRiPt:alert(1)'])(
+  it('opens the normalised homepage href, not the raw manifest value, without opening the detail', async () => {
+    const user = userEvent.setup();
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    const onSelect = vi.fn();
+    render(<ConnectorCard connector={{ ...CONNECTOR, homepage: 'https:/api/v1/x' }} onSelect={onSelect} />);
+
+    await user.click(screen.getByRole('button', { name: 'ServiceNow homepage' }));
+
+    expect(open).toHaveBeenCalledWith('https://api/v1/x', '_blank', 'noopener,noreferrer');
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'javascript:alert(1)',
+    'data:text/html,x',
+    ' JaVaScRiPt:alert(1)',
+    'https://user:pw@host/',
+    'https://cmdb.example@evil.test/',
+    'https://user@host/',
+    'https://:pw@host/',
+    'https://%75ser@host/',
+    'https:\\\\user:pw@host',
+    'HTTP://u:p@host',
+  ])(
     'has no homepage control and never opens a window for the unsafe homepage %j',
     async (homepage) => {
       const user = userEvent.setup();

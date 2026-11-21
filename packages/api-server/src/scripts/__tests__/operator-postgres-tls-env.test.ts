@@ -180,10 +180,13 @@ describe.each(WEAKENING_ENVS)('verify-full with %s in the environment', (_label,
   });
 });
 
-describe.each(WEAKENING_ENVS)('an unset POSTGRES_SSL setting on a remote host, with %s in the environment', (_label, weakening) => {
+// resolveOperatorPostgresTls reads only the env it is handed, so one row per tool covers the refusal. The API server's
+// own weakening toggles ride in that same env: they must not stand in for the tool's unset CMDB_*_POSTGRES_SSL.
+const AMBIENT_WEAKENING = { POSTGRES_SSL_MODE: 'disable', POSTGRES_SSL_ENABLED: 'off' };
+
+describe('an unset CMDB_*_POSTGRES_SSL setting on a remote host', () => {
   it('refuses the rotation and identity-window stores before a pool exists', () => {
-    Object.assign(process.env, weakening);
-    const env = rotateEnv();
+    const env = { ...rotateEnv(), ...AMBIENT_WEAKENING };
     delete env['CMDB_ROTATE_POSTGRES_SSL'];
 
     expect(() => openOperatorStores(env)).toThrow('CMDB_ROTATE_POSTGRES_SSL must be set for a non-loopback host');
@@ -191,8 +194,7 @@ describe.each(WEAKENING_ENVS)('an unset POSTGRES_SSL setting on a remote host, w
   });
 
   it('refuses the organization backfill before a pool exists', async () => {
-    Object.assign(process.env, weakening);
-    const env = backfillEnv();
+    const env = { ...backfillEnv(), ...AMBIENT_WEAKENING };
     delete env['CMDB_BACKFILL_POSTGRES_SSL'];
     let stderr = '';
 

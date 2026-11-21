@@ -5,7 +5,8 @@
  * TLS settings shared by the operator tools (rotate-user-password, identity-window, backfill, and the loopback test of
  * migrate-legacy-discovery-definitions). Every tool reads its own `CMDB_<TOOL>_*` variables only.
  *
- * Off loopback, an unset TLS setting is refused: it would otherwise mean plaintext (or, for Postgres, an unchecked
+ * Off loopback, an unset TLS setting is refused, and so is an unset Neo4j setting with any `neo4j://` routing URI,
+ * loopback included (see `resolveOperatorNeo4jEncrypted`): it would otherwise mean plaintext (or, for Postgres, an unchecked
  * certificate) to a remote host. Plaintext to a remote host needs an explicit opt-out and logs a warning.
  * Messages carry variable names only, never a value: a URI or file path can be sensitive.
  */
@@ -92,14 +93,14 @@ export function resolveOperatorNeo4jEncrypted(env: NodeJS.ProcessEnv, prefix: st
     throw new Error(`${variable} must be set for a non-loopback host or a neo4j:// routing URI: true (recommended), or false to opt out of TLS`);
   }
   if (setting === 'false' && !directLoopback) {
-    logger.warn(`${variable}=false: the Neo4j connection to a non-loopback host is NOT encrypted`);
+    logger.warn(`${variable}=false: the Neo4j connection to a non-loopback host or via a neo4j:// routing URI is NOT encrypted`);
   }
   return setting === 'true';
 }
 
 /**
  * The API server's own TLS toggles that `PostgresClient` / `Neo4jClient` read from `process.env`. Every operator tool
- * (rotation, identity window, backfill, seed) defines its connections only through its own `CMDB_*` variables, so it
+ * (rotation, identity window, backfill, seed, legacy-definitions migrate) defines its connections only through its own `CMDB_*` variables, so it
  * drops all of these before any client exists. A new ambient client variable MUST be added here, once.
  *
  * `NODE_EXTRA_CA_CERTS` is deliberately not in this list: it is a process-level Node setting that only adds trust to

@@ -15,9 +15,10 @@
 
 import { Job } from 'bullmq';
 import { Neo4jClient, PostgresClient } from '@cmdb/database';
-import { logger, CI, parseStoredMetadata } from '@cmdb/common';
+import { logger, CI, parseStoredMetadata, errorClassFields } from '@cmdb/common';
 import { subHours } from 'date-fns';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
+import { dimCiOrganizationId, isDimCiId, withDimCiIds, type ExtractedCI } from '../transformers/ci-organization';
 
 export interface ChangeDetectionJobData {
   /** Start date for change detection (ISO 8601 format) */
@@ -46,6 +47,8 @@ export interface ChangeDetectionResult {
 export interface ChangeEvent {
   /** CI identifier */
   ciId: string;
+  /** The CI's cmdb.dim_ci organization (its node's organization_id, or the internal organization) */
+  organizationId: string;
   /** CI name */
   ciName: string;
   /** Type of change */
@@ -128,14 +131,13 @@ export class ChangeDetectionJob {
             result.changesDetected += changes.length;
 
             // Record changes in database
-            await this.recordChanges(changes);
-            result.changesRecorded += changes.length;
+            result.changesRecorded += await this.recordChanges(changes);
           }
 
           result.cisChecked++;
 
         } catch (error) {
-          logger.error('Error detecting changes for CI', { ciId: ci!._id, error });
+          logger.error('Error detecting changes for CI', { ciId: ci!._id, ...errorClassFields(error) });
         }
       }
 
@@ -145,8 +147,7 @@ export class ChangeDetectionJob {
         result.changesDetected += relChanges.length;
 
         if (relChanges.length > 0) {
-          await this.recordChanges(relChanges);
-          result.changesRecorded += relChanges.length;
+          result.changesRecorded += await this.recordChanges(relChanges);
         }
       }
 
@@ -167,9 +168,10 @@ export class ChangeDetectionJob {
   }
 
   /**
-   * Get CIs that have changed since a specific time
+   * Get CIs that have changed since a specific time. Nodes whose id cannot be
+   * a cmdb.dim_ci ci_id are skipped; each CI carries its node's organization_id.
    */
-  private async getChangedCIs(since: string, ciIds?: string[]): Promise<CI[]> {
+  private async getChangedCIs(since: string, ciIds?: string[]): Promise<ExtractedCI[]> {
     const session = this.neo4jClient.getSession();
 
     try {
@@ -185,7 +187,7 @@ export class ChangeDetectionJob {
 
       const result = await session.run(query, params);
 
-      return result.records.map((record: any) => {
+      const cis: ExtractedCI[] = result.records.map((record: any) => {
         const node = record.get('ci');
         const props = node.properties;
         return {
@@ -198,9 +200,12 @@ export class ChangeDetectionJob {
           _created_at: props.created_at,
           _updated_at: props.updated_at,
           _discovered_at: props.discovered_at,
-          _metadata: parseStoredMetadata(props.metadata)
+          _metadata: parseStoredMetadata(props.metadata),
+          organization_id: props.organization_id
         };
       });
+
+      return withDimCiIds(cis, ci => ci._id, 'change-detection');
 
     } finally {
       await session.close();
@@ -210,16 +215,19 @@ export class ChangeDetectionJob {
   /**
    * Detect what changed in a CI by comparing with historical data
    */
-  private async detectChanges(ci: CI, since: string): Promise<ChangeEvent[]> {
+  private async detectChanges(extracted: ExtractedCI, since: string): Promise<ChangeEvent[]> {
     const changes: ChangeEvent[] = [];
+    const { organization_id, ...ci } = extracted;
+    const organizationId = dimCiOrganizationId(organization_id);
 
     // Get historical version of CI from PostgreSQL
-    const historicalCI = await this.getHistoricalCI(ci._id, since);
+    const historicalCI = await this.getHistoricalCI(ci._id, organizationId, since);
 
     if (!historicalCI) {
       // This is a new CI created within the lookback period
       changes.push({
         ciId: ci._id,
+        organizationId,
         ciName: ci.name,
         changeType: 'created',
         fieldName: '*',
@@ -242,6 +250,7 @@ export class ChangeDetectionJob {
 
         changes.push({
           ciId: ci._id,
+          organizationId,
           ciName: ci.name,
           changeType,
           fieldName: field,
@@ -260,6 +269,7 @@ export class ChangeDetectionJob {
     if (currentMeta !== historicalMeta) {
       changes.push({
         ciId: ci._id,
+        organizationId,
         ciName: ci.name,
         changeType: 'metadata-changed',
         fieldName: 'metadata',
@@ -274,16 +284,17 @@ export class ChangeDetectionJob {
   }
 
   /**
-   * Get historical state of CI from PostgreSQL
+   * Get historical state of CI from PostgreSQL, within the CI's organization
    */
-  private async getHistoricalCI(ciId: string, beforeDate: string): Promise<CI | null> {
+  private async getHistoricalCI(ciId: string, organizationId: string, beforeDate: string): Promise<CI | null> {
     const result = await this.postgresClient.query(
       `SELECT * FROM cmdb.dim_ci
        WHERE ci_id = $1
-       AND effective_from < $2
+       AND organization_id = $2
+       AND effective_from < $3
        ORDER BY effective_from DESC
        LIMIT 1`,
-      [ciId, beforeDate]
+      [ciId, organizationId, beforeDate]
     );
 
     if (result.rows.length === 0) {
@@ -317,19 +328,31 @@ export class ChangeDetectionJob {
       const result = await session.run(
         `MATCH (from:CI)-[r]->(to:CI)
          WHERE r.created_at >= datetime($since) OR r.updated_at >= datetime($since)
-         RETURN from.id as fromId, from.name as fromName,
-                to.id as toId, to.name as toName,
+         RETURN from.id as fromId, from.name as fromName, from.organization_id as fromOrganizationId,
+                to.id as toId, to.name as toName, to.organization_id as toOrganizationId,
                 type(r) as relType, r.created_at as createdAt, r.updated_at as updatedAt`,
         { since }
       );
 
+      let skipped = 0;
+
       for (const record of result.records) {
+        const fromId = record.get('fromId');
+        const organizationId = dimCiOrganizationId(record.get('fromOrganizationId'));
+
+        // An edge is recorded for its FROM CI, and only inside one organization.
+        if (!isDimCiId(fromId) || organizationId !== dimCiOrganizationId(record.get('toOrganizationId'))) {
+          skipped++;
+          continue;
+        }
+
         const createdAt = record.get('createdAt');
         const updatedAt = record.get('updatedAt');
         const isNew = new Date(createdAt).toISOString() >= since;
 
         changes.push({
-          ciId: record.get('fromId'),
+          ciId: fromId,
+          organizationId,
           ciName: record.get('fromName'),
           changeType: isNew ? 'relationship-added' : 'updated',
           fieldName: 'relationship',
@@ -346,6 +369,13 @@ export class ChangeDetectionJob {
         });
       }
 
+      if (skipped > 0) {
+        logger.warn('Skipping relationships with an invalid source id or endpoints in different organizations', {
+          job: 'change-detection',
+          skipped
+        });
+      }
+
     } finally {
       await session.close();
     }
@@ -354,12 +384,17 @@ export class ChangeDetectionJob {
   }
 
   /**
-   * Record changes in PostgreSQL fact table
+   * Record changes in the PostgreSQL fact table; returns the rows actually
+   * inserted. A change already recorded for the same CI (any dim_ci version of
+   * it) is skipped: this job re-reads a 24 h window every run, so it sees the
+   * same change many times.
    */
-  private async recordChanges(changes: ChangeEvent[]): Promise<void> {
+  private async recordChanges(changes: ChangeEvent[]): Promise<number> {
     if (changes.length === 0) {
-      return;
+      return 0;
     }
+
+    let inserted = 0;
 
     await this.postgresClient.transaction(async (client: any) => {
       let savepointIndex = 0;
@@ -370,22 +405,34 @@ export class ChangeDetectionJob {
         try {
           await client.query(`SAVEPOINT ${savepointName}`);
 
+          const organizationId = change.organizationId;
           const ciKeyResult = await client.query(
-            'SELECT ci_key FROM cmdb.dim_ci WHERE ci_id = $1 AND is_current = true',
-            [change.ciId]
+            'SELECT ci_key FROM cmdb.dim_ci WHERE ci_id = $1 AND organization_id = $2 AND is_current = true',
+            [change.ciId, organizationId]
           );
 
           if (ciKeyResult.rows.length === 0) {
-            throw new Error(`No current cmdb.dim_ci record found for CI id ${change.ciId}`);
+            throw new Error('No current cmdb.dim_ci record found for the CI in its organization');
           }
 
           const ciKey = ciKeyResult.rows[0].ci_key;
           const changedAt = new Date(change.changedAt);
 
-          await client.query(
+          // ci_key moves with every SCD2 version of the CI, so the recorded
+          // check spans all versions of this CI in this organization.
+          const insertResult = await client.query(
             `INSERT INTO cmdb.fact_ci_changes
              (ci_key, date_key, changed_at, change_type, field_name, old_value, new_value, changed_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+             SELECT $1::int, $2::int, $3::timestamptz, $4::varchar, $5::varchar, $6::text, $7::text, $8::varchar
+             WHERE NOT EXISTS (
+               SELECT 1 FROM cmdb.fact_ci_changes fc
+               JOIN cmdb.dim_ci d ON d.ci_key = fc.ci_key
+               WHERE d.ci_id = $9 AND d.organization_id = $10
+                 AND fc.changed_at = $3::timestamptz
+                 AND fc.change_type = $4::varchar
+                 AND fc.field_name IS NOT DISTINCT FROM $5::varchar
+                 AND fc.new_value IS NOT DISTINCT FROM $7::text
+             )`,
             [
               ciKey,
               this.dimensionTransformer.generateDateKey(changedAt),
@@ -394,19 +441,28 @@ export class ChangeDetectionJob {
               change.fieldName,
               JSON.stringify(change.oldValue),
               JSON.stringify(change.newValue),
-              change.changedBy || 'system'
+              change.changedBy || 'system',
+              change.ciId,
+              organizationId
             ]
           );
 
           await client.query(`RELEASE SAVEPOINT ${savepointName}`);
+          inserted += insertResult.rowCount ?? 0;
         } catch (error) {
           await client.query(`ROLLBACK TO SAVEPOINT ${savepointName}`);
-          logger.error('Error recording change', { change, error });
+          // Class and code only: the change carries customer CI values.
+          logger.error('Error recording change', {
+            ciId: change.ciId,
+            changeType: change.changeType,
+            ...errorClassFields(error)
+          });
         }
       }
     });
 
-    logger.info(`Recorded ${changes.length} changes in database`);
+    logger.info(`Recorded ${inserted} of ${changes.length} detected changes in database`);
+    return inserted;
   }
 }
 

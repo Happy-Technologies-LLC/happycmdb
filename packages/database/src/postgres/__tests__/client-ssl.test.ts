@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { mkdtempSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { ConnectionOptions, PeerCertificate } from 'tls';
@@ -49,6 +49,17 @@ describe('PostgresClient TLS mode', () => {
     process.env['POSTGRES_SSL_MODE'] = 'verify-full';
     process.env['POSTGRES_SSL_CA_FILE'] = caFile;
     expect(() => open()).toThrow();
+  });
+
+  it('refuses verify-full when POSTGRES_SSL_CA_FILE is missing instead of falling back to the public trust store', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hap1380-'));
+    try {
+      process.env['POSTGRES_SSL_MODE'] = 'verify-full';
+      process.env['POSTGRES_SSL_CA_FILE'] = join(dir, 'missing-ca.crt');
+      expect(() => open()).toThrow(/ENOENT/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('verifies against an explicit CA bundle with rejectUnauthorized, ahead of an ambient CA file', () => {

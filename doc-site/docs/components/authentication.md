@@ -262,19 +262,47 @@ only on a private network you control.
   (`UNABLE_TO_VERIFY_LEAF_SIGNATURE`) until that CA is trusted.
 - Preferred: set `CMDB_ROTATE_POSTGRES_SSL_CA_FILE` (or `CMDB_BACKFILL_POSTGRES_SSL_CA_FILE`) to the CA
   bundle. The file is read at start and handed to the client with `rejectUnauthorized: true`, so **only** that
-  bundle is trusted for the database. Fail-closed: a missing, unreadable or empty file, or a CA file next to
-  any mode other than `verify-full`, makes the tool exit 1 before connecting. The file must hold CA
-  certificates only, never a private key.
-- Alternative: export `NODE_EXTRA_CA_CERTS=/path/to/ca.pem` for the run. Node reads it once at process start
-  and **adds** the CA to the built-in store; it does not replace the store, and it applies to every TLS
-  connection of the process. It works for every tool, `migrate-legacy-discovery-definitions` included.
+  bundle is trusted for the database, and nothing else in the process (Neo4j included) is affected. Fail-closed:
+  a missing, unreadable or empty file, or a CA file next to any mode other than `verify-full`, makes the tool
+  exit 1 before connecting. The file must hold CA certificates only, never a private key.
+- Alternative: set `NODE_EXTRA_CA_CERTS=/path/to/ca.pem`. Node reads it once at process start and **adds** the
+  CA to the built-in store; it does not replace the store, and it applies to **every** TLS connection of the
+  process, the Neo4j connection included. It works for every tool, `migrate-legacy-discovery-definitions`
+  included. Set it on the single command, not with `export` in the shell or a profile, so no other process
+  inherits it.
+- Check the CA file before using it, on either route. Do the three steps in this order, and stop without using
+  the file if any fails. Get the expected fingerprint out of band (from the database operator, not from the
+  same host or channel that gave you the file):
+  1. `grep -c -- '-----BEGIN' ca.pem` must print `1`, **and**
+     `openssl crl2pkcs7 -nocrl -certfile ca.pem | openssl pkcs7 -print_certs -noout | grep -c '^subject='`
+     must print `1`.
+  2. `openssl x509 -noout -fingerprint -sha256 -in ca.pem` must equal the expected fingerprint.
+  3. `openssl x509 -noout -ext basicConstraints -in ca.pem` must show `CA:TRUE`.
+
+  Step 1 is not optional, and both of its checks are needed. `openssl x509` reads only the **first**
+  certificate in a file, but both routes trust **every** certificate in it: `_POSTGRES_SSL_CA_FILE` passes the
+  whole file as the client's `ca`, and `NODE_EXTRA_CA_CERTS` adds all of it to the store. A file with the real
+  CA first and an attacker's CA second passes step 2 and still makes the tool trust the attacker's CA; under
+  `verify-full` that attacker can impersonate Postgres (and, with `NODE_EXTRA_CA_CERTS`, Neo4j) and receive the
+  privileged `CMDB_ROTATE_*` / `CMDB_BACKFILL_*` passwords. OpenSSL accepts more than one PEM label for a
+  certificate (for example the legacy `-----BEGIN X509 CERTIFICATE-----`), so a count of one label proves
+  nothing. The `-----BEGIN` count covers every PEM block of any label (it can only overcount, which fails
+  safe); the `subject=` count covers every certificate OpenSSL actually parses, whatever its label.
+- The CA file must be owned by the operator running the tool, mode `0644` or stricter, in a directory
+  that other users cannot write to, and never under `/tmp`. Anyone who can replace the file can make the
+  tool trust their own CA.
 - Do not fall back to `require`: it encrypts the connection but does **not** verify the server
   certificate, so it gives no protection against an impersonated database.
+- With `verify-full` the tools pass `rejectUnauthorized: true` explicitly, with or without a CA file. That wins
+  over `NODE_TLS_REJECT_UNAUTHORIZED=0` and over `PGSSLMODE` in the environment (pg reads `PGSSLMODE` only when
+  no `ssl` option is given). The API server's `POSTGRES_SSL_*` variables are dropped before any client exists.
+  This holds for Postgres only: `require` and `disable` do not verify, and the Neo4j connection has no such
+  override.
 
 ```bash
-export CMDB_ROTATE_POSTGRES_SSL=verify-full
-export CMDB_ROTATE_POSTGRES_SSL_CA_FILE=/path/to/ca.pem   # or: export NODE_EXTRA_CA_CERTS=/path/to/ca.pem
-export CMDB_ROTATE_NEO4J_ENCRYPTED=true
+CMDB_ROTATE_POSTGRES_SSL=verify-full CMDB_ROTATE_POSTGRES_SSL_CA_FILE=/path/to/ca.pem \
+  CMDB_ROTATE_NEO4J_ENCRYPTED=true \
+  node packages/api-server/dist/tenant-fixture/api-server/src/scripts/rotate-user-password.js ...
 ```
 
 ### Neo4j `:BusinessService.organization_id`

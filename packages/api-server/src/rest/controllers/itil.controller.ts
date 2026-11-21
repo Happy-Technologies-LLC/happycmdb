@@ -1090,6 +1090,11 @@ export class ITILController {
     try {
       const { id } = req.params;
       const { result: changeResult, notes, closedBy: claimedClosedBy } = req.body;
+      // GraphQL closeChange calls this controller directly, bypassing REST's Joi schema (closedBy max 255).
+      if (typeof claimedClosedBy === 'string' && claimedClosedBy.length > 255) {
+        res.status(400).json({ success: false, error: 'Bad Request', message: 'Invalid request' });
+        return;
+      }
 
       const outcomeMap: Record<string, string> = {
         SUCCESS: 'successful',

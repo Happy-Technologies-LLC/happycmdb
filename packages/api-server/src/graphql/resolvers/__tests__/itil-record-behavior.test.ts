@@ -216,6 +216,19 @@ it('HAP-922: updateChange persists implementedBy and actualDuration; change and 
   expect(await sql('SELECT * FROM itil_changes ORDER BY id')).toEqual(rows);
 });
 
+it.each([[255, 'closed'], [256, 'implemented']])(
+  'closeChange accepts a closedBy of 255 characters and refuses longer, like REST Joi: %i chars leaves status %s', async (length, status) => {
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await seedChange(id, 'implemented');
+    const response = await graphql(`mutation { closeChange(id: "${id}", result: SUCCESS, closedBy: "${'x'.repeat(length)}") { id status } }`);
+    if (length === 255) expect(response.body).toEqual({ data: { closeChange: { id, status: 'CLOSED' } } });
+    else {
+      expect(response.body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
+      expect(response.body.data).toBeNull();
+    }
+    expect(await sql('SELECT status FROM itil_changes WHERE id = $1', [id])).toEqual([{ status }]);
+  });
+
 it('updateChange status APPROVED records the verified principal and refuses a non-pre-approval change', async () => {
   const pending = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const closed = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';

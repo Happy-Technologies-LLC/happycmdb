@@ -1076,6 +1076,7 @@ paths:
                 _query:
                   type: string
                   minLength: 1
+                  maxLength: 500
                   description: Search query string
                   example: web server
                 _limit:
@@ -2093,6 +2094,7 @@ paths:
                 _query:
                   type: string
                   minLength: 1
+                  maxLength: 500
                 _type:
                   $ref: '#/components/schemas/CIType'
                 _status:
@@ -2101,8 +2103,20 @@ paths:
                   $ref: '#/components/schemas/Environment'
                 _metadata_filters:
                   type: object
-                  additionalProperties: true
-                  description: Filter by metadata fields
+                  maxProperties: 20
+                  additionalProperties:
+                    oneOf:
+                      - type: string
+                        maxLength: 256
+                      - type: number
+                        minimum: -9007199254740991
+                        maximum: 9007199254740991
+                      - type: boolean
+                  description: >-
+                    Filter by metadata fields. At most 20 keys; each key is 1 to 128 characters (and not
+                    `__proto__`); each value is a string of at most 256 characters, a safe number or a boolean.
+                    Nested objects, arrays and null are refused. A string matches a stored string, a number a stored
+                    number of exactly that value (3 does not match 30 or 3.5). Violations answer 400.
                   example:
                     os: Ubuntu
                     cpu_cores: 8
@@ -2151,6 +2165,7 @@ paths:
                 _query:
                   type: string
                   minLength: 1
+                  maxLength: 500
                 _limit:
                   type: integer
                   minimum: 1

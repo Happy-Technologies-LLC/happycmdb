@@ -672,7 +672,7 @@ Update a change's status or implementation details.
 
 All fields are optional but at least one must be sent: an empty body answers `400 {"success": false, "error": "Bad Request", "message": "No fields to update"}`. A value outside the limits answers `400 {"success": false, "error": "Bad Request", "message": "Invalid request"}`.
 
-Only the named columns are written. No status transition is enforced, and a status change sets no other column: `approved` does not record an approver (use [POST /changes/:id/approve](#post-changes-id-approve)) and `closed` does not stamp `closed_at` (use [POST /changes/:id/close](#post-changes-id-close)).
+Only the named columns are written, with these status effects. `APPROVED` is accepted only from `draft` or `pending_approval` and stamps `approval_status = approved`, `approved_by` (the verified caller) and `approved_at`, like [POST /changes/:id/approve](#post-changes-id-approve); from any other status it answers `409 CHANGE_NOT_APPROVABLE`. `DRAFT` and `PENDING_APPROVAL` clear `approved_by` and `approved_at` and set `approval_status = pending` in the same statement. That write is conditional on the status and approval stamp read just before it: if an approval (or any other write to those columns) committed in between, nothing is written and the answer is `409 CHANGE_APPROVAL_CHANGED`; reload and retry. When a stamp is cleared the server logs one `Change approval stamp cleared` event carrying ids only (`change_id`, `organization_id`, `previous_approved_by`, `previous_approved_at`, `actor_user_id`). No other status transition is enforced, and `closed` does not stamp `closed_at` (use [POST /changes/:id/close](#post-changes-id-close)).
 
 **Response:**
 

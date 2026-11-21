@@ -221,8 +221,8 @@ it('updateChange status APPROVED records the verified principal and refuses a no
     .toEqual([{ status: 'approved', approved_by: 'gql-user', stamped: true }]);
   const back = await graphql(`mutation { updateChange(id: "${pending}", input: { status: REQUESTED }) { status } }`);
   expect(back.body.data).toEqual({ updateChange: { status: 'REQUESTED' } });
-  expect(await sql('SELECT approved_by, approved_at FROM itil_changes WHERE id = $1', [pending]))
-    .toEqual([{ approved_by: null, approved_at: null }]);
+  expect(await sql('SELECT approval_status, approved_by, approved_at FROM itil_changes WHERE id = $1', [pending]))
+    .toEqual([{ approval_status: 'pending', approved_by: null, approved_at: null }]);
 });
 
 const seedIncident = (id: string, number: string, priority = 3, ci = 'ci-a', org = A) => sql(

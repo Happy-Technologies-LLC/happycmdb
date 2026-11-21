@@ -37,6 +37,12 @@ function refuseUnauthenticatedApprover(res: Response): void {
     message: 'An authenticated user is required to approve a change',
   });
 }
+/** Extra WHERE condition of the change UPDATE; `sql` references params already pushed. */
+interface ChangeWriteGuard { sql: string; conflict: { code: string; message: string } }
+const APPROVABLE_GUARD: ChangeWriteGuard = {
+  sql: `status IN (${PRE_APPROVAL_STATUS_LIST})`,
+  conflict: { code: 'CHANGE_NOT_APPROVABLE', message: 'Only a draft or pending_approval change can be approved' },
+};
 /** SET assignments for an approval; the stamp is overwritten, not COALESCEd: the status guard admits only unapproved changes. */
 function approvalAssignments(approver: string, params: unknown[]): string[] {
   params.push(approver);
@@ -820,6 +826,8 @@ export class ITILController {
       const approving = statusValue === 'approved';
       const updates: string[] = [];
       const params: unknown[] = [];
+      let guard: ChangeWriteGuard | undefined;
+      let clearedStamp: Record<string, unknown> | undefined;
 
       if (approving) {
         // The verified caller, never a body approved_by/approved_at; same rules as POST /approve.
@@ -834,7 +842,38 @@ export class ITILController {
         updates.push(`status = $${params.length}`);
         // Back to a pre-approval status: the earlier approval no longer stands, so a later approve records its own.
         if (PRE_APPROVAL_STATUSES.includes(statusValue)) {
-          updates.push('approved_by = NULL', 'approved_at = NULL');
+          const pool = this.postgresClient.pool;
+          const organizationId = requestOrganizationId(req);
+          const current = await pool.query(
+            `SELECT status, approved_by, approved_at::text AS approved_at_stamp, approved_at
+               FROM itil_changes WHERE id = $1 AND organization_id = $2`, [id, organizationId]);
+          const before = current.rows[0] as { status: string; approved_by: string | null;
+            approved_at_stamp: string | null; approved_at: Date | null } | undefined;
+          if (!before) {
+            res.status(404).json({ success: false, error: 'Not Found', message: 'Change not found' });
+            return;
+          }
+          // approval_status moves with the stamp in the same statement (BI views, datamart and framework read it).
+          updates.push("approval_status = 'pending'", 'approved_by = NULL', 'approved_at = NULL');
+          // Conditional on the state just read, so an approval that committed in between is not undone. The stamp
+          // is compared as the text the server rendered (microsecond precision a JS Date would lose).
+          params.push(before.status, before.approved_by, before.approved_at_stamp);
+          const at = params.length;
+          guard = {
+            sql: `status = $${at - 2} AND approved_by IS NOT DISTINCT FROM $${at - 1}::varchar
+              AND approved_at IS NOT DISTINCT FROM $${at}::timestamptz`,
+            conflict: {
+              code: 'CHANGE_APPROVAL_CHANGED',
+              message: 'The change was modified since it was read; reload it and retry',
+            },
+          };
+          if (before.approved_by != null || before.approved_at != null) {
+            clearedStamp = {
+              change_id: id, organization_id: organizationId, previous_approved_by: before.approved_by,
+              previous_approved_at: before.approved_at == null ? null : new Date(before.approved_at).toISOString(),
+              actor_user_id: (req as AuthenticatedRequest).user?._userId ?? null,
+            };
+          }
         }
       }
       if (implementedBy != null) {
@@ -856,7 +895,11 @@ export class ITILController {
       }
       updates.push('updated_at = NOW()');
 
-      await this.writeChange(req, res, id!, updates, params, approving, 'Change updated successfully');
+      const written = await this.writeChange(req, res, id!, updates, params, guard ??
+        (approving ? APPROVABLE_GUARD : undefined), 'Change updated successfully');
+      if (written && clearedStamp) {
+        logger.info('Change approval stamp cleared', clearedStamp);
+      }
     } catch (error) {
       logger.error('Error updating change', error);
       res.status(500).json({
@@ -917,7 +960,7 @@ export class ITILController {
 
       const params: unknown[] = [];
       const assignments = [...approvalAssignments(approver, params), 'updated_at = NOW()'];
-      await this.writeChange(req, res, id!, assignments, params, true, 'Change approved successfully');
+      await this.writeChange(req, res, id!, assignments, params, APPROVABLE_GUARD, 'Change approved successfully');
     } catch (error) {
       logger.error('Error approving change', error);
       res.status(500).json({
@@ -929,13 +972,13 @@ export class ITILController {
   }
 
   /**
-   * The one UPDATE behind approve and PATCH status=APPROVED. `approving` adds the pre-approval
-   * status guard to the same statement (race-free: a concurrent write serialises on the row lock
-   * and the guard is re-evaluated), then a 0-row result is a 404 (absent or another organization,
-   * nothing written) or a 409 (present, not approvable, nothing written).
+   * The one UPDATE behind approve and PATCH status. A `guard` adds its condition to the same statement
+   * (race-free: a concurrent write serialises on the row lock and the condition is re-evaluated), then a
+   * 0-row result is a 404 (absent or another organization, nothing written) or the guard's 409 (present,
+   * condition not met, nothing written). Returns whether the row was written.
    */
   private async writeChange(req: Request, res: Response, id: string, assignments: string[],
-    params: unknown[], approving: boolean, message: string): Promise<void> {
+    params: unknown[], guard: ChangeWriteGuard | undefined, message: string): Promise<boolean> {
     const pool = this.postgresClient.pool;
     const organizationId = requestOrganizationId(req);
     params.push(id, organizationId);
@@ -943,31 +986,31 @@ export class ITILController {
       `
       UPDATE itil_changes
       SET ${assignments.join(', ')}
-      WHERE id = $${params.length - 1} AND organization_id = $${params.length}${approving ? `
-        AND status IN (${PRE_APPROVAL_STATUS_LIST})` : ''}
+      WHERE id = $${params.length - 1} AND organization_id = $${params.length}${guard ? `
+        AND ${guard.sql}` : ''}
       RETURNING *
       `,
       params
     );
 
     if (result.rows.length === 0) {
-      const exists = approving && (await pool.query(
+      const exists = guard && (await pool.query(
         'SELECT 1 FROM itil_changes WHERE id = $1 AND organization_id = $2', [id, organizationId])).rows.length > 0;
-      if (exists) {
+      if (guard && exists) {
         res.status(409).json({
           success: false,
           error: 'Conflict',
-          code: 'CHANGE_NOT_APPROVABLE',
-          message: 'Only a draft or pending_approval change can be approved',
+          code: guard.conflict.code,
+          message: guard.conflict.message,
         });
-        return;
+        return false;
       }
       res.status(404).json({
         success: false,
         error: 'Not Found',
         message: 'Change not found',
       });
-      return;
+      return false;
     }
 
     res.json({
@@ -975,6 +1018,7 @@ export class ITILController {
       data: result.rows[0],
       message,
     });
+    return true;
   }
 
   async implementChange(req: Request, res: Response): Promise<void> {

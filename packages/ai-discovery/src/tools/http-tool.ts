@@ -51,6 +51,13 @@ export const httpProbeTool: DiscoveryTool = {
       path = '/',
       method = 'GET',
     } = params;
+    // protocol, port and path are model text: each must stay in its own URL
+    // component so the authority is exactly `host:port` (no `@`, `#` or `\` tricks).
+    if ((protocol !== 'http' && protocol !== 'https') ||
+      (port !== undefined && (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535)) ||
+      typeof path !== 'string' || !path.startsWith('/') || /[\\\s]/.test(path)) {
+      throw new Error('Invalid HTTP probe parameters');
+    }
     const methodLabel = ['GET', 'HEAD', 'POST', 'OPTIONS'].includes(method) ? method : 'OTHER';
 
     // Determine default port

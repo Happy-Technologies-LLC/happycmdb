@@ -42,3 +42,41 @@ describe('http_probe keeps the request on the named host', () => {
     expect(jest.mocked(safeDiscoveryHttp).mock.calls[0][0]).toBe('http://8.8.8.8:80/');
   });
 });
+
+describe('http_probe method allowlist', () => {
+  it.each(['DELETE', 'delete', 'PUT', 'PATCH', 'TRACE', 'CONNECT', 'PROPFIND', '', 'GET /', 'GET\r\nX: y', 7, null])(
+    'refuses the method %p and never calls safeDiscoveryHttp', async (method) => {
+      await expect(httpProbeTool.execute({ host: '8.8.8.8', method })).rejects.toThrow('Invalid HTTP probe parameters');
+      expect(safeDiscoveryHttp).not.toHaveBeenCalled();
+    });
+
+  it.each([['get', 'GET'], ['Head', 'HEAD'], ['pOsT', 'POST'], ['options', 'OPTIONS']])(
+    'sends %p as the upper-cased %s', async (method, expected) => {
+      await httpProbeTool.execute({ host: '8.8.8.8', method });
+
+      expect(jest.mocked(safeDiscoveryHttp).mock.calls[0][1]).toMatchObject({ method: expected });
+    });
+
+  it('returns the body only for a lower-case get, which is sent as GET', async () => {
+    const result = await httpProbeTool.execute({ host: '8.8.8.8', method: 'get' });
+
+    expect(result.body).toBe('ready');
+  });
+});
+
+describe('http_probe IPv6 hosts', () => {
+  it.each([
+    ['an unbracketed literal', '2001:4860:4860::8888'],
+    ['an already bracketed literal', '[2001:4860:4860::8888]'],
+  ])('puts %s in brackets inside the URL it requests', async (_label, host) => {
+    await httpProbeTool.execute({ host, protocol: 'https', port: 8443, path: '/health' });
+
+    expect(jest.mocked(safeDiscoveryHttp).mock.calls[0][0]).toBe('https://[2001:4860:4860::8888]:8443/health');
+  });
+
+  it('leaves an IPv4 address and a hostname unbracketed', async () => {
+    await httpProbeTool.execute({ host: 'public.example' });
+
+    expect(jest.mocked(safeDiscoveryHttp).mock.calls[0][0]).toBe('http://public.example:80/');
+  });
+});

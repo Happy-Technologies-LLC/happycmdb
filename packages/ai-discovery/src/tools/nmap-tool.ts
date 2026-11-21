@@ -21,6 +21,12 @@ export const NMAP_MAX_FIELD_CHARS = 200;
 export const NMAP_DEFAULT_CONCURRENCY = 4;
 /** Environment override for the process-wide nmap concurrency (integer 1-64). */
 export const NMAP_CONCURRENCY_ENV = 'AI_DISCOVERY_NMAP_CONCURRENCY';
+/** Default longest wait (ms) for a free nmap slot before the scan fails. */
+export const NMAP_DEFAULT_QUEUE_TIMEOUT_MS = 60000;
+/** Environment override for the nmap queue wait deadline (integer milliseconds, 1000-600000). */
+export const NMAP_QUEUE_TIMEOUT_ENV = 'AI_DISCOVERY_NMAP_QUEUE_TIMEOUT_MS';
+/** Fixed error when a scan waited past the deadline for a slot. */
+export const NMAP_QUEUE_TIMEOUT_MESSAGE = 'nmap scan queue timeout';
 
 function nmapConcurrencyFromEnv(): number {
   const raw = process.env[NMAP_CONCURRENCY_ENV];
@@ -31,17 +37,48 @@ function nmapConcurrencyFromEnv(): number {
   return limit >= 1 && limit <= 64 ? limit : NMAP_DEFAULT_CONCURRENCY;
 }
 
-/** FIFO counting semaphore: callers beyond the limit wait for a release. */
+function nmapQueueTimeoutFromEnv(): number {
+  const raw = process.env[NMAP_QUEUE_TIMEOUT_ENV];
+  if (raw === undefined || !/^\d{4,6}$/.test(raw.trim())) {
+    return NMAP_DEFAULT_QUEUE_TIMEOUT_MS;
+  }
+  const waitMs = Number(raw);
+  return waitMs >= 1000 && waitMs <= 600000 ? waitMs : NMAP_DEFAULT_QUEUE_TIMEOUT_MS;
+}
+
+class NmapQueueTimeoutError extends Error {}
+
+interface Waiter {
+  grant: () => void;
+  timer: NodeJS.Timeout;
+}
+
+/**
+ * FIFO counting semaphore: callers beyond the limit wait for a release, for at
+ * most `maxWaitMs`; a longer wait fails with NmapQueueTimeoutError.
+ */
 class Semaphore {
   private active = 0;
-  private readonly waiters: Array<() => void> = [];
+  private readonly waiters: Waiter[] = [];
 
-  constructor(private readonly limit: number) {}
+  constructor(private readonly limit: number, private readonly maxWaitMs: number) {}
 
   async run<T>(task: () => Promise<T>): Promise<T> {
     if (this.active >= this.limit) {
       // The slot is handed over directly, so `active` stays counted for the next holder.
-      await new Promise<void>((resolve) => this.waiters.push(resolve));
+      await new Promise<void>((resolve, reject) => {
+        const waiter: Waiter = {
+          grant: () => {
+            clearTimeout(waiter.timer);
+            resolve();
+          },
+          timer: setTimeout(() => {
+            this.waiters.splice(this.waiters.indexOf(waiter), 1);
+            reject(new NmapQueueTimeoutError());
+          }, this.maxWaitMs),
+        };
+        this.waiters.push(waiter);
+      });
     } else {
       this.active++;
     }
@@ -50,7 +87,7 @@ class Semaphore {
     } finally {
       const next = this.waiters.shift();
       if (next) {
-        next();
+        next.grant();
       } else {
         this.active--;
       }
@@ -59,9 +96,10 @@ class Semaphore {
 }
 
 /** Process-wide: every concurrent AI session shares these slots. */
-const nmapSlots = new Semaphore(nmapConcurrencyFromEnv());
+const nmapSlots = new Semaphore(nmapConcurrencyFromEnv(), nmapQueueTimeoutFromEnv());
 
 export const nmapTool: DiscoveryTool = {
+  targetScoped: true,
   name: 'nmap_scan',
   description:
     'Scan network ports and detect services on a target host. Use this to identify open ports, running services, and service versions.',
@@ -124,7 +162,11 @@ export const nmapTool: DiscoveryTool = {
       });
 
       return result;
-    } catch {
+    } catch (error) {
+      if (error instanceof NmapQueueTimeoutError) {
+        logger.warn('NMAP scan queue timeout');
+        throw new Error(NMAP_QUEUE_TIMEOUT_MESSAGE);
+      }
       logger.error('NMAP scan failed');
       throw new Error('NMAP scan failed');
     }

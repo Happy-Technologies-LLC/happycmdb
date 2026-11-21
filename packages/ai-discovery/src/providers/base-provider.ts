@@ -10,24 +10,43 @@ import { ILLMProvider, LLMConfig, AIDiscoveryContext, DiscoveryTool, AIToolCall 
 import { DISCOVERY_TARGET_REFUSED, logger } from '@cmdb/common';
 
 /**
- * Tools that open a connection to a host the model names. They may only be
- * pointed at the session's own target (`AIDiscoveryContext.targetHost`): the
- * model's tool arguments are influenced by text from scanned hosts, so the
- * host argument is never trusted. A discovery definition carries no allowed
- * ranges to widen this (checked 2026-11): the session target is the scope.
- */
-export const TARGET_SCOPED_TOOLS: ReadonlySet<string> = new Set([
-  'nmap_scan', 'http_probe', 'ssh_execute', 'ssh_read_file',
-]);
-
-/**
- * Most characters of one tool result serialized for the model (about 4k
- * tokens). Applies to every tool; the session record keeps the full output.
+ * Most UTF-16 code units of one tool result serialized for the model (roughly
+ * 4k tokens of ASCII text). Applies to every tool; the session record keeps the
+ * full output.
  */
 export const MAX_TOOL_RESULT_CHARS = 16000;
 
-/** Compare hosts case-insensitively, ignoring one trailing dot and IPv6 brackets. */
-function normalizeHost(host: string): string {
+/**
+ * Characters removed from every tool result before the model sees it: Unicode
+ * line/paragraph separators, C1 controls and format characters (bidi overrides,
+ * zero-width, BOM). C0 controls are already escaped by JSON serialization.
+ */
+const MODEL_HIDDEN_CHARS = /[\u2028\u2029\u0080-\u009f\p{Cf}]/gu;
+
+/**
+ * A tool whose schema takes a `host` opens a connection to a host the model
+ * names. It must set `DiscoveryTool.targetScoped` so it is only run against the
+ * session's own target (`AIDiscoveryContext.targetHost`): the model's tool
+ * arguments are influenced by text from scanned hosts, so the host argument is
+ * never trusted. A discovery definition carries no allowed ranges to widen this
+ * (checked 2026-11): the session target is the scope.
+ */
+function declaresHostParameter(tool: DiscoveryTool): boolean {
+  const properties = tool.inputSchema?.properties;
+  return typeof properties === 'object' && properties !== null &&
+    Object.prototype.hasOwnProperty.call(properties, 'host');
+}
+
+/**
+ * Compare hosts case-insensitively, ignoring one trailing dot and IPv6 brackets.
+ * Returns null for a host with any non-ASCII character: Unicode lowercasing maps
+ * some characters (U+212A KELVIN SIGN) onto ASCII letters, and a real target is
+ * ASCII (an internationalised name is its punycode form).
+ */
+function normalizeHost(host: string): string | null {
+  if (!/^[\x00-\x7f]*$/.test(host)) {
+    return null;
+  }
   let value = host.toLowerCase();
   if (value.startsWith('[') && value.endsWith(']')) {
     value = value.slice(1, -1);
@@ -36,8 +55,11 @@ function normalizeHost(host: string): string {
 }
 
 function isSessionTarget(context: AIDiscoveryContext, host: unknown): boolean {
-  return typeof host === 'string' && typeof context?.targetHost === 'string' &&
-    host !== '' && normalizeHost(host) === normalizeHost(context.targetHost);
+  if (typeof host !== 'string' || typeof context?.targetHost !== 'string' || host === '') {
+    return false;
+  }
+  const requested = normalizeHost(host);
+  return requested !== null && requested === normalizeHost(context.targetHost);
 }
 
 export abstract class BaseLLMProvider implements ILLMProvider {
@@ -131,13 +153,15 @@ Use available tools to gather information. Think step-by-step and explain your r
   }
 
   /**
-   * Serialize a tool call for the model, cut at MAX_TOOL_RESULT_CHARS.
+   * Serialize a tool call for the model: invisible and line-separator characters
+   * a scanned host could use to disguise text are removed, then the result is cut
+   * at MAX_TOOL_RESULT_CHARS UTF-16 code units.
    */
   protected formatToolResult(toolCall: AIToolCall): string {
     if (!toolCall.success) {
       return `Error: ${toolCall.error}`;
     }
-    const serialized = JSON.stringify(toolCall.output) ?? 'null';
+    const serialized = (JSON.stringify(toolCall.output) ?? 'null').replace(MODEL_HIDDEN_CHARS, '');
     if (serialized.length <= MAX_TOOL_RESULT_CHARS) {
       return serialized;
     }
@@ -157,7 +181,12 @@ Use available tools to gather information. Think step-by-step and explain your r
     params: any,
     context: AIDiscoveryContext
   ): Promise<AIToolCall> {
-    if (TARGET_SCOPED_TOOLS.has(tool.name) && !isSessionTarget(context, params?.host)) {
+    if (declaresHostParameter(tool) && tool.targetScoped !== true) {
+      // A network tool the scope check cannot see would skip it: fail closed.
+      logger.warn('Discovery tool with a host parameter is not marked targetScoped', { toolName: tool.name });
+      throw new Error(DISCOVERY_TARGET_REFUSED);
+    }
+    if (tool.targetScoped === true && !isSessionTarget(context, params?.host)) {
       // Fixed error and no target in the log: the host is model/scanned-host text.
       logger.warn('Discovery tool target outside session scope', { toolName: tool.name });
       throw new Error(DISCOVERY_TARGET_REFUSED);

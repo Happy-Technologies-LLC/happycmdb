@@ -98,7 +98,7 @@ it.each(['openai', 'custom', 'anthropic'] as const)(
 );
 
 it('does not log invalid model-controlled tool input before validation', async () => {
-  const tool: DiscoveryTool = { name: 'http_probe', description: 'test tool',
+  const tool: DiscoveryTool = { name: 'http_probe', description: 'test tool', targetScoped: true,
     inputSchema: { type: 'object', properties: { host: { type: 'string' }, path: { type: 'string' } },
       required: ['host'] }, execute: jest.fn(),
   };
@@ -142,7 +142,7 @@ it('does not return or log upstream request errors through coordinator', async (
 
 it.each(['openai', 'custom', 'anthropic'] as const)(
   '%s propagates the fixed egress refusal without logging the requested target', async (name) => {
-    const tool: DiscoveryTool = { name: 'http_probe', description: 'test tool',
+    const tool: DiscoveryTool = { name: 'http_probe', description: 'test tool', targetScoped: true,
       inputSchema: { type: 'object', properties: { host: { type: 'string' } }, required: ['host'] },
       execute: jest.fn().mockRejectedValue(new Error('Discovery target refused')),
     };
@@ -207,7 +207,7 @@ it('runs a whitelisted nmap version scan without logging remote stderr', async (
 });
 
 it('fails coordinator and hybrid discovery when a public-target AI tool refuses a private destination', async () => {
-  const tool: DiscoveryTool = { name: 'http_probe', description: 'test tool',
+  const tool: DiscoveryTool = { name: 'http_probe', description: 'test tool', targetScoped: true,
     inputSchema: { type: 'object', properties: { host: { type: 'string' } }, required: ['host'] },
     execute: jest.fn().mockRejectedValue(new Error('Discovery target refused')),
   };

@@ -13,7 +13,7 @@ import type { DiscoveryPattern } from '../types';
 
 jest.mock('dns/promises', () => ({ lookup: jest.fn() }));
 jest.mock('@cmdb/database', () => ({ getRedisClient: jest.fn(), getPostgresClient: jest.fn(() => ({})) }));
-jest.mock('../tools/safe-http', () => ({ safeDiscoveryHttp: jest.fn() }));
+jest.mock('../tools/safe-http', () => ({ ...jest.requireActual('../tools/safe-http'), safeDiscoveryHttp: jest.fn() }));
 
 const redis = { get: jest.fn().mockResolvedValue(null), setex: jest.fn().mockResolvedValue('OK') };
 const storage = {

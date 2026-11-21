@@ -11,8 +11,49 @@ import { PatternStorageService } from './pattern-storage';
 import { DISCOVERY_TARGET_REFUSED, logger, resolveDiscoveryHost } from '@cmdb/common';
 import { getRedisClient } from '@cmdb/database';
 import * as crypto from 'crypto';
-import { safeDiscoveryHttp } from './tools/safe-http';
+import {
+  DISCOVERY_HTTP_MAX_BYTES, DISCOVERY_HTTP_TOTAL_MS, DISCOVERY_RESPONSE_DEADLINE,
+  DISCOVERY_RESPONSE_TOO_LARGE, safeDiscoveryHttp,
+} from './tools/safe-http';
 import { detectWithPlan, parseDetectionPlan, parseDiscoveryPlan, PATTERN_NOT_ACTIVE, PATTERN_STATE_UNAVAILABLE, UNSUPPORTED_PATTERN_PLAN } from './pattern-plan';
+
+/**
+ * Budgets for ONE executeDiscovery call, across all of a pattern's endpoints (a plan may list 64,
+ * each otherwise allowed 1 MiB / 15 s). Code constants: raising them is a reviewed change.
+ *  - bytes: decoded response bytes summed over the endpoints (JSON bodies measured as serialized).
+ *  - time: wall clock from the first request; each request's deadline is clipped to what is left.
+ *  - stored: one body is kept in `ci.metadata` only if its JSON encoding is at most this many bytes;
+ *    otherwise it is cut (to a string ending in DISCOVERY_BODY_TRUNCATED) so the JSON encoding
+ *    of the stored value fits. 8 KiB x 64 endpoints = 512 KiB, inside the HAP-443 limits a CI is
+ *    refused above (64 KiB per value, 1 MiB per CI), so a probe can never make its CI unwritable.
+ * Endpoints not requested once a budget is spent are listed under `ci.metadata[DISCOVERY_SKIPPED_KEY]`.
+ */
+export const DISCOVERY_PATTERN_MAX_TOTAL_BYTES = 4 * DISCOVERY_HTTP_MAX_BYTES;
+export const DISCOVERY_PATTERN_MAX_TOTAL_MS = 2 * DISCOVERY_HTTP_TOTAL_MS;
+export const DISCOVERY_STORED_BODY_MAX_BYTES = 8192;
+export const DISCOVERY_BODY_TRUNCATED = '... (truncated)';
+/** Contains ':', which an endpoint key (validated `[a-zA-Z0-9/_.-]`) can never contain. */
+export const DISCOVERY_SKIPPED_KEY = 'discovery:skipped';
+
+function bodyBytes(data: unknown): number {
+  if (data === undefined || data === null) return 0;
+  return Buffer.byteLength(typeof data === 'string' ? data : (JSON.stringify(data) ?? ''));
+}
+
+const jsonBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value) ?? '');
+
+/** Keep small bodies as received; cut an oversized one (JSON re-serialized) to a string. */
+function storableBody(data: unknown): unknown {
+  if (jsonBytes(data) <= DISCOVERY_STORED_BODY_MAX_BYTES) return data;
+  const text = Buffer.from(typeof data === 'string' ? data : JSON.stringify(data));
+  let keep = DISCOVERY_STORED_BODY_MAX_BYTES;
+  for (;;) {
+    const cut = text.subarray(0, keep).toString('utf8') + DISCOVERY_BODY_TRUNCATED;
+    const size = jsonBytes(cut); // JSON escapes can expand the cut: shrink in proportion and retry
+    if (size <= DISCOVERY_STORED_BODY_MAX_BYTES || keep <= 0) return cut;
+    keep = Math.max(0, Math.min(keep - 1, Math.floor(keep * DISCOVERY_STORED_BODY_MAX_BYTES / size)));
+  }
+}
 
 /** Length framing makes concatenated IDs and plan bodies unambiguous to the hash. */
 function hashField(hash: crypto.Hash, value: string): void {
@@ -279,19 +320,37 @@ export class PatternMatcher implements IPatternMatcher {
     if (version) ci.metadata.version = version;
     const host = context.targetHost.includes(':') ? `[${context.targetHost}]` : context.targetHost;
     const protocol = context.targetPort === 443 ? 'https' : 'http';
+    const started = Date.now();
+    let bytesLeft = DISCOVERY_PATTERN_MAX_TOTAL_BYTES;
+    let exhausted: 'bytes' | 'time' | undefined;
+    const skipped: string[] = [];
     for (const endpoint of plan.endpoints) {
+      const msLeft = DISCOVERY_PATTERN_MAX_TOTAL_MS - (Date.now() - started);
+      if (!exhausted && bytesLeft <= 0) exhausted = 'bytes';
+      if (!exhausted && msLeft <= 0) exhausted = 'time';
+      if (exhausted) { skipped.push(endpoint); continue; }
       try {
         const response = await safeDiscoveryHttp(
           `${protocol}://${host}:${context.targetPort}${endpoint}`,
-          { method: 'GET', timeout: 5000, validateStatus: () => true }
+          { method: 'GET', timeout: 5000, validateStatus: () => true,
+            maxContentLength: Math.min(bytesLeft, DISCOVERY_HTTP_MAX_BYTES), totalMs: msLeft }
         );
+        bytesLeft -= bodyBytes(response.data);
         if (response.status >= 200 && response.status < 300) {
-          ci.metadata[endpoint.slice(1)] = response.data;
+          ci.metadata[endpoint.slice(1)] = storableBody(response.data);
         }
       } catch (error) {
         if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) throw error;
+        // A response cut by the remaining budget (not by the per-request ceiling) spends it.
+        if (error instanceof Error && error.message === DISCOVERY_RESPONSE_TOO_LARGE &&
+          bytesLeft < DISCOVERY_HTTP_MAX_BYTES) bytesLeft = 0;
+        if (error instanceof Error && error.message === DISCOVERY_RESPONSE_DEADLINE &&
+          msLeft < DISCOVERY_HTTP_TOTAL_MS) exhausted = 'time';
         // An unavailable public endpoint does not discard the discovered CI.
       }
+    }
+    if (skipped.length) {
+      ci.metadata[DISCOVERY_SKIPPED_KEY] = { reason: `${exhausted}-budget`, endpoints: skipped };
     }
     return [ci];
   }

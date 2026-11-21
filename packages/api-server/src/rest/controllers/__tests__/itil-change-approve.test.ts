@@ -263,6 +263,25 @@ describe('moving back to a pre-approval status clears the approval stamp', () =>
   });
 });
 
+describe('re-pend of a stamp with microsecond precision', () => {
+  // The guard compares approved_at as the server-rendered ::text. PGlite's now() has millisecond precision, so only a
+  // stamp written with six fractional digits catches a regression to comparing a JS Date (loses the microseconds, and
+  // on real PostgreSQL would 409 every re-pend).
+  it.each(['2026-01-01 00:00:00.123456+00', '2026-01-01 00:00:00.000001+00'])(
+    'PATCH DRAFT with approved_at %s answers 200 and clears the stamp', async stamp => {
+      const id = await addChange(ORG_A);
+      await approve(U1, id);
+      await sql(`UPDATE itil_changes SET approved_at = '${stamp}' WHERE id = $1`, [id]);
+      expect((await sql('SELECT approved_at::text AS stamp FROM itil_changes WHERE id = $1', [id]))[0]!['stamp']).toBe(stamp);
+
+      const out = await patch(U2, id, { status: 'DRAFT' });
+      expect(out.statusCode).toBe(200);
+      const stored = await row(id);
+      expect([stored['status'], stored['approval_status'], stored['approved_by'], stored['approved_at']])
+        .toEqual(['draft', 'pending', null, null]);
+    });
+});
+
 /**
  * PATCH to a pre-approval status reads the row, then writes conditionally on what it read. `between` runs after the
  * read and before the write (the window of the race), through the same database.
@@ -337,16 +356,38 @@ describe('clearing an approval stamp leaves one id-only trail event', () => {
   const cleared = () => (logger.info as jest.Mock).mock.calls.filter(([message]) => message === 'Change approval stamp cleared');
   beforeEach(() => { (logger.info as jest.Mock).mockClear(); });
 
-  it('logs change id, org id, previous approver, previous approved_at and actor user id once', async () => {
+  it('logs change id, org id, previous approver (a UUID), previous approved_at and actor user id once', async () => {
     const id = await addChange(ORG_A);
-    await approve(U1, id);
+    const approverId = '33333333-3333-4333-8333-333333333333';
+    await approve({ _userId: approverId, _organizationId: ORG_A }, id);
     await sql(`UPDATE itil_changes SET approved_at = '${FIXED_APPROVED}' WHERE id = $1`, [id]);
     expect((await patch({ _userId: 'u-2', _username: 'Bob Example', _organizationId: ORG_A }, id,
       { status: 'PENDING_APPROVAL' })).statusCode).toBe(200);
     expect(cleared()).toEqual([['Change approval stamp cleared', {
-      change_id: id, organization_id: ORG_A, previous_approved_by: 'u-1',
+      change_id: id, organization_id: ORG_A, previous_approved_by: approverId,
       previous_approved_at: FIXED_APPROVED, actor_user_id: 'u-2',
     }]]);
+  });
+
+  it.each(['alice@example.com', 'u-1', 'Alice Example'])(
+    'logs a legacy non-UUID approver (%s) as a kind only, never the stored value', async legacy => {
+      const id = await addChange(ORG_A);
+      await approve({ _username: legacy, _organizationId: ORG_A }, id);
+      expect((await row(id))['approved_by']).toBe(legacy);
+      expect((await patch(U2, id, { status: 'DRAFT' })).statusCode).toBe(200);
+      const [[, event]] = cleared() as [[string, Record<string, unknown>]];
+      expect(event).toEqual({
+        change_id: id, organization_id: ORG_A, previous_approved_by_kind: 'legacy',
+        previous_approved_at: expect.any(String), actor_user_id: 'u-2',
+      });
+      expect(JSON.stringify(event)).not.toContain(legacy);
+    });
+
+  it('logs a stamp with no approver as previous_approved_by null', async () => {
+    const id = await addChange(ORG_A);
+    await sql(`UPDATE itil_changes SET approved_at = '${FIXED_APPROVED}' WHERE id = $1`, [id]);
+    expect((await patch(U2, id, { status: 'DRAFT' })).statusCode).toBe(200);
+    expect(cleared()[0]![1]).toMatchObject({ previous_approved_by: null, previous_approved_at: FIXED_APPROVED });
   });
 
   it('logs nothing when there was no stamp to clear, or when the write is refused', async () => {
@@ -421,5 +462,21 @@ describe('PATCH /itil/changes/:id with status APPROVED records the approver', ()
     expect(out.statusCode).toBe(404);
     expect(out.body).toEqual({ success: false, error: 'Not Found', message: 'Change not found' });
     expect(await row(id)).toEqual(before);
+  });
+});
+
+describe('POST /itil/changes/:id/close logs the verified actor', () => {
+  it('logs the verified user id as closed_by and the body closedBy only as claimed_closed_by', async () => {
+    const id = await addChange(ORG_A, 'implemented');
+    (logger.info as jest.Mock).mockClear();
+    (getPostgresClient as jest.Mock).mockReturnValue({ pool });
+    const out = res();
+    await new ITILController().closeChange({
+      user: U1, params: { id }, body: { result: 'SUCCESS', notes: 'done', closedBy: 'mallory' },
+    } as unknown as Request, out as unknown as Response);
+    expect(out.statusCode).toBe(200);
+    expect((logger.info as jest.Mock).mock.calls.filter(([message]) => message === 'Closing change')).toEqual([
+      ['Closing change', { id, closed_by: 'u-1', claimed_closed_by: 'mallory' }],
+    ]);
   });
 });

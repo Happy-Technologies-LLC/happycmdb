@@ -23,7 +23,17 @@ function sql(text: string, params: unknown[] = [], mode: 'query' | 'exec' = 'que
   host.send({ id, op: mode, sql: text, params });
   return promise;
 }
-const query = (text: string, params?: unknown[]) => sql(text, params).then(rows => ({ rows }));
+/** Runs once after the next re-pend read of a change (before its conditional write): the race window. */
+let afterRependRead: (() => Promise<unknown>) | undefined;
+const query = async (text: string, params?: unknown[]) => {
+  const result = { rows: await sql(text, params) };
+  if (afterRependRead && /SELECT status, approved_by/.test(text)) {
+    const hook = afterRependRead;
+    afterRependRead = undefined;
+    await hook();
+  }
+  return result;
+};
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
 const ciNodes = new Map<string, string>();
@@ -223,6 +233,26 @@ it('updateChange status APPROVED records the verified principal and refuses a no
   expect(back.body.data).toEqual({ updateChange: { status: 'REQUESTED' } });
   expect(await sql('SELECT approval_status, approved_by, approved_at FROM itil_changes WHERE id = $1', [pending]))
     .toEqual([{ approval_status: 'pending', approved_by: null, approved_at: null }]);
+});
+
+it('updateChange passes the controller code in extensions, keeping code BAD_USER_INPUT, so a retryable 409 is distinguishable', async () => {
+  const closed = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const raced = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  await seedChange(closed, 'closed');
+  await seedChange(raced, 'pending_approval');
+  const mutate = (id: string, status: string) =>
+    graphql(`mutation { updateChange(id: "${id}", input: { status: ${status} }) { status } }`);
+
+  const refused = await mutate(closed, 'APPROVED');
+  expect(refused.body.errors?.[0]?.extensions).toMatchObject({ code: 'BAD_USER_INPUT', controllerCode: 'CHANGE_NOT_APPROVABLE' });
+
+  afterRependRead = () => sql(`UPDATE itil_changes SET status = 'approved', approval_status = 'approved',
+    approved_by = 'someone-else', approved_at = now() WHERE id = $1`, [raced]);
+  const lost = await mutate(raced, 'REQUESTED');
+  expect(afterRependRead).toBeUndefined();
+  expect(lost.body.errors?.[0]?.extensions).toMatchObject({ code: 'BAD_USER_INPUT', controllerCode: 'CHANGE_APPROVAL_CHANGED' });
+  expect(await sql('SELECT status, approved_by FROM itil_changes WHERE id = $1', [raced]))
+    .toEqual([{ status: 'approved', approved_by: 'someone-else' }]);
 });
 
 const seedIncident = (id: string, number: string, priority = 3, ci = 'ci-a', org = A) => sql(

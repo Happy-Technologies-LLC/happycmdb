@@ -51,8 +51,14 @@ async function recordCall(context: GraphQLContext, kind: RecordKind, handler: Ha
     const message = status === 404 && 'message' in failure && typeof failure.message === 'string'
       ? failure.message : status === 404 ? `${kind === 'incident' ? 'Incident' : 'Change'} not found`
         : 'Invalid ITIL record request';
-    throw new GraphQLError(message,
-      { extensions: { code: status === 404 ? 'NOT_FOUND' : 'BAD_USER_INPUT' } });
+    // The controller's machine code (e.g. the retryable CHANGE_APPROVAL_CHANGED) rides alongside the stable
+    // `code`, so clients can tell it apart from bad input without a changed `code` contract.
+    const controllerCode = 'code' in failure && typeof failure.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(failure.code)
+      ? failure.code : undefined;
+    throw new GraphQLError(message, { extensions: {
+      code: status === 404 ? 'NOT_FOUND' : 'BAD_USER_INPUT',
+      ...(status !== 404 && controllerCode ? { controllerCode } : {}),
+    } });
   }
   return body;
 }

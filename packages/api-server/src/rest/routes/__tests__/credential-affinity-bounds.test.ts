@@ -33,6 +33,7 @@ const calls = {
   update: (affinity: object) => ({ send: () => request(app).put(`/api/v1/credentials/${ID}`).set(auth).send({ affinity }), spy: credentialService.update }),
   select: (context: object) => ({ send: () => request(app).post(`/api/v1/credential-sets/${ID}/select`).set(auth).send({ context }), spy: setService.selectCredentials }),
   match: (context: object) => ({ send: () => request(app).post('/api/v1/credentials/match').set(auth).send(context), spy: credentialService.findBestMatch }),
+  rank: (context: object) => ({ send: () => request(app).post('/api/v1/credentials/rank').set(auth).send(context), spy: credentialService.rankCredentials }),
 };
 const affinityRoutes = ['create', 'update'] as const;
 const patterns = (n: number, len = 10) => Array.from({ length: n }, () => 'a'.repeat(len));
@@ -43,6 +44,7 @@ beforeEach(() => {
   credentialService.create.mockResolvedValue({ id: ID });
   credentialService.update.mockResolvedValue({ id: ID });
   credentialService.findBestMatch.mockResolvedValue(null);
+  credentialService.rankCredentials.mockResolvedValue([]);
   setService.selectCredentials.mockResolvedValue([]);
 });
 
@@ -74,6 +76,27 @@ describe.each(['select', 'match'] as const)('%s match-context hostname bound', (
 
   it('accepts a 253 character hostname', async () => {
     const { send, spy } = calls[route]({ hostname: 'a'.repeat(253) });
+    expect((await send()).status).not.toBe(400);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe.each(['select', 'match', 'rank'] as const)('%s match-context ip bound', (route) => {
+  it.each([
+    ['a 10 KB ip', 'a'.repeat(10 * 1024)],
+    ['a 10 KB dotted run', '1.'.repeat(5 * 1024)],
+    ['a 16 character ip', '1'.repeat(16)],
+    ['an ip with a prefix length', '10.0.0.1/8'],
+    ['an IPv6 address', '::1'],
+    ['a non-address', 'not-an-ip'],
+  ])('refuses %s with 400 before the service is reached', async (_label, ip) => {
+    const { send, spy } = calls[route]({ ip });
+    expect((await send()).status).toBe(400);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('accepts the longest IPv4 address', async () => {
+    const { send, spy } = calls[route]({ ip: '255.255.255.255' });
     expect((await send()).status).not.toBe(400);
     expect(spy).toHaveBeenCalledTimes(1);
   });

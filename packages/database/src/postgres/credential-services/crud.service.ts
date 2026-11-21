@@ -15,7 +15,7 @@ import {
   UnifiedCredentialSummary,
 } from '@cmdb/common';
 import { getEncryptionService, CredentialProtocolAdapter, DuplicateCredentialNameError, CredentialInUseError, CredentialNotFoundError } from '@cmdb/common';
-import { logger, errorClassFields } from '@cmdb/common';
+import { logger, errorClassFields, assertAffinityBounds } from '@cmdb/common';
 
 export interface CredentialFilters {
   protocol?: string;
@@ -98,6 +98,7 @@ export class CredentialCRUDService {
       throw c4AdminRequired();
     }
     assertSshPort(input.protocol, input.credentials);
+    assertAffinityBounds(input.affinity);
     const client = await this.pool.connect();
     try {
       const id = uuidv4();
@@ -365,6 +366,7 @@ export class CredentialCRUDService {
     organizationId: string,
     isOrgAdmin: boolean
   ): Promise<UnifiedCredential> {
+    assertAffinityBounds(input.affinity);
     const client = await this.pool.connect();
     let inTransaction = false;
     let releaseError: Error | undefined;

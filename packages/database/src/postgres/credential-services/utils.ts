@@ -5,45 +5,22 @@
  * Utility functions for credential affinity matching
  */
 
-import { logger } from '@cmdb/common';
+import { MAX_IPV4_LENGTH, MAX_NETWORK_LENGTH } from '@cmdb/common';
 
 /**
- * Check if an IP address is within a CIDR range
- * Supports IPv4 only (basic implementation)
+ * Convert a dotted-quad IPv4 address to a 32-bit integer, or null when it is not one.
+ *
+ * The length is checked before anything else, so an oversize string (the match
+ * context `ip` is caller-controlled) is refused without a split or any other
+ * allocation. It never throws and never logs the input.
  */
-export function isIpInCidr(ip: string, cidr: string): boolean {
-  try {
-    const [cidrIp, prefixLength] = cidr.split('/');
-    if (!cidrIp || !prefixLength) {
-      return false;
-    }
-
-    const prefix = parseInt(prefixLength, 10);
-
-    if (isNaN(prefix) || prefix < 0 || prefix > 32) {
-      return false;
-    }
-
-    const ipInt = ipToInt(ip);
-    const cidrIpInt = ipToInt(cidrIp);
-
-    // Create subnet mask
-    const mask = prefix === 0 ? 0 : -1 << (32 - prefix);
-
-    return (ipInt & mask) === (cidrIpInt & mask);
-  } catch (error) {
-    logger.error('Failed to match CIDR', { ip, cidr, error });
-    return false;
+export function ipToInt(ip: string): number | null {
+  if (ip.length > MAX_IPV4_LENGTH) {
+    return null;
   }
-}
-
-/**
- * Convert IPv4 address to 32-bit integer
- */
-function ipToInt(ip: string): number {
   const parts = ip.split('.').map((part) => parseInt(part, 10));
   if (parts.length !== 4 || parts.some((p) => isNaN(p) || p < 0 || p > 255)) {
-    throw new Error(`Invalid IP address: ${ip}`);
+    return null;
   }
   const p0 = parts[0] ?? 0;
   const p1 = parts[1] ?? 0;
@@ -52,6 +29,35 @@ function ipToInt(ip: string): number {
   return (
     (p0 << 24) | (p1 << 16) | (p2 << 8) | p3
   ) >>> 0;
+}
+
+/**
+ * Check whether an already-parsed IPv4 address (see `ipToInt`) is within a CIDR range.
+ * IPv4 only. A null address, a malformed or oversize CIDR matches nothing; nothing is logged.
+ */
+export function isIpIntInCidr(ipInt: number | null, cidr: string): boolean {
+  if (ipInt === null || cidr.length > MAX_NETWORK_LENGTH) {
+    return false;
+  }
+  const [cidrIp, prefixLength] = cidr.split('/');
+  if (!cidrIp || !prefixLength) {
+    return false;
+  }
+
+  const prefix = parseInt(prefixLength, 10);
+  if (isNaN(prefix) || prefix < 0 || prefix > 32) {
+    return false;
+  }
+
+  const cidrIpInt = ipToInt(cidrIp);
+  if (cidrIpInt === null) {
+    return false;
+  }
+
+  // Create subnet mask
+  const mask = prefix === 0 ? 0 : -1 << (32 - prefix);
+
+  return (ipInt & mask) === (cidrIpInt & mask);
 }
 
 /**

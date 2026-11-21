@@ -25,9 +25,9 @@ import {
   UnifiedCredential,
   UnifiedCredentialSummary,
 } from '@cmdb/common';
-import { logger, errorClassFields } from '@cmdb/common';
+import { logger, errorClassFields, assertMatchContextBounds } from '@cmdb/common';
 import { getEncryptionService } from '@cmdb/common';
-import { isIpInCidr, matchGlob } from './credential-services/utils';
+import { ipToInt, isIpIntInCidr, matchGlob } from './credential-services/utils';
 
 export class CredentialSetService {
   private encryptionService = getEncryptionService();
@@ -475,6 +475,7 @@ export class CredentialSetService {
     createdBy: string,
     organizationId: string
   ): Promise<UnifiedCredential[]> {
+    assertMatchContextBounds(context);
     const client = await this.pool.connect();
     try {
       // Fetch credential set
@@ -569,10 +570,12 @@ export class CredentialSetService {
     credentialIds: string[],
     context: CredentialMatchContext
   ): UnifiedCredential[] {
+    // Parsed once per request, not once per network of every credential scored
+    const ipInt = context.ip ? ipToInt(context.ip) : null;
     // Calculate affinity scores for each credential
     const scoredCredentials = credentials.map((credential) => ({
       credential,
-      affinityScore: this.calculateAffinityScore(credential, context),
+      affinityScore: this.calculateAffinityScore(credential, context, ipInt),
       setOrder: credentialIds.indexOf(credential.id),
     }));
 
@@ -606,7 +609,8 @@ export class CredentialSetService {
    */
   private calculateAffinityScore(
     credential: UnifiedCredential,
-    context: CredentialMatchContext
+    context: CredentialMatchContext,
+    ipInt: number | null
   ): number {
     let score = 0;
     const affinity = credential.affinity;
@@ -615,14 +619,14 @@ export class CredentialSetService {
     if (context.ip && affinity.networks && affinity.networks.length > 0) {
       const isInNetwork = affinity.networks.some((cidr) =>
         // A bare IP (no prefix) is an exact-address network
-        cidr.includes('/') ? isIpInCidr(context.ip!, cidr) : context.ip === cidr
+        cidr.includes('/') ? isIpIntInCidr(ipInt, cidr) : context.ip === cidr
       );
       if (isInNetwork) {
         score += 30;
       }
     }
 
-    // Hostname pattern match (glob or regex)
+    // Hostname pattern match (glob)
     if (context.hostname && affinity.hostname_patterns && affinity.hostname_patterns.length > 0) {
       const matchesPattern = affinity.hostname_patterns.some((pattern) =>
         matchGlob(context.hostname!, pattern)

@@ -89,8 +89,8 @@ const credentialScopeSchema = Joi.string().valid(
  * Credential Affinity schema
  */
 const credentialAffinitySchema = Joi.object({
-  networks: Joi.array().items(Joi.string()).optional(),
-  hostname_patterns: Joi.array().items(Joi.string()).optional(),
+  networks: Joi.array().items(Joi.string().max(64)).max(50).optional(),
+  hostname_patterns: Joi.array().items(Joi.string().max(253)).max(50).optional(),
   os_types: Joi.array().items(Joi.string()).optional(),
   device_types: Joi.array().items(Joi.string()).optional(),
   environments: Joi.array().items(Joi.string()).optional(),
@@ -142,7 +142,7 @@ const updateCredentialSchema = Joi.object({
  */
 const credentialMatchContextSchema = Joi.object({
   ip: Joi.string().optional(),
-  hostname: Joi.string().optional(),
+  hostname: Joi.string().max(253).optional(),
   os_type: Joi.string().optional(),
   device_type: Joi.string().optional(),
   environment: Joi.string().optional(),

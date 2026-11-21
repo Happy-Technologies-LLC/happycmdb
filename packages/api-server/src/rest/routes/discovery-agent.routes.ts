@@ -47,16 +47,21 @@ const registerAgentSchema = Joi.object({
   platform: Joi.string().optional().max(50),
   arch: Joi.string().optional().max(50),
   api_endpoint: Joi.string().uri().optional().max(500),
-  tags: Joi.array().items(Joi.string()).optional(),
+  tags: Joi.array().items(Joi.string().max(100)).max(50).optional(),
 });
+
+// The counters are per-heartbeat deltas added to INTEGER columns. A million jobs or CIs in one
+// heartbeat interval is far above anything real; the cap keeps a single request well inside INT4
+// (400 instead of a 500 at parameter binding).
+const MAX_HEARTBEAT_STAT_DELTA = 1_000_000;
 
 const heartbeatSchema = Joi.object({
   agent_id: Joi.string().required().min(1).max(255),
   status: Joi.string().valid('active', 'inactive', 'offline', 'disabled').required(),
   stats: Joi.object({
-    jobs_completed: Joi.number().integer().min(0).optional(),
-    jobs_failed: Joi.number().integer().min(0).optional(),
-    cis_discovered: Joi.number().integer().min(0).optional(),
+    jobs_completed: Joi.number().integer().min(0).max(MAX_HEARTBEAT_STAT_DELTA).optional(),
+    jobs_failed: Joi.number().integer().min(0).max(MAX_HEARTBEAT_STAT_DELTA).optional(),
+    cis_discovered: Joi.number().integer().min(0).max(MAX_HEARTBEAT_STAT_DELTA).optional(),
   }).optional(),
 });
 

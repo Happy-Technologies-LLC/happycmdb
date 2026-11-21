@@ -10,6 +10,43 @@ import { literalFulltextQuery } from './literal-fulltext-query';
 import { readCIList, CIListUnavailableError, CI_LIST_UNAVAILABLE_RESPONSE } from '../../read-admission';
 import { errorLogFields } from '../../utils/log-error';
 
+export const METADATA_FILTER_MAX_KEYS = 20;
+export const METADATA_FILTER_MAX_KEY_LENGTH = 128;
+export const METADATA_FILTER_MAX_VALUE_LENGTH = 256;
+export const SEARCH_QUERY_MAX_LENGTH = 500;
+
+export type MetadataFilterValue = string | number | boolean;
+
+/**
+ * The text `JSON.stringify` stores for one metadata pair, so `ci.metadata CONTAINS needle`
+ * matches strings, numbers, booleans and keys or values holding quotes, backslashes or control characters.
+ */
+export const metadataNeedle = (key: string, value: MetadataFilterValue): string =>
+  `${JSON.stringify(key)}:${JSON.stringify(value)}`;
+
+/** Defence in depth behind the route schema: the same bounds, as a refusal message or null. */
+export function metadataFilterRefusal(filters: unknown): string | null {
+  if (filters === undefined) return null;
+  if (typeof filters !== 'object' || filters === null || Array.isArray(filters)) {
+    return 'metadata_filters must be an object';
+  }
+  const entries = Object.entries(filters);
+  if (entries.length > METADATA_FILTER_MAX_KEYS) {
+    return `metadata_filters must have at most ${METADATA_FILTER_MAX_KEYS} keys`;
+  }
+  for (const [key, value] of entries) {
+    if (key.length < 1 || key.length > METADATA_FILTER_MAX_KEY_LENGTH) {
+      return `metadata_filters keys must be 1 to ${METADATA_FILTER_MAX_KEY_LENGTH} characters`;
+    }
+    const valid = (typeof value === 'string' && value.length <= METADATA_FILTER_MAX_VALUE_LENGTH) ||
+      (typeof value === 'number' && Number.isFinite(value)) || typeof value === 'boolean';
+    if (!valid) {
+      return `metadata_filters values must be a string of at most ${METADATA_FILTER_MAX_VALUE_LENGTH} characters, a finite number or a boolean`;
+    }
+  }
+  return null;
+}
+
 export class SearchController {
   private neo4jClient = getNeo4jClient();
 
@@ -38,6 +75,12 @@ export class SearchController {
         return;
       }
 
+      const metadataRefusal = metadataFilterRefusal(metadata_filters);
+      if (metadataRefusal) {
+        res.status(400).json({ success: false, error: 'Bad Request', message: metadataRefusal });
+        return;
+      }
+
       const organizationId = requestOrganizationId(req);
       const limitNum = Number(limit);
       const offsetNum = Number(offset);
@@ -56,11 +99,11 @@ export class SearchController {
           if (type) { conditions.push('ci.type = $type'); params.type = type; }
           if (status) { conditions.push('ci.status = $status'); params.status = status; }
           if (environment) { conditions.push('ci.environment = $environment'); params.environment = environment; }
-          if (metadata_filters && typeof metadata_filters === 'object') {
-            Object.entries(metadata_filters).forEach(([key, value], index) => {
+          if (metadata_filters) {
+            Object.entries(metadata_filters as Record<string, MetadataFilterValue>).forEach(([key, value], index) => {
               const paramName = `metaValue${index}`;
               conditions.push(`ci.metadata CONTAINS $${paramName}`);
-              params[paramName] = `"${key}":"${value}"`;
+              params[paramName] = metadataNeedle(key, value);
             });
           }
           const whereClause = conditions.join(' AND ');

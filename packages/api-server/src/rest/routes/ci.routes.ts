@@ -46,7 +46,7 @@ const updateCISchema = ciUpdateSchema.keys({
 });
 
 const searchCISchema = Joi.object({
-  query: Joi.string().required().min(1),
+  query: Joi.string().required().min(1).max(500),
   limit: Joi.number().integer().min(1).max(1000).default(50),
 });
 

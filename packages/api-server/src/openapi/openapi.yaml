@@ -30,7 +30,7 @@ info:
 
     The API mounts no global rate limiter (`ApiServer.setupMiddleware`), so there is
     no per-token or per-API-key hourly or burst budget. Limiters sit on four auth
-    routes registered in `AuthController`:
+    routes registered in `AuthController` and on `POST /agents/heartbeat`:
     - `POST /auth/login`: `RateLimitMiddleware.limit('auth', …)` with
       `rateLimit.endpoints.auth` (default 20 per hour per client address),
       `endpoints.authAccount` (5 per 15 minutes per account and client address) and
@@ -46,6 +46,9 @@ info:
       `RateLimitMiddleware.custom(endpointBudget('rest'), 'auth-refresh')`, on
       `endpoints.rest` (default 1000 per hour per client address); not mounted when
       `endpoints.rest.max` is 0.
+    - `POST /agents/heartbeat`: `RateLimitMiddleware.custom(…, 'agent-heartbeat')`, a fixed
+      budget of 600 per hour per verified user (not configurable; keyed on the user behind the
+      JWT or API key, ahead of body validation). Not a `rateLimit.endpoints` entry.
 
     Analysis requests (`executeBoundedAnalysis`) and GraphQL requests
     (`admitGraphQLRequest`) have in-process admission gates that answer 429 without
@@ -57,8 +60,8 @@ info:
     https://github.com/Happy-Technologies-LLC/happycmdb/blob/main/packages/api-server/docs/API_DOCUMENTATION.md#rate-limiting
 
     Rate limit headers are sent only by `POST /auth/login`, `PUT /auth/password`,
-    `POST /auth/sessions/revoke-others` and `POST /auth/refresh`, on allowed and on 429 responses, and not when
-    `rateLimit.enabled` is false, on a bypass-header match, when the endpoint's
+    `POST /auth/sessions/revoke-others`, `POST /auth/refresh` and `POST /agents/heartbeat`, on allowed and on 429
+    responses, and not when `rateLimit.enabled` is false, on a bypass-header match, when the endpoint's
     `max` is 0 or on a limiter store error. No other route sends them:
     - `X-RateLimit-Limit`: Maximum requests per window
     - `X-RateLimit-Remaining`: Remaining requests
@@ -3086,9 +3089,12 @@ paths:
       tags: [Discovery Agents]
       summary: Register agent
       description: >-
-        Omit agent_id to create an agent and receive its server-assigned ID.
-        Supply that issued ID to retry/update within the same organization;
-        foreign and missing IDs both return 404. Keep the ID for heartbeat.
+        Omit agent_id to create an agent and receive its server-assigned ID; the caller is recorded as its owner.
+        Supply that issued ID to retry/update within the same organization. An agent-role credential can only
+        update an agent it registered, and a re-registration never moves a `disabled` agent out of `disabled`.
+        An operator or admin can update any agent of the organization (and re-enable a `disabled` one); doing so
+        on an ownerless agent (registered before migration 057) claims it for that operator or admin. Foreign,
+        ownerless-to-an-agent-role-caller and missing IDs all return 404. Keep the ID for heartbeat.
       operationId: registerDiscoveryAgent
       requestBody:
         required: true
@@ -3128,7 +3134,15 @@ paths:
     post:
       tags: [Discovery Agents]
       summary: Update heartbeat
-      description: Update agent status and statistics
+      description: >-
+        Update agent status and statistics. An agent-role credential can only heartbeat an agent it registered
+        (the verified user behind the JWT or API key); a foreign, ownerless (registered before migration 057)
+        or missing agent all return the same 404. Operators and admins can heartbeat any agent of the
+        organization. `disabled` is operator-only: an agent-role caller sending it gets 403 ROLE_REQUIRED, and
+        its heartbeat never moves an agent out of `disabled` (the counters and liveness are still recorded).
+        Each verified principal is limited to 600 heartbeats per hour; beyond that the endpoint returns 429 with
+        X-RateLimit-* headers and a JSON body carrying _retryAfter (seconds). The limit is checked before the body
+        is validated, so malformed requests count too.
       operationId: updateAgentHeartbeat
       requestBody:
         required: true
@@ -3148,17 +3162,27 @@ paths:
                   properties:
                     jobs_completed:
                       type: integer
+                      minimum: 0
+                      maximum: 1000000
                     jobs_failed:
                       type: integer
+                      minimum: 0
+                      maximum: 1000000
                     cis_discovered:
                       type: integer
+                      minimum: 0
+                      maximum: 1000000
       responses:
         '200':
           description: Heartbeat updated
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: An agent-role caller attempted to set status `disabled` (ROLE_REQUIRED)
         '404':
-          description: Agent not found
+          description: Agent not found (also returned for an agent the caller did not register)
+        '429':
+          description: Per-principal heartbeat budget (600 per hour) exhausted
 
   /agents/find-best:
     post:
@@ -3225,7 +3249,10 @@ paths:
     delete:
       tags: [Discovery Agents]
       summary: Delete agent
-      description: Unregister a discovery agent
+      description: >-
+        Unregister a discovery agent. An agent-role credential can only delete an agent it registered; an
+        operator or admin can delete any agent of the organization. A foreign, ownerless (registered before
+        migration 057) or missing agent all return the same 404.
       operationId: deleteAgent
       parameters:
         - name: agentId
@@ -7347,8 +7374,10 @@ components:
           type: string
         tags:
           type: array
+          maxItems: 50
           items:
             type: string
+            maxLength: 100
 
     # =========================================================================
     # CONNECTORS

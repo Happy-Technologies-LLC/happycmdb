@@ -304,9 +304,9 @@ only on a private network you control. `<PREFIX>_POSTGRES_SSL=require` to a remo
   Neo4j driver sets `rejectUnauthorized: false` on its socket but then checks `socket.authorized` itself and
   refuses an unauthorized socket (with the system-CA trust strategy the operator tools use), so
   `NODE_TLS_REJECT_UNAUTHORIZED=0` does not weaken the Neo4j connection either. The `TRUST_ALL_CERTIFICATES`
-  strategy does not check `socket.authorized`, so it has no such protection. What `NODE_TLS_REJECT_UNAUTHORIZED=0`
-  can still change is trust, not verification: `NODE_EXTRA_CA_CERTS` adds its CA to the store
-  Neo4j verifies against (see above).
+  strategy does not check `socket.authorized`, so it has no such protection. What can still change the Neo4j
+  connection is trust, not verification: `NODE_EXTRA_CA_CERTS` adds its CA to the store Neo4j verifies against
+  (see above); `NODE_TLS_REJECT_UNAUTHORIZED=0` does not.
 
 ```bash
 CMDB_ROTATE_POSTGRES_SSL=verify-full CMDB_ROTATE_POSTGRES_SSL_CA_FILE=/path/to/ca.pem \

@@ -126,6 +126,27 @@ describe('PostgresClient TLS mode', () => {
       expect(logged).not.toContain(host);
     });
 
+  it.each([['127.0.0.1', 'local'], ['127.1.2.3', 'local'], ['::1', 'local'], ['localhost', 'local'], ['/var/run/postgresql', 'local'],
+    ['127.999.0.1', 'non-local'], ['127.0.0.256', 'non-local'], ['127.0.0.1.example.com', 'non-local']])(
+    'classifies the host %s as %s', (host, hostKind) => {
+      process.env['NODE_ENV'] = 'development';
+      open(host);
+      expect(JSON.stringify((logger.error as jest.Mock).mock.calls)).toContain(`"hostKind":"${hostKind}"`);
+    });
+
+  it('refuses an unset mode in production for 127.999.0.1, which is not loopback, but accepts 127.0.0.1', () => {
+    process.env['NODE_ENV'] = 'production';
+    expect(() => open('127.999.0.1')).toThrow();
+    expect(open('127.0.0.1').pool.options.ssl).toBe(false);
+  });
+
+  it('does not tell a production operator that NODE_ENV is not production when an unset mode is logged for a local host', () => {
+    process.env['NODE_ENV'] = 'production';
+    open('localhost');
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify((logger.error as jest.Mock).mock.calls)).not.toContain('NODE_ENV is not production');
+  });
+
   it('does not read an empty ambient CA file variable when an explicit CA bundle is given', () => {
     process.env['POSTGRES_SSL_CA_FILE'] = '';
     const ssl = new PostgresClient({

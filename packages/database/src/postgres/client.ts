@@ -36,8 +36,10 @@ function safePgDiagnostics(error: unknown): Partial<Record<typeof PG_DIAGNOSTIC_
 
 type PostgresSslMode = boolean | 'require' | 'prefer' | 'verify-full';
 
-/** Loopback (localhost, 127.0.0.0/8, ::1) or a Unix socket directory. */
-const LOCAL_HOST = /^(localhost|127(\.\d{1,3}){3}|::1|\/.*)$/;
+/** Loopback (localhost, 127.0.0.0/8, ::1) or a Unix socket directory. `isIP` rejects out-of-range octets such as 127.999.0.1. */
+function isLocalHost(host: string): boolean {
+  return host === 'localhost' || host === '::1' || host.startsWith('/') || (host.startsWith('127.') && isIP(host) === 4);
+}
 
 /**
  * HAP-1380: map the TLS mode (explicit config, else POSTGRES_SSL_MODE, else POSTGRES_SSL_ENABLED=on|off) to pg's `ssl`.
@@ -57,12 +59,12 @@ function resolveSsl(explicit: PostgresSslMode | undefined, host: string, env: No
     throw new Error('POSTGRES_SSL_CA_FILE is set but the PostgreSQL TLS mode is not verify-full: the CA bundle would be ignored, so set POSTGRES_SSL_MODE=verify-full or unset POSTGRES_SSL_CA_FILE');
   }
   if (mode === undefined) {
-    if (env['NODE_ENV'] === 'production' && !LOCAL_HOST.test(host)) {
+    if (env['NODE_ENV'] === 'production' && !isLocalHost(host)) {
       throw new Error('PostgreSQL TLS mode unset in production: set POSTGRES_SSL_MODE (verify-full, require, or disable)');
     }
     // The host itself stays out of the log; its kind says whether cleartext crosses a network.
-    logger.error('PostgreSQL client initialized WITHOUT SSL encryption: POSTGRES_SSL_MODE is unset and NODE_ENV is not production', {
-      hostKind: LOCAL_HOST.test(host) ? 'local' : 'non-local',
+    logger.error('PostgreSQL client initialized WITHOUT SSL encryption: POSTGRES_SSL_MODE is unset (allowed for a local host or outside production)', {
+      hostKind: isLocalHost(host) ? 'local' : 'non-local',
     });
     return false;
   }

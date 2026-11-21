@@ -7,13 +7,16 @@
  * NODE_TLS_REJECT_UNAUTHORIZED=0, and pg ignores PGSSLMODE once `ssl` is set, so the tools need no refusal for either;
  * this pins the resulting pool config (and the connection options pg derives from it) for every tool that opens one.
  *
- * The real PostgresClient and pg are used; only the Pool's network calls are cut off.
+ * The real PostgresClient and pg are used; only the Pool's network calls are cut off. The tests never call
+ * isolateOperatorEnvironment, so the POSTGRES_SSL_* rows prove that an explicit `verify-full` wins over those
+ * variables inside the client; that the entry points isolate the environment is covered by the CLI process tests
+ * (rotate-user-password.test.ts, backfill-business-service-organization.test.ts).
  */
 import pg from 'pg';
 import type tls from 'tls';
 import neo4j from 'neo4j-driver';
 import { logger } from '@cmdb/common';
-import { openOperatorStores, isolateOperatorEnvironment } from '../operator-stores';
+import { openOperatorStores } from '../operator-stores';
 import { main as backfillMain } from '../backfill-business-service-organization';
 
 jest.mock('neo4j-driver', () => ({
@@ -124,7 +127,6 @@ afterEach(() => {
 describe.each(WEAKENING_ENVS)('verify-full with %s in the environment', (_label, weakening) => {
   it('keeps ssl { rejectUnauthorized: true } for the rotation and identity-window stores', async () => {
     Object.assign(process.env, weakening);
-    isolateOperatorEnvironment(process.env);
 
     const stores = openOperatorStores(rotateEnv());
 
@@ -136,7 +138,6 @@ describe.each(WEAKENING_ENVS)('verify-full with %s in the environment', (_label,
 
   it('keeps ssl { rejectUnauthorized: true } for the organization backfill', async () => {
     Object.assign(process.env, weakening);
-    isolateOperatorEnvironment(process.env);
 
     await backfillMain(
       ['--created-before', '2026-01-01T00:00:00Z', '--writer-timezone', 'Etc/UTC'],
@@ -152,8 +153,6 @@ describe.each(WEAKENING_ENVS)('verify-full with %s in the environment', (_label,
 
 describe('verify-full with an IP-address host', () => {
   it('pins the identity check to the configured IP, not to the connection servername', async () => {
-    isolateOperatorEnvironment(process.env);
-
     const stores = openOperatorStores({ ...rotateEnv(), CMDB_ROTATE_POSTGRES_HOST: '192.0.2.10' });
 
     const ssl = pools[0].options.ssl as { rejectUnauthorized: boolean; checkServerIdentity: tls.CheckServerIdentityFunction };

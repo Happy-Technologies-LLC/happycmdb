@@ -255,14 +255,20 @@ so the API server's production fail-closed check does not apply to them. Always 
 - Check the CA before trusting it. Do the three steps in this order, and stop without using the file if any
   fails. Get the expected fingerprint out of band (from the database operator, not from the same host or
   channel that gave you the file):
-  1. `grep -c 'BEGIN CERTIFICATE' ca.pem` must print `1`.
+  1. `grep -c -- '-----BEGIN' ca.pem` must print `1`, **and**
+     `openssl crl2pkcs7 -nocrl -certfile ca.pem | openssl pkcs7 -print_certs -noout | grep -c '^subject='`
+     must print `1`.
   2. `openssl x509 -noout -fingerprint -sha256 -in ca.pem` must equal the expected fingerprint.
   3. `openssl x509 -noout -ext basicConstraints -in ca.pem` must show `CA:TRUE`.
 
-  Step 1 is not optional. `openssl x509` reads only the **first** certificate in a file, but
-  `NODE_EXTRA_CA_CERTS` trusts **every** certificate in it. A file with the real CA first and an attacker's CA
-  second passes step 2 and still makes the tool trust the attacker's CA; under `verify-full` that attacker can
-  impersonate Postgres or Neo4j and receive the privileged `CMDB_ROTATE_*` / `CMDB_BACKFILL_*` passwords.
+  Step 1 is not optional, and both of its checks are needed. `openssl x509` reads only the **first**
+  certificate in a file, but `NODE_EXTRA_CA_CERTS` trusts **every** certificate in it. A file with the real CA
+  first and an attacker's CA second passes step 2 and still makes the tool trust the attacker's CA; under
+  `verify-full` that attacker can impersonate Postgres or Neo4j and receive the privileged
+  `CMDB_ROTATE_*` / `CMDB_BACKFILL_*` passwords. OpenSSL accepts more than one PEM label for a certificate
+  (for example the legacy `-----BEGIN X509 CERTIFICATE-----`), so a count of one label proves nothing. The
+  `-----BEGIN` count covers every PEM block of any label (it can only overcount, which fails safe); the
+  `subject=` count covers every certificate OpenSSL actually parses, whatever its label.
 - The CA file must be owned by the operator running the tool, mode `0644` or stricter, in a directory
   that other users cannot write to, and never under `/tmp`. Anyone who can replace the file can make the
   tool trust their own CA.

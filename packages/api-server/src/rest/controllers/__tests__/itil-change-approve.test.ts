@@ -518,7 +518,7 @@ describe('POST /itil/changes/:id/close logs the verified actor and the kind of t
     const out = await closing(U1, id, claim);
     expect(out.statusCode).toBe(200);
     expect(closedLogs()).toEqual([['Change closed', { id, closed_by: 'u-1', claimed_closed_by_kind: kind }]]);
-    if (kind === 'other') expect(JSON.stringify((logger.info as jest.Mock).mock.calls)).not.toContain(claim);
+    if (kind !== 'matches_actor') expect(JSON.stringify((logger.info as jest.Mock).mock.calls)).not.toContain(claim);
   });
 
   it('logs nothing for an unknown id or another organization change, and never the claim', async () => {

@@ -726,7 +726,7 @@ Update a change's `status`, `implementedBy` or `actualDuration`. Requires the `w
 | Status | Meaning |
 |--------|---------|
 | 200 | Change updated |
-| 400 | Nothing is written. Three bodies: a Joi validation failure (`updateChangeSchema`: `status` one of the listed values, `actualDuration` an integer of at least 1) answers `{"_success": false, "_error": "Validation Error", ...}`; a value outside the stored limits (`implementedBy` empty, over 255 characters or not storable; `actualDuration` above 2147483647), which also reaches the controller through GraphQL, answers `{"success": false, "error": "Bad Request", "message": "Invalid request"}`; an empty body answers `{"success": false, "error": "Bad Request", "message": "No fields to update"}` |
+| 400 | Nothing is written. Three bodies: a Joi validation failure (`updateChangeSchema`: `status` one of the listed values, `implementedBy` a non-empty string, `actualDuration` an integer of at least 1) answers `{"_success": false, "_error": "Validation Error", ...}`, so an empty `implementedBy` on REST always gets this body; a value outside the stored limits that Joi lets through (`implementedBy` over 255 characters or not storable; `actualDuration` above 2147483647) answers `{"success": false, "error": "Bad Request", "message": "Invalid request"}` from the controller, and so does an empty `implementedBy`, which only GraphQL (it bypasses Joi) can bring that far; an empty body answers `{"success": false, "error": "Bad Request", "message": "No fields to update"}` |
 | 401 | `Unauthorized`: `status` is `APPROVED` and the request carries no user identity; nothing is written |
 | 403 | The credential lacks the `write` permission, or carries no organization claim (`ORGANIZATION_REQUIRED`) |
 | 404 | `Not Found`: no change with this id in the caller's organization |
@@ -869,7 +869,7 @@ The endpoint also sets `status` to `closed` and stamps `closed_at` with the curr
 | Status | Meaning |
 |--------|---------|
 | 200 | Change closed |
-| 400 | Body failed validation |
+| 400 | Body failed validation. On REST, Joi's `Validation Error` (including a `closedBy` over 255 characters); through GraphQL, which bypasses Joi, the controller refuses a `closedBy` over 255 characters with `{"success": false, "error": "Bad Request", "message": "Invalid request"}` |
 | 404 | `Change not found` (unknown id, other organization, or id not a UUID) |
 | 500 | `Failed to close change` |
 

@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import axios, { AxiosError, AxiosRequestConfig, AxiosResponse } from 'axios';
+import axios, { AxiosError, AxiosRequestConfig, AxiosResponse, AxiosResponseTransformer } from 'axios';
 import type { LookupAddress } from 'node:dns';
 import { Agent as HttpAgent } from 'node:http';
 import { Agent as HttpsAgent } from 'node:https';
@@ -35,6 +35,15 @@ export class DiscoveryHttpError extends Error {
 
 /** Per-call extras: `totalMs` is the total deadline (default DISCOVERY_HTTP_TOTAL_MS). */
 export type SafeDiscoveryHttpOptions = AxiosRequestConfig & { totalMs?: number };
+
+/** A successful probe: the response plus the bytes the transport decoded for its body. */
+export type SafeDiscoveryHttpResponse = AxiosResponse & {
+  /**
+   * UTF-8 byte length of the body as Axios inflated it, taken before any JSON parsing. The parsed
+   * `data` can be far smaller (padding whitespace, duplicate keys), so budgets charge this.
+   */
+  decodedBytes: number;
+};
 
 function contentLimit(requested: number | undefined): number {
   return typeof requested === 'number' && requested > 0
@@ -74,7 +83,9 @@ function isOversize(error: unknown): boolean {
 }
 
 /** Preserve Host/SNI; connect via checked DNS callback. Redirects and proxies cannot bypass it. */
-export async function safeDiscoveryHttp(url: string, options: SafeDiscoveryHttpOptions = {}): Promise<AxiosResponse> {
+export async function safeDiscoveryHttp(
+  url: string, options: SafeDiscoveryHttpOptions = {},
+): Promise<SafeDiscoveryHttpResponse> {
   let destination: URL;
   try {
     destination = new URL(url);
@@ -103,8 +114,16 @@ export async function safeDiscoveryHttp(url: string, options: SafeDiscoveryHttpO
   };
   const agent = destination.protocol === 'https:'
     ? new HttpsAgent({ lookup: lookupAtConnect }) : new HttpAgent({ lookup: lookupAtConnect });
+  // The first transform sees the raw decoded body (string, or Buffer for a binary responseType);
+  // the default transforms (JSON parsing) then run on it unchanged.
+  let decodedBytes = 0;
+  const measure: AxiosResponseTransformer = data => {
+    if (typeof data === 'string') decodedBytes = Buffer.byteLength(data);
+    else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) decodedBytes = data.byteLength;
+    return data;
+  };
   try {
-    return await axios({
+    const response = await axios({
       method: options.method,
       headers: options.headers,
       timeout: options.timeout,
@@ -116,8 +135,10 @@ export async function safeDiscoveryHttp(url: string, options: SafeDiscoveryHttpO
       proxy: false,
       httpAgent: agent,
       httpsAgent: agent,
+      transformResponse: [measure, ...([] as AxiosResponseTransformer[]).concat(axios.defaults.transformResponse ?? [])],
       signal,
     });
+    return Object.assign(response, { decodedBytes });
   } catch (error) {
     if (refused) throw new Error(DISCOVERY_TARGET_REFUSED);
     if (isOversize(error)) throw new Error(DISCOVERY_RESPONSE_TOO_LARGE);

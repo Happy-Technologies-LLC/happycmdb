@@ -20,7 +20,8 @@ import { detectWithPlan, parseDetectionPlan, parseDiscoveryPlan, PATTERN_NOT_ACT
 /**
  * Budgets for ONE executeDiscovery call, across all of a pattern's endpoints (a plan may list 64,
  * each otherwise allowed 1 MiB / 15 s). Code constants: raising them is a reviewed change.
- *  - bytes: decoded response bytes summed over the endpoints (JSON bodies measured as serialized).
+ *  - bytes: bytes the transport decoded, summed over the endpoints (`SafeDiscoveryHttpResponse.decodedBytes`,
+ *    counted before JSON parsing: padding whitespace or duplicate keys cannot shrink the charge).
  *    A response cut at the limit it was requested with (DISCOVERY_RESPONSE_TOO_LARGE) was already
  *    decoded up to that limit, so it spends that limit, whether the per-request ceiling or less.
  *  - time: wall clock from the first request; each request's deadline is clipped to what is left.
@@ -48,11 +49,6 @@ export const DISCOVERY_BODY_TRUNCATED = '... (truncated)';
 /** Contain ':', which an endpoint key (validated `[a-zA-Z0-9/_.-]`) can never contain. */
 export const DISCOVERY_SKIPPED_KEY = 'discovery:skipped';
 export const DISCOVERY_UNSTORED_KEY = 'discovery:unstored';
-
-function bodyBytes(data: unknown): number {
-  if (data === undefined || data === null) return 0;
-  return Buffer.byteLength(typeof data === 'string' ? data : (JSON.stringify(data) ?? ''));
-}
 
 const jsonBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value) ?? '');
 
@@ -390,7 +386,8 @@ export class PatternMatcher implements IPatternMatcher {
           { method: 'GET', timeout: 5000, validateStatus: () => true,
             maxContentLength: Math.min(bytesLeft, DISCOVERY_HTTP_MAX_BYTES), totalMs: msLeft }
         );
-        bytesLeft -= bodyBytes(response.data);
+        // Decoded bytes from the transport: the parsed value can be much smaller than what was inflated.
+        bytesLeft -= response.decodedBytes;
         if (response.status >= 200 && response.status < 300) {
           const key = endpoint.slice(1);
           const stored = storableBody(ci.metadata, key, response.data, reserve);

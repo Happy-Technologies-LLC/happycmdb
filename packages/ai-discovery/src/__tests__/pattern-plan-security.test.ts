@@ -50,7 +50,7 @@ beforeEach(() => {
   redis.get.mockReset().mockResolvedValue(null);
   redis.setex.mockReset().mockResolvedValue('OK');
   (lookup as jest.Mock).mockResolvedValue([{ address: '8.8.8.8', family: 4 }]);
-  (safeDiscoveryHttp as jest.Mock).mockResolvedValue({ status: 200, data: { healthy: true } });
+  (safeDiscoveryHttp as jest.Mock).mockResolvedValue({ status: 200, data: { healthy: true }, decodedBytes: 16 });
 });
 
 afterEach(() => jest.restoreAllMocks());

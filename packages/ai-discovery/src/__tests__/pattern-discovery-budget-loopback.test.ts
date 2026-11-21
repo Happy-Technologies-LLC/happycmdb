@@ -30,6 +30,8 @@ const storage = {
 
 let server: Server;
 let requests: string[];
+// What every endpoint serves; the default is the oversize bomb, a test replaces it.
+let served: { wire: Buffer; type: string };
 
 beforeEach(async () => {
   requests = [];
@@ -37,11 +39,11 @@ beforeEach(async () => {
   jest.mocked(connectDiscoveryHost).mockResolvedValue('127.0.0.1');
   (getRedisClient as jest.Mock).mockReturnValue(redis);
   // Every endpoint inflates to twice the per-request ceiling from a few KiB on the wire.
-  const wire = gzipSync(Buffer.alloc(2 * DISCOVERY_HTTP_MAX_BYTES, 97));
+  served = { wire: gzipSync(Buffer.alloc(2 * DISCOVERY_HTTP_MAX_BYTES, 97)), type: 'text/plain' };
   server = createServer((request, response) => {
     requests.push(request.url ?? '');
-    response.writeHead(200, { 'Content-Type': 'text/plain', 'Content-Encoding': 'gzip', 'Content-Length': wire.length });
-    response.end(wire);
+    response.writeHead(200, { 'Content-Type': served.type, 'Content-Encoding': 'gzip', 'Content-Length': served.wire.length });
+    response.end(served.wire);
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -77,5 +79,31 @@ describe('executeDiscovery byte budget against real oversize responses', () => {
     const requested = DISCOVERY_PATTERN_MAX_TOTAL_BYTES / MIB;
     expect(requests).toEqual(ENDPOINTS.slice(0, requested));
     expect(ci.metadata[DISCOVERY_SKIPPED_KEY]).toEqual({ reason: 'bytes-budget', endpoints: ENDPOINTS.slice(requested) });
+  });
+
+  // Axios JSON-parses these bodies, so the parsed value is a few bytes while a whole MiB was inflated:
+  // the budget must charge what was decoded, not the parsed value.
+  const padding = ' '.repeat(MIB - 64);
+  const parseShrinking: Array<[string, string, unknown]> = [
+    ['whitespace-padded JSON', `{"a":1${padding}}`, { a: 1 }],
+    ['a duplicate key hiding a large value', `{"a":"${'x'.repeat(MIB - 64)}","a":1}`, { a: 1 }],
+  ];
+  it.each(parseShrinking)('charges decoded bytes, not the parsed value, for %s', async (_name, text, parsed) => {
+    const body = Buffer.from(text);
+    expect(body.length).toBeLessThan(DISCOVERY_HTTP_MAX_BYTES);
+    served = { wire: gzipSync(body), type: 'application/json' };
+    storage.loadPatterns.mockResolvedValue([pattern()]);
+    const matcher = new PatternMatcher(storage as unknown as PatternStorageService);
+    const port = (server.address() as AddressInfo).port;
+    const [ci] = await matcher.executePattern('web-service',
+      { targetHost: 'probe-target.example', targetPort: port, scanResult: { services: [{ port }] } });
+    // Four full bodies leave less than one body of budget: the fifth request is cut at what is left.
+    const fits = Math.floor(DISCOVERY_PATTERN_MAX_TOTAL_BYTES / body.length);
+    expect(requests).toEqual(ENDPOINTS.slice(0, fits + 1));
+    expect(requests.length).toBeLessThan(ENDPOINTS.length);
+    expect(ci.metadata[DISCOVERY_SKIPPED_KEY]).toEqual({ reason: 'bytes-budget', endpoints: ENDPOINTS.slice(fits + 1) });
+    // At most the budget plus one request's ceiling was ever decoded.
+    expect(requests.length * body.length).toBeLessThanOrEqual(DISCOVERY_PATTERN_MAX_TOTAL_BYTES + DISCOVERY_HTTP_MAX_BYTES);
+    expect(ci.metadata.e0).toEqual(parsed);
   });
 });

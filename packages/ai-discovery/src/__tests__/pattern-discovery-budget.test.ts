@@ -25,6 +25,10 @@ const storage = {
 };
 const context = { targetHost: 'public.example', targetPort: 443, scanResult: { services: [{ port: 443 }] } };
 const http = jest.mocked(safeDiscoveryHttp);
+/** A transport result: the mock reports decodedBytes the way the transport does (the serialized size of the fixture). */
+const reply = (data: unknown) => ({
+  status: 200, data, decodedBytes: Buffer.byteLength(typeof data === 'string' ? data : JSON.stringify(data)),
+});
 
 function pattern(endpoints: string[]): DiscoveryPattern {
   return {
@@ -58,7 +62,7 @@ afterEach(() => jest.restoreAllMocks());
 
 describe('executeDiscovery budgets', () => {
   it('skips and records the endpoints left once the total byte budget is spent', async () => {
-    http.mockResolvedValue({ status: 200, data: 'a'.repeat(MIB) } as never);
+    http.mockResolvedValue(reply('a'.repeat(MIB)) as never);
     const ci = await run(paths(64));
     const requested = DISCOVERY_PATTERN_MAX_TOTAL_BYTES / MIB;
     expect(http).toHaveBeenCalledTimes(requested);
@@ -70,7 +74,7 @@ describe('executeDiscovery budgets', () => {
     // Every body is one byte under the ceiling: a transport cuts it only when the request's limit is lower.
     http.mockImplementation((async (_url: string, options: { maxContentLength: number }) => {
       if (DISCOVERY_HTTP_MAX_BYTES - 1 > options.maxContentLength) throw new Error(DISCOVERY_RESPONSE_TOO_LARGE);
-      return { status: 200, data: 'a'.repeat(DISCOVERY_HTTP_MAX_BYTES - 1) };
+      return reply('a'.repeat(DISCOVERY_HTTP_MAX_BYTES - 1));
     }) as never);
     const ci = await run(paths(10));
     // 4 x (ceiling - 1) bytes spent leaves 4: the 5th request is clipped to 4 bytes and cut.
@@ -83,7 +87,7 @@ describe('executeDiscovery budgets', () => {
     // Each endpoint is larger than the ceiling, so it is cut at the ceiling with the full budget left.
     http.mockImplementation((async (_url: string, options: { maxContentLength: number }) => {
       if (2 * MIB > options.maxContentLength) throw new Error(DISCOVERY_RESPONSE_TOO_LARGE);
-      return { status: 200, data: 'a'.repeat(2 * MIB) };
+      return reply('a'.repeat(2 * MIB));
     }) as never);
     const ci = await run(paths(64));
     const requested = DISCOVERY_PATTERN_MAX_TOTAL_BYTES / DISCOVERY_HTTP_MAX_BYTES;
@@ -96,7 +100,7 @@ describe('executeDiscovery budgets', () => {
   it('skips the remaining endpoints once the total time budget is spent, and clips request deadlines', async () => {
     let now = 1_000_000;
     jest.spyOn(Date, 'now').mockImplementation(() => now);
-    http.mockImplementation((async () => { now += 12_000; return { status: 200, data: 'ok' }; }) as never);
+    http.mockImplementation((async () => { now += 12_000; return reply('ok'); }) as never);
     const ci = await run(paths(6));
     expect(http).toHaveBeenCalledTimes(3);
     expect(ci.metadata[DISCOVERY_SKIPPED_KEY]).toEqual({ reason: 'time-budget', endpoints: ['/e3', '/e4', '/e5'] });
@@ -106,7 +110,7 @@ describe('executeDiscovery budgets', () => {
   });
 
   it('records nothing as skipped when every endpoint fits', async () => {
-    http.mockResolvedValue({ status: 200, data: { healthy: true } } as never);
+    http.mockResolvedValue(reply({ healthy: true }) as never);
     const ci = await run(paths(3));
     expect(http).toHaveBeenCalledTimes(3);
     expect(ci.metadata).not.toHaveProperty(DISCOVERY_SKIPPED_KEY);
@@ -120,9 +124,7 @@ describe('executeDiscovery budgets', () => {
       '/obj': { rows: 'x'.repeat(DISCOVERY_STORED_BODY_MAX_BYTES) },
       '/small': { small: true },
     };
-    http.mockImplementation((async (url: string) => ({
-      status: 200, data: bodies[new URL(url).pathname],
-    })) as never);
+    http.mockImplementation((async (url: string) => reply(bodies[new URL(url).pathname])) as never);
     const ci = await run(Object.keys(bodies));
     for (const key of ['big', 'quotes', 'obj']) {
       expect(typeof ci.metadata[key]).toBe('string');
@@ -172,7 +174,7 @@ describe('executeDiscovery budgets', () => {
     });
 
     it('truncates one body to the room left, then names the endpoints that no longer fit', async () => {
-      http.mockImplementation((async () => ({ status: 200, data: 'y'.repeat(DISCOVERY_STORED_BODY_MAX_BYTES) })) as never);
+      http.mockImplementation((async () => reply('y'.repeat(DISCOVERY_STORED_BODY_MAX_BYTES))) as never);
       const ci = await run(paths(12));
       const keys = paths(12).map(path => path.slice(1));
       const full = ci.metadata.e0.length;
@@ -193,7 +195,7 @@ describe('executeDiscovery budgets', () => {
         '/edge': nest(DISCOVERY_STORED_MAX_DEPTH),
         '/gone': nest(200),
       };
-      http.mockImplementation((async (url: string) => ({ status: 200, data: bodies[new URL(url).pathname] })) as never);
+      http.mockImplementation((async (url: string) => reply(bodies[new URL(url).pathname])) as never);
       const ci = await run(Object.keys(bodies));
       expect(typeof ci.metadata.deep).toBe('string');
       expect(JSON.parse(ci.metadata.deep)).toEqual(bodies['/deep']);

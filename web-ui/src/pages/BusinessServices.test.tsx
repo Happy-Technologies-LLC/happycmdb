@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // jsdom implements neither the Pointer Events capture API nor scrollIntoView,
 // both of which Radix UI's Select uses internally.
 if (!Element.prototype.hasPointerCapture) {
@@ -19,22 +19,40 @@ if (!Element.prototype.scrollIntoView) {
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent, { type UserEvent } from '@testing-library/user-event';
 import { Toaster } from 'sonner';
+import { AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { render } from '@/tests/utils/test-utils';
 
-const { apiClient } = vi.hoisted(() => ({
+const { apiClient, real, auth } = vi.hoisted(() => ({
   apiClient: {
     get: vi.fn(),
     post: vi.fn(),
     patch: vi.fn(),
     delete: vi.fn(),
   },
+  // `real.on` routes reads through the real api-client (its interceptors report a 403 to the shell).
+  real: { on: false },
+  // These screens gate their write controls on the signed-in server role (HAP-1252 S1): operator writes, viewer only reads.
+  auth: { role: 'operator' },
 }));
 
-vi.mock('../lib/api-client', () => ({ apiClient }));
+vi.mock('../lib/api-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/api-client')>();
+  return {
+    apiClient: {
+      ...apiClient,
+      get: (...args: Parameters<typeof apiClient.get>) =>
+        real.on ? actual.apiClient.get(args[0], args[1]) : apiClient.get(...args),
+    },
+  };
+});
 
 import BusinessServices from './BusinessServices';
-// These screens gate their write controls on the signed-in role (HAP-1252 S1); this test is about the writes, so the user may write.
-vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
+import { ForbiddenHost } from '../components/layout/ForbiddenHost';
+import { EMPTY_VALUE } from '../lib/dashboardValue';
+vi.mock('@contexts/AuthContext', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@contexts/AuthContext')>()),
+  useAuth: () => ({ user: { role: auth.role } }),
+}));
 
 // Backend rows use the real REST envelope ({success, items, next_cursor, as_of}
 // for the C1 list, {success, data} for writes) and the canonical business_criticality
@@ -284,5 +302,192 @@ describe('BusinessServices page', () => {
     await waitFor(() => expect(apiClient.patch).toHaveBeenCalledWith('/service-offerings/so-1',
       expect.objectContaining({ lifecycle: 'retired' }), { headers: { 'If-Match': '"2"' } }));
     expect(await within(listed).findByText('retired')).toBeInTheDocument();
+  });
+
+  describe('read states', () => {
+    afterEach(() => {
+      real.on = false;
+    });
+
+    it('shows a loading state, and no total, while the list is being read', async () => {
+      apiClient.get.mockReturnValue(new Promise(() => {}));
+
+      render(<BusinessServices />);
+
+      expect(await screen.findByRole('status')).toHaveTextContent(/loading business services/i);
+      expect(screen.queryByText('$0')).not.toBeInTheDocument();
+      expect(screen.queryByText('No services found')).not.toBeInTheDocument();
+      expect(screen.getAllByText(EMPTY_VALUE).length).toBeGreaterThanOrEqual(4);
+    });
+
+    it('shows an empty state with a create call to action for a writer', async () => {
+      apiClient.get.mockResolvedValue(listOf([]));
+
+      render(<BusinessServices />);
+
+      expect(await screen.findByText('No services found')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /create your first service/i })).toBeInTheDocument();
+    });
+
+    it('shows the empty state to a viewer without any create control', async () => {
+      auth.role = 'viewer';
+      apiClient.get.mockResolvedValue(listOf([]));
+
+      render(<BusinessServices />);
+
+      expect(await screen.findByText('No services found')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /create/i })).not.toBeInTheDocument();
+    });
+
+    it('shows a retryable error, not a blank list or a zero total, when the read fails', async () => {
+      const user = userEvent.setup();
+      apiClient.get.mockRejectedValueOnce(new Error('Network Error'));
+      apiClient.get.mockResolvedValueOnce(listOf([apiService]));
+
+      render(<BusinessServices />);
+
+      expect(await screen.findByText('Could not load business services')).toBeInTheDocument();
+      expect(screen.getByText('Network Error')).toBeInTheDocument();
+      expect(screen.queryByText('No services found')).not.toBeInTheDocument();
+      expect(screen.queryByText('$0')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /try again/i }));
+
+      expect(await rowFor('Customer Portal')).toBeInTheDocument();
+      expect(screen.queryByText('Could not load business services')).not.toBeInTheDocument();
+      expect(apiClient.get).toHaveBeenCalledTimes(2);
+    });
+
+    it('answers a server 403 with the shell banner and its own not-permitted state, not a spinner or a retry', async () => {
+      const actual = await vi.importActual<typeof import('../lib/api-client')>('../lib/api-client');
+      // The real client and its real interceptors; only the wire is played.
+      (actual.apiClient as unknown as { client: { defaults: { adapter: unknown } } }).client.defaults.adapter =
+        async (config: InternalAxiosRequestConfig) => {
+          const response = {
+            data: { _error: 'Forbidden', _message: "Permission 'read' required" },
+            status: 403, statusText: '', headers: {}, config, request: {},
+          };
+          throw new AxiosError('Request failed with status code 403', 'ERR_BAD_REQUEST', config, {}, response);
+        };
+      real.on = true;
+
+      render(
+        <>
+          <ForbiddenHost />
+          <BusinessServices />
+        </>
+      );
+
+      expect(await screen.findByText('No access to business services')).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toHaveTextContent("Permission 'read' required");
+      expect(screen.queryByRole('status')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
+      expect(screen.queryByText('No services found')).not.toBeInTheDocument();
+    });
+
+    it('shows a figure the row does not carry as unknown, never as 0', async () => {
+      apiClient.get.mockResolvedValue(listOf([row({ service_id: 'bs-bare', name: 'Bare Service', metadata: undefined })]));
+
+      render(<BusinessServices />);
+      const bare = await rowFor('Bare Service');
+
+      // Revenue impact, users, monthly cost and supporting CIs.
+      expect(within(bare).getAllByText(EMPTY_VALUE)).toHaveLength(4);
+      expect(within(bare).queryByText('$0')).not.toBeInTheDocument();
+      expect(within(bare).queryByText('0')).not.toBeInTheDocument();
+      // Nothing is known to total.
+      expect(screen.queryByText('$0')).not.toBeInTheDocument();
+    });
+
+    it('totals only the figures that are known', async () => {
+      apiClient.get.mockResolvedValue(
+        listOf([apiService, row({ service_id: 'bs-bare', name: 'Bare Service', metadata: undefined })])
+      );
+
+      render(<BusinessServices />);
+      await rowFor('Bare Service');
+
+      // $500,000 appears in the Customer Portal row and as the total.
+      expect(screen.getAllByText('$500,000')).toHaveLength(2);
+      expect(screen.getAllByText('$8,200')).toHaveLength(2);
+    });
+  });
+
+  describe('write controls by role', () => {
+    beforeEach(() => {
+      auth.role = 'operator';
+    });
+    afterEach(() => {
+      auth.role = 'operator';
+    });
+
+    it('lets a viewer read the list, search and filter, and offers no create, edit or delete', async () => {
+      auth.role = 'viewer';
+      const user = userEvent.setup();
+      apiClient.get.mockResolvedValue(
+        listOf([
+          apiService,
+          row({ service_id: 'bs-l', name: 'Svc Low', business_criticality: 'low' }),
+        ])
+      );
+
+      render(<BusinessServices />);
+      await rowFor('Customer Portal');
+
+      expect(screen.getByPlaceholderText('Search services...')).toBeInTheDocument();
+      await choose(user, screen.getByRole('combobox', { name: /filter by criticality/i }), 'Low');
+      expect(screen.queryByText('Customer Portal')).not.toBeInTheDocument();
+      expect(screen.getByText('Svc Low')).toBeInTheDocument();
+
+      expect(screen.queryByRole('button', { name: /create service/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^edit /i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^delete /i })).not.toBeInTheDocument();
+      // Offerings are a read: the viewer can still open them.
+      expect(screen.getByRole('button', { name: 'Offerings for Svc Low' })).toBeInTheDocument();
+    });
+
+    it.each(['operator', 'admin'])('shows an %s the create, edit and delete controls', async (role) => {
+      auth.role = role;
+      apiClient.get.mockResolvedValue(listOf([apiService]));
+
+      render(<BusinessServices />);
+      await rowFor('Customer Portal');
+
+      expect(screen.getByRole('button', { name: /^create service$/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Edit Customer Portal' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Delete Customer Portal' })).toBeInTheDocument();
+    });
+
+    it('deletes the confirmed row with the same request as before', async () => {
+      const user = userEvent.setup();
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      apiClient.get.mockResolvedValue(
+        listOf([apiService, row({ service_id: 'bs-l', name: 'Svc Low', business_criticality: 'low' })])
+      );
+      apiClient.delete.mockResolvedValue({ success: true });
+
+      render(<BusinessServices />);
+      await rowFor('Svc Low');
+      await user.click(screen.getByRole('button', { name: 'Delete Svc Low' }));
+
+      await waitFor(() => expect(apiClient.delete).toHaveBeenCalledWith('/business-services/bs-l'));
+      await waitFor(() => expect(screen.queryByText('Svc Low')).not.toBeInTheDocument());
+      expect(screen.getByText('Customer Portal')).toBeInTheDocument();
+      vi.restoreAllMocks();
+    });
+
+    it('keeps the row when the delete is not confirmed', async () => {
+      const user = userEvent.setup();
+      vi.spyOn(window, 'confirm').mockReturnValue(false);
+      apiClient.get.mockResolvedValue(listOf([apiService]));
+
+      render(<BusinessServices />);
+      await rowFor('Customer Portal');
+      await user.click(screen.getByRole('button', { name: 'Delete Customer Portal' }));
+
+      expect(apiClient.delete).not.toHaveBeenCalled();
+      expect(screen.getByText('Customer Portal')).toBeInTheDocument();
+      vi.restoreAllMocks();
+    });
   });
 });

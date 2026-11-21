@@ -403,6 +403,14 @@ export class ConfigurationLoader {
               ? parseInt(env['RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_WINDOW_MS'], 10)
               : fileConfig.rateLimit?.endpoints?.authAccountGlobal?.windowMs,
           },
+          agentHeartbeat: {
+            max: env['RATE_LIMIT_AGENT_HEARTBEAT_MAX']
+              ? parseInt(env['RATE_LIMIT_AGENT_HEARTBEAT_MAX'], 10)
+              : fileConfig.rateLimit?.endpoints?.agentHeartbeat?.max,
+            windowMs: env['RATE_LIMIT_AGENT_HEARTBEAT_WINDOW_MS']
+              ? parseInt(env['RATE_LIMIT_AGENT_HEARTBEAT_WINDOW_MS'], 10)
+              : fileConfig.rateLimit?.endpoints?.agentHeartbeat?.windowMs,
+          },
           discovery: {
             max: env['RATE_LIMIT_DISCOVERY_MAX']
               ? parseInt(env['RATE_LIMIT_DISCOVERY_MAX'], 10)

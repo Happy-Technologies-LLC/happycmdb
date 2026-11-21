@@ -317,12 +317,14 @@ export class DiscoveryAgentService {
   }
 
   /**
-   * Delete an agent
+   * Delete an agent. A bound (agent-role) caller cannot delete a `disabled` one: a fresh registration writes `active`,
+   * so delete-and-register would lift an operator's disable. Same "not found" as any other row it may not touch.
    */
   async deleteAgent(agentId: string, organizationId: string, caller: AgentCaller): Promise<boolean> {
     try {
       const result = await this.postgresClient.query(
-        `DELETE FROM discovery_agents WHERE agent_id = $1 AND organization_id = $2${caller.orgWide ? '' : ' AND owner_user_id = $3'}`,
+        `DELETE FROM discovery_agents WHERE agent_id = $1 AND organization_id = $2${
+          caller.orgWide ? '' : ` AND owner_user_id = $3 AND status <> 'disabled'`}`,
         caller.orgWide ? [agentId, organizationId] : [agentId, organizationId, caller.principalId]
       );
 

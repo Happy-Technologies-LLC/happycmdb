@@ -127,11 +127,13 @@ as its owning user, so a user's JWT and all of that user's keys act as one princ
 
 - An `agent`-role caller can heartbeat, re-register and delete only agents it registered. Any other agent of the same
   organization (another principal's, or an ownerless one, see below) returns the same `404 Agent not found` as a missing
-  agent, so the response does not reveal that an agent exists.
+  agent, so the response does not reveal who owns it. It does not hide that the agent exists: any member of the
+  organization can list agent ids (`GET /api/v1/agents`).
 - `operator` and `admin` keep organization-wide control of every agent, but never rewrite an existing owner. Every other
   role is treated as bound.
 - A new agent registered by an operator or admin is owned by that operator or admin, so an agent-role credential cannot
-  reach it. Give each agent host its own agent-role user or key and let it register itself.
+  reach it. Give each agent host its own agent-role user and let it register itself. Keys of one user are not separate
+  principals: they share the user's agents and its one heartbeat bucket (see Heartbeat Rate Limit).
 
 **Agents registered before migration 057 are ownerless.** The migration does not guess an owner: `owner_user_id` is NULL,
 and the safe default is that no agent-role credential can reach such an agent (404 on heartbeat, re-register and delete)
@@ -173,20 +175,28 @@ Agents send heartbeat every 60 seconds to indicate they're alive:
 
 ### Heartbeat Rate Limit
 
-Each verified principal (the user behind the JWT or API key) may send 600 heartbeats per hour, ten times the nominal
-one-per-minute cadence, so a healthy agent never sees it. Beyond that the endpoint answers `429` with
+Each verified principal (the user behind the JWT or API key) may send 600 heartbeats per hour by default, ten times the
+nominal one-per-minute cadence of one agent: about 10 agents per user at a 60 s interval. A user that runs more agents
+raises the budget (`RATE_LIMIT_AGENT_HEARTBEAT_MAX`, with `RATE_LIMIT_AGENT_HEARTBEAT_WINDOW_MS`, or
+`rateLimit.endpoints.agentHeartbeat`; `0` mounts no limiter). Beyond the budget the endpoint answers `429` with
 `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers and a JSON body carrying `_retryAfter`
-(seconds). The limiter runs ahead of body validation, so malformed requests count. The budget is a fixed constant
-(`HEARTBEAT_BUDGET` in `discovery-agent.routes.ts`), not a `rateLimit.endpoints` setting; it honours
-`rateLimit.enabled` and the bypass header, and a Redis failure lets the request through. Every API key of one user
-shares that user's bucket.
+(seconds). Only admitted heartbeats count: a refused request is not recorded, so a client that keeps retrying is admitted
+again as soon as its oldest admitted heartbeat leaves the window (`_retryAfter` is an upper bound of that wait). The
+limiter runs ahead of body validation, so malformed requests that were admitted count. It honours `rateLimit.enabled`
+and the bypass header, and a Redis failure lets the request through. All keys of one user (and its JWT) share that
+user's bucket.
 
 ### The `disabled` Status
 
 `disabled` is an operator decision. Only an operator or admin can set it (an agent-role caller sending
 `status: "disabled"` gets `403 ROLE_REQUIRED`, before any lookup) and only an operator or admin can move an agent out of
 it, by a heartbeat with another status or by re-registering the agent. A heartbeat or re-registration from an
-agent-role credential never changes a `disabled` agent's status (its counters and liveness are still recorded).
+agent-role credential never changes a `disabled` agent's status (its counters and liveness are still recorded), and an
+agent-role credential cannot delete a `disabled` agent either (the same `404`; the row stays). Otherwise it could delete
+and re-register the agent, which registers as `active`. An operator or admin can still delete a `disabled` agent.
+
+`disabled` does not quarantine a credential. A disabled agent's credential still authenticates, can still register new
+agents and can heartbeat its other agents. To cut a credential off, revoke its API key or disable its user.
 
 ### Stale Agent Detection
 

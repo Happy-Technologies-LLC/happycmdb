@@ -46,9 +46,9 @@ info:
       `RateLimitMiddleware.custom(endpointBudget('rest'), 'auth-refresh')`, on
       `endpoints.rest` (default 1000 per hour per client address); not mounted when
       `endpoints.rest.max` is 0.
-    - `POST /agents/heartbeat`: `RateLimitMiddleware.custom(…, 'agent-heartbeat')`, a fixed
-      budget of 600 per hour per verified user (not configurable; keyed on the user behind the
-      JWT or API key, ahead of body validation). Not a `rateLimit.endpoints` entry.
+    - `POST /agents/heartbeat`: `RateLimitMiddleware.custom(…, 'agent-heartbeat', { admittedOnly: true })` on
+      `endpoints.agentHeartbeat` (default 600 per hour per verified user: the user behind the JWT or API key,
+      ahead of body validation; only admitted requests count; not mounted when `max` is 0).
 
     Analysis requests (`executeBoundedAnalysis`) and GraphQL requests
     (`admitGraphQLRequest`) have in-process admission gates that answer 429 without
@@ -3127,6 +3127,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -3140,9 +3142,11 @@ paths:
         or missing agent all return the same 404. Operators and admins can heartbeat any agent of the
         organization. `disabled` is operator-only: an agent-role caller sending it gets 403 ROLE_REQUIRED, and
         its heartbeat never moves an agent out of `disabled` (the counters and liveness are still recorded).
-        Each verified principal is limited to 600 heartbeats per hour; beyond that the endpoint returns 429 with
-        X-RateLimit-* headers and a JSON body carrying _retryAfter (seconds). The limit is checked before the body
-        is validated, so malformed requests count too.
+        Each verified principal is limited to 600 heartbeats per hour by default (`rateLimit.endpoints.agentHeartbeat`,
+        env `RATE_LIMIT_AGENT_HEARTBEAT_MAX`, about 10 agents per user at a 60 s interval); only admitted heartbeats
+        count, so a client that keeps retrying is admitted again once its oldest admitted heartbeat leaves the window.
+        Beyond the budget the endpoint returns 429 with X-RateLimit-* headers and a JSON body carrying _retryAfter
+        (seconds). The limit is checked before the body is validated, so malformed requests count too.
       operationId: updateAgentHeartbeat
       requestBody:
         required: true
@@ -3154,6 +3158,8 @@ paths:
               properties:
                 agent_id:
                   type: string
+                  minLength: 1
+                  maxLength: 255
                 status:
                   type: string
                   enum: [active, inactive, offline, disabled]
@@ -3178,11 +3184,13 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: An agent-role caller attempted to set status `disabled` (ROLE_REQUIRED)
+          description: >-
+            The caller lacks the `write` permission (a viewer: `PERMISSION_REQUIRED`), or an agent-role caller
+            attempted to set status `disabled` (`ROLE_REQUIRED`)
         '404':
           description: Agent not found (also returned for an agent the caller did not register)
         '429':
-          description: Per-principal heartbeat budget (600 per hour) exhausted
+          description: Per-principal heartbeat budget (default 600 per hour, counting only admitted heartbeats) exhausted
 
   /agents/find-best:
     post:
@@ -3261,10 +3269,24 @@ paths:
           schema:
             type: string
       responses:
-        '204':
+        '200':
           description: Agent deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+              example:
+                success: true
+                message: Agent deleted successfully
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -7353,25 +7375,37 @@ components:
       properties:
         agent_id:
           type: string
+          minLength: 1
+          maxLength: 255
           description: Omit to create; supply an issued ID only to update an owned agent
         hostname:
           type: string
+          minLength: 1
+          maxLength: 255
         provider_capabilities:
           type: array
+          minItems: 1
           items:
             $ref: '#/components/schemas/DiscoveryProvider'
         reachable_networks:
           type: array
+          minItems: 1
           items:
             type: string
+            description: IPv4 CIDR
         version:
           type: string
+          maxLength: 50
         platform:
           type: string
+          maxLength: 50
         arch:
           type: string
+          maxLength: 50
         api_endpoint:
           type: string
+          format: uri
+          maxLength: 500
         tags:
           type: array
           maxItems: 50

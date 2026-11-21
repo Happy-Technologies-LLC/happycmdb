@@ -14,11 +14,14 @@
  */
 
 import { Job } from 'bullmq';
+import type { PoolClient } from 'pg';
 import { Neo4jClient, PostgresClient } from '@cmdb/database';
 import { logger, CI, parseStoredMetadata, errorClassFields } from '@cmdb/common';
 import { subHours } from 'date-fns';
 import { DimensionTransformer } from '../transformers/dimension-transformer';
-import { dimCiOrganizationId, isDimCiId, withDimCiIds, type ExtractedCI } from '../transformers/ci-organization';
+import {
+  dimCiOrganizationId, isDimCiId, lockCIDimensions, withDimCiIds, type ExtractedCI,
+} from '../transformers/ci-organization';
 
 export interface ChangeDetectionJobData {
   /** Start date for change detection (ISO 8601 format) */
@@ -388,6 +391,13 @@ export class ChangeDetectionJob {
    * inserted. A change already recorded for the same CI (any dim_ci version of
    * it) is skipped: this job re-reads a 24 h window every run, so it sees the
    * same change many times.
+   *
+   * No unique index backs the NOT EXISTS check, and the worker runs jobs
+   * concurrently under READ COMMITTED: two overlapping runs would both find
+   * the change absent and both insert it. The per-CI advisory lock (the one
+   * every cmdb.dim_ci writer takes) is therefore taken first and held to
+   * COMMIT, so the second run's check runs after the first run's commit and
+   * sees its row.
    */
   private async recordChanges(changes: ChangeEvent[]): Promise<number> {
     if (changes.length === 0) {
@@ -396,7 +406,8 @@ export class ChangeDetectionJob {
 
     let inserted = 0;
 
-    await this.postgresClient.transaction(async (client: any) => {
+    await this.postgresClient.transaction(async (client: PoolClient) => {
+      await lockCIDimensions(client, [...new Set(changes.map(change => change.ciId))]);
       let savepointIndex = 0;
 
       for (const change of changes) {

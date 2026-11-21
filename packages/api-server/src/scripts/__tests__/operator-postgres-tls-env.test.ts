@@ -5,13 +5,20 @@
  * With CMDB_*_POSTGRES_SSL=verify-full the operator tools must hand pg `ssl: { rejectUnauthorized: true }` whatever
  * TLS-weakening variables the shell carries. Node lets an explicit `rejectUnauthorized` win over
  * NODE_TLS_REJECT_UNAUTHORIZED=0, and pg ignores PGSSLMODE once `ssl` is set, so the tools need no refusal for either;
- * this pins the resulting pool config (and the connection options pg derives from it) for every tool that opens one.
+ * this pins the resulting pool config (and the connection options pg derives from it) for every tool that opens one,
+ * both with the built-in trust store and with the tool-scoped CMDB_*_POSTGRES_SSL_CA_FILE bundle (`ca` is passed
+ * next to `rejectUnauthorized: true`). It also pins that an unset SSL setting for a remote host refuses to build a
+ * pool whatever the shell carries; the refusal messages themselves are covered by operator-stores.test.ts and
+ * backfill-business-service-organization.test.ts.
  *
  * The real PostgresClient and pg are used; only the Pool's network calls are cut off. The tests never call
  * isolateOperatorEnvironment, so the POSTGRES_SSL_* rows prove that an explicit `verify-full` wins over those
  * variables inside the client; that the entry points isolate the environment is covered by the CLI process tests
  * (rotate-user-password.test.ts, backfill-business-service-organization.test.ts).
  */
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import pg from 'pg';
 import type tls from 'tls';
 import neo4j from 'neo4j-driver';
@@ -51,6 +58,17 @@ jest.mock('pg', () => {
 const pools = (jest.requireMock('pg') as { __pools: Array<{ options: pg.PoolConfig }> }).__pools;
 const driverMock = neo4j.driver as unknown as jest.Mock;
 const originalEnv = process.env;
+const CA_PEM = '-----BEGIN CERTIFICATE-----\nprivate-ca-for-test\n-----END CERTIFICATE-----\n';
+let caDir: string;
+let caFile: string;
+
+beforeAll(() => {
+  caDir = mkdtempSync(join(tmpdir(), 'operator-postgres-tls-env-'));
+  caFile = join(caDir, 'ca.pem');
+  writeFileSync(caFile, CA_PEM);
+});
+
+afterAll(() => rmSync(caDir, { recursive: true, force: true }));
 
 const WEAKENING_ENVS: Array<[string, NodeJS.ProcessEnv]> = [
   ['NODE_TLS_REJECT_UNAUTHORIZED=0', { NODE_TLS_REJECT_UNAUTHORIZED: '0' }],
@@ -84,6 +102,7 @@ function rotateEnv(): NodeJS.ProcessEnv {
     CMDB_ROTATE_POSTGRES_PASSWORD: 'p',
     CMDB_ROTATE_POSTGRES_SSL: 'verify-full',
     CMDB_ROTATE_NEO4J_URI: NEO4J_ENV.NEO4J_URI,
+    CMDB_ROTATE_NEO4J_ENCRYPTED: 'true',
     CMDB_ROTATE_NEO4J_USERNAME: NEO4J_ENV.NEO4J_USERNAME,
     CMDB_ROTATE_NEO4J_PASSWORD: NEO4J_ENV.NEO4J_PASSWORD,
   };
@@ -98,6 +117,7 @@ function backfillEnv(): NodeJS.ProcessEnv {
     CMDB_BACKFILL_POSTGRES_PASSWORD: 'p',
     CMDB_BACKFILL_POSTGRES_SSL: 'verify-full',
     CMDB_BACKFILL_NEO4J_URI: NEO4J_ENV.NEO4J_URI,
+    CMDB_BACKFILL_NEO4J_ENCRYPTED: 'true',
     CMDB_BACKFILL_NEO4J_USERNAME: NEO4J_ENV.NEO4J_USERNAME,
     CMDB_BACKFILL_NEO4J_PASSWORD: NEO4J_ENV.NEO4J_PASSWORD,
   };
@@ -124,30 +144,67 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
+const TRUST_ROUTES: Array<[string, { withCaFile: boolean }]> = [
+  ['the built-in trust store', { withCaFile: false }],
+  ['a CMDB_*_POSTGRES_SSL_CA_FILE bundle', { withCaFile: true }],
+];
+
 describe.each(WEAKENING_ENVS)('verify-full with %s in the environment', (_label, weakening) => {
-  it('keeps ssl { rejectUnauthorized: true } for the rotation and identity-window stores', async () => {
+  describe.each(TRUST_ROUTES)('trusting %s', (_route, { withCaFile }) => {
+    const expectedSsl = withCaFile ? { rejectUnauthorized: true, ca: CA_PEM } : { rejectUnauthorized: true };
+
+    it('keeps rejectUnauthorized: true for the rotation and identity-window stores', async () => {
+      Object.assign(process.env, weakening);
+
+      const stores = openOperatorStores({ ...rotateEnv(), ...(withCaFile ? { CMDB_ROTATE_POSTGRES_SSL_CA_FILE: caFile } : {}) });
+
+      expect(pools).toHaveLength(1);
+      expect(pools[0].options.ssl).toEqual(expectedSsl);
+      expect(connectionSsl(pools[0].options)).toEqual(expectedSsl);
+      await stores.close();
+    });
+
+    it('keeps rejectUnauthorized: true for the organization backfill', async () => {
+      Object.assign(process.env, weakening);
+
+      await backfillMain(
+        ['--created-before', '2026-01-01T00:00:00Z', '--writer-timezone', 'Etc/UTC'],
+        { ...backfillEnv(), ...(withCaFile ? { CMDB_BACKFILL_POSTGRES_SSL_CA_FILE: caFile } : {}) },
+        { stdout: () => undefined, stderr: () => undefined }
+      );
+
+      expect(pools).toHaveLength(1);
+      expect(pools[0].options.ssl).toEqual(expectedSsl);
+      expect(connectionSsl(pools[0].options)).toEqual(expectedSsl);
+    });
+  });
+});
+
+describe.each(WEAKENING_ENVS)('an unset POSTGRES_SSL setting on a remote host, with %s in the environment', (_label, weakening) => {
+  it('refuses the rotation and identity-window stores before a pool exists', () => {
     Object.assign(process.env, weakening);
+    const env = rotateEnv();
+    delete env['CMDB_ROTATE_POSTGRES_SSL'];
 
-    const stores = openOperatorStores(rotateEnv());
-
-    expect(pools).toHaveLength(1);
-    expect(pools[0].options.ssl).toEqual({ rejectUnauthorized: true });
-    expect(connectionSsl(pools[0].options)).toEqual({ rejectUnauthorized: true });
-    await stores.close();
+    expect(() => openOperatorStores(env)).toThrow('CMDB_ROTATE_POSTGRES_SSL must be set for a non-loopback host');
+    expect(pools).toHaveLength(0);
   });
 
-  it('keeps ssl { rejectUnauthorized: true } for the organization backfill', async () => {
+  it('refuses the organization backfill before a pool exists', async () => {
     Object.assign(process.env, weakening);
+    const env = backfillEnv();
+    delete env['CMDB_BACKFILL_POSTGRES_SSL'];
+    let stderr = '';
 
-    await backfillMain(
+    const code = await backfillMain(
       ['--created-before', '2026-01-01T00:00:00Z', '--writer-timezone', 'Etc/UTC'],
-      backfillEnv(),
-      { stdout: () => undefined, stderr: () => undefined }
+      env,
+      { stdout: () => undefined, stderr: text => { stderr += text; } }
     );
 
-    expect(pools).toHaveLength(1);
-    expect(pools[0].options.ssl).toEqual({ rejectUnauthorized: true });
-    expect(connectionSsl(pools[0].options)).toEqual({ rejectUnauthorized: true });
+    expect(code).not.toBe(0);
+    expect(stderr).toContain('CMDB_BACKFILL_POSTGRES_SSL must be set for a non-loopback host');
+    expect(pools).toHaveLength(0);
   });
 });
 

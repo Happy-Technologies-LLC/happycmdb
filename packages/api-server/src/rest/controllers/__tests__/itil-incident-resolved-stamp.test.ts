@@ -290,6 +290,75 @@ describe('MTTR of a reopened incident', () => {
   });
 });
 
+describe('MTTR population: resolved and closed incidents', () => {
+  const mttr = async (org = ORG_A) => {
+    (getPostgresClient as jest.Mock).mockReturnValue({ pool });
+    const out = res();
+    await new ITILController().getMeanTimeToResolve(
+      { user: { _organizationId: org } } as unknown as Request, out as unknown as Response);
+    return out.body.data.mttr as string;
+  };
+  /** Pins the resolution stamp relative to reported_at (reported 60 minutes ago), so no case waits on the clock. */
+  const resolvedAfter = (id: string, minutes: number) =>
+    setStamps(id, `resolved_at = reported_at + interval '${minutes} minutes'`);
+  /** An incident resolved `minutes` after it was reported, then closed through the API. */
+  const resolvedThenClosed = async (org: string, minutes: number) => {
+    const id = await addIncident(org);
+    await patch(org, id, { status: 'RESOLVED' });
+    await resolvedAfter(id, minutes);
+    await patch(org, id, { status: 'CLOSED' });
+    return id;
+  };
+
+  it('keeps a resolved incident in the mean after it is closed', async () => {
+    const id = await resolvedThenClosed(ORG_A, 15);
+    expect((await row(id)).status).toBe('closed');
+    expect((await row(id)).resolved_at).not.toBeNull();
+    expect(await mttr()).toBe('0.25');
+  });
+
+  it('averages a still-resolved incident with a resolved-then-closed one', async () => {
+    const stillResolved = await addIncident(ORG_A);
+    await patch(ORG_A, stillResolved, { status: 'RESOLVED' });
+    await resolvedAfter(stillResolved, 15);
+    await resolvedThenClosed(ORG_A, 60);
+    // (0.25 + 1.00) / 2 = 0.625, rendered by toFixed(2).
+    expect(await mttr()).toBe('0.63');
+  });
+
+  it('does not count an incident closed without ever being resolved', async () => {
+    const id = await addIncident(ORG_A, 'ci-1', 'new');
+    await patch(ORG_A, id, { status: 'CLOSED' });
+    expect((await row(id)).resolved_at).toBeNull();
+    expect(await mttr()).toBe('0.00');
+  });
+
+  it('does not count a cancelled incident that carries a stamp', async () => {
+    const id = await addIncident(ORG_A, 'ci-1', 'cancelled');
+    await resolvedAfter(id, 15);
+    expect(await mttr()).toBe('0.00');
+  });
+
+  it('drops a closed incident from the mean when it is reopened', async () => {
+    const kept = await addIncident(ORG_A);
+    await patch(ORG_A, kept, { status: 'RESOLVED' });
+    await resolvedAfter(kept, 15);
+    const reopened = await resolvedThenClosed(ORG_A, 60);
+    expect(await mttr()).toBe('0.63');
+
+    await patch(ORG_A, reopened, { status: 'IN_PROGRESS' });
+    expect((await row(reopened)).resolved_at).toBeNull();
+    expect(await mttr()).toBe('0.25');
+  });
+
+  it('does not let a closed incident of another organization change the mean', async () => {
+    await resolvedThenClosed(ORG_A, 15);
+    await resolvedThenClosed(ORG_B, 60);
+    expect(await mttr(ORG_A)).toBe('0.25');
+    expect(await mttr(ORG_B)).toBe('1.00');
+  });
+});
+
 describe('POST /itil/incidents/:id/resolve stamps resolved_at once', () => {
   const FIRST = { resolution: 'Restarted the checkout pool', resolvedBy: 'alice' };
   const SECOND = { resolution: 'Replaced the failing node', resolvedBy: 'bob' };

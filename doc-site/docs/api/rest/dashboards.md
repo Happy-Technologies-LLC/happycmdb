@@ -48,7 +48,7 @@ Get Executive Dashboard summary data for strategic IT leadership.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `days` | number | No | 30 | Time range in days (7, 30, 90, 365) |
+| `days` | number | No | 30 | Time range in days: an integer from 1 to 3650; anything else is `400`. The dashboards UI offers 7, 30, 90 and 365 |
 
 **Example Request:**
 
@@ -194,7 +194,7 @@ Get CIO Dashboard operational metrics for IT leadership.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `days` | number | No | 30 | Time range in days |
+| `days` | number | No | 30 | Time range in days: an integer from 1 to 3650; anything else is `400` |
 
 **Example Request:**
 
@@ -397,7 +397,7 @@ Get FinOps Dashboard data for cost optimization and financial operations.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `days` | number | No | 30 | Time range in days |
+| `days` | number | No | 30 | Time range in days: an integer from 1 to 3650; anything else is `400` |
 
 **Example Request:**
 
@@ -669,11 +669,25 @@ All endpoints return errors in this format:
 }
 ```
 
+A rejected `days` is answered before any dashboard work starts, with the validation error format:
+
+```json
+{
+  "_success": false,
+  "_error": "Validation Error",
+  "_message": "\"days\" must be less than or equal to 3650",
+  "_details": [
+    { "_field": "days", "_message": "\"days\" must be less than or equal to 3650", "_type": "number.max" }
+  ]
+}
+```
+
 **HTTP Status Codes:**
 
 | Code | Meaning | Common Cause |
 |------|---------|--------------|
 | 200 | Success | Data fetched successfully |
+| 400 | Validation Error | `days` on `/executive`, `/cio` or `/finops` is not an integer from 1 to 3650 (zero, negative, fractional, empty, non-numeric, repeated or too large) |
 | 401 | Unauthorized | Missing or invalid JWT token |
 | 403 | Forbidden | Token has no organization claim |
 | 404 | Not Found | `business-service/:serviceId` is not a service your organization owns |

@@ -13,7 +13,7 @@ import { TransformedCI, IdentificationAttributes } from '@cmdb/integration-frame
 import { GraphQLContext } from './index';
 import { checkGraphQLPermission } from '../../middleware/auth.middleware';
 import { requireGraphQLOrganization } from '../require-organization';
-import { GRAPHQL_PAGE_DEFAULTS } from '../pagination';
+import { GRAPHQL_PAGE_DEFAULTS, requirePageArg } from '../pagination';
 import {
   getOwnedFieldSources, getOwnedLineage, listOwnedConflicts,
 } from '../../reconciliation/tenant-queries';
@@ -107,11 +107,11 @@ const ReconciliationQuery = {
     _context: GraphQLContext
   ) => {
     const organizationId = requireGraphQLOrganization(_context);
+    const limit = requirePageArg('_limit', _args._limit, { min: 1, max: 1000, fallback: GRAPHQL_PAGE_DEFAULTS.listConflicts });
+    const offset = requirePageArg('_offset', _args._offset, { min: 0, max: 1000000, fallback: 0 });
     await _context._neo4jClient.assertJournalReady().catch((error: unknown) => Promise.reject(journalGraphQLError(error) ?? error)); // v16 §3.2
     try {
       const status = (_args._status || 'pending').toLowerCase();
-      const limit = Math.min(_args._limit || GRAPHQL_PAGE_DEFAULTS.listConflicts, 1000);
-      const offset = _args._offset || 0;
 
       const result = await listOwnedConflicts(postgresClient, status, limit, offset, organizationId);
 

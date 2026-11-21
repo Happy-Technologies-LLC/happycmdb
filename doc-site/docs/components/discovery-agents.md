@@ -143,6 +143,8 @@ Agents send heartbeat every 60 seconds to indicate they're alive:
 }
 ```
 
+`stats.jobs_completed`, `stats.jobs_failed` and `stats.cis_discovered` are per-heartbeat deltas: integers from 0 to 1,000,000 each (a larger, negative or fractional value is a 400). The service adds them to the agent's running totals, which saturate at 2,147,483,647 (the `INTEGER` column maximum) instead of failing the heartbeat.
+
 ### Stale Agent Detection
 
 The service can mark agents that haven't sent a heartbeat in 5 minutes `offline`

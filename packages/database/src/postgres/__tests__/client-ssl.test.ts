@@ -61,4 +61,18 @@ describe('PostgresClient TLS mode', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('verifies against an explicit CA bundle with rejectUnauthorized, ahead of an ambient CA file', () => {
+    process.env['POSTGRES_SSL_CA_FILE'] = '/nonexistent/ambient-ca.pem';
+    const ssl = new PostgresClient({
+      _host: 'db.internal', _port: 5432, _database: 'cmdb', _user: 'u', _password: 'p', ssl: 'verify-full', sslCa: 'explicit-ca-pem',
+    }).pool.options.ssl as ConnectionOptions;
+    expect(ssl).toMatchObject({ rejectUnauthorized: true, ca: 'explicit-ca-pem' });
+  });
+
+  it('refuses an empty explicit CA bundle instead of falling back to the public trust store', () => {
+    expect(() => new PostgresClient({
+      _host: 'db.internal', _port: 5432, _database: 'cmdb', _user: 'u', _password: 'p', ssl: 'verify-full', sslCa: ' \n',
+    })).toThrow();
+  });
 });

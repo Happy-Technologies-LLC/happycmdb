@@ -2024,23 +2024,49 @@ paths:
     get:
       tags: [Relationships]
       summary: Get relationships by type
-      description: Retrieve all relationships of a specific type
+      description: >-
+        Page through the relationships of one type between CIs of the caller's organization, ordered by source then target
+        name. The envelope carries the page and its totals; each row is a flat record with un-prefixed keys, not the
+        `Relationship` schema. `limit` and `offset` are validated by the route: a value outside the bounds below is a 400 before
+        the graph is read. The path accepts the nine types the REST write accepts (`RestRelationshipType`), not the set
+        `RelationshipType` lists.
       operationId: getRelationshipsByType
       parameters:
         - name: type
           in: path
           required: true
           schema:
-            $ref: '#/components/schemas/RelationshipType'
+            $ref: '#/components/schemas/RestRelationshipType'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
       responses:
         '200':
-          description: Relationships of specified type
+          description: One page of relationships of the requested type
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Relationship'
+                $ref: '#/components/schemas/RelationshipsByTypeResponse'
+        '400':
+          description: >-
+            The path type is not one of the nine accepted types (`RelationshipTypeRefusal`), or `limit` or `offset` is out of
+            range or not an integer (`MiddlewareError`, from the query validation).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/RelationshipTypeRefusal'
+                  - $ref: '#/components/schemas/MiddlewareError'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -2244,7 +2270,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/CredentialForbidden'
+          $ref: '#/components/responses/CredentialReadForbidden'
 
     post:
       tags: [Credentials]
@@ -2324,7 +2350,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/CredentialForbidden'
+          $ref: '#/components/responses/CredentialReadForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -2560,7 +2586,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/CredentialForbidden'
+          $ref: '#/components/responses/CredentialReadForbidden'
 
     post:
       tags: [Credential Sets]
@@ -2644,7 +2670,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          $ref: '#/components/responses/CredentialForbidden'
+          $ref: '#/components/responses/CredentialReadForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -4689,7 +4715,7 @@ paths:
         '403':
           $ref: '#/components/responses/BusinessServiceWriteForbidden'
         '422':
-          $ref: '#/components/responses/BusinessServiceOwnerRequired'
+          $ref: '#/components/responses/BusinessServiceOwnerRefused'
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
         '503':
@@ -4867,7 +4893,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/BusinessServiceError'
         '422':
-          $ref: '#/components/responses/BusinessServiceOwnerRequired'
+          $ref: '#/components/responses/BusinessServiceOwnerRefused'
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
         '503':
@@ -6171,7 +6197,7 @@ components:
           schema:
             anyOf:
               - $ref: '#/components/schemas/ForbiddenError'
-              - $ref: '#/components/schemas/BusinessServiceError'
+              - $ref: '#/components/schemas/BusinessServiceOwnerPrincipalRefusal'
           examples:
             noOrganization:
               summary: The caller has no organization
@@ -6202,8 +6228,11 @@ components:
 
     CredentialForbidden:
       description: >-
-        Refused by the credential router, before any credential or
-        credential-set lookup. A caller without an organization gets
+        POST /credentials/match, /credentials/rank and
+        /credentials/{id}/validate and the credential-set writes (POST, PUT,
+        DELETE and select), refused by the credential router, before any
+        credential or credential-set lookup. The GET operations use
+        CredentialReadForbidden. A caller without an organization gets
         `ORGANIZATION_REQUIRED` (the `ForbiddenError` body). A caller with no
         verified user id gets the bare `Verified credential owner required`
         body. A caller with the `agent` role gets the bare `Credential
@@ -6252,6 +6281,46 @@ components:
                 code: PERMISSION_REQUIRED
                 required: { permission: write }
                 role: viewer
+
+    CredentialReadForbidden:
+      description: >-
+        GET /credentials, GET /credentials/{id}, GET /credential-sets and GET
+        /credential-sets/{id}. Reads need no `write` permission (a viewer who
+        owns the record reads it), so `PERMISSION_REQUIRED` is never sent
+        here. Refused by the credential router before any lookup: a caller
+        without an organization gets `ORGANIZATION_REQUIRED` (the
+        `ForbiddenError` body); a caller with no verified user id gets the bare
+        `Verified credential owner required` body; a caller with the `agent`
+        role gets the bare `Credential management requires a human user` body.
+        The two bare bodies carry no `code`: read `message`.
+      content:
+        application/json:
+          schema:
+            anyOf:
+              - $ref: '#/components/schemas/ForbiddenError'
+              - $ref: '#/components/schemas/CredentialRefusalError'
+          examples:
+            noOrganization:
+              summary: The caller has no organization
+              value:
+                success: false
+                error: Forbidden
+                message: Organization claim required
+                _error: Forbidden
+                _message: Organization claim required
+                code: ORGANIZATION_REQUIRED
+            agentRole:
+              summary: An agent-role caller (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: Credential management requires a human user
+            noVerifiedOwner:
+              summary: The caller has no verified user id (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: Verified credential owner required
 
     CredentialWriteForbidden:
       description: >-
@@ -6316,23 +6385,40 @@ components:
                 code: c4_principal_admin_required
                 message: Only organization admins may manage the happylab-c4 credential tag
 
-    BusinessServiceOwnerRequired:
+    BusinessServiceOwnerRefused:
       description: >-
-        A live or retiring service needs owner_principal_id, the
-        identity-provider subject of its one accountable human owner (D15).
+        A 422 about owner_principal_id. A live or retiring service needs one,
+        the identity-provider subject of its one accountable human owner
+        (D15). A non-null owner_principal_id (POST and PATCH, after the admin
+        gate and body validation) must also be an enabled user of the caller's
+        organization: a user of another organization, an id that does not
+        exist and a disabled user are refused with the one same body, which
+        echoes nothing from the request, so it cannot tell which ids exist in
+        other tenants. Nothing is written and no audit row is appended. An
+        identity-store failure during that check is the write-unavailable 503.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/BusinessServiceError'
-          example:
-            success: false
-            error: Unprocessable Entity
-            message: owner_principal_id is required for a live or retiring service
+            $ref: '#/components/schemas/BusinessServiceOwnerRefusal'
+          examples:
+            ownerRequired:
+              summary: A live or retiring service without an owner
+              value:
+                success: false
+                error: Unprocessable Entity
+                message: owner_principal_id is required for a live or retiring service
+            ownerNotInOrganization:
+              summary: The owner is not an enabled user of the caller's organization
+              value:
+                success: false
+                error: Unprocessable Entity
+                message: owner_principal_id must be an enabled user of your organization
 
     BusinessServiceWriteUnavailable:
       description: >-
         The audit chain is unavailable (AUDIT_CHAIN_KEY unset, or the chain
-        lock timed out); nothing was written.
+        lock timed out), or the identity store could not verify a non-null
+        owner_principal_id; nothing was written.
       content:
         application/json:
           schema:
@@ -6585,6 +6671,99 @@ components:
           type: object
           additionalProperties: true
           description: Additional relationship metadata
+
+    RestRelationshipType:
+      type: string
+      description: >-
+        The relationship types the REST routes accept (the allow-list of `GET /relationships/type/{type}` and the `type` rule of
+        the relationship write and evidence routes). Not the same set as `RelationshipType`, which lists types no REST route
+        accepts and omits `INSTANCE_OF`.
+      enum: [DEPENDS_ON, HOSTS, CONNECTS_TO, USES, OWNED_BY, PART_OF, DEPLOYED_ON, BACKED_UP_BY, INSTANCE_OF]
+
+    TypedRelationshipRow:
+      type: object
+      description: >-
+        One relationship as `GET /relationships/type/{type}` sends it: flat, un-prefixed keys (not the `Relationship` schema).
+        The names and types are the endpoints' stored CI values and are omitted when a CI node has none.
+      additionalProperties: false
+      required: [from_id, to_id, type, properties]
+      properties:
+        from_id:
+          type: string
+        from_name:
+          type: string
+        from_type:
+          type: string
+        to_id:
+          type: string
+        to_name:
+          type: string
+        to_type:
+          type: string
+        type:
+          $ref: '#/components/schemas/RestRelationshipType'
+        properties:
+          type: object
+          additionalProperties: true
+          description: Every property stored on the relationship, `created_at` and `updated_at` included
+        created_at:
+          type: object
+          additionalProperties: true
+          description: >-
+            The relationship's stored `created_at`, omitted when the edge has none. It is a Neo4j `datetime()` passed through
+            unconverted, so JSON carries the driver's component object (`year`, `month`, `day`, `hour`, `minute`, `second`,
+            `nanosecond`, `timeZoneOffsetSeconds`, each a `{low, high}` integer pair), not an ISO string.
+        updated_at:
+          type: object
+          additionalProperties: true
+          description: The relationship's stored `updated_at`, omitted when the edge has none; same representation as `created_at`
+
+    RelationshipsByTypeResponse:
+      type: object
+      additionalProperties: false
+      required: [success, data, pagination, type]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/TypedRelationshipRow'
+        pagination:
+          type: object
+          additionalProperties: false
+          required: [total, count, offset, limit]
+          properties:
+            total:
+              type: integer
+              description: Relationships of this type in the organization, whatever the page
+            count:
+              type: integer
+              description: Rows in `data`
+            offset:
+              type: integer
+            limit:
+              type: integer
+              description: The limit applied, at most 1000
+        type:
+          $ref: '#/components/schemas/RestRelationshipType'
+
+    RelationshipTypeRefusal:
+      type: object
+      description: Body of the 400 for a path type outside `RestRelationshipType`
+      additionalProperties: false
+      required: [success, error, message]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          enum: [Bad Request]
+        message:
+          type: string
+          example: 'Invalid relationship type. Must be one of: DEPENDS_ON, HOSTS, CONNECTS_TO, USES, OWNED_BY, PART_OF, DEPLOYED_ON, BACKED_UP_BY, INSTANCE_OF'
 
     RelationshipInput:
       type: object
@@ -7551,8 +7730,9 @@ components:
       type: object
       description: >-
         Error body produced by the auth and request-validation middleware and
-        the global error handler (underscore-prefixed keys), e.g. the /cis
-        403, the body-validation 400 and the malformed-body 400.
+        the global error handler (underscore-prefixed keys), e.g. the 401 for
+        missing or invalid credentials, the body-validation 400 and the
+        malformed-body 400.
       required: [_error, _message]
       properties:
         _success:
@@ -7590,6 +7770,47 @@ components:
         error:
           type: string
           example: Business service not found
+
+    BusinessServiceOwnerPrincipalRefusal:
+      type: object
+      description: >-
+        The bare 403 body of the D38 owner_principal_id refusal (POST and PATCH
+        /business-services): no `code` and no underscore keys (those come with
+        ForbiddenError). It is the only 403 the business-service routes send
+        without ForbiddenError.
+      required: [success, error, message]
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          enum: [Forbidden]
+        message:
+          type: string
+          enum:
+            - owner_principal_id can be set or changed only by an admin
+
+    BusinessServiceOwnerRefusal:
+      type: object
+      description: >-
+        The 422 body of the owner_principal_id refusals (POST and PATCH
+        /business-services): closed, exactly these two fixed messages.
+      required: [success, error, message]
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          enum: [Unprocessable Entity]
+        message:
+          type: string
+          enum:
+            - owner_principal_id is required for a live or retiring service
+            - owner_principal_id must be an enabled user of your organization
 
     PortfolioImportResult:
       type: object
@@ -8404,7 +8625,8 @@ components:
           maxLength: 255
           description: >-
             Identity-provider subject of the one accountable human owner
-            (trimmed). Admin role only (D38); null when omitted.
+            (trimmed). Admin role only (D38); null when omitted. Must be an
+            enabled user of the caller's organization (else 422).
         owner_group:
           type: string
           minLength: 1
@@ -8484,6 +8706,8 @@ components:
           description: >-
             Identity-provider subject of the one accountable human owner
             (trimmed); null clears it. Admin role only (D38), null included.
+            A non-null value must be an enabled user of the caller's
+            organization (else 422).
         owner_group:
           type: string
           nullable: true

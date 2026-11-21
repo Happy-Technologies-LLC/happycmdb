@@ -21,6 +21,7 @@ import { isIP } from 'net';
 import { getEncryptionService, type EncryptedData } from '../../../common/src/services/encryption.service';
 import { hasUnsafeDiscoveryDefinitionConfig } from '../../../common/src/utils/discovery-scan-config';
 import { PostgresClient } from '../../../database/src/postgres/client';
+import { isLoopbackHost } from './operator-tls';
 
 // updated_at as a UTC microsecond string: the S5b drift check compares it without Date's millisecond truncation.
 export const DEFINITIONS_SQL = `SELECT id, organization_id, provider, credential_id, credential_set_id, created_by, config,
@@ -464,11 +465,6 @@ function postgresConfig(env: NodeJS.ProcessEnv): PostgresConfig | null {
   return { _host: host!, _port: Number(port), _database: database!, _user: user!, _password: password!, ssl: sslMode };
 }
 
-/** Loopback (127.0.0.0/8, ::1, localhost) or a Unix socket directory: the only hosts allowed without verify-full. */
-function isLocalHost(host: string): boolean {
-  return host === 'localhost' || host === '::1' || host.startsWith('/') || (isIP(host) === 4 && host.startsWith('127.'));
-}
-
 /** A close() that never settles must not hold the result hostage (#142 LOW-1). */
 export const CLOSE_TIMEOUT_MS = 3000;
 const INPUT_FLAG: Readonly<Record<string, string>> = { '--apply': '--plan', '--retire': '--plan', '--rollback': '--receipt', '--finalize': '--receipt' };
@@ -493,11 +489,11 @@ export async function main(
     return fail('usage: CMDB_MIGRATION_POSTGRES_{HOST,PORT,DB,USER,PASSWORD}=<...> [CMDB_MIGRATION_POSTGRES_SSL=require|verify-full] migrate-legacy-discovery-definitions [--apply|--retire --plan <file> | --rollback|--finalize --receipt <file>] [--sha256 <hex>] --out <new file>', 1);
   }
   // PostgresClient maps verify-full to rejectUnauthorized:true (chain and host name); unset is cleartext and require does not verify.
-  if (config.ssl !== 'verify-full' && !isLocalHost(config._host)) {
+  if (config.ssl !== 'verify-full' && !isLoopbackHost(config._host)) {
     return fail('refused: a non-loopback host needs CMDB_MIGRATION_POSTGRES_SSL=verify-full', 1);
   }
   // pg sets the TLS servername only for DNS names; for an IP literal Node checks the certificate against 'localhost'.
-  if (config.ssl === 'verify-full' && isIP(config._host) !== 0 && !isLocalHost(config._host)) {
+  if (config.ssl === 'verify-full' && isIP(config._host) !== 0 && !isLoopbackHost(config._host)) {
     return fail('refused: verify-full needs a DNS host name, not an IP literal', 1);
   }
   // The service throws only for an absent or short key; then nothing is proven and L1d rows stay DUAL_CREDENTIAL_MISMATCH.

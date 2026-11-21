@@ -20,6 +20,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
+import { declaredResponse, violations } from '../../../openapi/__tests__/spec-schema';
 
 const TENANT_T = '00000000-0000-0000-0000-000000000000';
 const TENANT_T2 = '22222222-2222-4222-8222-222222222222';
@@ -77,10 +78,17 @@ const USERS: Record<string, { _id: string; _username: string; _role: 'admin' | '
   o: { _id: 'actor-o', _username: 'otto', _role: 'operator', _enabled: true, _organizationId: TENANT_T },
   t2: { _id: 'actor-t2', _username: 'tom', _role: 'operator', _enabled: true, _organizationId: TENANT_T2 },
   v: { _id: 'actor-v', _username: 'vera', _role: 'viewer', _enabled: true, _organizationId: TENANT_T },
+  // Same organization as t, but disabled: not an owner an approval can be routed to.
+  d: { _id: 'actor-d', _username: 'dora', _role: 'operator', _enabled: false, _organizationId: TENANT_T },
 };
+/** Every user id the identity store was asked for (token verification asks for the caller's own on each request). */
+const userLookups: string[] = [];
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({
-    findUserById: async (id: string) => Object.values(USERS).find(user => user._id === id) ?? null,
+    findUserById: async (id: string) => {
+      userLookups.push(id);
+      return Object.values(USERS).find(user => user._id === id) ?? null;
+    },
     findApiKeyByKey: async () => null,
   })),
 }));
@@ -108,7 +116,8 @@ const headers = (user: string) => ({ 'x-actor': 'forged-admin', authorization: `
   USERS[user]!._id, USERS[user]!._username, USERS[user]!._role, USERS[user]!._organizationId, 0, Math.floor(Date.now() / 1000))}` });
 const BASE = { name: 'Payroll run', service_classification: 'application', tbm_tower: 'application', business_criticality: 'high' };
 const NOT_FOUND = { success: false, error: 'Business service not found' };
-const OWNER = 'idp|7f3c2a10-owner-alice';
+// A same-organization user (the viewer): the owner the writes below name.
+const OWNER = USERS['v']!._id;
 const LEGACY = 'bs-0c9a6f1e-2b7d-4e3a-9f10-5d6c7b8a9e01';
 
 const rows = async (text: string, params: unknown[] = []) => (await mockSql(text, params)).rows;
@@ -203,9 +212,66 @@ describe('D38 (HAP-1565): only an admin sets or changes owner_principal_id', () 
         .send('{"__proto__":{"owner_principal_id":"actor-o"}}')];
     expect(refusals.map(res => [res.status, res.body])).toEqual(Array(4).fill([403, {
       success: false, error: 'Forbidden', message: 'owner_principal_id can be set or changed only by an admin' }]));
+    // The real body also validates against the 403 schema the spec declares for each operation (a pin on the spec, not on runtime code).
+    expect(violations(declaredResponse('/business-services', 'post', '403').schema!, refusals[0]!.body)).toEqual([]);
+    for (const refusal of refusals.slice(1)) expect(violations(declaredResponse('/business-services/{service_id}', 'patch', '403').schema!, refusal.body)).toEqual([]);
     expect([await stored(id), await auditCount(), await rows(selfOwned)]).toEqual(before);
     expect((await patch(id, { description: 'no owner change' }, undefined, 'o')).status).toBe(200);
     expect((await audit(id)).map(row => row['actor'])).toEqual(['actor-o', 'actor-o']);
+  });
+});
+
+describe('owner_principal_id must be an enabled user of the caller organization', () => {
+  const FOREIGN = USERS['t2']!._id; // a real user of the other tenant
+  const MISSING = 'idp|no-such-user';
+  const DISABLED = USERS['d']!._id;
+  const serviceCount = async () => (await rows('SELECT count(*)::int AS n FROM dim_business_services'))[0]!['n'] as number;
+
+  it('an admin sets and clears an owner of the same organization on create and PATCH; the row and the audit trail carry it', async () => {
+    const id = await created({ owner_principal_id: OWNER });
+    expect(await stored(id)).toMatchObject({ owner_principal_id: OWNER, version: 1 });
+    const other = USERS['o']!._id;
+    const changed = await patch(id, { owner_principal_id: other });
+    expect([changed.status, changed.body.data.owner_principal_id]).toEqual([200, other]);
+    expect(await stored(id)).toMatchObject({ owner_principal_id: other, version: 2 });
+    expect((await audit(id)).at(-1)!['changes']).toEqual(expect.arrayContaining([
+      { field: 'owner_principal_id', old_value: OWNER, new_value: other }]));
+    expect((await patch(id, { owner_principal_id: null })).status).toBe(200);
+    expect(await stored(id)).toMatchObject({ owner_principal_id: null, version: 3 });
+  });
+
+  it('FAIL-FIRST: another organization\'s user, an unknown id and a disabled user are refused with one byte-identical body; nothing is written', async () => {
+    const id = await created({ owner_principal_id: OWNER });
+    const before = [await stored(id), await auditCount(), await serviceCount()];
+    const texts = new Set<string>();
+    for (const owner of [FOREIGN, MISSING, DISABLED]) {
+      const refused = [await create({ ...BASE, owner_principal_id: owner }), await patch(id, { owner_principal_id: owner }),
+        await patch(id, { lifecycle: 'live', owner_principal_id: owner }, '"1"')];
+      for (const res of refused) {
+        expect(res.status).toBe(422);
+        texts.add(res.text);
+        expect(res.text).not.toContain(owner);
+      }
+      expect(violations(declaredResponse('/business-services', 'post', '422').schema!, refused[0]!.body)).toEqual([]);
+      expect(violations(declaredResponse('/business-services/{service_id}', 'patch', '422').schema!, refused[1]!.body)).toEqual([]);
+    }
+    expect([...texts]).toEqual([JSON.stringify({
+      success: false, error: 'Unprocessable Entity', message: 'owner_principal_id must be an enabled user of your organization' })]);
+    expect([await stored(id), await auditCount(), await serviceCount()]).toEqual(before);
+  });
+
+  it('a non-admin still gets the original 403 body for any owner id, and no lookup of that id happens', async () => {
+    const id = await created({});
+    const before = [await stored(id), await auditCount(), await serviceCount()];
+    userLookups.length = 0;
+    const refusals = [];
+    for (const owner of [FOREIGN, MISSING, OWNER]) {
+      refusals.push(await create({ ...BASE, owner_principal_id: owner }, 'o'), await patch(id, { owner_principal_id: owner }, undefined, 'o'));
+    }
+    expect(refusals.map(res => [res.status, res.body])).toEqual(Array(6).fill([403, {
+      success: false, error: 'Forbidden', message: 'owner_principal_id can be set or changed only by an admin' }]));
+    expect(userLookups.filter(lookup => lookup !== USERS['o']!._id)).toEqual([]);
+    expect([await stored(id), await auditCount(), await serviceCount()]).toEqual(before);
   });
 });
 

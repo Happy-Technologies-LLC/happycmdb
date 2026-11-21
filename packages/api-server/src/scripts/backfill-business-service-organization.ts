@@ -75,19 +75,20 @@
  *
  * Not run automatically, not part of schema initialization or db-init. Build
  * with `npm run build:tenant-fixture --workspace=packages/api-server`
- * (tsconfig.scripts.json compiles src/scripts), then (for a private Postgres CA, add
- * NODE_EXTRA_CA_CERTS=<ca.pem> to this same command, as shown; see the authentication doc):
+ * (tsconfig.scripts.json compiles src/scripts), then:
  *   CMDB_BACKFILL_POSTGRES_HOST=... CMDB_BACKFILL_POSTGRES_PORT=5432 CMDB_BACKFILL_POSTGRES_DB=... \
  *   CMDB_BACKFILL_POSTGRES_USER=... CMDB_BACKFILL_POSTGRES_PASSWORD=... \
- *   [CMDB_BACKFILL_POSTGRES_SSL=verify-full] [NODE_EXTRA_CA_CERTS=<ca.pem>] \
+ *   CMDB_BACKFILL_POSTGRES_SSL=verify-full|require|disable \
  *   CMDB_BACKFILL_NEO4J_URI=bolt://<host>:7687 CMDB_BACKFILL_NEO4J_USERNAME=... CMDB_BACKFILL_NEO4J_PASSWORD=... \
- *   [CMDB_BACKFILL_NEO4J_ENCRYPTED=true|false] \
+ *   CMDB_BACKFILL_NEO4J_ENCRYPTED=true|false \
  *   node packages/api-server/dist/tenant-fixture/api-server/src/scripts/backfill-business-service-organization.js \
  *     --prepare | --created-before <ISO-8601 timestamp with zone> --writer-timezone <zone file name, e.g. Etc/UTC> \
  *     [--apply --plan <saved dry-run summary> --sha256 <independently reviewed plan_sha256>]
  * (--prepare needs only the CMDB_BACKFILL_NEO4J_* variables.)
- * CMDB_BACKFILL_POSTGRES_SSL unset means an UNENCRYPTED connection; `require` encrypts but does NOT verify the
- * server (no protection against an impersonated database): use verify-full.
+ * Off loopback, an unset CMDB_BACKFILL_POSTGRES_SSL or CMDB_BACKFILL_NEO4J_ENCRYPTED refuses to start. `require`
+ * encrypts but does NOT verify the server (no protection against an impersonated database): use verify-full.
+ * Private Postgres CA (see the authentication doc): add CMDB_BACKFILL_POSTGRES_SSL_CA_FILE=<ca.pem> (verify-full
+ * only) to the command, or NODE_EXTRA_CA_CERTS=<ca.pem>.
  */
 
 import { createHash } from 'crypto';
@@ -98,6 +99,7 @@ import { readFileSync } from 'fs';
 import { Neo4jClient } from '../../../database/src/neo4j/client';
 import { PostgresClient } from '../../../database/src/postgres/client';
 import { assertPlainNeo4jUri, isolateOperatorEnvironment } from './operator-stores';
+import { resolveOperatorNeo4jEncrypted, resolveOperatorPostgresTls } from './operator-tls';
 
 /** Same shape the api-server accepts as an organization claim (auth.middleware.ts). */
 const ORGANIZATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -481,12 +483,9 @@ export async function main(
     const reviewed = args.mode === 'prepare' || args.planFile === undefined
       ? undefined
       : JSON.parse(readFileSync(args.planFile, 'utf8')) as BackfillSummary;
-    const encryptedSetting = env['CMDB_BACKFILL_NEO4J_ENCRYPTED'];
-    if (encryptedSetting !== undefined && encryptedSetting !== 'true' && encryptedSetting !== 'false') {
-      throw new Error('CMDB_BACKFILL_NEO4J_ENCRYPTED must be true or false when set');
-    }
     const uri = required(env, 'CMDB_BACKFILL_NEO4J_URI');
     assertPlainNeo4jUri(uri, 'CMDB_BACKFILL_NEO4J_URI', 'CMDB_BACKFILL_NEO4J_ENCRYPTED');
+    const encrypted = resolveOperatorNeo4jEncrypted(env, 'CMDB_BACKFILL', uri);
     const neo4jUsername = required(env, 'CMDB_BACKFILL_NEO4J_USERNAME');
     const neo4jPassword = required(env, 'CMDB_BACKFILL_NEO4J_PASSWORD');
     if (args.mode === 'backfill') {
@@ -494,21 +493,19 @@ export async function main(
       if (!Number.isInteger(port) || port <= 0 || port > 65535) {
         throw new Error('CMDB_BACKFILL_POSTGRES_PORT must be a TCP port');
       }
-      const sslSetting = env['CMDB_BACKFILL_POSTGRES_SSL'];
-      const ssl: 'require' | 'verify-full' | false = sslSetting === 'require' || sslSetting === 'verify-full' ? sslSetting : false;
-      if (sslSetting !== undefined && ssl === false) {
-        throw new Error('CMDB_BACKFILL_POSTGRES_SSL must be require or verify-full when set');
-      }
+      const host = required(env, 'CMDB_BACKFILL_POSTGRES_HOST');
+      const { ssl, sslCa } = resolveOperatorPostgresTls(env, 'CMDB_BACKFILL', host);
       postgres = new PostgresClient({
-        _host: required(env, 'CMDB_BACKFILL_POSTGRES_HOST'),
+        _host: host,
         _port: port,
         _database: required(env, 'CMDB_BACKFILL_POSTGRES_DB'),
         _user: required(env, 'CMDB_BACKFILL_POSTGRES_USER'),
         _password: required(env, 'CMDB_BACKFILL_POSTGRES_PASSWORD'),
         ssl,
+        ...(sslCa === undefined ? {} : { sslCa }),
       });
     }
-    neo4j = new Neo4jClient(uri, neo4jUsername, neo4jPassword, { encrypted: encryptedSetting === 'true' });
+    neo4j = new Neo4jClient(uri, neo4jUsername, neo4jPassword, { encrypted });
 
     const session = neo4j.getSession();
     try {

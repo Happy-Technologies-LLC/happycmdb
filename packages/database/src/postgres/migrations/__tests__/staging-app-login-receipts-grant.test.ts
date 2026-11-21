@@ -43,12 +43,62 @@ const APP_LOGIN_SCRIPT = readFileSync(join(__dirname, '../../../../../../deploy/
 const TABLE_MIGRATIONS = ['046_service_offerings.sql', '047_ai_sync_cursors.sql', '048_portfolio_import.sql',
   '054_relationship_evidence_receipts.sql', '056_estate_kpi_snapshots.sql'];
 
-/** The `$hap2126$` DO block of the script, exactly as psql would send it. */
-function grantBlock(): string {
-  const block = /DO \$hap2126\$[\s\S]*?\$hap2126\$;/.exec(APP_LOGIN_SCRIPT);
-  if (!block) throw new Error('deploy/build01-staging-app-login.sql has no $hap2126$ DO block: the per-table cmdb_app re-grant is missing');
-  return block[0];
+const TAG = '$hap2126$';
+/**
+ * The `$hap2126$` DO block of `script`, cut the way the PostgreSQL lexer cuts it: the dollar-quoted body ends at the FIRST `$hap2126$`
+ * after the opener, a `--` comment or a string included (plpgsql comments are invisible to the SQL lexer), and the statement ends with the
+ * `;` right after it. A first tag followed by anything else (a space, another token) is refused.
+ */
+function blockOfScript(script: string): string {
+  const open = script.indexOf(`DO ${TAG}`);
+  if (open < 0) throw new Error('deploy/build01-staging-app-login.sql has no $hap2126$ DO block: the per-table cmdb_app re-grant is missing');
+  const close = script.indexOf(TAG, open + `DO ${TAG}`.length);
+  if (close < 0 || script[close + TAG.length] !== ';') {
+    throw new Error('the first $hap2126$ after the DO block opener is not followed by `;`: PostgreSQL ends the block there, so the text after it is not part of the block');
+  }
+  return script.slice(open, close + TAG.length + 1);
 }
+/** A script must hold the tag exactly twice (opener and closer), in code or comment: a third one is a lexer-visible block end the text checks cannot see. */
+const tagCountProblem = (script: string): string | undefined => {
+  const count = script.split(TAG).length - 1;
+  return count === 2 ? undefined : `deploy/build01-staging-app-login.sql holds ${count} $hap2126$ tags, not the two of the DO block's opener and closer`;
+};
+function grantBlockOf(script: string): string {
+  const problem = tagCountProblem(script);
+  if (problem) throw new Error(problem);
+  return blockOfScript(script);
+}
+/** The $hap2126$ DO block of the real script, exactly as psql would send it. */
+const grantBlock = (): string => grantBlockOf(APP_LOGIN_SCRIPT);
+
+/**
+ * The block with a WITH GRANT OPTION built in the FOR projection: the EXECUTE stays byte-identical to the canonical statement, and the
+ * grant keyword is split so no GRANT token and no `|| ' WITH GRANT OPTION'` appears in it. `--` comments out the rest of the
+ * format() string's `ON %s` tail; `split_part` lets the IF guard still see the bare table name.
+ */
+function withGrantOptionProjection(block: string): string {
+  const from = "FOR g IN SELECT * FROM (VALUES";
+  const guard = 'to_regclass(g.rel)';
+  if (!block.includes(from) || !block.includes(guard)) throw new Error('the $hap2126$ block no longer has the FOR / IF lines the projection fixture rewrites');
+  return block
+    .replace(from, "FOR g IN SELECT t.rel || ' TO cmdb_app WITH GR' || 'ANT OPTION --' AS rel, t.privs FROM (VALUES")
+    .replace(guard, "to_regclass(split_part(g.rel, ' ', 1))");
+}
+
+/**
+ * The second review's bypass, one whole `--` line between the block's last statement and its closing tag. PostgreSQL's SQL lexer does not
+ * know plpgsql comments, so the DO body ends at the comment's tag, the grant after it runs as a statement of its own, and the no-op DO
+ * consumes the real closing tag. A text lint that drops whole `--` lines sees an ordinary block.
+ */
+const COMMENTED_TAG_GRANT = `    -- ${TAG} ; GRANT SELECT ON public.dim_business_services TO cmdb_app WITH GRANT OPTION; DO ${TAG} BEGIN END`;
+function withCommentedTagGrant(script: string, line = COMMENTED_TAG_GRANT): string {
+  const closing = script.lastIndexOf(`${TAG};`);
+  const lineStart = script.lastIndexOf('\n', closing) + 1;
+  if (closing < 0 || script.slice(lineStart, closing).trim() !== '') throw new Error('the $hap2126$ closing tag is no longer alone on its line: adjust the fixture');
+  return `${script.slice(0, lineStart)}${line}\n${script.slice(lineStart)}`;
+}
+/** What psql sends to the server for the block: from its opener to the last tag of the script, as the server lexes it (any statement the comment turned into one included). */
+const psqlSends = (script: string): string => script.slice(script.indexOf(`DO ${TAG}`), script.lastIndexOf(`${TAG};`) + TAG.length + 1);
 
 const PRIVILEGES = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'];
 /** What the migrations 046, 047, 048, 054 and 056 give the app logins, table by table (never UPDATE on an append-only table). */
@@ -81,6 +131,23 @@ const migrate = (query: (sql: string) => Promise<Array<Record<string, any>>>, na
 const held = async (query: (sql: string) => Promise<Array<Record<string, any>>>, role: string, table: string) =>
   (await query(`SELECT ${PRIVILEGES.map(p => `has_table_privilege('${role}', '${table}', '${p}') AS "${p}"`).join(', ')}`))
     .flatMap(row => PRIVILEGES.filter(p => row[p] === true));
+/**
+ * Every `<schema>.<relation>|<PRIVILEGE>` of every relation in public and cmdb on which `role` holds the privilege WITH GRANT OPTION (it
+ * could re-grant it to any role), sorted. Not limited to the tables the block restores: a grant option on any other relation counts. The
+ * relation and privilege sets are those of `grantMatrix`, which reports the same grant options as `g` rows (this sweep also covers 'f' relations).
+ */
+const grantOptionsSweep = async (query: (sql: string) => Promise<Array<Record<string, any>>>, role: string): Promise<string[]> =>
+  (await query(`
+    SELECT n.nspname || '.' || c.relname || '|' || p.privilege AS row
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      CROSS JOIN LATERAL unnest(CASE WHEN c.relkind = 'S' THEN ARRAY['USAGE', 'SELECT', 'UPDATE']
+        ELSE ARRAY['${PRIVILEGES.join("', '")}'] END) AS p(privilege)
+      WHERE n.nspname IN ('public', 'cmdb') AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+        AND CASE WHEN c.relkind = 'S' THEN has_sequence_privilege('${role}', c.oid, p.privilege || ' WITH GRANT OPTION')
+                 ELSE has_table_privilege('${role}', c.oid, p.privilege || ' WITH GRANT OPTION') END`))
+    .map(row => row['row'] as string).sort();
+/** `EXPECTED` as the sorted `<table>|<PRIVILEGE>` rows `grantOptionsSweep` reports when every restored privilege is re-grantable. */
+const EXPECTED_AS_GRANT_OPTIONS = Object.entries(EXPECTED).flatMap(([table, privileges]) => privileges.map(p => `${table}|${p}`)).sort();
 
 describe('the $hap2126$ block in the app-login script', () => {
   it('restores exactly the migrations\' grants on a re-created cmdb_app, never more, and re-runs cleanly', async () => {
@@ -94,8 +161,10 @@ describe('the $hap2126$ block in the app-login script', () => {
     const after = async () => Object.fromEntries(await Promise.all(Object.keys(EXPECTED).map(async table =>
       [table, await held(query, 'cmdb_app', table)] as const)));
     expect(await after()).toEqual(EXPECTED);
+    expect(await grantOptionsSweep(query, 'cmdb_app')).toEqual([]); // restored, but nothing in public or cmdb is re-grantable
     await query(grantBlock());
     expect(await after()).toEqual(EXPECTED);
+    expect(await grantOptionsSweep(query, 'cmdb_app')).toEqual([]);
     expect(await grantMatrix(query, 'cmdb_user')).toEqual(userBefore); // cmdb_user's grants are not touched
   }, 60000);
 
@@ -110,18 +179,41 @@ describe('the $hap2126$ block in the app-login script', () => {
     expect(await held(query, 'cmdb_app', 'public.relationship_evidence_receipts')).toEqual(['SELECT', 'INSERT']);
     expect(await held(query, 'cmdb_app', 'public.estate_kpi_snapshots')).toEqual(['SELECT', 'INSERT']);
     expect(await held(query, 'cmdb_app', 'public.service_offerings')).toEqual(['SELECT', 'INSERT', 'UPDATE']);
+    expect(await grantOptionsSweep(query, 'cmdb_app')).toEqual([]);
+  }, 60000);
+
+  it('a block that builds WITH GRANT OPTION in its FOR projection leaves cmdb_app holding the grant option, and the check sees it', async () => {
+    const query = open();
+    await prepare(query, false);
+    for (const name of TABLE_MIGRATIONS) await migrate(query, name);
+    await query('CREATE ROLE cmdb_app LOGIN');
+    await query(withGrantOptionProjection(grantBlock()));
+    expect(await grantOptionsSweep(query, 'cmdb_app')).toEqual(EXPECTED_AS_GRANT_OPTIONS); // every restored privilege of every table is re-grantable, and nothing else
+  }, 60000);
+
+  it('a whole-line comment that holds the tag ends the block for PostgreSQL, so its GRANT ... WITH GRANT OPTION runs, and the sweep sees it on a table outside EXPECTED', async () => {
+    const query = open();
+    await prepare(query, false);
+    for (const name of TABLE_MIGRATIONS) await migrate(query, name);
+    await query('CREATE ROLE cmdb_app LOGIN');
+    const script = withCommentedTagGrant(APP_LOGIN_SCRIPT);
+    expect(script.split('\n').filter(line => /^\s*--/.test(line))).toContain(COMMENTED_TAG_GRANT); // to a text lint, and to a reader, a comment
+    await query(psqlSends(script));
+    expect(await held(query, 'cmdb_app', 'public.service_offerings')).toEqual(['SELECT', 'INSERT', 'UPDATE']); // the original block still ran
+    expect(await grantOptionsSweep(query, 'cmdb_app')).toEqual(['public.dim_business_services|SELECT']);
   }, 60000);
 });
 
 /**
- * Every privilege of `role` on every relation, schema and function of public and cmdb, as sorted `object|privilege|t/f` rows, plus
- * the column-only privileges (`column <schema>.<table>.<column>|<PRIVILEGE>|t`: held on the column, not on the table). The
- * same query runs against a real server in `grant_matrix()` of deploy/test-staging-migrations.sh: keep the two texts identical.
+ * The query of `grantMatrix`. The same query runs against a real server in `grant_matrix()` of deploy/test-staging-migrations.sh with the
+ * role literal `cmdb_app`; a test below compares the two texts, so an edit made to one copy only fails there.
  */
-async function grantMatrix(query: (sql: string) => Promise<Array<Record<string, any>>>, role: string): Promise<string[]> {
-  const rows = await query(`
+function grantMatrixSql(role: string): string {
+  return `
     SELECT n.nspname || '.' || c.relname || '|' || p.privilege || '|'
-        || CASE WHEN CASE WHEN c.relkind = 'S' THEN has_sequence_privilege('${role}', c.oid, p.privilege)
+        || CASE WHEN CASE WHEN c.relkind = 'S' THEN has_sequence_privilege('${role}', c.oid, p.privilege || ' WITH GRANT OPTION')
+                     ELSE has_table_privilege('${role}', c.oid, p.privilege || ' WITH GRANT OPTION') END THEN 'g'
+                WHEN CASE WHEN c.relkind = 'S' THEN has_sequence_privilege('${role}', c.oid, p.privilege)
                      ELSE has_table_privilege('${role}', c.oid, p.privilege) END THEN 't' ELSE 'f' END AS row
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       CROSS JOIN LATERAL unnest(CASE WHEN c.relkind = 'S' THEN ARRAY['USAGE', 'SELECT', 'UPDATE']
@@ -129,19 +221,31 @@ async function grantMatrix(query: (sql: string) => Promise<Array<Record<string, 
       WHERE n.nspname IN ('public', 'cmdb') AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
     UNION ALL
     SELECT 'schema ' || n.nspname || '|' || p.privilege || '|'
-        || CASE WHEN has_schema_privilege('${role}', n.oid, p.privilege) THEN 't' ELSE 'f' END
+        || CASE WHEN has_schema_privilege('${role}', n.oid, p.privilege || ' WITH GRANT OPTION') THEN 'g'
+                WHEN has_schema_privilege('${role}', n.oid, p.privilege) THEN 't' ELSE 'f' END
       FROM pg_namespace n CROSS JOIN (VALUES ('USAGE'), ('CREATE')) AS p(privilege) WHERE n.nspname IN ('public', 'cmdb')
     UNION ALL
     SELECT 'function ' || f.oid::regprocedure::text || '|EXECUTE|'
-        || CASE WHEN has_function_privilege('${role}', f.oid, 'EXECUTE') THEN 't' ELSE 'f' END
+        || CASE WHEN has_function_privilege('${role}', f.oid, 'EXECUTE WITH GRANT OPTION') THEN 'g'
+                WHEN has_function_privilege('${role}', f.oid, 'EXECUTE') THEN 't' ELSE 'f' END
       FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace WHERE n.nspname IN ('public', 'cmdb')
     UNION ALL
-    SELECT 'column ' || n.nspname || '.' || c.relname || '.' || a.attname || '|' || p.privilege || '|t'
+    SELECT 'column ' || n.nspname || '.' || c.relname || '.' || a.attname || '|' || p.privilege || '|'
+        || CASE WHEN has_column_privilege('${role}', a.attrelid, a.attnum, p.privilege || ' WITH GRANT OPTION') THEN 'g' ELSE 't' END
       FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
       CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('REFERENCES')) AS p(privilege)
       WHERE n.nspname IN ('public', 'cmdb') AND c.relkind IN ('r', 'p', 'v', 'm') AND a.attnum > 0 AND NOT a.attisdropped
         AND has_column_privilege('${role}', a.attrelid, a.attnum, p.privilege)
-        AND NOT has_table_privilege('${role}', a.attrelid, p.privilege)`);
+        AND NOT has_table_privilege('${role}', a.attrelid, p.privilege)`;
+}
+
+/**
+ * Every privilege of `role` on every relation, schema and function of public and cmdb, as sorted `object|privilege|g/t/f` rows (`g`:
+ * held WITH GRANT OPTION, `t`: held without it, `f`: not held), plus the column-only privileges (`column <schema>.<table>.<column>|
+ * <PRIVILEGE>|g/t`: held on the column, not on the table).
+ */
+async function grantMatrix(query: (sql: string) => Promise<Array<Record<string, any>>>, role: string): Promise<string[]> {
+  const rows = await query(grantMatrixSql(role));
   return rows.map(row => row['row'] as string).sort();
 }
 
@@ -165,6 +269,8 @@ describe('whole-grant matrix: a re-created cmdb_app equals a freshly migrated on
     await recreated('CREATE ROLE cmdb_app LOGIN NOSUPERUSER');
     await migrate(recreated, '045_staging_app_login_acl.sql');
     await recreated(grantBlock());
+    expect(await grantOptionsSweep(recreated, 'cmdb_app')).toEqual([]);
+    expect(await grantOptionsSweep(baseline, 'cmdb_app')).toEqual([]);
 
     const [fresh, again] = [await grantMatrix(baseline, 'cmdb_app'), await grantMatrix(recreated, 'cmdb_app')];
     for (const [table, privileges] of Object.entries(EXPECTED)) {
@@ -174,6 +280,13 @@ describe('whole-grant matrix: a re-created cmdb_app equals a freshly migrated on
     expect({ onlyInFresh: fresh.filter(row => !again.includes(row)), onlyInRecreated: again.filter(row => !fresh.includes(row)) })
       .toEqual({ onlyInFresh: [], onlyInRecreated: [] });
     expect(again).toEqual(fresh);
+
+    // A grant option on a table the block restores is a one-row difference: ...|SELECT|t becomes ...|SELECT|g, and nothing else moves.
+    expect(fresh.filter(row => row.endsWith('|g'))).toEqual([]);
+    await recreated('GRANT SELECT ON public.estate_kpi_snapshots TO cmdb_app WITH GRANT OPTION');
+    const grantable = await grantMatrix(recreated, 'cmdb_app');
+    expect({ onlyInFresh: fresh.filter(row => !grantable.includes(row)), onlyInGrantable: grantable.filter(row => !fresh.includes(row)) })
+      .toEqual({ onlyInFresh: ['public.estate_kpi_snapshots|SELECT|t'], onlyInGrantable: ['public.estate_kpi_snapshots|SELECT|g'] });
   }, 120000);
 });
 
@@ -192,6 +305,46 @@ describe('the column section of the grant matrix', () => {
   }, 60000);
 });
 
+describe('the grant option field of the grant matrix', () => {
+  /** One privilege on one object kind per case: the grant, the matrix row it reads as, and the field that kind reads when nothing is held (a column row exists only while held). */
+  const CASES: Array<{ kind: string; target: string; privilege: string; row: string; none: string | null }> = [
+    { kind: 'table', target: 'ON TABLE public.t', privilege: 'SELECT', row: 'public.t|SELECT|', none: 'f' },
+    { kind: 'sequence', target: 'ON SEQUENCE public.s', privilege: 'USAGE', row: 'public.s|USAGE|', none: 'f' },
+    { kind: 'schema', target: 'ON SCHEMA cmdb', privilege: 'CREATE', row: 'schema cmdb|CREATE|', none: 'f' },
+    { kind: 'function', target: 'ON FUNCTION public.fn()', privilege: 'EXECUTE', row: 'function fn()|EXECUTE|', none: 'f' },
+    { kind: 'column', target: 'ON public.u', privilege: 'SELECT (id)', row: 'column public.u.id|SELECT|', none: null },
+  ];
+
+  it.each(CASES)('reads $kind: t when held, g with the grant option, t after REVOKE GRANT OPTION FOR, not held after REVOKE', async c => {
+    const query = open();
+    await query('CREATE ROLE cmdb_app LOGIN; CREATE SCHEMA cmdb');
+    await query(`CREATE TABLE public.t (id int); CREATE TABLE public.u (id int, name text); CREATE SEQUENCE public.s;
+      CREATE FUNCTION public.fn() RETURNS int LANGUAGE sql AS 'SELECT 1'; REVOKE EXECUTE ON FUNCTION public.fn() FROM PUBLIC`);
+    const reads = async () => (await grantMatrix(query, 'cmdb_app')).filter(row => row.startsWith(c.row));
+    const unheld = c.none === null ? [] : [`${c.row}${c.none}`];
+    expect(await reads()).toEqual(unheld);
+    await query(`GRANT ${c.privilege} ${c.target} TO cmdb_app`);
+    expect(await reads()).toEqual([`${c.row}t`]);
+    await query(`GRANT ${c.privilege} ${c.target} TO cmdb_app WITH GRANT OPTION`);
+    expect(await reads()).toEqual([`${c.row}g`]);
+    await query(`REVOKE GRANT OPTION FOR ${c.privilege} ${c.target} FROM cmdb_app`);
+    expect(await reads()).toEqual([`${c.row}t`]);
+    await query(`REVOKE ${c.privilege} ${c.target} FROM cmdb_app`);
+    expect(await reads()).toEqual(unheld);
+  }, 60000);
+});
+
+describe('the two copies of the grant matrix query', () => {
+  const collapse = (sql: string) => sql.replace(/\s+/g, ' ').trim();
+
+  it('are the same text: grantMatrixSql for cmdb_app equals the SQL of grant_matrix() in the staging migration contract script', () => {
+    const script = readFileSync(join(__dirname, '../../../../../../deploy/test-staging-migrations.sh'), 'utf8');
+    const shellSql = /\ngrant_matrix\(\) \{\n\s*owner_psql -c "([^"]*)" \| LC_ALL=C sort\n\}/.exec(script)?.[1];
+    expect(shellSql).toBeDefined();
+    expect(collapse(shellSql!)).toEqual(collapse(grantMatrixSql('cmdb_app')));
+  });
+});
+
 describe('the $hap2126$ block cannot silently drift from the migrations (grants, dynamic grantees, REVOKE, every file)', () => {
   const FIX = 'add the table to the $hap2126$ block in deploy/build01-staging-app-login.sql, to TABLE_MIGRATIONS and EXPECTED in '
     + 'staging-app-login-receipts-grant.test.ts, and to deploy/BUILD01-STAGING.md';
@@ -200,14 +353,12 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
     '001_complete_schema.sql': 'EXECUTE only in a column-diff function and in trigger EXECUTE FUNCTION; every GRANT is TO PUBLIC',
     '005_fix_business_service_hypertable_pks.sql': 'dynamic EXECUTE only of ALTER TABLE ... ADD PRIMARY KEY and DROP CONSTRAINT; no privilege statement',
     '010_business_service_views_org_functions.sql': 'EXECUTE only as a privilege (REVOKE EXECUTE ... FROM PUBLIC); no GRANT to a role',
-    '020_auth_credential_events.sql': 'EXECUTE only in trigger EXECUTE FUNCTION; the one privilege statement is REVOKE ALL ... FROM PUBLIC',
     '028_change_history_reconciliation_org_provenance.sql': 'one static EXECUTE of REVOKE ... FROM metabase_readonly; the rest is FROM PUBLIC',
     '031_business_service_mapping_ownership.sql': 'EXECUTE only re-creates a view; the one privilege statement is REVOKE ... FROM PUBLIC',
     '032_secret_table_public_grants.sql': 'dynamic REVOKE FROM PUBLIC and metabase_readonly; grants only cmdb_user and metabase_readonly',
     '033_public_business_service_audit_acl.sql': 'dynamic REVOKE FROM PUBLIC; grants only cmdb_user and metabase_readonly',
     '035_itil_record_ownership.sql': 'dynamic EXECUTE only of ALTER TABLE ... ADD COLUMN and ADD CONSTRAINT ... NOT VALID; no privilege statement',
     '036_history_criticality_org_contract.sql': 'dynamic EXECUTE only of ALTER TABLE ... DROP CONSTRAINT; no privilege statement',
-    '041_discovery_definition_migration_ledger.sql': 'EXECUTE only in trigger EXECUTE FUNCTION; the privilege statements are REVOKE ... FROM PUBLIC',
     '050_bi_cost_view_grants.sql': 'dynamic REVOKE and GRANT, but the grantee is the literal metabase_readonly',
     '051_bi_view_security_barrier.sql': 'dynamic REVOKE and GRANT, but the grantee is the literal metabase_readonly',
     '052_bi_views_organization_id.sql': 'dynamic EXECUTE only of CREATE OR REPLACE VIEW, COMMENT ON VIEW and ALTER VIEW ... SET (options); no privilege statement',
@@ -226,7 +377,9 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
   const scanned = scannedMigrations(readdirSync(MIGRATIONS)); // files only: no rollback/ or __tests__/
   // Everything below that decides whether a file is dangerous reads the RAW text: a comment mention is a (loud) false positive, never a hidden grant.
   const namesApp = (sql: string) => /\bcmdb_app\b/i.test(sql);
-  const GRANTEE_MARKER = String.raw`(?:%(?:\d+\$)?[IsL]|quote_ident\(|U&\s*"|['"]\s*(?:\|\||,))`;
+  const GRANTEE_MARKER = String.raw`(?:%(?:\d+\$)?[IsL]|quote_ident\(|['"]\s*(?:\|\||,))`;
+  /** A Unicode-escaped identifier (`U&"cmdb\005fapp"`) can spell a role name in any position of a privilege statement (`TO a, U&"…"`, `TO GROUP U&"…"`, `FROM U&"…"`), so it is refused anywhere in a migration, comments included. No migration needs one. */
+  const UNICODE_ESCAPED_IDENTIFIER = /U&\s*"/i;
   const DYNAMIC_GRANTEE = new RegExp(String.raw`\b(?:TO|FROM)\s*${GRANTEE_MARKER}`, 'i');
   const DYNAMIC_GRANT = new RegExp(String.raw`\bGRANT\b[^;]*\bTO\s*${GRANTEE_MARKER}`, 'i');
   const revokesApp = (sql: string) => /\bREVOKE\b[^;]*\bcmdb_app\b/i.test(sql);
@@ -252,6 +405,10 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
       if (listed.includes(name)) problems.push(`${name} is in both TABLE_MIGRATIONS and NON_APP_GRANTING: list it in one place only`);
     }
     for (const [name, sql] of Object.entries(sources)) {
+      if (UNICODE_ESCAPED_IDENTIFIER.test(sql)) {
+        problems.push(`${name} contains a Unicode-escaped identifier (U&"..."), which can spell a role name in any position of a privilege statement `
+          + 'and which no text check reads: write the name literally');
+      }
       if (listed.includes(name)) continue;
       if (revokesApp(sql)) {
         problems.push(`${name} revokes from cmdb_app, which the $hap2126$ block would re-grant: a REVOKE from cmdb_app must be reflected in `
@@ -262,7 +419,7 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
         problems.push(`${name} names cmdb_app but is not in TABLE_MIGRATIONS (list it in TABLE_MIGRATIONS, or in NON_APP_GRANTING with a reason `
           + `if it grants cmdb_app nothing): ${FIX}`);
       } else if (DYNAMIC_GRANTEE.test(sql)) {
-        problems.push(`${name} uses a dynamic grantee (TO or FROM %I, %s, %L, quote_ident, U& or a concatenation) but is in neither TABLE_MIGRATIONS `
+        problems.push(`${name} uses a dynamic grantee (TO or FROM %I, %s, %L, quote_ident or a concatenation) but is in neither TABLE_MIGRATIONS `
           + `nor NON_APP_GRANTING: list it in one place or the other; ${FIX}`);
       } else if (runsDynamicExecute(sql)) {
         problems.push(`${name} runs a dynamic EXECUTE (not a trigger's EXECUTE FUNCTION or the EXECUTE privilege), so any privilege statement and its `
@@ -274,28 +431,77 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
   };
   const sources = () => Object.fromEntries(scanned.map(name => [name, migration(name)]));
 
-  /** The block's `(table, privileges)` tuples, how many VALUES tuples of any shape it holds, and its EXECUTE statements. Raw text: nothing is stripped out of sight. */
+  /** The block's `(table, privileges)` tuples, how many VALUES tuples of any shape it holds, and its EXECUTE statements. Whole-line comments go first, and every count reads that one text. */
+  const uncommentedOf = (text: string) => text.replace(/^[ \t]*--.*$/gm, ''); // only whole lines: a `--` inside a string must not hide a statement behind it
   const blockText = () => grantBlock();
   const rowListOf = (text: string) => [...text.matchAll(/\('(public\.[a-z_]+)',\s*'([A-Z, ]+)'\)/g)]
     .map(match => [match[1]!, match[2]!.split(',').map(p => p.trim())] as const);
-  const tuplesOf = (text: string) => [...text.matchAll(/\('([^']+)',\s*'([^']+)'\)/g)].map(match => match[0]);
+  /**
+   * How many rows every `VALUES` list holds, counted loosely: each top-level parenthesised group, whatever is inside it (a space before the comma,
+   * `::text`, `$$` quoting, a function call). It must equal the strictly parsed row count, so no row can hide from `rowListOf`.
+   */
+  const looseRowCount = (text: string): number => {
+    let count = 0;
+    for (const values of text.matchAll(/\bVALUES\b/gi)) {
+      let depth = 0;
+      let quoted = false;
+      for (let i = values.index! + values[0].length; i < text.length; i++) {
+        const c = text[i]!;
+        if (quoted) { quoted = c !== "'"; continue; }
+        if (c === "'") quoted = true;
+        else if (c === '(') { if (depth === 0) count++; depth++; }
+        else if (c === ')') { if (depth === 0) break; depth--; }
+        else if (c === ';' && depth === 0) break;
+      }
+    }
+    return count;
+  };
   const executesOf = (text: string) => text.match(/\bEXECUTE\b/gi) ?? [];
-  const BLOCK_GRANT_EXECUTE = `EXECUTE format('GRANT %s ON %s TO cmdb_app'`;
-  const blockRowList = () => rowListOf(blockText());
+  /** The one statement the block may run, in full: nothing before the closing parenthesis, nothing after it, so no `|| ' WITH GRANT OPTION'`. */
+  const BLOCK_GRANT_EXECUTE = `EXECUTE format('GRANT %s ON %s TO cmdb_app', g.privs, g.rel);`;
+  const executeStatementsOf = (text: string) => text.match(/\bEXECUTE\b[^;]*(?:;|$)/gi) ?? [];
+  const blockRowList = () => rowListOf(uncommentedOf(blockText()));
   const blockRows = () => Object.fromEntries(blockRowList());
-  /** What is wrong with the shape of a block beyond its rows: a table twice, a tuple of another shape (`('cmdb.x', 'SELECT, DELETE')`, a lower-case privilege), anything but one EXECUTE. */
+  /**
+   * The whole DO block, whitespace-normalised, with its VALUES rows as one placeholder: nothing else may differ. The FOR query is a bare
+   * `SELECT *` over the rows and the IF guard a bare `to_regclass(g.rel)`, so only the EXECUTE reads g.rel and g.privs, and no
+   * projection, cast or concatenation can rewrite them (a grant option spelled `WITH GR' || 'ANT OPTION` in the projection).
+   */
+  const ROWS = '\u0000';
+  const BLOCK_TEMPLATE = `DO $hap2126$ DECLARE g record; BEGIN FOR g IN SELECT * FROM (VALUES ${ROWS} ) AS t(rel, privs) LOOP `
+    + `IF to_regclass(g.rel) IS NOT NULL THEN ${BLOCK_GRANT_EXECUTE} END IF; END LOOP; END $hap2126$;`;
+  const templateOf = (uncommented: string) => uncommented.replace(/\s+/g, ' ').trim()
+    .replace(/\('public\.[a-z_]+',\s*'[A-Z, ]+'\)/g, ROWS).replace(new RegExp(`${ROWS}(?:, ${ROWS})*`, 'g'), ROWS);
+  /**
+   * What is wrong with the shape of a block beyond its rows: a table twice, a VALUES row that is not strictly `('public.<table>', 'UPPER, CASE')`,
+   * anything but one EXECUTE, that one not exactly the full statement, and, as the catch-all once none of those specific rules fired, any
+   * other difference from BLOCK_TEMPLATE.
+   */
   const blockShapeProblems = (text: string): string[] => {
     const problems: string[] = [];
-    const rows = rowListOf(text);
+    const uncommented = uncommentedOf(text);
+    const rows = rowListOf(uncommented);
     if (Object.keys(Object.fromEntries(rows)).length !== rows.length) problems.push('a table appears twice in the VALUES rows');
-    if (tuplesOf(text).length !== rows.length) problems.push('a VALUES tuple has another shape than (public.<table>, UPPER-CASE privileges)');
-    const executes = executesOf(text).length;
-    if (executes !== 1) problems.push(`${executes} EXECUTE statements, not the one \`EXECUTE format('GRANT %s ON %s TO cmdb_app', ...)\` over the VALUES rows`);
-    // Only whole-line comments go (the block's own prose says "grant"): a `--` inside a string must not hide a statement behind it.
-    const outside = text.replace(/^[ \t]*--.*$/gm, '').replace(BLOCK_GRANT_EXECUTE, '');
-    if (/\b(?:GRANT|REVOKE)\b/i.test(outside)) problems.push('a GRANT or REVOKE token outside the one EXECUTE format(...) statement');
+    if (looseRowCount(uncommented) !== rows.length) problems.push('a VALUES row has another shape than (public.<table>, UPPER-CASE privileges)');
+    const executes = executesOf(uncommented).length;
+    if (executes !== 1) problems.push(`${executes} EXECUTE statements, not the one \`${BLOCK_GRANT_EXECUTE}\` over the VALUES rows`);
+    const statements = executeStatementsOf(uncommented);
+    if (executes > 0 && statements.some(statement => statement !== BLOCK_GRANT_EXECUTE)) {
+      problems.push(`an EXECUTE statement is not exactly \`${BLOCK_GRANT_EXECUTE}\` (anything appended or concatenated to it can add a grant option or another privilege)`);
+    }
+    // Whatever is outside every EXECUTE statement (those are judged above) may not hold a GRANT or REVOKE.
+    if (/\b(?:GRANT|REVOKE)\b/i.test(statements.reduce((rest, statement) => rest.replace(statement, ''), uncommented))) {
+      problems.push('a GRANT or REVOKE token outside the one EXECUTE format(...) statement');
+    }
+    if (problems.length === 0 && templateOf(uncommented) !== BLOCK_TEMPLATE) {
+      problems.push('the DO block is not the canonical template apart from its VALUES rows: nothing outside the one EXECUTE may build or rewrite g.rel or g.privs');
+    }
     return problems;
   };
+  /** A whole `$hap2126$` block as the real script has it, with `values` as the rows, `execute` as the loop body and `extra` after the loop. */
+  const canonicalBlock = (values: string, execute: string, extra = '') =>
+    `DO $hap2126$\nDECLARE g record;\nBEGIN\n  FOR g IN SELECT * FROM (VALUES ${values}\n  ) AS t(rel, privs) LOOP\n    IF to_regclass(g.rel) IS NOT NULL THEN\n      ${execute}\n`
+    + `    END IF;\n  END LOOP;\n${extra}\nEND\n$hap2126$;`;
 
   /** Tables of every `GRANT ... ON <tables> TO` statement of `sql`, and the first 80 characters of each GRANT whose table cannot be named. */
   const grantStatements = (sql: string): { tables: string[]; unparsed: string[] } => {
@@ -393,8 +599,6 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
       ['concat call', `DO $$ BEGIN EXECUTE concat('GRANT SELECT ON public.x TO ', r); END $$;`, GRANTEE],
       ['split literal', `DO $$ BEGIN EXECUTE 'GRANT SELECT ON public.x TO cmdb' || '_app'; END $$;`, EXECUTES],
       ['replace call', `DO $$ BEGIN EXECUTE replace('GRANT SELECT ON public.x TO R', 'R', r); END $$;`, EXECUTES],
-      ['unicode escape in EXECUTE', `DO $$ BEGIN EXECUTE 'GRANT SELECT ON public.x TO U&"cmdb\\005Fapp"'; END $$;`, GRANTEE],
-      ['unicode escape, static', 'GRANT SELECT ON public.x TO U&"cmdb\\005Fapp";', GRANTEE],
       ['REVOKE placeholder', `DO $$ BEGIN EXECUTE format('REVOKE SELECT ON public.x FROM %I', r); END $$;`, GRANTEE],
       ['default privileges placeholder', `DO $$ BEGIN EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO %1$I', r); END $$;`, GRANTEE],
       ['default privileges, split literal', `DO $$ BEGIN EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO cmdb' || '_app'; END $$;`, EXECUTES],
@@ -425,7 +629,6 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
       ['%L', 'GRANT SELECT ON public.x TO %L;'],
       ['numbered %L', 'GRANT SELECT ON public.x TO %2$L;'],
       ['quote_ident', 'GRANT SELECT ON public.x TO quote_ident(r);'],
-      ['unicode escape', 'GRANT SELECT ON public.x TO U&"x";'],
       ['concatenation', `GRANT SELECT ON public.x TO ' || r;`],
       ['argument list', `GRANT SELECT ON public.x TO ', r;`],
       ['double-quoted concatenation', 'GRANT SELECT ON public.x TO " || r;'],
@@ -479,9 +682,34 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
     expect(blockShapeProblems(blockText())).toEqual([]);
   });
 
+  it('cuts the block where PostgreSQL does (the first tag, then `;`) and holds the script to exactly two tags, so a commented tag cannot smuggle a statement past the block checks', () => {
+    // The real script: opener and closer only, and the block ends at the closer.
+    expect(tagCountProblem(APP_LOGIN_SCRIPT)).toBeUndefined();
+    expect(grantBlockOf(APP_LOGIN_SCRIPT).endsWith(`END\n    ${TAG};`)).toBe(true);
+    // The reviewer's line: each of the two rules refuses it alone.
+    const smuggled = withCommentedTagGrant(APP_LOGIN_SCRIPT);
+    expect(() => blockOfScript(smuggled)).toThrow('not followed by `;`'); // the first tag is followed by a space
+    expect(tagCountProblem(smuggled)).toContain('holds 4 $hap2126$ tags');
+    expect(() => grantBlockOf(smuggled)).toThrow();
+    // With the `;` glued to the tag the extraction accepts the cut, but the cut block has lost its closing tag (its last line is the comment):
+    // the count rejects it, and so does the template, so no one rule is the only line of defence.
+    const glued = withCommentedTagGrant(APP_LOGIN_SCRIPT, COMMENTED_TAG_GRANT.replace(`${TAG} ;`, `${TAG};`));
+    const cut = blockOfScript(glued);
+    expect(cut.endsWith(`${TAG};`)).toBe(true);
+    expect(tagCountProblem(glued)).toContain('holds 4 $hap2126$ tags');
+    expect(blockShapeProblems(cut)).toEqual([expect.stringContaining('not the canonical template')]);
+    // A tag anywhere else, in a comment above the block or in a trailing comment, is refused by the count alone.
+    for (const extra of [`-- ${TAG}\n${APP_LOGIN_SCRIPT}`, `${APP_LOGIN_SCRIPT}\n-- ${TAG}\n`]) {
+      expect(tagCountProblem(extra)).toContain('holds 3 $hap2126$ tags');
+    }
+    // No block at all, or one that never closes with `;`, is refused by the extraction.
+    expect(() => blockOfScript('SELECT 1;')).toThrow('has no $hap2126$ DO block');
+    expect(() => blockOfScript(`DO ${TAG} BEGIN END ${TAG}\n;`)).toThrow('not followed by `;`');
+  });
+
   it('flags a block sample with a table twice, a tuple of another shape, a second EXECUTE or any GRANT or REVOKE outside the one EXECUTE, through the real block check', () => {
-    const sample = (values: string[], executes = 1, extra = '') => `FOR g IN SELECT * FROM (VALUES ${values.join(', ')}) AS t(rel, privs) LOOP `
-      + Array.from({ length: executes }, () => `EXECUTE format('GRANT %s ON %s TO cmdb_app', g.privs, g.rel);`).join(' ') + ` END LOOP;\n${extra}`;
+    const sample = (values: string[], executes = 1, extra = '') => canonicalBlock(values.join(', '),
+      Array.from({ length: executes }, () => BLOCK_GRANT_EXECUTE).join(' '), extra);
     expect(blockShapeProblems(sample(["('public.a', 'SELECT')", "('public.b', 'SELECT, INSERT')"]))).toEqual([]);
     for (const stray of ["('cmdb.c', 'SELECT')", "('public.c', 'select')", "('public.C', 'SELECT')"]) {
       expect(blockShapeProblems(sample(["('public.a', 'SELECT')", stray]))).toEqual([expect.stringContaining('another shape')]);
@@ -490,16 +718,114 @@ describe('the $hap2126$ block cannot silently drift from the migrations (grants,
     expect(blockShapeProblems(sample(["('public.a', 'SELECT')"], 0))).toEqual([expect.stringContaining('0 EXECUTE')]);
     // A second statement is refused whatever its case, and a static GRANT or REVOKE is refused with no EXECUTE at all.
     const one = ["('public.a', 'SELECT')"];
-    expect(blockShapeProblems(sample(one, 2))).toEqual([expect.stringContaining('2 EXECUTE'), expect.stringContaining('outside the one EXECUTE')]);
+    expect(blockShapeProblems(sample(one, 2))).toEqual([expect.stringContaining('2 EXECUTE')]);
     expect(blockShapeProblems(sample(one, 1, `execute 'GRANT DELETE ON public.api_keys TO cmdb_app';`)))
-      .toEqual([expect.stringContaining('2 EXECUTE'), expect.stringContaining('outside the one EXECUTE')]);
+      .toEqual([expect.stringContaining('2 EXECUTE'), expect.stringContaining('not exactly')]);
     expect(blockShapeProblems(sample(one, 1, 'GRANT DELETE ON public.api_keys TO cmdb_app;'))).toEqual([expect.stringContaining('outside the one EXECUTE')]);
     expect(blockShapeProblems(sample(one, 1, 'revoke select on public.api_keys from cmdb_app;'))).toEqual([expect.stringContaining('outside the one EXECUTE')]);
     expect(blockShapeProblems(sample(one, 1, `IF to_regclass('public.zz') IS NOT NULL THEN GRANT DELETE ON public.zz TO cmdb_app; END IF;`)))
       .toEqual([expect.stringContaining('outside the one EXECUTE')]);
     // A comment mention is stripped, but a `--` inside a string does not hide the statement behind it.
     expect(blockShapeProblems(sample(one, 1, '-- GRANT is only mentioned here'))).toEqual([]);
+    // An EXECUTE in a whole-line comment is no EXECUTE: `executesOf` reads the same uncommented text as every other count.
+    const commentedExecute = sample(one, 1, '-- EXECUTE nothing');
+    expect(executesOf(commentedExecute)).toHaveLength(2);
+    expect(executesOf(uncommentedOf(commentedExecute))).toHaveLength(1);
+    expect(blockShapeProblems(commentedExecute)).toEqual([]);
     expect(blockShapeProblems(sample(one, 1, `SELECT '--'; GRANT DELETE ON public.api_keys TO cmdb_app;`))).toEqual([expect.stringContaining('outside the one EXECUTE')]);
+    // The one EXECUTE must be the whole statement: text appended or concatenated after the grantee is a different grant (WITH GRANT OPTION).
+    const withGrantOption = (tail: string) => canonicalBlock("('public.a', 'SELECT')",
+      `EXECUTE format('GRANT %s ON %s TO cmdb_app'${tail}, g.privs, g.rel);`);
+    expect(blockShapeProblems(withGrantOption(''))).toEqual([]);
+    for (const tail of [` || ' WITH GR' || 'ANT OPTION'`, ` || ' WITH GRANT OPTION'`, ` || ', cmdb_user'`]) {
+      expect([tail, blockShapeProblems(withGrantOption(tail))]).toEqual([tail, [expect.stringContaining('is not exactly')]]);
+    }
+    expect(blockShapeProblems(`EXECUTE format('GRANT %s ON %s TO cmdb_app', g.privs, g.rel) || ' WITH GRANT OPTION';`))
+      .toEqual([expect.stringContaining('is not exactly')]);
+  });
+
+  it('refuses a block whose FOR projection or IF guard rewrites g.rel or g.privs, and the real block is the template', () => {
+    const real = blockText();
+    expect(blockShapeProblems(real)).toEqual([]);
+    // The WITH GRANT OPTION split across the FOR projection: the EXECUTE is byte-identical to the canonical statement, so only the template sees it.
+    const projected = withGrantOptionProjection(real);
+    expect(projected).toContain(BLOCK_GRANT_EXECUTE);
+    expect(blockShapeProblems(projected)).toEqual([expect.stringContaining('not the canonical template')]);
+    const mutations: Array<[string, (block: string) => string]> = [
+      ['projection concatenates the privileges', block => block.replace('FOR g IN SELECT * FROM (VALUES', "FOR g IN SELECT t.rel, t.privs || ' WITH GR' || 'ANT OPTION --' AS privs FROM (VALUES")],
+      ['a column list instead of *', block => block.replace('FOR g IN SELECT * FROM (VALUES', 'FOR g IN SELECT t.rel, t.privs FROM (VALUES')],
+      ['a WHERE clause on the rows', block => block.replace(') AS t(rel, privs) LOOP', ") AS t(rel, privs) WHERE privs <> '' LOOP")],
+      ['a different alias list', block => block.replace('AS t(rel, privs)', 'AS t(privs, rel)')],
+      ['the guard rewrites the relation', block => block.replace('to_regclass(g.rel)', "to_regclass(g.rel || '')")],
+      ['an extra statement in the loop', block => block.replace('END IF;', "END IF; g.rel := g.rel || ' ';")],
+      ['a statement before the loop', block => block.replace('FOR g IN', "PERFORM set_config('x', 'y', true); FOR g IN")],
+      ['a different DECLARE', block => block.replace('DECLARE g record;', 'DECLARE g record; x text := 1;')],
+    ];
+    for (const [label, mutate] of mutations) {
+      expect([label, mutate(real) === real]).toEqual([label, false]);
+      expect([label, blockShapeProblems(mutate(real))]).toEqual([label, [expect.stringContaining('not the canonical template')]]);
+    }
+    // Whitespace and whole-line comments are free; a row list of any length is one placeholder.
+    expect(blockShapeProblems(real.replace(/\n\s*/g, '\n').replace('BEGIN', 'BEGIN\n-- anything'))).toEqual([]);
+  });
+
+  it('runs the strict row parse and the loose row count on the same uncommented text, so a commented strict row cannot pay for a loose row', () => {
+    const real = blockText();
+    const estate = /\('public\.estate_kpi_snapshots',\s*'SELECT, INSERT'\)/;
+    expect(real).toMatch(estate);
+    // The estate row becomes a comment, and a loose row that no strict parse reads takes its place: raw-text counts see 6 strict, 6 loose.
+    const swapped = real.replace(estate, "-- ('public.estate_kpi_snapshots', 'SELECT, INSERT')\n        ('public.api_keys' ,'DELETE')");
+    expect(rowListOf(swapped)).toHaveLength(6);
+    expect(looseRowCount(uncommentedOf(swapped))).toBe(6);
+    expect(blockShapeProblems(swapped)).toEqual([expect.stringContaining('another shape')]);
+    // A commented row alone is no row: it is dropped from the parsed rows too.
+    const commented = real.replace(estate, "-- ('public.estate_kpi_snapshots', 'SELECT, INSERT')").replace(/'SELECT, INSERT'\),(\s*)-- /, "'SELECT, INSERT')$1-- ");
+    expect(rowListOf(uncommentedOf(commented))).toHaveLength(5);
+    expect(blockShapeProblems(commented)).toEqual([]);
+  });
+
+  it('counts every VALUES row loosely, so a row that the two strict parsers both skip is still refused', () => {
+    const sample = (values: string[]) => canonicalBlock(values.join(', '), BLOCK_GRANT_EXECUTE);
+    const good = "('public.a', 'SELECT')";
+    const loose: Array<[string, string]> = [
+      ['space before the comma', "('public.api_keys' ,'DELETE')"],
+      ['text cast', "('public.api_keys'::text, 'DELETE')"],
+      ['cast privilege', "('public.api_keys', 'DELETE'::text)"],
+      ['dollar quoting', "($$public.api_keys$$, $$DELETE$$)"],
+      ['function call', "(lower('PUBLIC.API_KEYS'), 'DELETE')"],
+      ['line break after the open parenthesis', "(\n'public.api_keys', 'DELETE')"],
+    ];
+    for (const [label, row] of loose) {
+      expect([label, rowListOf(sample([good, row])).length]).toEqual([label, 1]); // the strict parser does not see the row: only the loose count can
+      expect([label, blockShapeProblems(sample([good, row]))]).toEqual([label, [expect.stringContaining('another shape')]]);
+    }
+    // Two well-formed rows count as two, and a second VALUES list is counted too.
+    expect(blockShapeProblems(sample(["('public.a', 'SELECT')", "('public.b', 'SELECT, INSERT')"]))).toEqual([]);
+    expect(blockShapeProblems(`${sample([good])}\nSELECT * FROM (VALUES ('public.zz' ,'DELETE')) AS u(rel, privs);`)).toEqual([expect.stringContaining('another shape')]);
+  });
+
+  it('refuses a Unicode-escaped identifier anywhere in a migration, in every statement position and whether or not the file is listed', () => {
+    const MESSAGE = 'contains a Unicode-escaped identifier';
+    const bodies: Array<[string, string]> = [
+      ['TO, after another role', 'GRANT SELECT ON public.x TO cmdb_user, U&"cmdb\\005fapp";'],
+      ['TO GROUP', 'GRANT SELECT ON public.x TO GROUP U&"cmdb\\005fapp";'],
+      ['directly after TO', 'GRANT SELECT ON public.x TO U&"cmdb\\005fapp";'],
+      ['REVOKE FROM', 'REVOKE SELECT ON public.x FROM U&"cmdb\\005fapp";'],
+      ['REVOKE FROM, after another role', 'REVOKE SELECT ON public.x FROM cmdb_user, U&"cmdb\\005fapp";'],
+      ['lower case', 'grant select on public.x to cmdb_user, u&"cmdb\\005fapp";'],
+      ['role created with the escape', 'CREATE ROLE U&"cmdb\\005fapp";'],
+    ];
+    for (const [label, body] of bodies) {
+      expect([label, listingProblems({ '057_probe.sql': body }, [], {})]).toEqual([label, [expect.stringContaining(`057_probe.sql ${MESSAGE}`)]]);
+      // The rule has no exemption: a listing or a reason does not excuse it (a listed file that grants nothing to cmdb_app adds its own finding).
+      expect([label, listingProblems({ '057_probe.sql': body }, ['057_probe.sql'], {})]).toEqual([label, expect.arrayContaining([expect.stringContaining(MESSAGE)])]);
+      expect([label, listingProblems({ '057_probe.sql': body }, [], { '057_probe.sql': 'reviewed' })]).toEqual([label, [expect.stringContaining(MESSAGE)]]);
+    }
+    // Inside an EXECUTE it is refused next to the dynamic-EXECUTE finding, not instead of it.
+    expect(listingProblems({ '057_probe.sql': `DO $$ BEGIN EXECUTE 'GRANT SELECT ON public.x TO U&"cmdb\\005Fapp"'; END $$;` }, [], {}))
+      .toEqual([expect.stringContaining(MESSAGE), expect.stringContaining('runs a dynamic EXECUTE')]);
+    // A plain quoted identifier and an `&` elsewhere are not findings.
+    expect(listingProblems({ '057_probe.sql': `SELECT 1 & 2; GRANT SELECT ON public.x TO "cmdb_user";` }, [], {})).toEqual([]);
   });
 
   it('names every table of every GRANT of the granting migrations, and the block restores each', () => {

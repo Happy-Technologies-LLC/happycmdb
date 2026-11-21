@@ -70,8 +70,22 @@ NEO4J_ENCRYPTED=true
 | `POSTGRES_SSL_MODE` | Yes in production | unset (cleartext) | `disable`, `require` (TLS, certificate not verified), `prefer` (same as `require`; no cleartext fallback), or `verify-full` (certificate chain and host name). Any other value refuses to start. With `NODE_ENV=production` and a non-local host, setting neither `POSTGRES_SSL_MODE` nor `POSTGRES_SSL_ENABLED` refuses to start. |
 | `POSTGRES_SSL_ENABLED` | No | - | Used only when `POSTGRES_SSL_MODE` is unset: `on` (= `require`), or any other value taken as the mode itself (`off`, `false`, `disable`, `require`, `prefer`, `verify-full`); an unsupported value such as `true` refuses to start. The shipped compose always sets `POSTGRES_SSL_MODE` for the api-server, so there it only drives the postgres server's `-c ssl=` flag |
 | `POSTGRES_SSL_CA_FILE` | No | Node.js trust store | Path to the CA bundle that `verify-full` trusts |
+| `REQUIRE_NON_SUPERUSER_DB` | No | `false` (log only) | Startup check of the API's PostgreSQL login. Only the string `true` (case-insensitive, surrounding whitespace ignored) enforces; `1`, `yes`, empty and unset do not. Enforcing makes the API exit non-zero before it listens when the login is privileged (see below), and also when the probe cannot run (fail closed). Off, the same check logs one `error` line for a privileged login and the API starts. |
 
 `POSTGRES_SSL_CA_FILE` only takes effect in a process that receives it. The shipped `infrastructure/docker/docker-compose.yml` does not forward it to the api-server or mount a CA, so `verify-full` needs the additions described in [Production Configuration](../deployment/PRODUCTION_CONFIGURATION.md).
+
+`REQUIRE_NON_SUPERUSER_DB` counts the login as privileged when any of these eight flags is set (the probe runs one read-only query as the API's own login):
+
+- `rolsuper`: the role is a superuser.
+- `rolbypassrls`: the role has `BYPASSRLS`.
+- `session_user_privileged`: the session login (before any `SET ROLE`) is a superuser or has `BYPASSRLS`.
+- `can_set_privileged_role`: the role or the session login is a member of another superuser or `BYPASSRLS` role, so it can `SET ROLE` to it.
+- `session_authorization_masked`: a superuser login used `SET SESSION AUTHORIZATION` to look like another role. Detected on PostgreSQL 16 and later only; always false below 16.
+- `dangerous_builtin_role_member`: the role or the session login is a member of `pg_execute_server_program`, `pg_write_server_files`, `pg_read_server_files`, `pg_read_all_data` or `pg_write_all_data`.
+- `createrole_escalation`: PostgreSQL 15 or older only: a member of a `CREATEROLE` role, which can grant itself any role.
+- `replication_escalation`: a member of a role with `REPLICATION`.
+
+The shipped `infrastructure/docker/docker-compose.yml` does not forward `REQUIRE_NON_SUPERUSER_DB` and logs the API in as `POSTGRES_USER=cmdb_user`, the bootstrap superuser, so setting it in `.env` alone does nothing there, and forwarding it with the shipped `cmdb_user` would make the API refuse to start. Use it only with a dedicated non-privileged login, such as the `cmdb_app` role of `deploy/build01-staging.compose.yml`; see `deploy/BUILD01-STAGING.md` for the role creation, migration order and rollback.
 
 **Example:**
 

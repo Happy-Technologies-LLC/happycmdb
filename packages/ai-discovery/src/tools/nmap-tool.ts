@@ -83,9 +83,75 @@ export const nmapTool: DiscoveryTool = {
   },
 };
 
+const XML_ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+};
+
+/** Decode the five predefined XML entities in a single pass (no double decoding). */
+function decodeXmlEntities(value: string): string {
+  return value.replace(/&(amp|lt|gt|quot|apos);/g, (_m, name: string) => XML_ENTITIES[name]);
+}
+
+/** The only attributes the extractor reads; everything else in nmap's XML is ignored. */
+interface XmlAttributes {
+  state?: string;
+  protocol?: string;
+  portid?: string;
+  name?: string;
+  product?: string;
+  version?: string;
+  extrainfo?: string;
+}
+
+const WANTED_ATTRIBUTES: ReadonlySet<string> = new Set([
+  'state', 'protocol', 'portid', 'name', 'product', 'version', 'extrainfo',
+]);
+
+/** Read `name="value"` pairs from the attribute text of one start tag. */
+function parseAttributes(attributeText: string): XmlAttributes {
+  const attributes: XmlAttributes = {};
+  const attributeRegex = /([\w:.-]+)="([^"]*)"/g;
+  let match: RegExpExecArray | null;
+  while ((match = attributeRegex.exec(attributeText)) !== null) {
+    if (WANTED_ATTRIBUTES.has(match[1])) {
+      attributes[match[1] as keyof XmlAttributes] = decodeXmlEntities(match[2]);
+    }
+  }
+  return attributes;
+}
+
 /**
- * Parse NMAP output (simplified)
- * In production, use a proper XML parser like xml2js
+ * Attribute list of a start tag: quoted values may contain a literal `>`, so the
+ * tag end is only recognised outside quotes.
+ */
+const ATTR_LIST = '((?:\\s+[\\w:.-]+="[^"]*")*)\\s*';
+
+function firstTag(xml: string, name: string): XmlAttributes | null {
+  const match = new RegExp(`<${name}${ATTR_LIST}\\/?>`).exec(xml);
+  return match ? parseAttributes(match[1]) : null;
+}
+
+/** Error result: same shape as a scan result, no ports, plus the first 500 characters of output. */
+function parseFailure(output: string): any {
+  return {
+    status: 'error',
+    error: 'Failed to parse output',
+    openPorts: [],
+    services: [],
+    osGuess: null,
+    rawOutput: output.substring(0, 500),
+  };
+}
+
+/**
+ * Parse `nmap -oX -` output. nmap emits a fixed element set, so a strict
+ * extractor is used instead of an XML dependency. Output that is not nmap XML
+ * (for example the plain-text format) is reported as `error`, never as a clean
+ * "nothing open".
  */
 function parseNmapOutput(output: string): any {
   const result: any = {
@@ -96,46 +162,59 @@ function parseNmapOutput(output: string): any {
   };
 
   try {
-    // Check if host is up
-    if (output.includes('Host is up')) {
+    if (!/<nmaprun[\s>]/.test(output)) {
+      return parseFailure(output);
+    }
+
+    // Comments and host hints can repeat element names (`<status>`, `<port`).
+    const xml = output
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<hosthint\b[\s\S]*?<\/hosthint>/g, '');
+
+    const status = firstTag(xml, 'status')?.state;
+    if (status === 'up') {
       result.status = 'up';
-    } else if (output.includes('host down')) {
+    } else if (status === 'down') {
       result.status = 'down';
       return result;
     }
 
-    // Extract open ports (simple regex parsing)
-    const portRegex = /(\d+)\/tcp\s+open\s+(\S+)\s*(.*)/g;
-    let match;
+    const portRegex = new RegExp(`<port${ATTR_LIST}>([\\s\\S]*?)<\\/port>`, 'g');
+    let match: RegExpExecArray | null;
 
-    while ((match = portRegex.exec(output)) !== null) {
-      const port = parseInt(match[1], 10);
-      const service = match[2];
-      const version = match[3]?.trim() || '';
+    while ((match = portRegex.exec(xml)) !== null) {
+      const portAttrs = parseAttributes(match[1]);
+      const body = match[2];
+
+      if (firstTag(body, 'state')?.state !== 'open') continue;
+      if (portAttrs.protocol !== 'tcp' && portAttrs.protocol !== 'udp') continue;
+      if (!/^\d{1,5}$/.test(portAttrs.portid ?? '')) continue;
+      const port = Number(portAttrs.portid);
+      if (port < 1 || port > 65535) continue;
+
+      const serviceAttrs = firstTag(body, 'service') ?? {};
+      const version = [serviceAttrs.product, serviceAttrs.version, serviceAttrs.extrainfo]
+        .filter((part): part is string => !!part)
+        .join(' ');
 
       result.openPorts.push(port);
       result.services.push({
         port,
-        protocol: 'tcp',
+        protocol: portAttrs.protocol,
         state: 'open',
-        service,
+        service: serviceAttrs.name ?? '',
         version,
       });
     }
 
-    // Extract OS guess (if available)
-    const osMatch = output.match(/OS details: (.+)/);
-    if (osMatch) {
-      result.osGuess = osMatch[1];
+    const osName = firstTag(xml, 'osmatch')?.name;
+    if (osName) {
+      result.osGuess = osName;
     }
 
     return result;
   } catch {
     logger.error('Failed to parse NMAP output');
-    return {
-      status: 'error',
-      error: 'Failed to parse output',
-      rawOutput: output.substring(0, 500), // First 500 chars
-    };
+    return parseFailure(output);
   }
 }

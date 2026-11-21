@@ -162,17 +162,21 @@ AI_DISCOVERY_MAX_RETRIES=2
 
 # Max concurrent nmap processes per api-server process (integer 1-64, default 4)
 AI_DISCOVERY_NMAP_CONCURRENCY=4
+
+# Longest wait for a free nmap slot, in milliseconds (integer 1000-600000, default 60000)
+AI_DISCOVERY_NMAP_QUEUE_TIMEOUT_MS=60000
 ```
 
 ### AI Tool Limits
 
 Tool arguments come from the model, and tool results come from scanned hosts. Both are treated as untrusted:
 
-- **Session scope**: `nmap_scan`, `http_probe`, `ssh_execute` and `ssh_read_file` may only target the session's `targetHost` (compared case-insensitively, ignoring a trailing dot and IPv6 brackets). Any other host, for example one named by text in a service banner, fails the discovery with the fixed error `Discovery target refused` and the tool does not run. Discovery definitions carry no allowed-range list, so the session target is the whole scope. The existing block on non-public addresses still applies on top of this.
-- **`http_probe` URL**: `protocol` must be `http` or `https`, `port` an integer 1-65535, and `path` must start with `/`, so those fields cannot redirect the request to another host.
+- **Session scope**: a tool declares that it connects to a model-named host with `targetScoped: true` on its `DiscoveryTool` definition; `nmap_scan`, `http_probe`, `ssh_execute` and `ssh_read_file` set it. Every `targetScoped` tool may only target the session's `targetHost` (compared case-insensitively, ignoring a trailing dot and IPv6 brackets; a host with any non-ASCII character never matches, so an internationalised name must be given in its punycode form). Any other host, for example one named by text in a service banner, fails the discovery with the fixed error `Discovery target refused` and the tool does not run. A tool whose input schema has a `host` property but no `targetScoped: true` is refused with the same error, whatever its name, so a custom network tool cannot skip the check. Discovery definitions carry no allowed-range list, so the session target is the whole scope. The existing block on non-public addresses still applies on top of this.
+- **`http_probe` URL**: `protocol` must be `http` or `https`, `port` an integer 1-65535, and `path` must start with `/`, so those fields cannot redirect the request to another host. `method` must be GET, HEAD, POST or OPTIONS (case-insensitive, sent upper-cased); anything else fails with `Invalid HTTP probe parameters` and no request is made. An IPv6 host is put in brackets in the URL.
 - **`nmap_scan` result**: at most 256 services/open ports, and each scanner-supplied string (service, product, version, extrainfo, OS name) is cut at 200 characters after control characters are removed. A cut sets `truncated: true`. Failed parses return a fixed error and no scanner output. The XML parser expands only the five predefined entities and numeric character references, never DTD entities.
-- **Tool result size**: any tool result sent back to the model is cut at 16,000 characters (`MAX_TOOL_RESULT_CHARS`) with a `[tool result truncated: ...]` marker. The stored session trace keeps the full output.
-- **nmap concurrency**: a process-wide semaphore allows 4 simultaneous nmap subprocesses (`AI_DISCOVERY_NMAP_CONCURRENCY` overrides; values outside 1-64 fall back to 4). Further scans wait for a free slot.
+- **Tool result size**: any tool result sent back to the model is first stripped of Unicode line/paragraph separators (U+2028/U+2029), C1 control characters and format characters (`\p{Cf}`: bidi overrides, zero-width characters, BOM), then cut at 16,000 UTF-16 code units (`MAX_TOOL_RESULT_CHARS`) with a `[tool result truncated: ...]` marker. The stored session trace keeps the full output, except that SSH output is bounded (see below).
+- **nmap concurrency**: a process-wide semaphore allows 4 simultaneous nmap subprocesses (`AI_DISCOVERY_NMAP_CONCURRENCY` overrides; values outside 1-64 fall back to 4). Further scans wait for a free slot, for at most 60 seconds (`AI_DISCOVERY_NMAP_QUEUE_TIMEOUT_MS` overrides; integer milliseconds 1000-600000, anything else falls back to 60000). A scan still queued at the deadline never starts and fails with the fixed error `nmap scan queue timeout`. The deadline covers the wait only, not the scan itself (which has its own 30 second limit).
+- **SSH output**: `ssh_execute` and `ssh_read_file` keep at most 1 MiB of stdout plus stderr combined (`SSH_MAX_OUTPUT_BYTES`). Past that the connection is closed and the result carries `truncated: true` (`ssh_execute` also reports `success: false`, since the exit status is unknown). The stored session trace holds the same bounded output.
 
 ### Supported LLM Providers
 

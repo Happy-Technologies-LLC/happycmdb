@@ -64,4 +64,25 @@ describe('PostgresClient TLS mode', () => {
       _host: 'db.internal', _port: 5432, _database: 'cmdb', _user: 'u', _password: 'p', ssl: 'verify-full', sslCa: ' \n',
     })).toThrow();
   });
+
+  // A CA bundle is trust the caller pinned; a mode that ignores it must fail, not connect unverified.
+  it.each(['require', 'prefer', 'disable', false, true] as const)('refuses an explicit CA bundle with ssl %p', (ssl) => {
+    expect(() => new PostgresClient({
+      _host: 'db.internal', _port: 5432, _database: 'cmdb', _user: 'u', _password: 'p', ssl, sslCa: 'explicit-ca-pem',
+    })).toThrow('sslCa needs ssl: verify-full');
+  });
+
+  it('refuses an explicit CA bundle when the mode is unset or comes from POSTGRES_SSL_MODE=require', () => {
+    const config = { _host: 'db.internal', _port: 5432, _database: 'cmdb', _user: 'u', _password: 'p', sslCa: 'explicit-ca-pem' };
+    expect(() => new PostgresClient(config)).toThrow('sslCa needs ssl: verify-full');
+    process.env['POSTGRES_SSL_MODE'] = 'require';
+    expect(() => new PostgresClient(config)).toThrow('sslCa needs ssl: verify-full');
+  });
+
+  it('still accepts an explicit CA bundle when verify-full comes from POSTGRES_SSL_MODE', () => {
+    process.env['POSTGRES_SSL_MODE'] = 'verify-full';
+    const ssl = new PostgresClient({ _host: 'db.internal', _port: 5432, _database: 'cmdb', _user: 'u', _password: 'p', sslCa: 'explicit-ca-pem' })
+      .pool.options.ssl as ConnectionOptions;
+    expect(ssl).toMatchObject({ rejectUnauthorized: true, ca: 'explicit-ca-pem' });
+  });
 });

@@ -21,7 +21,7 @@ import { isIP } from 'net';
 import { getEncryptionService, type EncryptedData } from '../../../common/src/services/encryption.service';
 import { hasUnsafeDiscoveryDefinitionConfig } from '../../../common/src/utils/discovery-scan-config';
 import { PostgresClient } from '../../../database/src/postgres/client';
-import { isLoopbackHost } from './operator-tls';
+import { isLoopbackHost, isolateOperatorEnvironment } from './operator-tls';
 
 // updated_at as a UTC microsecond string: the S5b drift check compares it without Date's millisecond truncation.
 export const DEFINITIONS_SQL = `SELECT id, organization_id, provider, credential_id, credential_set_id, created_by, config,
@@ -610,8 +610,7 @@ if (require.main === module) {
   // Nothing goes to stdout: every stdout write (the shared logger, libraries) goes to stderr.
   process.stdout.write = process.stderr.write.bind(process.stderr);
   // PostgresClient also reads the api-server's TLS toggles; this tool is configured only by CMDB_MIGRATION_POSTGRES_*.
-  delete process.env['POSTGRES_SSL_MODE'];
-  delete process.env['POSTGRES_SSL_ENABLED'];
+  isolateOperatorEnvironment(process.env);
   void runCli(() => main(process.argv.slice(2), process.env, { stderr: line => process.stderr.write(`${line}\n`) }),
     (chunk, done) => process.stderr.write(chunk, done), code => process.exit(code));
 }

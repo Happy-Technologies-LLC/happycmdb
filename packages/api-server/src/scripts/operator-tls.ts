@@ -63,6 +63,9 @@ export function resolveOperatorPostgresTls(env: NodeJS.ProcessEnv, prefix: strin
   if (setting === 'disable' && !loopback) {
     logger.warn(`${sslVariable}=disable: the PostgreSQL connection to a non-loopback host is NOT encrypted`);
   }
+  if (setting === 'require' && !loopback) {
+    logger.warn(`${sslVariable}=require: the PostgreSQL connection to a non-loopback host does NOT verify the server certificate`);
+  }
   return { ssl: setting === 'require' || setting === 'verify-full' ? setting : false };
 }
 
@@ -72,18 +75,49 @@ function neo4jUriHost(uri: string): string {
   return authority.startsWith('[') ? authority.slice(1, authority.indexOf(']')) : authority.replace(/:\d+$/, '');
 }
 
-/** `<prefix>_NEO4J_ENCRYPTED`: `true` or `false`. `uri` MUST already have passed `assertPlainNeo4jUri`. */
+/**
+ * `<prefix>_NEO4J_ENCRYPTED`: `true` or `false`. `uri` MUST already have passed `assertPlainNeo4jUri`.
+ * Only a direct `bolt://` URI to a loopback host may leave it unset: with the `neo4j://` routing scheme the driver dials
+ * the hosts the server's routing table advertises, so `neo4j://localhost` (an SSH tunnel, say) can still send
+ * credentials in plaintext to a remote host.
+ */
 export function resolveOperatorNeo4jEncrypted(env: NodeJS.ProcessEnv, prefix: string, uri: string): boolean {
   const variable = `${prefix}_NEO4J_ENCRYPTED`;
   const setting = env[variable];
   if (setting !== undefined && setting !== 'true' && setting !== 'false') {
     throw new Error(`${variable} must be true or false when set`);
   }
-  if (setting === undefined && !isLoopbackHost(neo4jUriHost(uri))) {
-    throw new Error(`${variable} must be set for a non-loopback host: true (recommended), or false to opt out of TLS`);
+  const directLoopback = uri.startsWith('bolt://') && isLoopbackHost(neo4jUriHost(uri));
+  if (setting === undefined && !directLoopback) {
+    throw new Error(`${variable} must be set for a non-loopback host or a neo4j:// routing URI: true (recommended), or false to opt out of TLS`);
   }
-  if (setting === 'false' && !isLoopbackHost(neo4jUriHost(uri))) {
+  if (setting === 'false' && !directLoopback) {
     logger.warn(`${variable}=false: the Neo4j connection to a non-loopback host is NOT encrypted`);
   }
   return setting === 'true';
+}
+
+/**
+ * The API server's own TLS toggles that `PostgresClient` / `Neo4jClient` read from `process.env`. Every operator tool
+ * (rotation, identity window, backfill, seed) defines its connections only through its own `CMDB_*` variables, so it
+ * drops all of these before any client exists. A new ambient client variable MUST be added here, once.
+ *
+ * `NODE_EXTRA_CA_CERTS` is deliberately not in this list: it is a process-level Node setting that only adds trust to
+ * the public store, and it is the supported way to trust a private Postgres CA under `verify-full`. Do not add it.
+ */
+export const API_SERVER_CLIENT_ENV_NAMES: readonly string[] = [
+  'POSTGRES_SSL_MODE',
+  'POSTGRES_SSL_ENABLED',
+  'POSTGRES_SSL_CA_FILE',
+  'NEO4J_SSL_ENABLED',
+  'NEO4J_ENCRYPTION',
+  'NEO4J_ENCRYPTED',
+  'NEO4J_SSL_TRUST_STRATEGY',
+];
+
+/** Drops the API server's own TLS toggles so only the tool's CMDB_* variables define connections. */
+export function isolateOperatorEnvironment(env: NodeJS.ProcessEnv): void {
+  for (const name of API_SERVER_CLIENT_ENV_NAMES) {
+    delete env[name];
+  }
 }

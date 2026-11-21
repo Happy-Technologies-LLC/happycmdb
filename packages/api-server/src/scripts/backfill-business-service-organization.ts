@@ -95,8 +95,8 @@ import { readFileSync } from 'fs';
 // connection at load time. These modules open nothing until a client is constructed.
 import { Neo4jClient } from '../../../database/src/neo4j/client';
 import { PostgresClient } from '../../../database/src/postgres/client';
-import { assertPlainNeo4jUri, isolateOperatorEnvironment } from './operator-stores';
-import { resolveOperatorNeo4jEncrypted, resolveOperatorPostgresTls } from './operator-tls';
+import { assertPlainNeo4jUri } from './operator-stores';
+import { isolateOperatorEnvironment, resolveOperatorNeo4jEncrypted, resolveOperatorPostgresTls } from './operator-tls';
 
 /** Same shape the api-server accepts as an organization claim (auth.middleware.ts). */
 const ORGANIZATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

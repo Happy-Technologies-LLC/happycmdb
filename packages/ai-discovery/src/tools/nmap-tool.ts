@@ -13,6 +13,54 @@ import { logger, resolveDiscoveryHost, connectDiscoveryHost, DISCOVERY_TARGET_RE
 
 const execFileAsync = promisify(execFile);
 
+/** Most open ports/services one scan result carries to the model. */
+export const NMAP_MAX_SERVICES = 256;
+/** Longest scanner-supplied string (service, product, version, extrainfo, OS name) in a result. */
+export const NMAP_MAX_FIELD_CHARS = 200;
+/** Default number of nmap subprocesses running at once in this process. */
+export const NMAP_DEFAULT_CONCURRENCY = 4;
+/** Environment override for the process-wide nmap concurrency (integer 1-64). */
+export const NMAP_CONCURRENCY_ENV = 'AI_DISCOVERY_NMAP_CONCURRENCY';
+
+function nmapConcurrencyFromEnv(): number {
+  const raw = process.env[NMAP_CONCURRENCY_ENV];
+  if (raw === undefined || !/^\d{1,2}$/.test(raw.trim())) {
+    return NMAP_DEFAULT_CONCURRENCY;
+  }
+  const limit = Number(raw);
+  return limit >= 1 && limit <= 64 ? limit : NMAP_DEFAULT_CONCURRENCY;
+}
+
+/** FIFO counting semaphore: callers beyond the limit wait for a release. */
+class Semaphore {
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+
+  constructor(private readonly limit: number) {}
+
+  async run<T>(task: () => Promise<T>): Promise<T> {
+    if (this.active >= this.limit) {
+      // The slot is handed over directly, so `active` stays counted for the next holder.
+      await new Promise<void>((resolve) => this.waiters.push(resolve));
+    } else {
+      this.active++;
+    }
+    try {
+      return await task();
+    } finally {
+      const next = this.waiters.shift();
+      if (next) {
+        next();
+      } else {
+        this.active--;
+      }
+    }
+  }
+}
+
+/** Process-wide: every concurrent AI session shares these slots. */
+const nmapSlots = new Semaphore(nmapConcurrencyFromEnv());
+
 export const nmapTool: DiscoveryTool = {
   name: 'nmap_scan',
   description:
@@ -59,10 +107,10 @@ export const nmapTool: DiscoveryTool = {
       const args = [nmapArgs, ...(ports === undefined ? ['--top-ports', '100'] : ['-p', ports]),
         destination, '-oX', '-'];
       // execFile never invokes a shell; the destination is a checked numeric IP.
-      const { stdout, stderr } = await execFileAsync('nmap', args, {
+      const { stdout, stderr } = await nmapSlots.run(() => execFileAsync('nmap', args, {
         timeout: 30000,
         maxBuffer: 1024 * 1024,
-      });
+      }));
 
       if (stderr && !stderr.includes('Starting Nmap')) {
         logger.warn('NMAP stderr output');
@@ -91,9 +139,36 @@ const XML_ENTITIES: Record<string, string> = {
   apos: "'",
 };
 
-/** Decode the five predefined XML entities in a single pass (no double decoding). */
+/**
+ * Decode the five predefined XML entities and numeric character references in a
+ * single pass (no double decoding). A reference to a code point XML cannot
+ * carry is left as literal text. No other entity is ever expanded.
+ */
 function decodeXmlEntities(value: string): string {
-  return value.replace(/&(amp|lt|gt|quot|apos);/g, (_m, name: string) => XML_ENTITIES[name]);
+  return value.replace(
+    /&(?:(amp|lt|gt|quot|apos)|#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6}));/g,
+    (match, name?: string, decimal?: string, hex?: string) => {
+      if (name) return XML_ENTITIES[name];
+      const codePoint = decimal !== undefined ? Number(decimal) : parseInt(hex as string, 16);
+      const valid = codePoint >= 1 && codePoint <= 0x10ffff && (codePoint < 0xd800 || codePoint > 0xdfff);
+      return valid ? String.fromCodePoint(codePoint) : match;
+    },
+  );
+}
+
+/** Text a scanned host controls: drop control characters, then cut at the field cap. */
+function boundScannerText(value: string | undefined, limits: { truncated: boolean }): string | undefined {
+  if (value === undefined) return undefined;
+  let text = value.replace(/[\p{Cc}\u2028\u2029]/gu, '');
+  if (text.length > NMAP_MAX_FIELD_CHARS) {
+    limits.truncated = true;
+    text = text.slice(0, NMAP_MAX_FIELD_CHARS);
+    // Never end on half of a surrogate pair.
+    if (/[\ud800-\udbff]$/.test(text)) {
+      text = text.slice(0, -1);
+    }
+  }
+  return text;
 }
 
 /** The only attributes the extractor reads; everything else in nmap's XML is ignored. */
@@ -135,15 +210,14 @@ function firstTag(xml: string, name: string): XmlAttributes | null {
   return match ? parseAttributes(match[1]) : null;
 }
 
-/** Error result: same shape as a scan result, no ports, plus the first 500 characters of output. */
-function parseFailure(output: string): any {
+/** Error result: same shape as a scan result, no ports, and no scanner output. */
+function parseFailure(): any {
   return {
     status: 'error',
     error: 'Failed to parse output',
     openPorts: [],
     services: [],
     osGuess: null,
-    rawOutput: output.substring(0, 500),
   };
 }
 
@@ -160,15 +234,18 @@ function parseNmapOutput(output: string): any {
     services: [],
     osGuess: null,
   };
+  const limits = { truncated: false };
 
   try {
     if (!/<nmaprun[\s>]/.test(output)) {
-      return parseFailure(output);
+      return parseFailure();
     }
 
-    // Comments and host hints can repeat element names (`<status>`, `<port`).
+    // Comments, a DOCTYPE (with any internal subset) and host hints can repeat
+    // element names (`<status>`, `<port`); none of them is scan data.
     const xml = output
       .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<!DOCTYPE[^[>]*(?:\[[\s\S]*?\]\s*)?>/gi, '')
       .replace(/<hosthint\b[\s\S]*?<\/hosthint>/g, '');
 
     const status = firstTag(xml, 'status')?.state;
@@ -192,8 +269,15 @@ function parseNmapOutput(output: string): any {
       const port = Number(portAttrs.portid);
       if (port < 1 || port > 65535) continue;
 
+      if (result.services.length >= NMAP_MAX_SERVICES) {
+        limits.truncated = true;
+        break;
+      }
+
       const serviceAttrs = firstTag(body, 'service') ?? {};
+      const name = boundScannerText(serviceAttrs.name, limits);
       const version = [serviceAttrs.product, serviceAttrs.version, serviceAttrs.extrainfo]
+        .map((part) => boundScannerText(part, limits))
         .filter((part): part is string => !!part)
         .join(' ');
 
@@ -202,19 +286,20 @@ function parseNmapOutput(output: string): any {
         port,
         protocol: portAttrs.protocol,
         state: 'open',
-        service: serviceAttrs.name ?? '',
+        service: name ?? '',
         version,
       });
     }
 
-    const osName = firstTag(xml, 'osmatch')?.name;
+    const osName = boundScannerText(firstTag(xml, 'osmatch')?.name, limits);
     if (osName) {
       result.osGuess = osName;
     }
 
+    if (limits.truncated) result.truncated = true;
     return result;
   } catch {
     logger.error('Failed to parse NMAP output');
-    return parseFailure(output);
+    return parseFailure();
   }
 }

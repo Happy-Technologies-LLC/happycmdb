@@ -159,7 +159,20 @@ AI_ENABLE_LEGACY_FALLBACK=true
 # Security & Timeouts
 AI_DISCOVERY_TIMEOUT_MS=30000          # 30 seconds
 AI_DISCOVERY_MAX_RETRIES=2
+
+# Max concurrent nmap processes per api-server process (integer 1-64, default 4)
+AI_DISCOVERY_NMAP_CONCURRENCY=4
 ```
+
+### AI Tool Limits
+
+Tool arguments come from the model, and tool results come from scanned hosts. Both are treated as untrusted:
+
+- **Session scope**: `nmap_scan`, `http_probe`, `ssh_execute` and `ssh_read_file` may only target the session's `targetHost` (compared case-insensitively, ignoring a trailing dot and IPv6 brackets). Any other host, for example one named by text in a service banner, fails the discovery with the fixed error `Discovery target refused` and the tool does not run. Discovery definitions carry no allowed-range list, so the session target is the whole scope. The existing block on non-public addresses still applies on top of this.
+- **`http_probe` URL**: `protocol` must be `http` or `https`, `port` an integer 1-65535, and `path` must start with `/`, so those fields cannot redirect the request to another host.
+- **`nmap_scan` result**: at most 256 services/open ports, and each scanner-supplied string (service, product, version, extrainfo, OS name) is cut at 200 characters after control characters are removed. A cut sets `truncated: true`. Failed parses return a fixed error and no scanner output. The XML parser expands only the five predefined entities and numeric character references, never DTD entities.
+- **Tool result size**: any tool result sent back to the model is cut at 16,000 characters (`MAX_TOOL_RESULT_CHARS`) with a `[tool result truncated: ...]` marker. The stored session trace keeps the full output.
+- **nmap concurrency**: a process-wide semaphore allows 4 simultaneous nmap subprocesses (`AI_DISCOVERY_NMAP_CONCURRENCY` overrides; values outside 1-64 fall back to 4). Further scans wait for a free slot.
 
 ### Supported LLM Providers
 

@@ -78,6 +78,8 @@ async function patch(user: Record<string, unknown>, id: string, body: Record<str
 const U1 = { _userId: 'u-1', _organizationId: ORG_A };
 const U2 = { _userId: 'u-2', _organizationId: ORG_A };
 const row = async (id: string) => (await sql('SELECT * FROM itil_changes WHERE id = $1', [id]))[0];
+/** The server's own rendering of FIXED_APPROVED (`approved_at::text`), which the trail event logs verbatim. */
+const FIXED_STAMP_TEXT = '2026-01-01 00:00:00+00';
 const FIXED_APPROVED = '2026-01-01T00:00:00.000Z';
 
 let counter = 0;
@@ -167,11 +169,23 @@ describe('POST /itil/changes/:id/approve records the approver', () => {
     expect((await row(id))['approved_by']).toBe('u-1');
   });
 
-  it('falls back to _username when the token carries no _userId', async () => {
+  it('refuses a principal that carries only a username with 401 and writes nothing', async () => {
     const id = await addChange(ORG_A);
+    const before = await row(id);
     const out = await approve({ _username: 'alice', _organizationId: ORG_A }, id);
+    expect(out.statusCode).toBe(401);
+    expect(out.body).toEqual({ success: false, error: 'Unauthorized',
+      message: 'An authenticated user is required to approve a change' });
+    expect(await row(id)).toEqual(before);
+  });
+
+  it('stamps the _userId of an API-key principal (_userId, _username, _role and _type, as AuthService.verifyApiKey returns)', async () => {
+    const id = await addChange(ORG_A);
+    const keyOwner = '44444444-4444-4444-8444-444444444444';
+    const out = await approve({ _userId: keyOwner, _username: 'ci-bot', _role: 'operator', _type: 'access',
+      _organizationId: ORG_A }, id);
     expect(out.statusCode).toBe(200);
-    expect((await row(id))['approved_by']).toBe('alice');
+    expect((await row(id))['approved_by']).toBe(keyOwner);
   });
 
   it('answers 401 without a usable identity and writes nothing', async () => {
@@ -365,15 +379,25 @@ describe('clearing an approval stamp leaves one id-only trail event', () => {
       { status: 'PENDING_APPROVAL' })).statusCode).toBe(200);
     expect(cleared()).toEqual([['Change approval stamp cleared', {
       change_id: id, organization_id: ORG_A, previous_approved_by: approverId,
-      previous_approved_at: FIXED_APPROVED, actor_user_id: 'u-2',
+      previous_approved_at: FIXED_STAMP_TEXT, actor_user_id: 'u-2',
     }]]);
+  });
+
+  it('logs previous_approved_at as the server stamp text, keeping the microseconds a JS Date drops', async () => {
+    const id = await addChange(ORG_A);
+    await approve(U1, id);
+    await sql(`UPDATE itil_changes SET approved_at = '2026-01-01 00:00:00.123456+00' WHERE id = $1`, [id]);
+    const [{ stamp }] = await sql('SELECT approved_at::text AS stamp FROM itil_changes WHERE id = $1', [id]) as [{ stamp: string }];
+    expect(stamp).toContain('.123456');
+    expect((await patch(U2, id, { status: 'DRAFT' })).statusCode).toBe(200);
+    expect(cleared()[0]![1]).toMatchObject({ previous_approved_at: stamp });
   });
 
   it.each(['alice@example.com', 'u-1', 'Alice Example'])(
     'logs a legacy non-UUID approver (%s) as a kind only, never the stored value', async legacy => {
       const id = await addChange(ORG_A);
-      await approve({ _username: legacy, _organizationId: ORG_A }, id);
-      expect((await row(id))['approved_by']).toBe(legacy);
+      await sql(`UPDATE itil_changes SET status = 'approved', approval_status = 'approved', approved_by = $2,
+        approved_at = now() WHERE id = $1`, [id, legacy]);
       expect((await patch(U2, id, { status: 'DRAFT' })).statusCode).toBe(200);
       const [[, event]] = cleared() as [[string, Record<string, unknown>]];
       expect(event).toEqual({
@@ -387,7 +411,7 @@ describe('clearing an approval stamp leaves one id-only trail event', () => {
     const id = await addChange(ORG_A);
     await sql(`UPDATE itil_changes SET approved_at = '${FIXED_APPROVED}' WHERE id = $1`, [id]);
     expect((await patch(U2, id, { status: 'DRAFT' })).statusCode).toBe(200);
-    expect(cleared()[0]![1]).toMatchObject({ previous_approved_by: null, previous_approved_at: FIXED_APPROVED });
+    expect(cleared()[0]![1]).toMatchObject({ previous_approved_by: null, previous_approved_at: FIXED_STAMP_TEXT });
   });
 
   it('logs nothing when there was no stamp to clear, or when the write is refused', async () => {
@@ -429,13 +453,20 @@ describe('PATCH /itil/changes/:id with status APPROVED records the approver', ()
     expect((stored['approved_at'] as Date).getTime()).toBeGreaterThan(new Date(FIXED_APPROVED).getTime());
   });
 
-  it('falls back to _username, and carries implementedBy in the same write', async () => {
+  it('carries implementedBy in the same write as the approval', async () => {
     const id = await addChange(ORG_A);
-    const out = await patch({ _username: 'alice', _organizationId: ORG_A }, id,
-      { status: 'APPROVED', implementedBy: 'bob' });
+    const out = await patch(U1, id, { status: 'APPROVED', implementedBy: 'bob' });
     expect(out.statusCode).toBe(200);
     const stored = await row(id);
-    expect([stored['approved_by'], stored['implemented_by']]).toEqual(['alice', 'bob']);
+    expect([stored['approved_by'], stored['implemented_by']]).toEqual(['u-1', 'bob']);
+  });
+
+  it('refuses a principal that carries only a username with 401 and writes nothing', async () => {
+    const id = await addChange(ORG_A);
+    const before = await row(id);
+    const out = await patch({ _username: 'alice', _organizationId: ORG_A }, id, { status: 'APPROVED' });
+    expect(out.statusCode).toBe(401);
+    expect(await row(id)).toEqual(before);
   });
 
   it('answers 401 without a usable identity and writes nothing', async () => {
@@ -465,18 +496,38 @@ describe('PATCH /itil/changes/:id with status APPROVED records the approver', ()
   });
 });
 
-describe('POST /itil/changes/:id/close logs the verified actor', () => {
-  it('logs the verified user id as closed_by and the body closedBy only as claimed_closed_by', async () => {
-    const id = await addChange(ORG_A, 'implemented');
+describe('POST /itil/changes/:id/close logs the verified actor and the kind of the claim, never the claim', () => {
+  const closing = async (user: Record<string, unknown>, id: string, closedBy: string) => {
     (logger.info as jest.Mock).mockClear();
     (getPostgresClient as jest.Mock).mockReturnValue({ pool });
     const out = res();
     await new ITILController().closeChange({
-      user: U1, params: { id }, body: { result: 'SUCCESS', notes: 'done', closedBy: 'mallory' },
+      user, params: { id }, body: { result: 'SUCCESS', notes: 'done', closedBy },
     } as unknown as Request, out as unknown as Response);
+    return out;
+  };
+  const closedLogs = () => (logger.info as jest.Mock).mock.calls.filter(([message]) => message === 'Change closed');
+  const UNKNOWN = '99999999-9999-4999-8999-999999999999';
+
+  it.each([
+    ['mallory@example.com', 'other'],
+    ['55555555-5555-4555-8555-555555555555', 'uuid'],
+    ['u-1', 'matches_actor'],
+  ])('logs closedBy %s as claimed_closed_by_kind %s after the write', async (claim, kind) => {
+    const id = await addChange(ORG_A, 'implemented');
+    const out = await closing(U1, id, claim);
     expect(out.statusCode).toBe(200);
-    expect((logger.info as jest.Mock).mock.calls.filter(([message]) => message === 'Closing change')).toEqual([
-      ['Closing change', { id, closed_by: 'u-1', claimed_closed_by: 'mallory' }],
-    ]);
+    expect(closedLogs()).toEqual([['Change closed', { id, closed_by: 'u-1', claimed_closed_by_kind: kind }]]);
+    if (kind === 'other') expect(JSON.stringify((logger.info as jest.Mock).mock.calls)).not.toContain(claim);
+  });
+
+  it('logs nothing for an unknown id or another organization change, and never the claim', async () => {
+    const foreign = await addChange(ORG_B, 'implemented');
+    for (const id of [foreign, UNKNOWN]) {
+      const out = await closing(U1, id, 'mallory@example.com');
+      expect(out.statusCode).toBe(404);
+      expect((logger.info as jest.Mock).mock.calls).toEqual([]);
+    }
+    expect((await row(foreign))['status']).toBe('implemented');
   });
 });

@@ -245,15 +245,19 @@ no such variable (loopback databases only).
 |----------|--------|-------|
 | `<PREFIX>_POSTGRES_SSL` | `verify-full`, `require`, `disable` | Refused for a non-loopback host; plaintext on loopback |
 | `<PREFIX>_POSTGRES_SSL_CA_FILE` | Path to a PEM CA bundle; needs `<PREFIX>_POSTGRES_SSL=verify-full` | The built-in public CA store (plus `NODE_EXTRA_CA_CERTS`) |
-| `<PREFIX>_NEO4J_ENCRYPTED` | `true`, `false` | Refused for a non-loopback host; plaintext on loopback |
+| `<PREFIX>_NEO4J_ENCRYPTED` | `true`, `false` | Refused for a non-loopback host and for any `neo4j://` URI; plaintext only for `bolt://` to loopback |
 
 **A non-loopback host needs an explicit setting.** Loopback is `127.0.0.0/8`, `::1`, `localhost` and (Postgres
 only) a Unix socket directory; anything else, including `localhost.example`, `0.0.0.0` and
 `::ffff:127.0.0.1`, is remote. For a remote host an unset `<PREFIX>_POSTGRES_SSL` or
-`<PREFIX>_NEO4J_ENCRYPTED` makes the tool exit 1 before any connection opens, naming the variable. Plaintext
+`<PREFIX>_NEO4J_ENCRYPTED` makes the tool exit 1 before any connection opens, naming the variable. A
+`neo4j://` (routing) URI counts as remote even for `localhost`: the driver dials the hosts the server's
+routing table advertises, so a tunnel to a loopback port can still send credentials in plaintext to another
+host. Only a direct `bolt://` URI to loopback may leave `<PREFIX>_NEO4J_ENCRYPTED` unset. Plaintext
 to a remote host is possible only by spelling it out, `<PREFIX>_POSTGRES_SSL=disable` or
 `<PREFIX>_NEO4J_ENCRYPTED=false`; the tool then logs a warning that the connection is not encrypted. Use it
-only on a private network you control.
+only on a private network you control. `<PREFIX>_POSTGRES_SSL=require` to a remote host also logs a warning
+(the connection is encrypted but the server certificate is not verified). Warnings name the variable only.
 
 **Trusting a private Postgres CA.**
 

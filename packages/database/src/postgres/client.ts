@@ -47,6 +47,10 @@ const LOCAL_HOST = /^(localhost|127(\.\d{1,3}){3}|::1|\/.*)$/;
 function resolveSsl(explicit: PostgresSslMode | undefined, host: string, env: NodeJS.ProcessEnv, explicitCa?: string): false | ConnectionOptions {
   const enabled = env['POSTGRES_SSL_ENABLED'] || undefined;
   const mode = explicit ?? (env['POSTGRES_SSL_MODE'] || undefined) ?? (enabled === 'on' ? 'require' : enabled);
+  // A CA bundle only means something under verify-full: any other mode would silently ignore the caller's pinned trust.
+  if (explicitCa !== undefined && mode !== 'verify-full') {
+    throw new Error('PostgreSQL CA bundle given without verify-full: sslCa needs ssl: verify-full');
+  }
   if (mode === undefined) {
     if (env['NODE_ENV'] === 'production' && !LOCAL_HOST.test(host)) {
       throw new Error('PostgreSQL TLS mode unset in production: set POSTGRES_SSL_MODE (verify-full, require, or disable)');

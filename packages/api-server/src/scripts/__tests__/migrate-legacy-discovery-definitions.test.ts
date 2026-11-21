@@ -636,6 +636,22 @@ describe('migrate-legacy-discovery-definitions write modes (S5b, 041 on PGlite; 
     expect([child.status, existsSync(path)]).toEqual([1, false]);
   }, 60_000);
 
+  it('the real CLI drops an inherited POSTGRES_SSL_CA_FILE: verify-full uses the system trust store, not the ambient bundle', () => {
+    const [path, cli] = [outPath(), JSON.stringify(join(__dirname, '../migrate-legacy-discovery-definitions.ts'))];
+    const ambientCa = join(mkdtempSync(join(tmpdir(), 's5a-ca-')), 'ca.pem');
+    writeFileSync(ambientCa, 'S5ASENTINEL-AMBIENT-CA');
+    // The first query reports the pool's TLS options (never settles); a constructor that throws never reaches it.
+    const script = `require('pg').Pool.prototype.query = function () { process.stderr.write('POOLSSL ' + JSON.stringify(this.options.ssl) + '\\n'); return Promise.withResolvers().promise; };
+      process.argv = [process.execPath, ${cli}, '--out', ${JSON.stringify(path)}]; require('module')._load(${cli}, null, true);`;
+    const child = spawnSync(process.execPath, ['-r', join(__dirname, 'fixtures/ts-source-register.cjs'), '-e', script], {
+      env: { PATH: process.env['PATH'] ?? '', ...ENV, CMDB_MIGRATION_POSTGRES_SSL: 'verify-full', POSTGRES_SSL_CA_FILE: ambientCa, POSTGRES_SSL_MODE: 'disable' },
+      encoding: 'utf8', timeout: 60_000,
+    });
+    const reported = /POOLSSL (.*)/.exec(child.stderr)?.[1];
+    expect(reported).toBe('{"rejectUnauthorized":true}'); // a function-valued checkServerIdentity is not serialised; any `ca` would be
+    expect(child.stderr).not.toContain('S5ASENTINEL-AMBIENT-CA');
+  }, 60_000);
+
   it('a closeSync error on a successful run exits 1 and leaves no plan', async () => {
     const fs: { closeSync: (fd: number) => void } = jest.requireActual('fs');
     const realClose = fs.closeSync;

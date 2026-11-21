@@ -47,7 +47,8 @@ import { PORTFOLIO_IMPORT_SCOPE } from '../auth/scopes';
 import { LOCK_USER } from '../auth/user-lock';
 import { BCRYPT_HASH } from '../auth/password.service';
 
-import { isolateOperatorEnvironment, openOperatorStores, type OperatorStores } from './operator-stores';
+import { openOperatorStores, type OperatorStores } from './operator-stores';
+import { isolateOperatorEnvironment } from './operator-tls';
 import type { RotationGraph, RotationSql, RotationSqlQuery, Row } from './rotate-user-password';
 
 export const SEED_INVENTORY_CYPHER = `

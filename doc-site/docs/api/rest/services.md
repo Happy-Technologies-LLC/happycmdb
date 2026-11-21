@@ -652,6 +652,7 @@ Get a specific change by ID. The id must be the change's UUID (`data.id`), not t
 
 ---
 
+
 ### GET /changes/:id/risk-assessment
 
 Get a risk estimate for a change, computed on each call from the change's `affected_ci_ids`. It is not stored on the change.
@@ -719,7 +720,7 @@ Update a change's `status`, `implementedBy` or `actualDuration`. Requires the `w
 - `status: APPROVED` follows the same rules and refusals as [`POST /changes/:id/approve`](#post-changes-id-approve): the approver and time are recorded in the same write, the approver is the authenticated caller, and a body `approved_by` or `approved_at` is ignored.
 - `status: DRAFT` or `PENDING_APPROVAL` sets `approval_status = pending` and clears `approved_by` and `approved_at` in the same write, so a later approval records its own approver and time. Any other status leaves the approval record as it is.
   - The write is conditional on the `status`, `approved_by` and `approved_at` read just before it. If an approval (or any other write to those columns) committed in between, nothing is written and the answer is `409 CHANGE_APPROVAL_CHANGED` ("The change was modified since it was read; reload it and retry"): reload the change and retry.
-  - When the write clears an existing stamp (the change had a stored `approved_by` or `approved_at`), the server logs one `info` event, `Change approval stamp cleared`, with the fields `change_id`, `organization_id`, `previous_approved_by`, `previous_approved_at` (ISO 8601 or `null`) and `actor_user_id` (the caller's `_userId`, or `null`). `previous_approved_by` is the stored `approved_by` value as it was, not guaranteed to be a user id. The event is not logged when the write is refused or when no stamp was set.
+  - When the write clears an existing stamp (the change had a stored `approved_by` or `approved_at`), the server logs one `info` event, `Change approval stamp cleared`, with the fields `change_id`, `organization_id`, `previous_approved_at` (ISO 8601 or `null`), `actor_user_id` (the caller's `_userId`, or `null`) and one approver field. `previous_approved_by` is the stored `approved_by` when it is a UUID, or `null` when the stamp had no approver. For a legacy value (an email or a name, since `approved_by` is free text) the value is not logged and the event carries `previous_approved_by_kind: "legacy"` instead. The event is not logged when the write is refused or when no stamp was set.
 
 **Response:** `200` with the full updated change row in `data` and `message: "Change updated successfully"`.
 
@@ -731,6 +732,8 @@ Update a change's `status`, `implementedBy` or `actualDuration`. Requires the `w
 | 403 | The credential lacks the `write` permission, or carries no organization claim (`ORGANIZATION_REQUIRED`) |
 | 404 | `Not Found`: no change with this id in the caller's organization |
 | 409 | `Conflict`, with one of two codes. `CHANGE_NOT_APPROVABLE`: `status` is `APPROVED` and the change is not in `draft` or `pending_approval`. `CHANGE_APPROVAL_CHANGED`: `status` is `DRAFT` or `PENDING_APPROVAL` and the change's status or approval stamp changed after it was read; reload and retry. Nothing is written in either case |
+
+The GraphQL `updateChange` mutation calls the same controller. A refusal that carries a controller code (`CHANGE_NOT_APPROVABLE`, `CHANGE_APPROVAL_CHANGED`) is returned as a `BAD_USER_INPUT` error with that code in `extensions.controllerCode`; a `404` is `NOT_FOUND` without it.
 
 ---
 
@@ -826,7 +829,7 @@ Close a change with a result.
 |-------|----------|-------------|
 | `result` | Yes | `SUCCESS`, `PARTIAL_SUCCESS`, `FAILED` or `ROLLED_BACK` |
 | `notes` | No | String, stored as `closure_notes` (`null` when omitted) |
-| `closedBy` | Yes | String, but accepted and not stored: it is only written to the server log (the change row has no `closed_by` column) |
+| `closedBy` | Yes | String, but accepted and not stored: it is only written to the server log as `claimed_closed_by`, next to `closed_by`, the verified caller's user id (the change row has no `closed_by` column) |
 
 **Result Values:**
 

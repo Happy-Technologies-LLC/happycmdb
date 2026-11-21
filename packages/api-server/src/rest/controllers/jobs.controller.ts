@@ -36,6 +36,48 @@ const MAX_JOB_START = 10_000;
 const INVALID_JOB_PAGINATION = { success: false, error: 'Invalid job pagination' };
 const DEEP_JOB_PAGES_UNAVAILABLE = { success: false, error: 'Deep job pages unavailable' };
 
+const MAX_CLEAN_GRACE_MS = 31_536_000_000;
+const MAX_CLEAN_LIMIT = 10_000;
+const INVALID_CLEAN_REQUEST = { success: false, error: 'Invalid clean request' };
+
+interface CleanRequest {
+  grace: number;
+  limit: number;
+  type: 'completed' | 'failed';
+}
+
+function boundedInteger(value: unknown, fallback: number, min: number, max: number): number | null {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+    return null;
+  }
+  return value >= min && value <= max ? value : null;
+}
+
+/**
+ * Strict body parse for the clean endpoint: BullMQ `clean` also accepts wait, active, paused and
+ * delayed, so only the two history states are allowed, and grace and limit are bounded integers.
+ * Returns null for anything else; the caller answers with a fixed body that never echoes input.
+ */
+function cleanRequest(body: unknown): CleanRequest | null {
+  const input = body === undefined ? {} : body;
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return null;
+  }
+  const { grace, limit, type } = input as Record<string, unknown>;
+  if (type !== undefined && type !== 'completed' && type !== 'failed') {
+    return null;
+  }
+  const validGrace = boundedInteger(grace, 3_600_000, 0, MAX_CLEAN_GRACE_MS);
+  const validLimit = boundedInteger(limit, 1000, 1, MAX_CLEAN_LIMIT);
+  if (validGrace === null || validLimit === null) {
+    return null;
+  }
+  return { grace: validGrace, limit: validLimit, type: type ?? 'completed' };
+}
+
 function nonNegativePageInteger(value: unknown, fallback: number): number | null {
   if (value === undefined) return fallback;
   if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
@@ -679,25 +721,24 @@ export class JobsController {
         return;
       }
 
-      const { grace = 3600000, limit = 1000, type = 'completed' } = req.body;
+      const clean = cleanRequest(req.body);
+      if (clean === null) {
+        res.status(400).json(INVALID_CLEAN_REQUEST);
+        return;
+      }
 
-      await this.queueManager.cleanQueue(
-        queueName,
-        Number(grace),
-        Number(limit),
-        type as 'completed' | 'failed'
-      );
+      await this.queueManager.cleanQueue(queueName, clean.grace, clean.limit, clean.type);
 
-      logger.info(`Cleaned ${type} jobs from queue ${queueName}`, {
-        grace,
-        limit,
+      logger.info(`Cleaned ${clean.type} jobs from queue ${queueName}`, {
+        grace: clean.grace,
+        limit: clean.limit,
       });
 
       res.json({
         success: true,
         data: {
           queueName,
-          message: `Cleaned ${type} jobs older than ${grace}ms`,
+          message: `Cleaned ${clean.type} jobs older than ${clean.grace}ms`,
         },
       });
     } catch (err: any) {

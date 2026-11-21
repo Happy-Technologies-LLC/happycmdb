@@ -88,7 +88,7 @@ describe('POST /search/advanced metadata_filters', () => {
     expect(runs.length).toBe(2);
     for (const { params } of runs) {
       const needles = Object.keys(params).filter(k => k.startsWith('metaValue')).sort().map(k => params[k]);
-      expect(needles).toEqual(Object.entries(filters).map(([k, v]) => metadataNeedle(k, v)));
+      expect(needles).toEqual(['"env":"prod"', '"n":3', '"on":true', '"q":"say \\"hi\\""', '"k\\"x":"C:\\\\dir"']);
     }
     expect(res.body.filters.metadata_filters).toEqual(filters);
   });
@@ -124,9 +124,10 @@ describe('POST /search/advanced metadata_filters', () => {
     ['257-character value', { k: 'v'.repeat(257) }],
     ['array metadata_filters', ['a']],
     ['string metadata_filters', 'a'],
-  ])('rejects %s with 400 and runs no query', async (_name, filters) => {
+  ])('rejects %s at the route schema with 400 and runs no query', async (_name, filters) => {
     const res = await withFilters(filters);
     expect(res.status).toBe(400);
+    expect(res.body._error).toBe('Validation Error');
     expect(runs).toEqual([]);
   });
 
@@ -150,6 +151,7 @@ describe('search query length', () => {
   it.each(routes)('%s rejects a 501-character query and accepts 500', async (path) => {
     const refused = await request(app).post(path).set(auth).send({ query: 'q'.repeat(501) });
     expect(refused.status).toBe(400);
+    expect(refused.body._error).toBe('Validation Error');
     expect(runs).toEqual([]);
     const accepted = await request(app).post(path).set(auth).send({ query: 'q'.repeat(500) });
     expect(accepted.status).toBe(200);

@@ -95,7 +95,7 @@ const CASES: Record<string, Case> = {
   'ITILController.createBaseline': { req: { body: { ciIds: [ID] } } },
   'RelationshipController.getRelationshipsByType': { req: { params: { type: 'DEPENDS_ON' } } },
   'RelationshipController.listEvidence': { req: { query: { from_id: ID, to_id: ID, type: 'DEPENDS_ON', limit: 50, offset: 0 } } },
-  'SettingsController.updateDiscoveryProviderSettings': { req: { params: { provider: 'aws' }, body: { credentials: { a: 'b' } } } },
+  'SettingsController.updateDiscoveryProviderSettings': { req: { params: { provider: 'aws' }, body: { credentials: { accessKeyId: 'a' } } } },
   'TBMController.allocateCosts': { req: { body: { sourceId: ID, targetType: 'ci', targetIds: [ID] } } },
   'TBMController.importGLData': { req: { body: { records: [{ accountCode: '1' }] } }, jsonThrows: true },
   'SettingsController.testDiscoveryConnection': { req: { body: { provider: 'aws', credentials: {} } }, jsonThrows: true },

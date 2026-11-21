@@ -90,6 +90,7 @@ jest.mock('bcrypt', () => ({}));
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({
     findUserById: async (userId: string) => A1_USERS[userId] ?? null,
+    findUsersByIds: async (ids: string[]) => ({ ambiguous: [], users: new Map(ids.filter(id => A1_USERS[id]).map(id => [id, A1_USERS[id]])) }),
     findApiKeyByKey: async (keyHash: string) => A1_API_KEYS[keyHash] ?? null,
     updateApiKeyLastUsed: async () => undefined,
   })),

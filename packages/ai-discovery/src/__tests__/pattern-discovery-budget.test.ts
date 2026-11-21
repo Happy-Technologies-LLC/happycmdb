@@ -9,7 +9,9 @@ import {
   DISCOVERY_SKIPPED_KEY, DISCOVERY_STORED_BODY_MAX_BYTES, DISCOVERY_STORED_MAX_DEPTH,
   DISCOVERY_STORED_METADATA_MAX_BYTES, DISCOVERY_UNSTORED_KEY, PatternMatcher,
 } from '../pattern-matcher';
-import { DISCOVERY_HTTP_MAX_BYTES, DISCOVERY_RESPONSE_TOO_LARGE, safeDiscoveryHttp } from '../tools/safe-http';
+import {
+  DISCOVERY_HTTP_MAX_BYTES, DISCOVERY_RESPONSE_DEADLINE, DISCOVERY_RESPONSE_TOO_LARGE, DiscoveryHttpError, safeDiscoveryHttp,
+} from '../tools/safe-http';
 import type { PatternStorageService } from '../pattern-storage';
 import type { DiscoveryPattern } from '../types';
 
@@ -97,6 +99,33 @@ describe('executeDiscovery budgets', () => {
     expect(ci.metadata[DISCOVERY_SKIPPED_KEY]).toEqual({ reason: 'bytes-budget', endpoints: paths(64).slice(requested) });
   });
 
+  describe('a request that fails without a decoded-byte count', () => {
+    const limits = () => http.mock.calls.map(call => (call[1] as { maxContentLength: number }).maxContentLength);
+    const requested = DISCOVERY_PATTERN_MAX_TOTAL_BYTES / DISCOVERY_HTTP_MAX_BYTES;
+
+    it.each(['ECONNRESET', 'ECONNABORTED', undefined])('spends the limit it was requested with (%s)', async code => {
+      http.mockRejectedValue(new DiscoveryHttpError(code));
+      const ci = await run(paths(64));
+      expect(limits()).toEqual(Array(requested).fill(DISCOVERY_HTTP_MAX_BYTES));
+      expect(ci.metadata[DISCOVERY_SKIPPED_KEY]).toEqual({ reason: 'bytes-budget', endpoints: paths(64).slice(requested) });
+    });
+
+    it('spends the limit on a deadline that may have cut a body', async () => {
+      http.mockRejectedValue(new Error(DISCOVERY_RESPONSE_DEADLINE));
+      const ci = await run(paths(64));
+      expect(limits()).toEqual(Array(requested).fill(DISCOVERY_HTTP_MAX_BYTES));
+      expect(ci.metadata[DISCOVERY_SKIPPED_KEY].reason).toBe('bytes-budget');
+    });
+
+    it.each(['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'ENOTFOUND', 'EAI_AGAIN'])(
+      'is free when %s: no body can have arrived', async code => {
+        http.mockRejectedValue(new DiscoveryHttpError(code));
+        const ci = await run(paths(64));
+        expect(http).toHaveBeenCalledTimes(64);
+        expect(ci.metadata).not.toHaveProperty(DISCOVERY_SKIPPED_KEY);
+      });
+  });
+
   it('skips the remaining endpoints once the total time budget is spent, and clips request deadlines', async () => {
     let now = 1_000_000;
     jest.spyOn(Date, 'now').mockImplementation(() => now);
@@ -107,6 +136,18 @@ describe('executeDiscovery budgets', () => {
     const totals = http.mock.calls.map(call => (call[1] as { totalMs: number }).totalMs);
     expect(totals).toEqual([DISCOVERY_PATTERN_MAX_TOTAL_MS, DISCOVERY_PATTERN_MAX_TOTAL_MS - 12_000,
       DISCOVERY_PATTERN_MAX_TOTAL_MS - 24_000]);
+  });
+
+  it('lists a body too deeply nested to re-serialize as unstored instead of dropping it silently', async () => {
+    // JSON.parse accepts this depth; JSON.stringify of the result overflows the stack.
+    let deep: unknown[] = [];
+    for (let level = 0; level < 300_000; level++) deep = [deep];
+    http.mockImplementation((async (url: string) => new URL(url).pathname === '/deep'
+      ? { status: 200, data: deep, decodedBytes: 600_000 } : reply({ ok: true })) as never);
+    const ci = await run(['/deep', '/ok']);
+    expect(ci.metadata).not.toHaveProperty('deep');
+    expect(ci.metadata.ok).toEqual({ ok: true });
+    expect(ci.metadata[DISCOVERY_UNSTORED_KEY]).toEqual({ reason: 'metadata-budget', endpoints: ['/deep'] });
   });
 
   it('records nothing as skipped when every endpoint fits', async () => {
@@ -157,7 +198,7 @@ describe('executeDiscovery budgets', () => {
           { rows: '\\"'.repeat(DISCOVERY_STORED_BODY_MAX_BYTES) },
           'é'.repeat(DISCOVERY_STORED_BODY_MAX_BYTES),
         ][index % 4];
-        return { status: 200, data };
+        return reply(data);
       }) as never);
       const ci = await run(longPaths(64));
       expect(() => assertPlanRepresentable(createPlan(ci) as never)).not.toThrow();

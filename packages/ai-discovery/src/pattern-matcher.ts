@@ -13,7 +13,7 @@ import { getRedisClient } from '@cmdb/database';
 import * as crypto from 'crypto';
 import {
   DISCOVERY_HTTP_MAX_BYTES, DISCOVERY_HTTP_TOTAL_MS, DISCOVERY_RESPONSE_DEADLINE,
-  DISCOVERY_RESPONSE_TOO_LARGE, safeDiscoveryHttp,
+  DiscoveryHttpError, safeDiscoveryHttp,
 } from './tools/safe-http';
 import { detectWithPlan, parseDetectionPlan, parseDiscoveryPlan, PATTERN_NOT_ACTIVE, PATTERN_STATE_UNAVAILABLE, UNSUPPORTED_PATTERN_PLAN } from './pattern-plan';
 
@@ -22,8 +22,10 @@ import { detectWithPlan, parseDetectionPlan, parseDiscoveryPlan, PATTERN_NOT_ACT
  * each otherwise allowed 1 MiB / 15 s). Code constants: raising them is a reviewed change.
  *  - bytes: bytes the transport decoded, summed over the endpoints (`SafeDiscoveryHttpResponse.decodedBytes`,
  *    counted before JSON parsing: padding whitespace or duplicate keys cannot shrink the charge).
- *    A response cut at the limit it was requested with (DISCOVERY_RESPONSE_TOO_LARGE) was already
- *    decoded up to that limit, so it spends that limit, whether the per-request ceiling or less.
+ *    A request that fails without a count (cut at its limit, reset or idle-timed-out mid-body, corrupt
+ *    gzip, deadline) was decoded up to its limit at most, so it spends the limit it was requested with,
+ *    whether the per-request ceiling or less. Only failures that cannot carry a body are free
+ *    (NO_BODY_CODES: connection refused, host or network unreachable, name not found).
  *  - time: wall clock from the first request; each request's deadline is clipped to what is left.
  *  - stored: `Neo4jClient.createCI` stores `ci.metadata` as ONE leaf, `JSON.stringify(metadata)`, and
  *    the journal refuses a plan whose leaf JSON-encodes to more than PLAN_LIMITS.valueBytes (64 KiB)
@@ -40,6 +42,8 @@ import { detectWithPlan, parseDetectionPlan, parseDiscoveryPlan, PATTERN_NOT_ACT
  * The base metadata (technology, category, scan version) is not budgeted here.
  */
 export const DISCOVERY_PATTERN_MAX_TOTAL_BYTES = 4 * DISCOVERY_HTTP_MAX_BYTES;
+/** Transport failure codes raised before any response byte can have arrived. */
+const NO_BODY_CODES: ReadonlySet<string> = new Set(['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'ENOTFOUND', 'EAI_AGAIN']);
 export const DISCOVERY_PATTERN_MAX_TOTAL_MS = 2 * DISCOVERY_HTTP_TOTAL_MS;
 export const DISCOVERY_STORED_BODY_MAX_BYTES = 8192;
 export const DISCOVERY_STORED_METADATA_MAX_BYTES = 48 * 1024;
@@ -380,24 +384,32 @@ export class PatternMatcher implements IPatternMatcher {
       if (!exhausted && bytesLeft <= 0) exhausted = 'bytes';
       if (!exhausted && msLeft <= 0) exhausted = 'time';
       if (exhausted) { skipped.push(endpoint); continue; }
+      const limit = Math.min(bytesLeft, DISCOVERY_HTTP_MAX_BYTES);
       try {
         const response = await safeDiscoveryHttp(
           `${protocol}://${host}:${context.targetPort}${endpoint}`,
-          { method: 'GET', timeout: 5000, validateStatus: () => true,
-            maxContentLength: Math.min(bytesLeft, DISCOVERY_HTTP_MAX_BYTES), totalMs: msLeft }
+          { method: 'GET', timeout: 5000, validateStatus: () => true, maxContentLength: limit, totalMs: msLeft }
         );
         // Decoded bytes from the transport: the parsed value can be much smaller than what was inflated.
         bytesLeft -= response.decodedBytes;
         if (response.status >= 200 && response.status < 300) {
           const key = endpoint.slice(1);
-          const stored = storableBody(ci.metadata, key, response.data, reserve);
+          let stored: unknown;
+          try {
+            stored = storableBody(ci.metadata, key, response.data, reserve);
+          } catch {
+            // A body too deeply nested to re-serialize (JSON.parse accepts what JSON.stringify cannot).
+            stored = undefined;
+          }
           if (stored === undefined) unstored.push(endpoint); else ci.metadata[key] = stored;
         }
       } catch (error) {
         if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) throw error;
-        // A response cut at its limit was decoded up to that limit: it spends the limit it was cut at.
-        if (error instanceof Error && error.message === DISCOVERY_RESPONSE_TOO_LARGE) {
-          bytesLeft -= Math.min(bytesLeft, DISCOVERY_HTTP_MAX_BYTES);
+        // A failure after the body started (cut at the limit, reset, idle timeout, bad gzip trailer,
+        // deadline) reports no byte count, yet the transport may have decoded up to `limit`: it spends
+        // `limit`. Only failures that cannot come with a body are free.
+        if (!(error instanceof DiscoveryHttpError && error.code !== undefined && NO_BODY_CODES.has(error.code))) {
+          bytesLeft -= limit;
         }
         if (error instanceof Error && error.message === DISCOVERY_RESPONSE_DEADLINE &&
           msLeft < DISCOVERY_HTTP_TOTAL_MS) exhausted = 'time';

@@ -1,7 +1,7 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import { createServer, Server } from 'node:http';
+import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { gzipSync } from 'node:zlib';
 import { connectDiscoveryHost, resolveDiscoveryHost } from '@cmdb/common';
@@ -32,9 +32,12 @@ let server: Server;
 let requests: string[];
 // What every endpoint serves; the default is the oversize bomb, a test replaces it.
 let served: { wire: Buffer; type: string };
+// A test may take over the response (e.g. to fail mid-body); the default serves `served`.
+let respond: ((request: IncomingMessage, response: ServerResponse) => void) | undefined;
 
 beforeEach(async () => {
   requests = [];
+  respond = undefined;
   jest.mocked(resolveDiscoveryHost).mockResolvedValue('127.0.0.1');
   jest.mocked(connectDiscoveryHost).mockResolvedValue('127.0.0.1');
   (getRedisClient as jest.Mock).mockReturnValue(redis);
@@ -42,6 +45,7 @@ beforeEach(async () => {
   served = { wire: gzipSync(Buffer.alloc(2 * DISCOVERY_HTTP_MAX_BYTES, 97)), type: 'text/plain' };
   server = createServer((request, response) => {
     requests.push(request.url ?? '');
+    if (respond) { respond(request, response); return; }
     response.writeHead(200, { 'Content-Type': served.type, 'Content-Encoding': 'gzip', 'Content-Length': served.wire.length });
     response.end(served.wire);
   });
@@ -105,5 +109,30 @@ describe('executeDiscovery byte budget against real oversize responses', () => {
     // At most the budget plus one request's ceiling was ever decoded.
     expect(requests.length * body.length).toBeLessThanOrEqual(DISCOVERY_PATTERN_MAX_TOTAL_BYTES + DISCOVERY_HTTP_MAX_BYTES);
     expect(ci.metadata.e0).toEqual(parsed);
+  });
+});
+
+describe('executeDiscovery byte budget against bodies that fail after they started', () => {
+  async function run(): Promise<{ metadata: Record<string, any> }> {
+    storage.loadPatterns.mockResolvedValue([pattern()]);
+    const matcher = new PatternMatcher(storage as unknown as PatternStorageService);
+    const port = (server.address() as AddressInfo).port;
+    const [ci] = await matcher.executePattern('web-service',
+      { targetHost: 'probe-target.example', targetPort: port, scanResult: { services: [{ port }] } });
+    return ci;
+  }
+
+  it('charges a body that is reset after most of it arrived, so the budget still bounds the decoded bytes', async () => {
+    // Identity body just under the per-request ceiling, promised in full, then the socket is reset:
+    // the client has decoded ~1 MiB, but no request ever completes.
+    const partial = Buffer.alloc(DISCOVERY_HTTP_MAX_BYTES - 64, 97);
+    respond = (request, response) => {
+      response.writeHead(200, { 'Content-Type': 'text/plain', 'Content-Length': partial.length + 64 });
+      response.write(partial, () => request.socket.destroy());
+    };
+    const ci = await run();
+    const requested = DISCOVERY_PATTERN_MAX_TOTAL_BYTES / MIB;
+    expect(requests).toEqual(ENDPOINTS.slice(0, requested));
+    expect(ci.metadata[DISCOVERY_SKIPPED_KEY]).toEqual({ reason: 'bytes-budget', endpoints: ENDPOINTS.slice(requested) });
   });
 });

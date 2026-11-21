@@ -12,17 +12,22 @@
  * state, so they additionally require the 'write' permission
  * (`authMiddleware.requirePermission('write')`); the 'agent' role has
  * 'write' (see ROLE_PERMISSIONS), so discovery agents can register and
- * heartbeat themselves alongside operator/admin. Finding the best agent
- * for a job and listing/reading agents are read-like -- they don't
- * change agent state -- so they stay authenticated-only with no extra
- * gate.
+ * heartbeat themselves alongside operator/admin. Those three writes are
+ * owner-bound: an agent-role caller only reaches agents it registered
+ * (see DiscoveryAgentService, AgentCaller); operator/admin act org-wide.
+ * Heartbeats also pass a per-principal rate limit (HEARTBEAT_BUDGET).
+ * Finding the best agent for a job and listing/reading agents are
+ * read-like -- they don't change agent state -- so they stay
+ * authenticated-only with no extra gate.
  */
-import { Router } from 'express';
+import { RequestHandler, Router } from 'express';
 import Joi from 'joi';
 import { DiscoveryAgentController } from '../controllers/discovery-agent.controller';
 import { validateRequest } from '../middleware/validation.middleware';
-import { schemas } from '@cmdb/common';
+import { schemas, loadConfig, logger, errorClassFields } from '@cmdb/common';
+import { getRedisClient } from '@cmdb/database';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
+import { RateLimitMiddleware } from '../../middleware/rate-limit.middleware';
 
 export const discoveryAgentRoutes = Router();
 const controller = new DiscoveryAgentController();
@@ -55,6 +60,27 @@ const registerAgentSchema = Joi.object({
 // (400 instead of a 500 at parameter binding).
 const MAX_HEARTBEAT_STAT_DELTA = 1_000_000;
 
+/**
+ * Heartbeats per verified principal per window: 600 per hour, ten times the nominal one-per-minute cadence of one agent,
+ * so retries, restarts and a few agents under one credential never trip it. The bucket is the verified user (an API key
+ * authenticates as its owning user and carries no key id), so all keys of one user share it. Not configurable; it
+ * honours `rateLimit.enabled` and the internal-service bypass header like every limiter, and fails open on a store error.
+ */
+const HEARTBEAT_BUDGET = { _max: 600, _windowMs: 3_600_000 };
+let heartbeatLimiter: RequestHandler | undefined;
+// Built on the first heartbeat: no Redis connection or limiter state at import time.
+const limitHeartbeats: RequestHandler = (req, res, next) => {
+  try {
+    heartbeatLimiter ??= new RateLimitMiddleware(getRedisClient().getConnection(), loadConfig().rateLimit)
+      .custom(HEARTBEAT_BUDGET, 'agent-heartbeat') as unknown as RequestHandler;
+  } catch (error) {
+    logger.error('Heartbeat rate limiter unavailable - allowing request', undefined, errorClassFields(error));
+    next();
+    return;
+  }
+  void heartbeatLimiter(req, res, next);
+};
+
 const heartbeatSchema = Joi.object({
   agent_id: Joi.string().required().min(1).max(255),
   status: Joi.string().valid('active', 'inactive', 'offline', 'disabled').required(),
@@ -85,6 +111,7 @@ discoveryAgentRoutes.post(
 discoveryAgentRoutes.post(
   '/heartbeat',
   authMiddleware.requirePermission('write'),
+  limitHeartbeats,
   validateRequest(heartbeatSchema, 'body'),
   controller.updateHeartbeat.bind(controller)
 );

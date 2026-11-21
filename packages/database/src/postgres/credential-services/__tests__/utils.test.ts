@@ -76,6 +76,27 @@ describe('ipToInt', () => {
     expect(ipToInt('')).toBeNull();
   });
 
+  it.each([
+    ['an octet with a trailing letter', '1x.0.0.1'],
+    ['an octet with a plus sign', '+1.0.0.1'],
+    ['leading whitespace', ' 1.0.0.1'],
+    ['trailing whitespace', '1.0.0.1 '],
+    ['a leading-zero octet', '010.000.000.001'],
+    ['an empty octet', '1..0.1'],
+  ])('refuses %s instead of coercing it with parseInt', (_label, ip) => {
+    expect(ipToInt(ip)).toBeNull();
+    expect(inCidr(ip, '0.0.0.0/0')).toBe(false);
+  });
+
+  it('parses a valid address, including a lone 0 octet', () => {
+    expect(ipToInt('1.0.0.1')).toBe(0x01000001);
+    expect(inCidr('10.0.0.1', '10.0.0.0/8')).toBe(true);
+  });
+
+  it('does not read a leading-zero octet in a network as decimal either', () => {
+    expect(inCidr('10.0.0.1', '010.0.0.0/8')).toBe(false);
+  });
+
   it('refuses an overlong input before it is split, so nothing is allocated for it', () => {
     const split = jest.spyOn(String.prototype, 'split');
     try {

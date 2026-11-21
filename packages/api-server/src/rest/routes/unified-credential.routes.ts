@@ -141,8 +141,16 @@ const updateCredentialSchema = Joi.object({
  * Credential Match Context schema
  */
 const credentialMatchContextSchema = Joi.object({
-  // The length is checked first, so a long value is refused before the address parser sees it.
-  ip: Joi.string().max(MAX_IPV4_LENGTH).ip({ version: ['ipv4'], cidr: 'forbidden' }).optional(),
+  // `validate()` runs Joi with abortEarly:false, so `.ip()` and the pattern below also run on a value over the
+  // max: the length check does not run first. The cost is bounded instead, because both are anchored or
+  // single-pass regexes without nested quantifiers (linear in the input), and the body size limit caps the input.
+  // Leading-zero octets (`010.000.000.001`) pass Joi's parser but are refused here, as `ipToInt` refuses them,
+  // so the route never admits an address that matches no network.
+  ip: Joi.string()
+    .max(MAX_IPV4_LENGTH)
+    .ip({ version: ['ipv4'], cidr: 'forbidden' })
+    .pattern(/(?:^|\.)0\d/, { name: 'no leading-zero octet', invert: true })
+    .optional(),
   hostname: Joi.string().max(MAX_HOSTNAME_LENGTH).optional(),
   os_type: Joi.string().optional(),
   device_type: Joi.string().optional(),

@@ -54,8 +54,10 @@ const sql = async (text: string, params: unknown[] = [], op: 'query' | 'exec' = 
 
 const agentRow = async () => (await sql('SELECT * FROM discovery_agents WHERE agent_id = $1', [AGENT]))[0];
 
+// Counter arithmetic only: an org-wide caller, so the owner predicate (discovery-agent.owner-binding.test.ts) is out of play.
 function heartbeat(stats: Record<string, number>) {
-  return new DiscoveryAgentService().updateHeartbeat({ agent_id: AGENT, status: 'active', stats } as any, ORG);
+  return new DiscoveryAgentService().updateHeartbeat({ agent_id: AGENT, status: 'active', stats } as any, ORG,
+    { principalId: 'operator-1', orgWide: true });
 }
 
 beforeAll(async () => {

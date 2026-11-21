@@ -18,6 +18,9 @@ import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
 
+const HEARTBEAT_BUDGET = 7;
+const HEARTBEAT_WINDOW_MS = 3_600_000; // the schema default
+
 // Placeholder config so loadConfig() validates; no Neo4j/Redis/PostgreSQL server is contacted.
 Object.assign(process.env, {
   JWT_SECRET: randomBytes(32).toString('hex'), AUDIT_CHAIN_KEY: randomBytes(32).toString('hex'),
@@ -26,6 +29,8 @@ Object.assign(process.env, {
   REDIS_HOST: '127.0.0.1', KAFKA_CLIENT_ID: 'unused', KAFKA_GROUP_ID: 'unused',
   // The limiter's metrics interval is not unref'd.
   RATE_LIMIT_MONITORING_ENABLED: 'false',
+  // The heartbeat budget under test: small enough to exhaust, set before the routes first build their limiter.
+  RATE_LIMIT_AGENT_HEARTBEAT_MAX: String(HEARTBEAT_BUDGET),
 });
 
 const host = fork(join(__dirname, 'fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
@@ -53,27 +58,41 @@ const pgClient = {
   getClient: async () => ({ query: pgClient.query, release: () => undefined }),
 };
 
-/** The sorted-set pipeline RateLimitMiddleware runs, in memory. */
+/** The sorted-set pipeline RateLimitMiddleware runs, in memory (zrem included). `failing` makes every pipeline reject. */
 function memoryRedis() {
-  const sets = new Map<string, number[]>();
+  const sets = new Map<string, Array<{ score: number; member: string }>>();
+  const state = { failing: false };
   const pipeline = () => {
     const ops: Array<() => unknown> = [];
     const chain = {
       zremrangebyscore: (key: string, _min: string, max: string) => {
-        ops.push(() => sets.set(key, (sets.get(key) ?? []).filter(score => score > Number(max))));
+        ops.push(() => sets.set(key, (sets.get(key) ?? []).filter(entry => entry.score > Number(max))));
         return chain;
       },
       zcard: (key: string) => { ops.push(() => (sets.get(key) ?? []).length); return chain; },
-      zadd: (key: string, score: string) => {
-        ops.push(() => sets.set(key, [...(sets.get(key) ?? []), Number(score)]));
+      zadd: (key: string, score: string, member: string) => {
+        ops.push(() => sets.set(key, [...(sets.get(key) ?? []), { score: Number(score), member }]));
         return chain;
       },
       expire: () => { ops.push(() => 1); return chain; },
-      exec: async () => ops.map(op => [null, op()]),
+      exec: async () => {
+        if (state.failing) throw new Error('store unavailable');
+        return ops.map(op => [null, op()]);
+      },
     };
     return chain;
   };
-  return { pipeline, reset: () => sets.clear() };
+  const zrem = async (key: string, member: string) => {
+    if (state.failing) throw new Error('store unavailable');
+    sets.set(key, (sets.get(key) ?? []).filter(entry => entry.member !== member));
+    return 1;
+  };
+  return {
+    pipeline, zrem,
+    get failing() { return state.failing; },
+    set failing(value: boolean) { state.failing = value; },
+    reset: () => { sets.clear(); state.failing = false; },
+  };
 }
 const redis = memoryRedis();
 
@@ -90,11 +109,13 @@ const user = (id: string, role: string, org = ORG): TestUser =>
   ({ _id: id, _username: id, _role: role, _enabled: true, _organizationId: org });
 const USERS: Record<string, TestUser> = Object.fromEntries([
   user('agent-a', 'agent'), user('agent-b', 'agent'), user('operator-1', 'operator'), user('admin-1', 'admin'),
-  user('operator-2', 'operator', OTHER_ORG),
+  user('operator-2', 'operator', OTHER_ORG), user('viewer-1', 'viewer'),
 ].map(u => [u._id, u]));
 const API_KEY_A1 = randomBytes(32).toString('hex');
+const API_KEY_B1 = randomBytes(32).toString('hex');
 const API_KEYS: Record<string, { _id: string; _userId: string; _role: string; _enabled: boolean }> = {
   [createHash('sha256').update(API_KEY_A1).digest('hex')]: { _id: 'key-a1', _userId: 'agent-a', _role: 'agent', _enabled: true },
+  [createHash('sha256').update(API_KEY_B1).digest('hex')]: { _id: 'key-b1', _userId: 'agent-b', _role: 'agent', _enabled: true },
 };
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({
@@ -105,6 +126,7 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 }));
 
 import { loadConfig } from '@cmdb/common';
+import { declaredResponse, spec, violations, type Schema } from '../../../openapi/__tests__/spec-schema';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { discoveryAgentRoutes } from '../discovery-agent.routes';
@@ -234,6 +256,23 @@ describe('an agent-role credential only controls the agents it registered', () =
   });
 });
 
+describe("another user's API key", () => {
+  it("cannot heartbeat, re-register or delete a peer's agent: the same 404 as a missing agent", async () => {
+    const asPeerKey = (req: request.Test) => req.set('X-API-Key', API_KEY_B1);
+    const peer = [
+      await asPeerKey(request(app).post('/api/v1/agents/heartbeat')).send({ agent_id: 'agent-of-a', status: 'offline', stats: { jobs_completed: 3 } }),
+      await asPeerKey(request(app).post('/api/v1/agents/register')).send({ ...registration, agent_id: 'agent-of-a', hostname: 'intruder' }),
+      await asPeerKey(request(app).delete('/api/v1/agents/agent-of-a')),
+    ];
+    expect(peer.map(response => [response.status, response.body])).toEqual([[404, NOT_FOUND], [404, NOT_FOUND], [404, NOT_FOUND]]);
+    const row = await agent('agent-of-a');
+    expect([row?.status, row?.hostname, row?.total_jobs_completed]).toEqual(['active', 'agent-of-a-host', 0]);
+    // The key still reaches its own user's agent.
+    const own = await asPeerKey(request(app).post('/api/v1/agents/heartbeat')).send({ agent_id: 'agent-of-b', status: 'active' });
+    expect(own.status).toBe(200);
+  });
+});
+
 describe('operator and admin keep organization-wide control', () => {
   it.each(['operator-1', 'admin-1'])('%s can heartbeat, re-register and delete any agent of its organization', async (caller) => {
     expect((await heartbeat(caller, 'agent-of-a', 'inactive', { jobs_completed: 3 })).status).toBe(200);
@@ -309,18 +348,150 @@ describe('disabled is operator-only', () => {
   });
 });
 
-describe('heartbeat rate limit (600 per principal per hour)', () => {
+describe('deleting a disabled agent', () => {
+  it('is refused for the owning agent-role credential like a missing agent, leaving the row, and allowed for an operator or admin', async () => {
+    await heartbeat('operator-1', 'agent-of-a', 'disabled', {});
+    const refused = await remove('agent-a', 'agent-of-a');
+    expect([refused.status, refused.body]).toEqual([404, NOT_FOUND]);
+    expect((await agent('agent-of-a'))?.status).toBe('disabled');
+    // Without the refusal, delete + register would lift the disable: a fresh registration is active.
+    expect((await register('agent-a', { agent_id: 'agent-of-a' })).body.data.status).toBe('disabled');
+
+    expect((await remove('operator-1', 'agent-of-a')).status).toBe(200);
+    expect(await agent('agent-of-a')).toBeUndefined();
+
+    await heartbeat('operator-1', 'agent-of-b', 'disabled', {});
+    expect((await remove('admin-1', 'agent-of-b')).status).toBe(200);
+  });
+
+  it('still lets the owning agent-role credential delete its own agent while it is not disabled', async () => {
+    await heartbeat('operator-1', 'agent-of-a', 'inactive', {});
+    expect((await remove('agent-a', 'agent-of-a')).status).toBe(200);
+  });
+});
+
+// The budget is set by RATE_LIMIT_AGENT_HEARTBEAT_MAX (top of file); the default (600) is not what runs here.
+describe(`heartbeat rate limit (${HEARTBEAT_BUDGET} per principal per hour, configured)`, () => {
   const invalid = (userId: string) =>
     request(app).post('/api/v1/agents/heartbeat').set(as(userId)).send({ agent_id: 'agent-of-b', status: 'bogus' });
+  const heartbeatByKey = (apiKey: string, agentId: string) =>
+    request(app).post('/api/v1/agents/heartbeat').set('X-API-Key', apiKey).send({ agent_id: agentId, status: 'active' });
 
-  it('refuses the 601st heartbeat of a principal with 429 before any write, and leaves other principals alone', async () => {
-    for (let i = 0; i < 600; i++) expect((await invalid('agent-a')).status).toBe(400);
+  it('honours the configured budget: refuses the next heartbeat of a principal with 429 before any write, and leaves other principals alone', async () => {
+    for (let i = 0; i < HEARTBEAT_BUDGET; i++) expect((await invalid('agent-a')).status).toBe(400);
     const limited = await heartbeat('agent-a', 'agent-of-a', 'active', { jobs_completed: 9 });
     expect(limited.status).toBe(429);
-    expect(limited.headers['x-ratelimit-limit']).toBe('600');
+    expect(limited.headers['x-ratelimit-limit']).toBe(String(HEARTBEAT_BUDGET));
     expect((await agent('agent-of-a'))?.total_jobs_completed).toBe(0);
 
     expect((await invalid('agent-b')).status).toBe(400);
     expect((await heartbeat('agent-b', 'agent-of-b')).status).toBe(200);
-  }, 60_000);
+  });
+
+  it('admits a principal again once its admitted heartbeats leave the window, however hard it kept retrying while refused', async () => {
+    const clock = jest.spyOn(Date, 'now');
+    const start = Date.now();
+    try {
+      clock.mockReturnValue(start);
+      for (let i = 0; i < HEARTBEAT_BUDGET; i++) expect((await heartbeatByKey(API_KEY_A1, 'agent-of-a')).status).toBe(200);
+
+      // Half a window later it retries more often than the budget allows; every retry is refused.
+      clock.mockReturnValue(start + HEARTBEAT_WINDOW_MS / 2);
+      for (let i = 0; i < HEARTBEAT_BUDGET + 3; i++) expect((await heartbeatByKey(API_KEY_A1, 'agent-of-a')).status).toBe(429);
+
+      // The retries were not recorded: when the admitted heartbeats slide out, the next one is admitted.
+      clock.mockReturnValue(start + HEARTBEAT_WINDOW_MS + 1);
+      expect((await heartbeatByKey(API_KEY_A1, 'agent-of-a')).status).toBe(200);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('lets a heartbeat through when the limiter store fails, without limit headers', async () => {
+    redis.failing = true;
+    const response = await heartbeat('agent-a', 'agent-of-a', 'active', { jobs_completed: 4 });
+    expect(response.status).toBe(200);
+    expect(response.headers['x-ratelimit-limit']).toBeUndefined();
+    expect((await agent('agent-of-a'))?.total_jobs_completed).toBe(4);
+  });
+});
+
+// openapi.yaml against what the real router, Joi schemas and controller answer.
+describe('openapi.yaml discovery-agent contract', () => {
+  type Bounds = { minLength?: number; maxLength?: number; minItems?: number; format?: string };
+  const bounds = (schema: Schema): Bounds => schema as Bounds;
+  const registerProperties = spec.components.schemas['RegisterAgentInput']!.properties!;
+  const heartbeatProperties = (spec.paths['/agents/heartbeat']!['post'] as unknown as {
+    requestBody: { content: { 'application/json': { schema: Schema } } };
+  }).requestBody.content['application/json'].schema.properties!;
+
+  // A string of exactly `length` characters that is still a URI where one is required.
+  const text = (name: string, length: number) =>
+    name === 'api_endpoint' ? `http://h.example/${'a'.repeat(length - 'http://h.example/'.length)}` : 'a'.repeat(length);
+  // Joi's verdict on one field: 400 is a refusal; any other status means the field passed validation.
+  const accepted = async (body: Record<string, unknown>) => (await register('agent-a', body)).status !== 400;
+
+  it('declares the bounds the register Joi schema enforces, and each one is where the router draws the line', async () => {
+    const declared = Object.fromEntries(Object.entries(registerProperties)
+      .map(([name, schema]) => [name, bounds(schema)] as const)
+      .filter(([, b]) => b.minLength !== undefined || b.maxLength !== undefined || b.minItems !== undefined || b.format !== undefined)
+      .map(([name, b]) => [name, { minLength: b.minLength, maxLength: b.maxLength, minItems: b.minItems, format: b.format }]));
+    expect(declared).toEqual({
+      agent_id: { minLength: 1, maxLength: 255 },
+      hostname: { minLength: 1, maxLength: 255 },
+      provider_capabilities: { minItems: 1 },
+      reachable_networks: { minItems: 1 },
+      version: { maxLength: 50 },
+      platform: { maxLength: 50 },
+      arch: { maxLength: 50 },
+      api_endpoint: { maxLength: 500, format: 'uri' },
+    });
+
+    for (const [name, b] of Object.entries(declared) as Array<[string, Bounds]>) {
+      if (b.maxLength !== undefined) {
+        expect([name, 'max', await accepted({ [name]: text(name, b.maxLength) })]).toEqual([name, 'max', true]);
+        expect([name, 'max+1', await accepted({ [name]: text(name, b.maxLength + 1) })]).toEqual([name, 'max+1', false]);
+      }
+      if (b.minLength !== undefined) {
+        expect([name, 'empty', await accepted({ [name]: '' })]).toEqual([name, 'empty', false]);
+      }
+      if (b.minItems !== undefined) {
+        expect([name, 'empty list', await accepted({ [name]: [] })]).toEqual([name, 'empty list', false]);
+      }
+    }
+    expect(await accepted({ api_endpoint: 'not a uri' })).toBe(false);
+  });
+
+  it('declares the heartbeat agent_id bounds the heartbeat Joi schema enforces', async () => {
+    expect(bounds(heartbeatProperties['agent_id']!)).toMatchObject({ minLength: 1, maxLength: 255 });
+    const status = async (agentId: string) => (await heartbeat('operator-1', agentId, 'active', {})).status;
+    expect(await status('a'.repeat(255))).toBe(404);
+    expect(await status('a'.repeat(256))).toBe(400);
+    expect(await status('')).toBe(400);
+  });
+
+  it('declares the 200 body a delete sends, and no 204', async () => {
+    const responses = Object.keys(spec.paths['/agents/{agentId}']!['delete']!.responses);
+    expect(responses).toContain('200');
+    expect(responses).not.toContain('204');
+    const deleted = await remove('agent-a', 'agent-of-a');
+    expect(deleted.status).toBe(200);
+    expect(violations(declaredResponse('/agents/{agentId}', 'delete', '200').schema!, deleted.body)).toEqual([]);
+  });
+
+  it('declares the 403 a viewer gets on register, delete and heartbeat', async () => {
+    const refused = [
+      ['/agents/register', 'post', await register('viewer-1')],
+      ['/agents/{agentId}', 'delete', await remove('viewer-1', 'agent-of-a')],
+      ['/agents/heartbeat', 'post', await heartbeat('viewer-1', 'agent-of-a')],
+    ] as const;
+    for (const [path, method, response] of refused) {
+      expect([path, response.status, response.body.code]).toEqual([path, 403, 'PERMISSION_REQUIRED']);
+      expect(Object.keys(spec.paths[path]![method]!.responses)).toContain('403');
+    }
+    for (const [path, method, response] of refused.slice(0, 2)) {
+      expect(violations(declaredResponse(path, method, '403').schema!, response.body)).toEqual([]);
+    }
+    expect((await agent('agent-of-a'))?.status).toBe('active');
+  });
 });

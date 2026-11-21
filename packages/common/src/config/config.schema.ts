@@ -210,6 +210,13 @@ export const configSchema = Joi.object({
         windowMs: Joi.number().default(900000), // 15 minutes
       }).default(),
 
+      // POST /agents/heartbeat per verified user across all clients: 600 per hour, counting only admitted requests.
+      // 0 = no limiter.
+      agentHeartbeat: Joi.object({
+        max: Joi.number().default(600),
+        windowMs: Joi.number().default(3600000), // 1 hour
+      }).default(),
+
       // Discovery endpoints
       discovery: Joi.object({
         max: Joi.number().default(100),
@@ -429,6 +436,7 @@ export type ConfigSchema = {
       auth: { max: number; windowMs: number };
       authAccount: { max: number; windowMs: number };
       authAccountGlobal: { max: number; windowMs: number };
+      agentHeartbeat: { max: number; windowMs: number };
       discovery: { max: number; windowMs: number };
       admin: { max: number; windowMs: number };
     };

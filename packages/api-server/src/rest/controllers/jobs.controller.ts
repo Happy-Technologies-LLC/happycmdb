@@ -70,12 +70,13 @@ function cleanRequest(body: unknown): CleanRequest | null {
   if (type !== undefined && type !== 'completed' && type !== 'failed') {
     return null;
   }
+  const validType: CleanRequest['type'] = type === 'failed' ? 'failed' : 'completed';
   const validGrace = boundedInteger(grace, 3_600_000, 0, MAX_CLEAN_GRACE_MS);
   const validLimit = boundedInteger(limit, 1000, 1, MAX_CLEAN_LIMIT);
   if (validGrace === null || validLimit === null) {
     return null;
   }
-  return { grace: validGrace, limit: validLimit, type: type ?? 'completed' };
+  return { grace: validGrace, limit: validLimit, type: validType };
 }
 
 function nonNegativePageInteger(value: unknown, fallback: number): number | null {

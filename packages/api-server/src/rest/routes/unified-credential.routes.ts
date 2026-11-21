@@ -10,7 +10,7 @@
 
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import Joi from 'joi';
-import { CredentialProtocolAdapter } from '@cmdb/common';
+import { CredentialProtocolAdapter, MAX_AFFINITY_ITEMS, MAX_HOSTNAME_LENGTH, MAX_IPV4_LENGTH, MAX_NETWORK_LENGTH } from '@cmdb/common';
 import { UnifiedCredentialController, REDACTED_PLACEHOLDER, INVALID_CREDENTIALS_UPDATE, isRedactionArtefact } from '../controllers/unified-credential.controller';
 import { CredentialSetController } from '../controllers/credential-set.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
@@ -89,8 +89,8 @@ const credentialScopeSchema = Joi.string().valid(
  * Credential Affinity schema
  */
 const credentialAffinitySchema = Joi.object({
-  networks: Joi.array().items(Joi.string().max(64)).max(50).optional(),
-  hostname_patterns: Joi.array().items(Joi.string().max(253)).max(50).optional(),
+  networks: Joi.array().items(Joi.string().max(MAX_NETWORK_LENGTH)).max(MAX_AFFINITY_ITEMS).optional(),
+  hostname_patterns: Joi.array().items(Joi.string().max(MAX_HOSTNAME_LENGTH)).max(MAX_AFFINITY_ITEMS).optional(),
   os_types: Joi.array().items(Joi.string()).optional(),
   device_types: Joi.array().items(Joi.string()).optional(),
   environments: Joi.array().items(Joi.string()).optional(),
@@ -141,8 +141,9 @@ const updateCredentialSchema = Joi.object({
  * Credential Match Context schema
  */
 const credentialMatchContextSchema = Joi.object({
-  ip: Joi.string().optional(),
-  hostname: Joi.string().max(253).optional(),
+  // The length is checked first, so a long value is refused before the address parser sees it.
+  ip: Joi.string().max(MAX_IPV4_LENGTH).ip({ version: ['ipv4'], cidr: 'forbidden' }).optional(),
+  hostname: Joi.string().max(MAX_HOSTNAME_LENGTH).optional(),
   os_type: Joi.string().optional(),
   device_type: Joi.string().optional(),
   environment: Joi.string().optional(),

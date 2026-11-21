@@ -56,20 +56,40 @@ function ipToInt(ip: string): number {
 
 /**
  * Match hostname against glob pattern
- * Supports * (any characters) and ? (single character)
+ * Supports * (any run of characters, including none) and ? (exactly one
+ * character); everything else is a literal, compared case-insensitively.
+ *
+ * No regular expression is built from the pattern (it is user-authored): an
+ * iterative two-pointer matcher that remembers a single `*` position, so the
+ * worst case is O(pattern.length * hostname.length) and it cannot throw.
  */
 export function matchGlob(hostname: string, pattern: string): boolean {
-  try {
-    // Convert glob pattern to regex
-    const regexPattern = pattern
-      .replace(/[.+^${}()|[\]\\]/g, '\\$&') // Escape special chars
-      .replace(/\*/g, '.*') // * matches any characters
-      .replace(/\?/g, '.'); // ? matches single character
+  const text = hostname.toLowerCase();
+  const glob = pattern.toLowerCase();
+  let t = 0;
+  let g = 0;
+  let starG = -1; // pattern index just after the last `*` seen
+  let starT = 0; // text index that `*` currently extends to
 
-    const regex = new RegExp(`^${regexPattern}$`, 'i'); // Case-insensitive
-    return regex.test(hostname);
-  } catch (error) {
-    logger.error('Failed to match glob pattern', { hostname, pattern, error });
-    return false;
+  while (t < text.length) {
+    const c = glob[g];
+    if (c === '*') {
+      starG = ++g;
+      starT = t;
+    } else if (g < glob.length && (c === '?' || c === text[t])) {
+      g++;
+      t++;
+    } else if (starG !== -1) {
+      // Let the last `*` swallow one more character and retry after it
+      g = starG;
+      t = ++starT;
+    } else {
+      return false;
+    }
   }
+
+  while (glob[g] === '*') {
+    g++;
+  }
+  return g === glob.length;
 }

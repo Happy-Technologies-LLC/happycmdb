@@ -97,6 +97,17 @@ jest.mock('../../../services/discovery-agent.service', () => ({
   },
 }));
 
+// The heartbeat limiter is covered against a real limiter in discovery-agent.owner-binding.test.ts; here it must not
+// open a Redis connection. Plain functions (not jest.fn) so `resetMocks: true` cannot wipe them.
+jest.mock('@cmdb/database', () => ({ getRedisClient: () => ({ getConnection: () => ({}) }) }));
+jest.mock('../../../middleware/rate-limit.middleware', () => ({
+  RateLimitMiddleware: class {
+    custom() {
+      return (_req: unknown, _res: unknown, next: () => void) => next();
+    }
+  },
+}));
+
 import { logger } from '@cmdb/common';
 import { discoveryAgentRoutes } from '../discovery-agent.routes';
 

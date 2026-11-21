@@ -2,13 +2,26 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { DiscoveryAgentService, AGENT_NOT_FOUND } from '../../services/discovery-agent.service';
+import { DiscoveryAgentService, AGENT_NOT_FOUND, AgentCaller } from '../../services/discovery-agent.service';
 import { logger, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
-import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { requestOrganizationId, AuthenticatedRequest } from '../../middleware/auth.middleware';
+import { sendForbidden } from '../../middleware/forbidden-response';
 
 /** Error class name only; never the message, stack or cause. */
 function errorClass(error: unknown): string {
   return error instanceof Error ? error.constructor.name : typeof error;
+}
+
+/**
+ * The verified caller of an agent write. Only operator and admin act org-wide; every other role that reaches these
+ * routes (today: agent) is bound to the agents it registered. An unknown role is bound too: it fails closed.
+ */
+function agentCaller(req: Request): AgentCaller {
+  const user = (req as AuthenticatedRequest).user;
+  if (!user?._userId) {
+    throw new Error('Agent write reached without authentication');
+  }
+  return { principalId: user._userId, orgWide: user._role === 'operator' || user._role === 'admin' };
 }
 
 /**
@@ -24,7 +37,7 @@ export class DiscoveryAgentController {
    */
   async registerAgent(req: Request, res: Response): Promise<void> {
     try {
-      const agent = await this.service.registerAgent(req.body, requestOrganizationId(req));
+      const agent = await this.service.registerAgent(req.body, requestOrganizationId(req), agentCaller(req));
       if (!agent) {
         res.status(404).json({ success: false, error: AGENT_NOT_FOUND });
         return;
@@ -49,7 +62,17 @@ export class DiscoveryAgentController {
    */
   async updateHeartbeat(req: Request, res: Response): Promise<void> {
     try {
-      const updated = await this.service.updateHeartbeat(req.body, requestOrganizationId(req));
+      const caller = agentCaller(req);
+      // `disabled` is an operator decision: a bound caller can neither set it here nor leave it (the service keeps it).
+      // Refused before any query, so it says nothing about whether the agent exists or who owns it.
+      if (req.body.status === 'disabled' && !caller.orgWide) {
+        sendForbidden(res, 'ROLE_REQUIRED', "Role 'operator or admin' required to disable an agent", {
+          required: { roles: ['operator', 'admin'] },
+          role: (req as AuthenticatedRequest).user?._role,
+        });
+        return;
+      }
+      const updated = await this.service.updateHeartbeat(req.body, requestOrganizationId(req), caller);
       if (!updated) {
         res.status(404).json({ success: false, error: AGENT_NOT_FOUND });
         return;
@@ -159,7 +182,7 @@ export class DiscoveryAgentController {
         return;
       }
 
-      const deleted = await this.service.deleteAgent(agentId, requestOrganizationId(req));
+      const deleted = await this.service.deleteAgent(agentId, requestOrganizationId(req), agentCaller(req));
       if (!deleted) {
         res.status(404).json({ success: false, error: AGENT_NOT_FOUND });
         return;

@@ -62,6 +62,20 @@ describe('PostgresClient TLS mode', () => {
     }
   });
 
+  it('refuses verify-full with POSTGRES_SSL_CA_FILE set but empty, naming the variable', () => {
+    process.env['POSTGRES_SSL_MODE'] = 'verify-full';
+    process.env['POSTGRES_SSL_CA_FILE'] = '';
+    expect(() => open()).toThrow('POSTGRES_SSL_CA_FILE is set but empty');
+  });
+
+  it('does not read an empty ambient CA file variable when an explicit CA bundle is given', () => {
+    process.env['POSTGRES_SSL_CA_FILE'] = '';
+    const ssl = new PostgresClient({
+      _host: 'db.internal', _port: 5432, _database: 'cmdb', _user: 'u', _password: 'p', ssl: 'verify-full', sslCa: 'explicit-ca-pem',
+    }).pool.options.ssl as ConnectionOptions;
+    expect(ssl).toMatchObject({ rejectUnauthorized: true, ca: 'explicit-ca-pem' });
+  });
+
   it('verifies against an explicit CA bundle with rejectUnauthorized, ahead of an ambient CA file', () => {
     process.env['POSTGRES_SSL_CA_FILE'] = '/nonexistent/ambient-ca.pem';
     const ssl = new PostgresClient({

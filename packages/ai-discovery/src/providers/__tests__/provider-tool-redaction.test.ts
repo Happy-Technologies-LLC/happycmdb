@@ -74,7 +74,7 @@ it.each(['openai', 'custom', 'anthropic'] as const)(
       inputSchema: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
       execute: jest.fn().mockResolvedValue({ stdout: `result ${secret}` }),
     };
-    const args = { command: `echo password=${secret}` };
+    const args = { host: '8.8.8.8', command: `echo password=${secret}` };
     setResponse(name, tool.name, args);
     const provider = providers[name]();
     const success = await provider.discover(context, [tool], 'system', 'user');
@@ -146,8 +146,9 @@ it.each(['openai', 'custom', 'anthropic'] as const)(
       inputSchema: { type: 'object', properties: { host: { type: 'string' } }, required: ['host'] },
       execute: jest.fn().mockRejectedValue(new Error('Discovery target refused')),
     };
+    const privateContext = { targetHost: `private-${secret}`, targetPort: 443 };
     setResponse(name, tool.name, { host: `private-${secret}` });
-    await expect(providers[name]().discover(context, [tool], 'system', 'user'))
+    await expect(providers[name]().discover(privateContext, [tool], 'system', 'user'))
       .rejects.toThrow('Discovery target refused');
     expect(tool.execute).toHaveBeenCalledTimes(1);
     expect(JSON.stringify([jest.mocked(logger.debug).mock.calls, jest.mocked(logger.info).mock.calls,
@@ -212,7 +213,7 @@ it('fails coordinator and hybrid discovery when a public-target AI tool refuses 
   };
   const config = { provider: 'openai' as const, model: 'gpt-4', apiKey: 'unused' };
   const coordinator = new AIAgentCoordinator(config, [tool]);
-  setResponse('openai', tool.name, { host: '10.0.0.1' });
+  setResponse('openai', tool.name, { host: '8.8.8.8' });
   const direct = await coordinator.discover(context);
   expect(direct).toMatchObject({ success: false, error: 'Discovery target refused',
     discoveredCIs: [], session: { status: 'failed', errorMessage: 'Discovery target refused' } });
@@ -223,7 +224,7 @@ it('fails coordinator and hybrid discovery when a public-target AI tool refuses 
   hybrid.updateConfig({ aiEnabled: true });
   (hybrid as any).aiCoordinator = coordinator;
   openaiCreate.mockReset();
-  setResponse('openai', tool.name, { host: '10.0.0.1' });
+  setResponse('openai', tool.name, { host: '8.8.8.8' });
   const routed = await hybrid.discover(context);
   expect(routed).toMatchObject({ success: false, error: 'Discovery target refused',
     discoveredCIs: [], method: 'ai' });

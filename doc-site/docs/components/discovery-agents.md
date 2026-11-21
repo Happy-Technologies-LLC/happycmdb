@@ -67,6 +67,11 @@ organization. Global `agent_id` uniqueness is preserved. PUBLIC grants on the
 base table and unscoped legacy views are revoked; use organization-filtered
 service queries rather than `active_discovery_agents` or `agent_network_coverage`.
 
+Migration `057_discovery_agents_owner.sql` adds nullable `owner_user_id` (no backfill and no index: it is only an extra
+predicate on the `agent_id` lookup). Manual rollback:
+`rollback/057_discovery_agents_owner.down.sql`, which drops the column; re-applying 057 afterwards leaves every agent
+ownerless. See [Agent Ownership](#agent-ownership).
+
 ## Agent Registration
 
 ### Registration Flow
@@ -114,6 +119,27 @@ is not an authorization source: local interfaces often yield private networks.
 The find-best route validates every requested target against the same fail-closed
 public-egress policy and requires one organization-scoped agent covering them all.
 
+### Agent Ownership
+
+Each agent is bound to the principal that registered it: the verified user behind the JWT or API key (migration
+`057_discovery_agents_owner.sql`, `discovery_agents.owner_user_id`, never returned by the API). An API key authenticates
+as its owning user, so a user's JWT and all of that user's keys act as one principal.
+
+- An `agent`-role caller can heartbeat, re-register and delete only agents it registered. Any other agent of the same
+  organization (another principal's, or an ownerless one, see below) returns the same `404 Agent not found` as a missing
+  agent, so the response does not reveal that an agent exists.
+- `operator` and `admin` keep organization-wide control of every agent, but never rewrite an existing owner. Every other
+  role is treated as bound.
+- A new agent registered by an operator or admin is owned by that operator or admin, so an agent-role credential cannot
+  reach it. Give each agent host its own agent-role user or key and let it register itself.
+
+**Agents registered before migration 057 are ownerless.** The migration does not guess an owner: `owner_user_id` is NULL,
+and the safe default is that no agent-role credential can reach such an agent (404 on heartbeat, re-register and delete)
+until an operator or admin acts. Two remedies, both by an operator or admin: re-register it (the supplied `agent_id`
+claims the row for the operator's own principal, which does not make it reachable by an agent-role key), or delete it and
+let the agent register afresh with its own credential, which is the normal way to hand an agent to its own key. Until
+then a pre-057 agent's heartbeats are refused with 404.
+
 ## Heartbeat Monitoring
 
 ### Heartbeat Protocol
@@ -144,6 +170,23 @@ Agents send heartbeat every 60 seconds to indicate they're alive:
 ```
 
 `stats.jobs_completed`, `stats.jobs_failed` and `stats.cis_discovered` are per-heartbeat deltas: integers from 0 to 1,000,000 each (a larger, negative or fractional value is a 400). The service adds them to the agent's running totals, which saturate at 2,147,483,647 (the `INTEGER` column maximum) instead of failing the heartbeat.
+
+### Heartbeat Rate Limit
+
+Each verified principal (the user behind the JWT or API key) may send 600 heartbeats per hour, ten times the nominal
+one-per-minute cadence, so a healthy agent never sees it. Beyond that the endpoint answers `429` with
+`X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers and a JSON body carrying `_retryAfter`
+(seconds). The limiter runs ahead of body validation, so malformed requests count. The budget is a fixed constant
+(`HEARTBEAT_BUDGET` in `discovery-agent.routes.ts`), not a `rateLimit.endpoints` setting; it honours
+`rateLimit.enabled` and the bypass header, and a Redis failure lets the request through. Every API key of one user
+shares that user's bucket.
+
+### The `disabled` Status
+
+`disabled` is an operator decision. Only an operator or admin can set it (an agent-role caller sending
+`status: "disabled"` gets `403 ROLE_REQUIRED`, before any lookup) and only an operator or admin can move an agent out of
+it, by a heartbeat with another status or by re-registering the agent. A heartbeat or re-registration from an
+agent-role credential never changes a `disabled` agent's status (its counters and liveness are still recorded).
 
 ### Stale Agent Detection
 

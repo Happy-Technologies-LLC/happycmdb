@@ -152,7 +152,7 @@ curl -X GET https://cmdb.example.com/api/v1/cis \
 
 ## Rate Limiting
 
-The API mounts no global rate limiter: `ApiServer.setupMiddleware` (`rest/server.ts`) applies none, so a request outside the routes below is not rate-limited by the API itself. Limiters sit on four auth routes registered in `AuthController`, and a reverse proxy can add a global limit (see [Proxy limits](#proxy-limits)).
+The API mounts no global rate limiter: `ApiServer.setupMiddleware` (`rest/server.ts`) applies none, so a request outside the routes below is not rate-limited by the API itself. Limiters sit on four auth routes registered in `AuthController` and on `POST /api/v1/agents/heartbeat`, and a reverse proxy can add a global limit (see [Proxy limits](#proxy-limits)).
 
 ### Rate Limit Rules
 
@@ -162,6 +162,7 @@ The API mounts no global rate limiter: `ApiServer.setupMiddleware` (`rest/server
 | `PUT /api/v1/auth/password` | `RateLimitMiddleware.limit('auth', { perUser: true, … })`: per client address and per verified user | `endpoints.auth` and `endpoints.authAccount` | fail closed: fixed `503`, `Cache-Control: no-store` |
 | `POST /api/v1/auth/sessions/revoke-others` | `RateLimitMiddleware.limit('auth', { perUserClient: true, perSession: true, … })`: per client address, per verified user AND client address, and per verified user AND session (the access token's `_authTime`, constant across refresh; across all client addresses) (HAP-1716). A token without `_authTime` is refused `401` before the limiter | `endpoints.auth` and `endpoints.authAccount` (the last two buckets) | fail closed: fixed `503`, `Cache-Control: no-store` |
 | `POST /api/v1/auth/refresh` | separate `auth-refresh` bucket: `RateLimitMiddleware.custom(endpointBudget('rest'), 'auth-refresh')`; it never uses up login's budget | the REST budget, `endpoints.rest` (default 1000 per 3600000 ms) | fail open: the request is let through |
+| `POST /api/v1/agents/heartbeat` | separate `agent-heartbeat` bucket: `RateLimitMiddleware.custom({ max: 600, windowMs: 3600000 }, 'agent-heartbeat')`, per verified user (the user behind the JWT or API key), ahead of body validation | fixed 600 per 3600000 ms (10 times the nominal one-per-minute agent cadence); a constant in `discovery-agent.routes.ts`, not a `rateLimit.endpoints` entry | fail open: the request is let through |
 
 The refresh limiter is not mounted when `rateLimit.endpoints.rest.max` is `0`. `endpoints.graphql`, `endpoints.health`, `endpoints.discovery` and `endpoints.admin` exist in the config schema, but no route mounts a limiter on them.
 
@@ -182,7 +183,7 @@ That file is the TLS-terminating configuration; the `web-ui` image that `infrast
 
 ### Rate Limit Headers
 
-The auth rate limiters send `X-RateLimit-*` headers: `POST /api/v1/auth/login` and `PUT /api/v1/auth/password` (both `RateLimitMiddleware.limit`) and `POST /api/v1/auth/refresh` (`RateLimitMiddleware.custom`), on allowed and on `429` responses, set by `RateLimitMiddleware.setRateLimitHeaders`. They are absent when `rateLimit.enabled` is `false`, when the request carries the bypass header (`rateLimit.bypassHeader`, default `X-Internal-Service`) with the value of `rateLimit.bypassSecret`, when the endpoint's `max` is `0` (`rateLimit.endpoints.auth.max` for login and password, which then skip the limiter; `rateLimit.endpoints.rest.max` for refresh, which is then not mounted), and when the limiter store fails (refresh fails open and sets none; the fail-closed `503` of login and password carries none). No other route sends them, and the `429` responses from the analysis, impact and GraphQL concurrency gates and from nginx carry none.
+The auth rate limiters send `X-RateLimit-*` headers: `POST /api/v1/auth/login` and `PUT /api/v1/auth/password` (both `RateLimitMiddleware.limit`) and `POST /api/v1/auth/refresh` and `POST /api/v1/agents/heartbeat` (`RateLimitMiddleware.custom`), on allowed and on `429` responses, set by `RateLimitMiddleware.setRateLimitHeaders`. They are absent when `rateLimit.enabled` is `false`, when the request carries the bypass header (`rateLimit.bypassHeader`, default `X-Internal-Service`) with the value of `rateLimit.bypassSecret`, when the endpoint's `max` is `0` (`rateLimit.endpoints.auth.max` for login and password, which then skip the limiter; `rateLimit.endpoints.rest.max` for refresh, which is then not mounted), and when the limiter store fails (refresh and heartbeat fail open and set none; the fail-closed `503` of login and password carries none). No other route sends them, and the `429` responses from the analysis, impact and GraphQL concurrency gates and from nginx carry none.
 
 ```http
 X-RateLimit-Limit: 1000
@@ -206,7 +207,7 @@ X-RateLimit-Reset: 1640995200000
 
 `_retryAfter` is in seconds; `_resetAt` is the same instant as `X-RateLimit-Reset`, as an ISO 8601 string.
 
-This flat body is sent only by the auth rate limiters (`RateLimitMiddleware.custom` for refresh and `RateLimitMiddleware.admit`, behind `RateLimitMiddleware.limit`, for login and password change). Other `429` responses use a different body and no `X-RateLimit-*` headers:
+This flat body is sent only by the auth rate limiters (`RateLimitMiddleware.custom` for refresh and for the agent heartbeat, and `RateLimitMiddleware.admit`, behind `RateLimitMiddleware.limit`, for login and password change). Other `429` responses use a different body and no `X-RateLimit-*` headers:
 
 | Source | Body | Headers |
 |--------|------|---------|
@@ -1952,9 +1953,9 @@ All API endpoints return consistent error responses:
 
 ## Rate Limiting
 
-The API mounts no global rate limiter; only `POST /api/v1/auth/login`, `PUT /api/v1/auth/password` and `POST /api/v1/auth/refresh` are limited (own `auth-refresh` bucket for refresh). See [Rate Limiting](#rate-limiting) above for the budgets and the nginx limits at the reverse proxy.
+The API mounts no global rate limiter; only `POST /api/v1/auth/login`, `PUT /api/v1/auth/password`, `POST /api/v1/auth/refresh` and `POST /api/v1/agents/heartbeat` are limited (own `auth-refresh` and `agent-heartbeat` buckets for refresh and heartbeat). See [Rate Limiting](#rate-limiting) above for the budgets and the nginx limits at the reverse proxy.
 
-Rate limit headers (sent only by those three routes, and not when `rateLimit.enabled` is `false`, on a bypass-header match, when the endpoint's `max` is `0` or on a limiter store error; no other route sends them):
+Rate limit headers (sent only by those four routes, and not when `rateLimit.enabled` is `false`, on a bypass-header match, when the endpoint's `max` is `0` or on a limiter store error; no other route sends them):
 ```
 X-RateLimit-Limit: 1000
 X-RateLimit-Remaining: 999

@@ -259,7 +259,7 @@ describe('openOperatorStores TLS settings (CMDB_ROTATE_*)', () => {
 
     open('neo4j://localhost', { CMDB_ROTATE_NEO4J_ENCRYPTED: 'false' });
     expect(driverMock.mock.calls[1][2].encrypted).toBe('ENCRYPTION_OFF');
-    expect(nonLoopbackWarnings()).toEqual(['CMDB_ROTATE_NEO4J_ENCRYPTED=false: the Neo4j connection to a non-loopback host is NOT encrypted']);
+    expect(nonLoopbackWarnings()).toEqual(['CMDB_ROTATE_NEO4J_ENCRYPTED=false: the Neo4j connection to a non-loopback host or via a neo4j:// routing URI is NOT encrypted']);
   });
 
   const nonLoopbackWarnings = (): string[] =>
@@ -276,7 +276,7 @@ describe('openOperatorStores TLS settings (CMDB_ROTATE_*)', () => {
     const warnings = nonLoopbackWarnings();
     expect(warnings).toEqual([
       'CMDB_ROTATE_POSTGRES_SSL=disable: the PostgreSQL connection to a non-loopback host is NOT encrypted',
-      'CMDB_ROTATE_NEO4J_ENCRYPTED=false: the Neo4j connection to a non-loopback host is NOT encrypted',
+      'CMDB_ROTATE_NEO4J_ENCRYPTED=false: the Neo4j connection to a non-loopback host or via a neo4j:// routing URI is NOT encrypted',
     ]);
   });
 

@@ -300,8 +300,11 @@ only on a private network you control. `<PREFIX>_POSTGRES_SSL=require` to a remo
 - With `verify-full` the tools pass `rejectUnauthorized: true` explicitly, with or without a CA file. That wins
   over `NODE_TLS_REJECT_UNAUTHORIZED=0` and over `PGSSLMODE` in the environment (pg reads `PGSSLMODE` only when
   no `ssl` option is given). The API server's `POSTGRES_SSL_*` variables are dropped before any client exists.
-  This holds for Postgres only: `require` and `disable` do not verify, and the Neo4j connection has no such
-  override.
+  The `verify-full` override is Postgres only: `require` and `disable` do not verify. Neo4j needs none: the
+  Neo4j driver sets `rejectUnauthorized: false` on its socket but then checks `socket.authorized` itself and
+  refuses an unauthorized socket, so `NODE_TLS_REJECT_UNAUTHORIZED=0` does not weaken the Neo4j connection
+  either. What it can still change is trust, not verification: `NODE_EXTRA_CA_CERTS` adds its CA to the store
+  Neo4j verifies against (see above).
 
 ```bash
 CMDB_ROTATE_POSTGRES_SSL=verify-full CMDB_ROTATE_POSTGRES_SSL_CA_FILE=/path/to/ca.pem \

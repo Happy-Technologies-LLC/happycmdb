@@ -124,7 +124,7 @@ const updateChangeSchema = Joi.object({
 const closeChangeSchema = Joi.object({
   result: Joi.string().valid('SUCCESS', 'PARTIAL_SUCCESS', 'FAILED', 'ROLLED_BACK').required(),
   notes: Joi.string().optional(),
-  closedBy: Joi.string().required(),
+  closedBy: Joi.string().max(255).required(),
 });
 
 const createBaselineSchema = Joi.object({

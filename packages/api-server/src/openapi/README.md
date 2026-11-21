@@ -379,7 +379,7 @@ curl -H "X-API-Key: YOUR_API_KEY" \
 
 ## Rate Limiting
 
-The API mounts no global rate limiter (`ApiServer.setupMiddleware`), so there is no per-token or per-API-key hourly or burst budget. Limiters sit on four auth routes registered in `AuthController`:
+The API mounts no global rate limiter (`ApiServer.setupMiddleware`), so there is no per-token or per-API-key hourly or burst budget. Limiters sit on four auth routes registered in `AuthController` and on `POST /api/v1/agents/heartbeat`:
 
 | Route | Limiter | Budget (`rateLimit.endpoints`) |
 |-------|---------|--------------------------------|
@@ -387,10 +387,11 @@ The API mounts no global rate limiter (`ApiServer.setupMiddleware`), so there is
 | `PUT /api/v1/auth/password` | `RateLimitMiddleware.limit('auth', { perUser: true })` | `auth` per client address, `authAccount` per verified user |
 | `POST /api/v1/auth/sessions/revoke-others` | `RateLimitMiddleware.limit('auth', { perUserClient: true, perSession: true })` | `auth` per client address, `authAccount` per verified user AND client address, and `authAccount` per verified user AND session (the access token's `_authTime`, constant across refresh; across all client addresses; HAP-1716). A token without `_authTime` gets `401` before the limiter |
 | `POST /api/v1/auth/refresh` | `RateLimitMiddleware.custom(endpointBudget('rest'), 'auth-refresh')` | `rest` (default 1000 per hour per client address); not mounted when `rest.max` is `0` |
+| `POST /api/v1/agents/heartbeat` | `RateLimitMiddleware.custom({ max: 600, windowMs: 3600000 }, 'agent-heartbeat')` | Fixed 600 per hour per verified user (the user behind the JWT or API key), checked before body validation; not a `rateLimit.endpoints` entry |
 
 Analysis requests (`executeBoundedAnalysis`) and GraphQL requests (`admitGraphQLRequest`) have in-process admission gates that answer `429` without the headers below. The shipped `infrastructure/docker/nginx.conf` adds per-client-address zones, each answering `limit_req_status 429`: `api_limit` (100r/s, `burst=50`, `location /api/`), `auth_limit` (5r/m, `burst=2`, login and password change only), `auth_session_limit` (2r/s, `burst=20`, the other `/api/v1/auth/` paths) and `graphql_limit` (50r/s, `burst=20`, `location /graphql`). The full rules are in [API_DOCUMENTATION.md](../../docs/API_DOCUMENTATION.md#rate-limiting).
 
-Rate limit headers (sent only by the auth endpoints `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh` and `PUT /api/v1/auth/password`; no other route sends them; absent when `rateLimit.enabled` is `false`, on a bypass-header match, when the endpoint's `max` is `0` or on a limiter store error):
+Rate limit headers (sent only by the auth endpoints `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh` and `PUT /api/v1/auth/password`, and by `POST /api/v1/agents/heartbeat`; no other route sends them; absent when `rateLimit.enabled` is `false`, on a bypass-header match, when the endpoint's `max` is `0` or on a limiter store error):
 - `X-RateLimit-Limit`: Maximum requests
 - `X-RateLimit-Remaining`: Remaining requests
 - `X-RateLimit-Reset`: Unix epoch milliseconds when the limit resets

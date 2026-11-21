@@ -20,6 +20,9 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 
 const ORG = '11111111-1111-4111-8111-111111111111';
+// Routing/heartbeat behaviour only: an operator-shaped caller, so the owner predicate is out of play
+// (it is covered by src/rest/routes/__tests__/discovery-agent.owner-binding.test.ts).
+const CALLER = { principalId: 'integration-operator', orgWide: true };
 
 describe('Discovery Agent Routing Integration Tests', () => {
   let pool: Pool;
@@ -35,7 +38,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
   }, 120000);
 
   async function registerFresh(input: Omit<DiscoveryAgentRegistration, 'agent_id'>): Promise<string> {
-    const agent = await agentService.registerAgent(input, ORG);
+    const agent = await agentService.registerAgent(input, ORG, CALLER);
     if (!agent) throw new Error('Expected registration to succeed');
     createdAgentIds.push(agent.agent_id);
     return agent.agent_id;
@@ -110,7 +113,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         tags: ['test', 'updated'],
       };
 
-      const updatedAgent = await agentService.registerAgent(updatedRegistration, ORG);
+      const updatedAgent = await agentService.registerAgent(updatedRegistration, ORG, CALLER);
       if (!updatedAgent) throw new Error('Expected same-org re-registration to succeed');
 
       expect(updatedAgent.agent_id).toBe(agentId);
@@ -143,7 +146,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         status: 'active',
       };
 
-      await agentService.updateHeartbeat(heartbeat, ORG);
+      await agentService.updateHeartbeat(heartbeat, ORG, CALLER);
 
       // Verify heartbeat was updated
       const agentAfter = await agentService.getAgent(agentId, ORG);
@@ -168,7 +171,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         },
       };
 
-      await agentService.updateHeartbeat(heartbeat, ORG);
+      await agentService.updateHeartbeat(heartbeat, ORG, CALLER);
 
       // Verify stats were updated
       const agent = await agentService.getAgent(agentId, ORG);
@@ -187,7 +190,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
         },
       };
 
-      await agentService.updateHeartbeat(heartbeat2, ORG);
+      await agentService.updateHeartbeat(heartbeat2, ORG, CALLER);
 
       // Verify incremental stats
       const agentAfter = await agentService.getAgent(agentId, ORG);
@@ -241,7 +244,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
           jobs_failed: 5,
           cis_discovered: 500,
         },
-      }, ORG);
+      }, ORG, CALLER);
 
       // Register agent with lower success rate
       const poorAgentId = await registerFresh({
@@ -259,7 +262,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
           jobs_failed: 30,
           cis_discovered: 50,
         },
-      }, ORG);
+      }, ORG, CALLER);
 
       // Find best agent for the covered public network.
       const bestAgent = await agentService.findBestAgentForNetworks(['8.8.8.0/24'], 'nmap', ORG);
@@ -379,7 +382,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
       await agentService.updateHeartbeat({
         agent_id: agentId,
         status: 'active',
-      }, ORG);
+      }, ORG, CALLER);
 
       // Verify agent is back online
       const recoveredAgent = await agentService.getAgent(agentId, ORG);
@@ -508,7 +511,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
       expect(agentBefore).not.toBeNull();
 
       // Delete agent
-      expect(await agentService.deleteAgent(agentId, ORG)).toBe(true);
+      expect(await agentService.deleteAgent(agentId, ORG, CALLER)).toBe(true);
 
       // Verify agent is deleted
       const agentAfter = await agentService.getAgent(agentId, ORG);
@@ -523,7 +526,7 @@ describe('Discovery Agent Routing Integration Tests', () => {
 
     it('should return false when deleting a non-existent agent in the caller organization', async () => {
       const nonExistentId = `test-agent-${uuidv4()}`;
-      expect(await agentService.deleteAgent(nonExistentId, ORG)).toBe(false);
+      expect(await agentService.deleteAgent(nonExistentId, ORG, CALLER)).toBe(false);
     }, 60000);
   });
 });

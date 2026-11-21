@@ -20,7 +20,7 @@ import { createHash, randomBytes } from 'crypto';
 import type { Response } from 'express';
 import { logger } from '@cmdb/common';
 import { AuthService, AuthRepository, UserProfileUpdate } from '../auth.service';
-import type { GuardedEpochBump } from '../auth.service';
+import type { GuardedEpochBump, UsersByIds } from '../auth.service';
 import { JWTService } from '../jwt.service';
 import { bcryptKey, isDefaultEquivalent } from '../default-credentials';
 import { PasswordService } from '../password.service';
@@ -73,8 +73,8 @@ class FakeRepository implements AuthRepository {
     const user = this.users.get(id);
     return user ? { ...user } : null;
   }
-  async findUsersByIds(ids: readonly string[]): Promise<Map<string, User>> {
-    return new Map(ids.flatMap(id => (this.users.has(id) ? [[id, { ...this.users.get(id)! }] as [string, User]] : [])));
+  async findUsersByIds(ids: readonly string[]): Promise<UsersByIds> {
+    return { ambiguous: [], users: new Map(ids.flatMap(id => (this.users.has(id) ? [[id, { ...this.users.get(id)! }] as [string, User]] : []))) };
   }
   async updateUserLastLogin(): Promise<void> {}
   async updateUser(id: string, updates: UserProfileUpdate): Promise<User> {

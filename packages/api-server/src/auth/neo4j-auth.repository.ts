@@ -20,7 +20,7 @@ import type { AuditLogEntry } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
 import type {
   AuthRepository, CredentialEventInput, GuardedEpochBump, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite,
-  UserProfileUpdate,
+  UserProfileUpdate, UsersByIds,
 } from './auth.service';
 import { AmbiguousUserIdentityError, UserNotFoundError, type ApiKey, type User } from './types';
 import { LOCK_USER } from './user-lock';
@@ -230,11 +230,12 @@ export class Neo4jAuthRepository implements AuthRepository {
   /**
    * The users the `ids` resolve to, one batched read (`FIND_USERS_BY_IDS_CYPHER`, the per-id predicate of
    * findUserById). An id that matches no node, or more than one distinct node (ambiguous identity), is absent from
-   * the map: the batch never fails for one ambiguous id. `timeoutMs` bounds the transaction server-side.
+   * `users`; the ambiguous ids are listed in `ambiguous`, so the batch never fails for one of them.
+   * `timeoutMs` bounds the transaction server-side.
    */
-  async findUsersByIds(ids: readonly string[], timeoutMs: number): Promise<Map<string, User>> {
+  async findUsersByIds(ids: readonly string[], timeoutMs: number): Promise<UsersByIds> {
     if (ids.length === 0) {
-      return new Map();
+      return { users: new Map(), ambiguous: [] };
     }
     const session = this.neo4jClient.getSession();
     try {
@@ -248,12 +249,15 @@ export class Neo4jAuthRepository implements AuthRepository {
         nodesById.set(requested, nodes);
       }
       const users = new Map<string, User>();
+      const ambiguous: string[] = [];
       for (const [requested, nodes] of nodesById) {
         if (nodes.size === 1) {
           users.set(requested, this.mapUserNode([...nodes.values()][0]!));
+        } else {
+          ambiguous.push(requested);
         }
       }
-      return users;
+      return { users, ambiguous };
     } catch (error) {
       throw new Error(`Failed to find users by ID: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {

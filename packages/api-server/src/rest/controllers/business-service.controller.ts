@@ -130,13 +130,17 @@ const C1_SERVICE_COLUMNS = `s.*,
  * Owner validity (the C1 `owner_valid`) of the services in `rows`, all of `organizationId`: the same enabled-user and
  * organization comparison an owner write applies, from one batched identity-store lookup bounded by
  * OWNER_VALIDITY_TIMEOUT_MS. An identity-store failure or timeout reads as not valid (the read still succeeds) and is
- * logged once per read, as error fields only (never an id or a value).
+ * logged once per read, as error fields only (never an id or a value). An owner id the store holds two user nodes for
+ * (AmbiguousUserIdentityError elsewhere) also reads as not valid and is logged once per read, as the ids only.
  */
 async function ownerValidityOf(organizationId: string, rows: Array<Record<string, unknown>>): Promise<ReadonlyMap<string, boolean>> {
-  const { valid, failures } = await readOwnerValidity(organizationId, rows.map(row => row['owner_principal_id'] as string | null),
+  const { valid, failures, ambiguous } = await readOwnerValidity(organizationId, rows.map(row => row['owner_principal_id'] as string | null),
     (ids, timeoutMs) => getAuthService().findEnabledUsers(ids, timeoutMs));
   if (failures.length > 0) {
     logger.error('Business service owner validity lookup failed', { error: errorLogFields(failures[0]) });
+  }
+  if (ambiguous.length > 0) {
+    logger.error('Business service owner identity is ambiguous', { user_ids: ambiguous });
   }
   return valid;
 }

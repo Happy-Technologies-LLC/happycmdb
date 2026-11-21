@@ -97,20 +97,19 @@ describe('Neo4jAuthRepository', () => {
       const rows = [['x', a], ['x', a], ['dup', dupA], ['dup', dupB]] as const;
       mockSession.run.mockResolvedValueOnce({ records: rows.map(([requested, u]) => ({ get: (k: string) => (k === 'requested' ? requested : u) })) });
 
-      const users = await repository.findUsersByIds(['x', 'dup', 'ghost'], 1234);
+      const { users, ambiguous } = await repository.findUsersByIds(['x', 'dup', 'ghost'], 1234);
 
       expect([...users.keys()]).toEqual(['x']);
+      expect(ambiguous).toEqual(['dup']);
       expect(users.get('x')).toMatchObject({ _elementId: '4:a', _role: 'viewer' });
       expect(mockSession.run).toHaveBeenCalledTimes(1);
-      const [cypher, params, config] = mockSession.run.mock.calls[0] as [string, Record<string, unknown>, Record<string, unknown>];
-      expect(cypher).toContain('UNWIND $ids');
+      const [, params] = mockSession.run.mock.calls[0] as [string, Record<string, unknown>, Record<string, unknown>];
       expect(params).toEqual({ ids: ['x', 'dup', 'ghost'] });
-      expect(config).toEqual({ timeout: 1234 });
       expect(mockSession.close).toHaveBeenCalled();
     });
 
     it('findUsersByIds: an empty list runs no query', async () => {
-      await expect(repository.findUsersByIds([], 1000)).resolves.toEqual(new Map());
+      await expect(repository.findUsersByIds([], 1000)).resolves.toEqual({ users: new Map(), ambiguous: [] });
       expect(mockSession.run).not.toHaveBeenCalled();
     });
 

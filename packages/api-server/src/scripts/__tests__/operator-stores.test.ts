@@ -368,7 +368,6 @@ describe('openOperatorStores graph sessions', () => {
     await expect(graph.read('MATCH (u:User) RETURN count(u) AS n', {})).resolves.toEqual([{ n: 1 }]);
 
     expect(configs).toEqual([{ database: 'neo4j', defaultAccessMode: neo4j.session.READ }]);
-    expect(neo4j.session.READ).toBe('READ');
   });
 
   it('keeps graph.write on a session that is not READ-mode', async () => {

@@ -5,12 +5,14 @@
  * readOwnerValidity: one batched, time-bounded identity-store lookup per read (the C1 `owner_valid`).
  */
 import {
-  OWNER_VALIDITY_TIMEOUT_MS, OwnerValidityTimeoutError, ownerValidityTimeoutMs, readOwnerValidity, type OwnerUser,
+  OWNER_VALIDITY_TIMEOUT_MS, OwnerValidityTimeoutError, ownerValidityTimeoutMs, readOwnerValidity, type OwnerLookup, type OwnerUser,
 } from '../business-service-reference';
 
 const ORG = 'org-a';
-const users = (entries: Record<string, string | null | undefined>): Map<string, OwnerUser> =>
-  new Map(Object.entries(entries).map(([id, organization]) => [id, { _organizationId: organization }]));
+const users = (entries: Record<string, string | null | undefined>, ambiguous: string[] = []): OwnerLookup => ({
+  users: new Map<string, OwnerUser>(Object.entries(entries).map(([id, organization]) => [id, { _organizationId: organization }])),
+  ambiguous,
+});
 
 describe('readOwnerValidity', () => {
   it('asks once for the distinct owners and compares each user\'s organization', async () => {
@@ -23,6 +25,16 @@ describe('readOwnerValidity', () => {
     expect(lookup.mock.calls[0]).toEqual([['same', 'other', 'orphan', 'ghost'], 1000]);
     expect([...result.valid]).toEqual([['same', true], ['other', false], ['orphan', false], ['ghost', false]]);
     expect(result.failures).toEqual([]);
+    expect(result.ambiguous).toEqual([]);
+  });
+
+  it('an ambiguous owner reads not valid and is reported, the others keep their answer', async () => {
+    const lookup = jest.fn(async () => users({ same: ORG }, ['twin']));
+
+    const result = await readOwnerValidity(ORG, ['same', 'twin'], lookup, 1000);
+
+    expect([...result.valid]).toEqual([['same', true], ['twin', false]]);
+    expect([result.ambiguous, result.failures]).toEqual([['twin'], []]);
   });
 
   it('asks nothing when no service names an owner', async () => {
@@ -35,7 +47,7 @@ describe('readOwnerValidity', () => {
   });
 
   it('a lookup that outlasts the bound reads every owner as not valid and records a fixed timeout error', async () => {
-    const lookup = jest.fn(() => new Promise<Map<string, OwnerUser>>(() => undefined));
+    const lookup = jest.fn(() => new Promise<OwnerLookup>(() => undefined));
     const started = Date.now();
 
     const result = await readOwnerValidity(ORG, ['secret-principal-id', 'another'], lookup, 20);
@@ -56,7 +68,7 @@ describe('readOwnerValidity', () => {
     const unhandled = jest.fn();
     process.on('unhandledRejection', unhandled);
     try {
-      const late = await readOwnerValidity(ORG, ['a'], () => new Promise<Map<string, OwnerUser>>((_resolve, reject) => {
+      const late = await readOwnerValidity(ORG, ['a'], () => new Promise<OwnerLookup>((_resolve, reject) => {
         setTimeout(() => reject(failure), 60);
       }), 10);
       expect(late.failures[0]).toBeInstanceOf(OwnerValidityTimeoutError);

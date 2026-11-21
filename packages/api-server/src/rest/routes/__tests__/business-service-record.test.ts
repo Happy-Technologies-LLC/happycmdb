@@ -44,8 +44,10 @@ host.on('message', ({ id, rows, rowCount, error, code }: { id: number; rows: Rec
 /** Fails the next audit_log INSERT with this error (a failed append after the service row was written). */
 const mockFault: {
   auditInsert: Error | null; beforeLock: (() => Promise<unknown>) | null; failLookupsOf: Set<string>; hangBatchLookups: boolean;
+  /** Ids the identity store holds two user nodes for. */
+  ambiguousIds: Set<string>;
 } = {
-  auditInsert: null, beforeLock: null, failLookupsOf: new Set(), hangBatchLookups: false,
+  auditInsert: null, beforeLock: null, failLookupsOf: new Set(), hangBatchLookups: false, ambiguousIds: new Set(),
 };
 function mockSql(text: string, params: unknown[] = [], op: 'query' | 'exec' = 'query') {
   if (mockFault.auditInsert && /^\s*INSERT INTO audit_log/.test(text)) {
@@ -106,7 +108,11 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
       batchLookups.push({ ids: [...ids], timeoutMs });
       if (mockFault.hangBatchLookups) return new Promise<never>(() => undefined);
       if (ids.some(id => mockFault.failLookupsOf.has(id))) throw new Error('identity store down');
-      return new Map(Object.values(USERS).filter(user => ids.includes(user._id)).map(user => [user._id, user]));
+      const twins = ids.filter(id => mockFault.ambiguousIds.has(id));
+      return {
+        ambiguous: twins,
+        users: new Map(Object.values(USERS).filter(user => ids.includes(user._id) && !twins.includes(user._id)).map(user => [user._id, user])),
+      };
     },
     findApiKeyByKey: async () => null,
   })),
@@ -188,7 +194,7 @@ beforeAll(async () => {
 }, 60000);
 afterAll(() => { host.kill(); });
 afterEach(() => {
-  mockFault.auditInsert = null; mockFault.beforeLock = null; mockFault.failLookupsOf.clear(); mockFault.hangBatchLookups = false;
+  mockFault.auditInsert = null; mockFault.beforeLock = null; mockFault.failLookupsOf.clear(); mockFault.hangBatchLookups = false; mockFault.ambiguousIds.clear();
 });
 
 describe('scenario 1: live needs an owner principal (D15)', () => {
@@ -447,6 +453,26 @@ describe('C1 read: owner_valid says whether the owner can be an approver', () =>
       expect(entries).toHaveLength(1);
       expect(JSON.stringify(entries[0])).not.toContain(OWNER);
       expect(JSON.stringify(entries[0])).not.toContain(USERS['o']!._id);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it('an owner the identity store holds two nodes for reads not valid and is logged once per read, by id only', async () => {
+    const twin = USERS['o']!._id;
+    await created({ owner_principal_id: OWNER, name: 'owner-valid-twin-a' });
+    await created({ owner_principal_id: twin, name: 'owner-valid-twin-b' });
+    await created({ owner_principal_id: twin, name: 'owner-valid-twin-c' });
+    const logged = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    try {
+      mockFault.ambiguousIds.add(twin);
+      const listed = await request(app).get('/api/v1/business-services').query({ search: 'owner-valid-twin-', limit: 10 }).set(headers('t'));
+      expect([listed.status, listed.body.success]).toEqual([200, true]);
+      expect(listed.body.items.map((item: any) => item.owner_valid)).toEqual([true, false, false]);
+      const entries = logged.mock.calls.filter(call => call[0] === 'Business service owner identity is ambiguous');
+      expect(entries).toHaveLength(1);
+      expect(entries[0]![1]).toEqual({ user_ids: [twin] });
+      expect(logged.mock.calls.filter(call => call[0] === 'Business service owner validity lookup failed')).toEqual([]);
     } finally {
       logged.mockRestore();
     }

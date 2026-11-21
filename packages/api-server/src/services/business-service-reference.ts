@@ -18,7 +18,7 @@
  *   refuses an owner that is not valid.
  */
 
-import { boundedStatementTimeoutMs } from '../rest/impact-envelope';
+import { boundedStatementTimeoutMs } from '../rest/statement-timeout';
 
 export type C1Lifecycle = 'planned' | 'live' | 'retiring' | 'retired';
 
@@ -96,35 +96,43 @@ export class OwnerValidityTimeoutError extends Error {
   }
 }
 
+/** What the identity store answers a batched owner lookup with: the enabled users, and the ids with two user nodes. */
+export interface OwnerLookup {
+  users: ReadonlyMap<string, OwnerUser>;
+  ambiguous: readonly string[];
+}
+
 export interface OwnerValidity {
   /** principal -> whether it resolves to an enabled user of the organization; a failed or timed-out lookup is false. */
   valid: ReadonlyMap<string, boolean>;
   /** The lookup's failure (the identity store's error, or OwnerValidityTimeoutError), at most one; every owner is then not valid. */
   failures: unknown[];
+  /** The principals the identity store holds two user nodes for (an integrity alarm); each reads as not valid. */
+  ambiguous: string[];
 }
 
 /**
  * Owner validity of every distinct non-null principal in `principals`, in one batched identity-store lookup
  * (`findEnabledUsers`: the enabled users among the ids, by id; a page repeats owners). A principal absent from the
- * result is not valid. The lookup is bounded by `timeoutMs` (handed to it too, so the store can cancel); when it fails
+ * result is not valid; the lookup's `ambiguous` ids are passed on in `ambiguous`. The lookup is bounded by `timeoutMs` (handed to it too, so the store can cancel); when it fails
  * or times out the error is recorded in `failures` and every owner reads as not valid. It never rejects.
  */
 export async function readOwnerValidity(
   organizationId: string, principals: ReadonlyArray<string | null>,
-  findEnabledUsers: (ids: string[], timeoutMs: number) => Promise<ReadonlyMap<string, OwnerUser>>,
+  findEnabledUsers: (ids: string[], timeoutMs: number) => Promise<OwnerLookup>,
   timeoutMs: number = ownerValidityTimeoutMs()
 ): Promise<OwnerValidity> {
   const ids = [...new Set(principals.filter((principal): principal is string => principal !== null))];
   const valid = new Map<string, boolean>();
   if (ids.length === 0) {
-    return { valid, failures: [] };
+    return { valid, failures: [], ambiguous: [] };
   }
   let timer: NodeJS.Timeout | undefined;
   try {
     const lookup = findEnabledUsers(ids, timeoutMs);
     // A lookup that loses the race may still reject later: that must not become an unhandled rejection.
     lookup.catch(() => undefined);
-    const users = await Promise.race([
+    const { users, ambiguous } = await Promise.race([
       lookup,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => reject(new OwnerValidityTimeoutError()), timeoutMs);
@@ -133,12 +141,12 @@ export async function readOwnerValidity(
     for (const id of ids) {
       valid.set(id, ownerInOrganization(users.get(id) ?? null, organizationId));
     }
-    return { valid, failures: [] };
+    return { valid, failures: [], ambiguous: [...ambiguous] };
   } catch (error) {
     for (const id of ids) {
       valid.set(id, false);
     }
-    return { valid, failures: [error] };
+    return { valid, failures: [error], ambiguous: [] };
   } finally {
     clearTimeout(timer);
   }

@@ -18,7 +18,7 @@ import { join } from 'path';
 import {
   main, OWNER_USERS_CYPHER, reportUnresolvedOwners, type OwnerReport,
 } from '../unresolved-business-service-owners';
-import { MALFORMED_AMBIENT_TLS_ENV, runOperatorCli } from './fixtures/run-operator-cli';
+import { listenStrayRedis, MALFORMED_AMBIENT_TLS_ENV, runOperatorCli } from './fixtures/run-operator-cli';
 
 const host = fork(join(__dirname, '../../rest/routes/__tests__/fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let nextId = 0;
@@ -216,5 +216,19 @@ describe('unresolved-business-service-owners CLI process', () => {
     expect(stderr).toContain('unresolved-business-service-owners:');
     expect(stderr).not.toContain('pg-secret-value');
     expect(stderr).not.toContain('neo4j-secret-value');
+  }, 20000);
+
+  it('opens no connection to the API server\'s Redis (the @cmdb/database barrel is not in its import closure)', async () => {
+    const redis = await listenStrayRedis();
+    try {
+      const { code } = await runOperatorCli(SCRIPT, [], { ...ENV, ...redis.env });
+
+      expect(code).toBe(1);
+      // An import-time IORedis connection is made while the child loads, well before it exits; allow the parent to see it.
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(redis.connections()).toBe(0);
+    } finally {
+      await redis.close();
+    }
   }, 20000);
 });

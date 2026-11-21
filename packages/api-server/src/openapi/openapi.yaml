@@ -3260,7 +3260,8 @@ paths:
       description: >-
         Unregister a discovery agent. An agent-role credential can only delete an agent it registered; an
         operator or admin can delete any agent of the organization. A foreign, ownerless (registered before
-        migration 057) or missing agent all return the same 404.
+        migration 057), `disabled` (an agent-role credential cannot delete one: it could otherwise delete and
+        re-register it as `active`; an operator or admin still can) or missing agent all return the same 404.
       operationId: deleteAgent
       parameters:
         - name: agentId

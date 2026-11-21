@@ -672,7 +672,7 @@ Update a change's status or implementation details.
 
 All fields are optional but at least one must be sent: an empty body answers `400 {"success": false, "error": "Bad Request", "message": "No fields to update"}`. A value outside the limits answers `400 {"success": false, "error": "Bad Request", "message": "Invalid request"}`.
 
-Only the named columns are written, with these status effects. `APPROVED` is accepted only from `draft` or `pending_approval` and stamps `approval_status = approved`, `approved_by` (the verified caller) and `approved_at`, like [POST /changes/:id/approve](#post-changes-id-approve); from any other status it answers `409 CHANGE_NOT_APPROVABLE`. `DRAFT` and `PENDING_APPROVAL` clear `approved_by` and `approved_at` and set `approval_status = pending` in the same statement. That write is conditional on the status and approval stamp read just before it: if an approval (or any other write to those columns) committed in between, nothing is written and the answer is `409 CHANGE_APPROVAL_CHANGED`; reload and retry. When a stamp is cleared the server logs one `Change approval stamp cleared` event carrying ids only (`change_id`, `organization_id`, `previous_approved_by`, `previous_approved_at`, `actor_user_id`). `previous_approved_by` is logged only when the stored value is a UUID; a legacy value (an email or a name) is not logged, and the event carries `previous_approved_by_kind: "legacy"` instead. No other status transition is enforced, and `closed` does not stamp `closed_at` (use [POST /changes/:id/close](#post-changes-id-close)).
+Only the named columns are written, with these status effects. `APPROVED` is accepted only from `draft` or `pending_approval` and stamps `approval_status = approved`, `approved_by` (the verified caller) and `approved_at`, like [POST /changes/:id/approve](#post-changes-id-approve); from any other status it answers `409 CHANGE_NOT_APPROVABLE`. `DRAFT` and `PENDING_APPROVAL` clear `approved_by` and `approved_at` and set `approval_status = pending` in the same statement. That write is conditional on the status and approval stamp read just before it: if an approval (or any other write to those columns) committed in between, nothing is written and the answer is `409 CHANGE_APPROVAL_CHANGED`; reload and retry. When a stamp is cleared the server logs one `Change approval stamp cleared` event carrying ids only (`change_id`, `organization_id`, `previous_approved_by`, `previous_approved_at`, `actor_user_id`). `previous_approved_at` is the stored stamp as PostgreSQL renders it (`approved_at::text`, microsecond precision). `previous_approved_by` is logged only when the stored value is a UUID; a legacy value (an email or a name) is not logged, and the event carries `previous_approved_by_kind: "legacy"` instead. No other status transition is enforced, and `closed` does not stamp `closed_at` (use [POST /changes/:id/close](#post-changes-id-close)).
 
 **Response:**
 
@@ -786,7 +786,7 @@ Update a change's `status`, `implementedBy` or `actualDuration`. Requires the `w
 
 ### POST /changes/:id/approve
 
-Approve a change request. Requires the `write` permission; there is no separate approve permission. The request takes no body: the approver is the authenticated caller (`_userId`, or the username when the token has no user id), never a request field.
+Approve a change request. Requires the `write` permission; there is no separate approve permission. The request takes no body: the approver is the authenticated caller's user id (`_userId`), never a request field. A principal without a `_userId` is refused `401`; JWT access tokens and API keys always carry one.
 
 Only a change in `draft` or `pending_approval` can be approved. The change gets `status` and `approval_status` set to `approved`, and `approved_by` and `approved_at` record the approver and the time, in one statement. Any other status (`approved`, `scheduled`, `in_progress`, `implemented`, `closed`, `cancelled`) is refused with `409` and nothing is written, so the first approval is never overwritten. Moving the change back to `draft` or `pending_approval` through `PATCH /changes/:id` clears the record; the next approval then stores the new approver and time.
 
@@ -876,7 +876,7 @@ Close a change with a result.
 |-------|----------|-------------|
 | `result` | Yes | `SUCCESS`, `PARTIAL_SUCCESS`, `FAILED` or `ROLLED_BACK` |
 | `notes` | No | String, stored as `closure_notes` (`null` when omitted) |
-| `closedBy` | Yes | String, but accepted and not stored: it is only written to the server log as `claimed_closed_by`, next to `closed_by`, the verified caller's user id (the change row has no `closed_by` column) |
+| `closedBy` | Yes | String, 1-255 characters, accepted and not stored (the change row has no `closed_by` column) and never logged. Once the change is found in the caller's organization, the server logs one `Change closed` event with `closed_by` (the verified caller's user id) and `claimed_closed_by_kind`: `matches_actor` (the claim equals the caller's id), `uuid` (another UUID) or `other`. An unknown id or another organization's id logs nothing |
 
 **Result Values:**
 

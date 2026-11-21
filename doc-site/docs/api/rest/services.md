@@ -14,6 +14,8 @@ The ITIL Service Management API provides endpoints for:
 
 All ITIL endpoints require authentication. Audit coverage is partial. Writes to the CI graph (the lifecycle, configuration-status and audit routes under `/configuration-items`, and [baseline restore](#post-baselines-id-restore)) are journaled with the verified caller as actor, and append chained audit entries. Writes to incident, change and baseline records (the rows in `itil_incidents`, `itil_changes` and `itil_baselines`) are not audited yet: they leave no audit entry and no journal row.
 
+The `*_by` fields taken from a request body (`reportedBy`, `requestedBy`, `implementedBy`, `createdBy`, `auditor`, `completedBy`) are stored as sent and are not verified against the caller. Only `approved_by` and the journal and audit actor come from the credential.
+
 ## Base URL
 
 ```
@@ -650,58 +652,6 @@ Get a specific change by ID. The id must be the change's UUID (`data.id`), not t
 
 ---
 
-### PATCH /changes/:id
-
-Update a change's status or implementation details.
-
-**Request Body:**
-
-```json
-{
-  "status": "IN_PROGRESS",
-  "implementedBy": "platform-engineering@company.com",
-  "actualDuration": 165
-}
-```
-
-| Field | Constraints |
-|-------|-------------|
-| `status` | `DRAFT`, `PENDING_APPROVAL`, `APPROVED`, `SCHEDULED`, `IN_PROGRESS`, `IMPLEMENTED`, `CLOSED` or `CANCELLED`; stored lower-case |
-| `implementedBy` | String, 1-255 characters, stored as `implemented_by` |
-| `actualDuration` | Integer minutes, 1 to 2147483647, stored as `actual_duration` |
-
-All fields are optional but at least one must be sent: an empty body answers `400 {"success": false, "error": "Bad Request", "message": "No fields to update"}`. A value outside the limits answers `400 {"success": false, "error": "Bad Request", "message": "Invalid request"}`.
-
-Only the named columns are written, with these status effects. `APPROVED` is accepted only from `draft` or `pending_approval` and stamps `approval_status = approved`, `approved_by` (the verified caller) and `approved_at`, like [POST /changes/:id/approve](#post-changes-id-approve); from any other status it answers `409 CHANGE_NOT_APPROVABLE`. `DRAFT` and `PENDING_APPROVAL` clear `approved_by` and `approved_at` and set `approval_status = pending` in the same statement. That write is conditional on the status and approval stamp read just before it: if an approval (or any other write to those columns) committed in between, nothing is written and the answer is `409 CHANGE_APPROVAL_CHANGED`; reload and retry. When a stamp is cleared the server logs one `Change approval stamp cleared` event carrying ids only (`change_id`, `organization_id`, `previous_approved_by`, `previous_approved_at`, `actor_user_id`). No other status transition is enforced, and `closed` does not stamp `closed_at` (use [POST /changes/:id/close](#post-changes-id-close)).
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "data": {
-    "id": "8d1b7e42-0c5a-4f36-b1d9-2a6e94c07f13",
-    "change_number": "CHG-8d1b7e42-0c5a-4f36-b1d9-2a6e94c07f13",
-    "status": "in_progress",
-    "implemented_by": "platform-engineering@company.com",
-    "actual_duration": 165,
-    "updated_at": "2025-11-20T04:45:00.000Z"
-  },
-  "message": "Change updated successfully"
-}
-```
-
-`data` is the full updated change row; the example lists the fields that matter here.
-
-| Status | Meaning |
-|--------|---------|
-| 200 | Change updated |
-| 400 | Body failed validation, `Invalid request`, or `No fields to update` |
-| 404 | `Change not found` (unknown id, other organization, or id not a UUID) |
-| 500 | `Failed to update change` |
-
----
-
 ### GET /changes/:id/risk-assessment
 
 Get a risk estimate for a change, computed on each call from the change's `affected_ci_ids`. It is not stored on the change.
@@ -767,7 +717,9 @@ Update a change's `status`, `implementedBy` or `actualDuration`. Requires the `w
 `status` takes `DRAFT`, `PENDING_APPROVAL`, `APPROVED`, `SCHEDULED`, `IN_PROGRESS`, `IMPLEMENTED`, `CLOSED` or `CANCELLED`. Status moves are not otherwise restricted, with two approval rules:
 
 - `status: APPROVED` follows the same rules and refusals as [`POST /changes/:id/approve`](#post-changes-id-approve): the approver and time are recorded in the same write, the approver is the authenticated caller, and a body `approved_by` or `approved_at` is ignored.
-- `status: DRAFT` or `PENDING_APPROVAL` clears `approved_by` and `approved_at` in the same write, so a later approval records its own approver and time. Any other status leaves the approval record as it is.
+- `status: DRAFT` or `PENDING_APPROVAL` sets `approval_status = pending` and clears `approved_by` and `approved_at` in the same write, so a later approval records its own approver and time. Any other status leaves the approval record as it is.
+  - The write is conditional on the `status`, `approved_by` and `approved_at` read just before it. If an approval (or any other write to those columns) committed in between, nothing is written and the answer is `409 CHANGE_APPROVAL_CHANGED` ("The change was modified since it was read; reload it and retry"): reload the change and retry.
+  - When the write clears an existing stamp (the change had a stored `approved_by` or `approved_at`), the server logs one `info` event, `Change approval stamp cleared`, with the fields `change_id`, `organization_id`, `previous_approved_by`, `previous_approved_at` (ISO 8601 or `null`) and `actor_user_id` (the caller's `_userId`, or `null`). `previous_approved_by` is the stored `approved_by` value as it was, not guaranteed to be a user id. The event is not logged when the write is refused or when no stamp was set.
 
 **Response:** `200` with the full updated change row in `data` and `message: "Change updated successfully"`.
 
@@ -778,7 +730,7 @@ Update a change's `status`, `implementedBy` or `actualDuration`. Requires the `w
 | 401 | `Unauthorized`: `status` is `APPROVED` and the request carries no user identity; nothing is written |
 | 403 | The credential lacks the `write` permission, or carries no organization claim (`ORGANIZATION_REQUIRED`) |
 | 404 | `Not Found`: no change with this id in the caller's organization |
-| 409 | `Conflict`, `code: CHANGE_NOT_APPROVABLE`: `status` is `APPROVED` and the change is not in `draft` or `pending_approval`; nothing is written |
+| 409 | `Conflict`, with one of two codes. `CHANGE_NOT_APPROVABLE`: `status` is `APPROVED` and the change is not in `draft` or `pending_approval`. `CHANGE_APPROVAL_CHANGED`: `status` is `DRAFT` or `PENDING_APPROVAL` and the change's status or approval stamp changed after it was read; reload and retry. Nothing is written in either case |
 
 ---
 
@@ -1085,6 +1037,8 @@ Restore a CI to a baseline configuration.
 
 The restore is journaled: the actor on the journal row and the audit entry is the verified caller taken from the credential.
 
+The restore overlays; it does not replace. Only the snapshot's attributes are written (Cypher `SET ci += $props`): an attribute the snapshot holds overwrites the CI's current value, and a property added to the CI since the baseline stays. Reserved and identity keys, `updated_at`, `incarnation_id` and `external_id` are never restored, and a name in `restoreAttributes` that the snapshot does not hold is not restored; each is skipped silently and the response is still `200`. `created_at` and `discovered_at` are restored only when the snapshot holds a parseable value, otherwise the stored value stays. `updated_at` is not restored from the snapshot; every restore stamps it with the current time.
+
 :::: danger Destructive Operation
 Baseline restoration updates CI attributes in Neo4j. This does NOT modify the actual infrastructure - it only updates the CMDB representation. Use with caution.
 ::::
@@ -1109,7 +1063,9 @@ Baseline restoration updates CI attributes in Neo4j. This does NOT modify the ac
 | Status | Meaning |
 |--------|---------|
 | 200 | CI restored |
+| 400 | Nothing is written. Two bodies: a Joi validation failure (`restoreFromBaselineSchema`: `ciId` and `performedBy` are required strings, `ciId` not empty, `restoreAttributes` an array of strings) answers `{"_success": false, "_error": "Validation Error", ...}`; a `ciId` longer than 255 characters or not storable answers `{"error": "Bad Request", "message": "Invalid request"}` |
 | 404 | `Baseline not found` (unknown id, other organization, or id not a UUID), or `CI not found` (the CI is not in the baseline, or no longer exists in the caller's organization) |
+| 409 | `Conflict`, `code: source_owned`: the CI is an AI CI (its class is owned by its source and changes only through its sync), or the attributes being restored set `type` or `ci_type` to an AI class; nothing is written |
 | 500 | `Failed to restore from baseline` |
 
 Journal refusals are answered as on the other CI writes: `409` (a write to the CI is pending reconciliation, or it could not be reconciled), `503` (`CI write temporarily unavailable`) and `422` (the snapshot cannot be restored through the audited path).

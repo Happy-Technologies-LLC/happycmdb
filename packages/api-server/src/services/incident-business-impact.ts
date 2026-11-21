@@ -45,7 +45,7 @@
 
 /** The one pg method these reads need; both the pool and a pooled client satisfy it. */
 export interface Sql {
-  query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
+  query<R = Record<string, unknown>>(text: string, params?: unknown[]): Promise<{ rows: R[] }>;
 }
 
 /** Hours in a year used to turn an annual revenue figure into a per-hour rate (24x7). */
@@ -101,29 +101,36 @@ export function serviceFigures(metadata: unknown): ServiceFigures {
 
 /** The mapped services of one CI, primary first (most critical, then name, then id). */
 export function deriveImpact(rows: MappedServiceRow[]): DerivedImpact {
-  const ordered = [...rows].sort((a, b) =>
-    rank(a.business_criticality) - rank(b.business_criticality)
-    || a.name.localeCompare(b.name) || a.service_id.localeCompare(b.service_id));
+  const ordered = [...rows].sort((a, b) => {
+    const byRank = rank(a.business_criticality) - rank(b.business_criticality);
+    if (byRank !== 0) {
+      return byRank;
+    }
+    const byName = a.name.localeCompare(b.name);
+    return byName !== 0 ? byName : a.service_id.localeCompare(b.service_id);
+  });
   const unique = ordered.filter((row, index) => ordered.findIndex(other => other.service_id === row.service_id) === index);
   const services = unique.map(({ service_id, name }) => ({ service_id, name }));
   const primary = unique[0];
   return {
     primary: services[0] ?? null,
     services,
-    ...(primary ? serviceFigures(primary.metadata) : { users_affected: null, revenue_per_hour: null }),
+    ...(unique.length > 0 ? serviceFigures(primary.metadata) : { users_affected: null, revenue_per_hour: null }),
   };
 }
 
 /** Services in the organization that the given CIs are mapped to; retired services never count. */
 export async function readMappedServices(sql: Sql, organizationId: string, ciIds: string[]): Promise<MappedServiceRow[]> {
-  if (ciIds.length === 0) return [];
-  const result = await sql.query(
+  if (ciIds.length === 0) {
+    return [];
+  }
+  const result = await sql.query<MappedServiceRow>(
     `SELECT m.ci_id, s.service_id, s.name, s.business_criticality, s.metadata
      FROM ci_business_service_mappings m
      JOIN dim_business_services s ON s.service_id = m.service_id
      WHERE s.organization_id = $1 AND m.ci_id = ANY($2::text[]) AND s.lifecycle <> 'retired'`,
     [organizationId, ciIds]);
-  return result.rows as MappedServiceRow[];
+  return result.rows;
 }
 
 /** The `business_impact` JSON stored on a new incident; unknown figures are null (never the column's zero default). */
@@ -167,21 +174,33 @@ const storedUsers = (businessImpact: unknown): number | null => {
   return users === null ? null : positive(Math.round(users));
 };
 
+interface OpenIncidentRow {
+  id: string;
+  incident_number: string;
+  title: string;
+  priority: number;
+  status: string;
+  affected_ci_id: string | null;
+  reported_at: Date | string;
+  business_impact: unknown;
+}
+
 export async function readOpenIncidentRibbon(
   sql: Sql, organizationId: string, limit: number
 ): Promise<OpenIncidentRibbon> {
   const open = `organization_id = $1 AND status NOT IN ('resolved', 'closed', 'cancelled')`;
   // Sequential: the controller runs every statement on one transaction connection, which serves one at a time.
-  const page = await sql.query(
+  const page = await sql.query<OpenIncidentRow>(
     `SELECT id, incident_number, title, priority, status, affected_ci_id, reported_at, business_impact
      FROM itil_incidents WHERE ${open}
      ORDER BY priority ASC, reported_at DESC, id LIMIT $2`,
     [organizationId, limit]);
-  const count = await sql.query(`SELECT count(*)::int AS open_count FROM itil_incidents WHERE ${open}`, [organizationId]);
+  const count = await sql.query<{ open_count: number }>(
+    `SELECT count(*)::int AS open_count FROM itil_incidents WHERE ${open}`, [organizationId]);
   const ciIds = [...new Set(page.rows.map((row: { affected_ci_id: string | null }) => row.affected_ci_id)
     .filter((id: string | null): id is string => typeof id === 'string'))];
   const mapped = await readMappedServices(sql, organizationId, ciIds);
-  const incidents = page.rows.map((row: Record<string, any>): RibbonIncident => {
+  const incidents = page.rows.map((row): RibbonIncident => {
     const live = deriveImpact(mapped.filter(service => service.ci_id === row.affected_ci_id));
     const users = storedUsers(row.business_impact) ?? live.users_affected;
     const revenue = stored(row.business_impact, 'revenue_per_hour') ?? live.revenue_per_hour;

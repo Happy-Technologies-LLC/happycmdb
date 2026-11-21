@@ -51,11 +51,19 @@ function resolveSsl(explicit: PostgresSslMode | undefined, host: string, env: No
   if (explicitCa !== undefined && mode !== 'verify-full') {
     throw new Error('PostgreSQL CA bundle given without verify-full: sslCa needs ssl: verify-full');
   }
+  // The same holds for the ambient variable: under any other mode the connection would be silently unverified.
+  const ambientCaFile = env['POSTGRES_SSL_CA_FILE'];
+  if (mode !== 'verify-full' && ambientCaFile !== undefined && ambientCaFile.trim() !== '') {
+    throw new Error('POSTGRES_SSL_CA_FILE is set but the PostgreSQL TLS mode is not verify-full: the CA bundle would be ignored, so set POSTGRES_SSL_MODE=verify-full or unset POSTGRES_SSL_CA_FILE');
+  }
   if (mode === undefined) {
     if (env['NODE_ENV'] === 'production' && !LOCAL_HOST.test(host)) {
       throw new Error('PostgreSQL TLS mode unset in production: set POSTGRES_SSL_MODE (verify-full, require, or disable)');
     }
-    logger.warn('PostgreSQL client initialized WITHOUT SSL encryption (development mode)');
+    // The host itself stays out of the log; its kind says whether cleartext crosses a network.
+    logger.error('PostgreSQL client initialized WITHOUT SSL encryption: POSTGRES_SSL_MODE is unset and NODE_ENV is not production', {
+      hostKind: LOCAL_HOST.test(host) ? 'local' : 'non-local',
+    });
     return false;
   }
   switch (mode) {
@@ -74,7 +82,7 @@ function resolveSsl(explicit: PostgresSslMode | undefined, host: string, env: No
       return { rejectUnauthorized: false };
     case 'verify-full': {
       // An explicit CA (an operator tool's own, already read) wins over the ambient POSTGRES_SSL_CA_FILE.
-      const caFile = env['POSTGRES_SSL_CA_FILE'];
+      const caFile = ambientCaFile;
       logger.info('PostgreSQL SSL enabled (verify-full mode - verifies certificate chain and host name)');
       // pg sets servername only for DNS hosts, so Node would check an IP literal against 'localhost'; pin the real host.
       const verify: ConnectionOptions = isIP(host) === 0 ? { rejectUnauthorized: true }
@@ -82,9 +90,18 @@ function resolveSsl(explicit: PostgresSslMode | undefined, host: string, env: No
       if (explicitCa === undefined) {
         if (caFile === undefined) return verify;
         // A set-but-empty variable is a misconfiguration (an unfilled template, a blanked secret), not "no CA".
-        if (caFile === '') throw new Error('POSTGRES_SSL_CA_FILE is set but empty: verify-full needs a CA bundle path, or unset the variable');
+        if (caFile.trim() === '') throw new Error('POSTGRES_SSL_CA_FILE is set but empty: verify-full needs a CA bundle path, or unset the variable');
       }
-      const ca = explicitCa ?? readFileSync(caFile!, 'utf8');
+      let ca = explicitCa;
+      if (ca === undefined) {
+        try {
+          ca = readFileSync(caFile!, 'utf8');
+        } catch (error) {
+          // The raw fs message carries the path; name only the variable and the error code.
+          const code: unknown = Reflect.get(error as object, 'code');
+          throw new Error(`POSTGRES_SSL_CA_FILE cannot be read${typeof code === 'string' ? ` (${code})` : ''}`);
+        }
+      }
       // An empty `ca` makes Node fall back to its public trust store; refuse instead of silently widening trust.
       if (ca.trim() === '') throw new Error('PostgreSQL CA bundle is empty: verify-full needs a CA bundle');
       return { ...verify, ca };

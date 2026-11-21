@@ -302,8 +302,10 @@ only on a private network you control. `<PREFIX>_POSTGRES_SSL=require` to a remo
   no `ssl` option is given). The API server's `POSTGRES_SSL_*` variables are dropped before any client exists.
   The `verify-full` override is Postgres only: `require` and `disable` do not verify. Neo4j needs none: the
   Neo4j driver sets `rejectUnauthorized: false` on its socket but then checks `socket.authorized` itself and
-  refuses an unauthorized socket, so `NODE_TLS_REJECT_UNAUTHORIZED=0` does not weaken the Neo4j connection
-  either. What it can still change is trust, not verification: `NODE_EXTRA_CA_CERTS` adds its CA to the store
+  refuses an unauthorized socket (with the system-CA trust strategy the operator tools use), so
+  `NODE_TLS_REJECT_UNAUTHORIZED=0` does not weaken the Neo4j connection either. The `TRUST_ALL_CERTIFICATES`
+  strategy does not check `socket.authorized`, so it has no such protection. What `NODE_TLS_REJECT_UNAUTHORIZED=0`
+  can still change is trust, not verification: `NODE_EXTRA_CA_CERTS` adds its CA to the store
   Neo4j verifies against (see above).
 
 ```bash

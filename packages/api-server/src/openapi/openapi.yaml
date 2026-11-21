@@ -4794,7 +4794,7 @@ paths:
       summary: Get a business service (C1 service read)
       description: >-
         The service plus its mapped-CI and dependency counts, and the Suite
-        Contracts v2 C1 service-reference fields (tenant_id, owner,
+        Contracts v2 C1 service-reference fields (tenant_id, owner, owner_valid,
         owner_group, criticality, lifecycle, version, dependencies, offerings).
         Another organization's service answers the same 404 as a missing one;
         the tenant is the token's organization, never a request parameter.
@@ -4887,7 +4887,9 @@ paths:
           description: >-
             Stale If-Match (`message: Version mismatch`, with the current
             `version`), a backward or post-retirement lifecycle move, or a move
-            out of live while the service has a live offering (HAP-1424).
+            out of live while the service has a live offering (HAP-1424), or
+            the stored owner changed between the owner check of a lifecycle move
+            and the row lock (`message: Business service changed; retry`).
           content:
             application/json:
               schema:
@@ -6396,6 +6398,9 @@ components:
         echoes nothing from the request, so it cannot tell which ids exist in
         other tenants. Nothing is written and no audit row is appended. An
         identity-store failure during that check is the write-unavailable 503.
+        A PATCH that moves a service into live or retiring without naming
+        owner_principal_id approves with the stored owner, which gets the same
+        check and the same body when it does not resolve.
       content:
         application/json:
           schema:
@@ -8034,7 +8039,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/BusinessService'
         - type: object
-          required: [mapped_cis_count, dependencies_count, tenant_id, owner, owner_group, criticality, lifecycle, version, dependencies, offerings]
+          required: [mapped_cis_count, dependencies_count, tenant_id, owner, owner_valid, owner_group, criticality, lifecycle, version, dependencies, offerings]
           properties:
             mapped_cis_count:
               type: integer
@@ -8060,6 +8065,16 @@ components:
                   type: string
                   nullable: true
                   description: The stored owned_by
+            owner_valid:
+              type: boolean
+              description: >-
+                Whether owner.principal_id resolves, at read time, to an enabled
+                user of this service's organization (the check an owner write
+                applies). false when there is no principal, when it is unknown,
+                disabled or a user of another organization, and when the
+                identity store cannot answer (the read still succeeds). A
+                consumer that routes a D15 approval to the owner must refuse an
+                owner that is not valid.
             owner_group:
               type: string
               nullable: true

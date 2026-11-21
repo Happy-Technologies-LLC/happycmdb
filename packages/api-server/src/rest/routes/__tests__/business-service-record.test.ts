@@ -42,12 +42,20 @@ host.on('message', ({ id, rows, rowCount, error, code }: { id: number; rows: Rec
   else call.resolve({ rows, rowCount: rowCount || rows.length });
 });
 /** Fails the next audit_log INSERT with this error (a failed append after the service row was written). */
-const mockFault: { auditInsert: Error | null } = { auditInsert: null };
+const mockFault: { auditInsert: Error | null; beforeLock: (() => Promise<unknown>) | null; failLookupsOf: Set<string> } = {
+  auditInsert: null, beforeLock: null, failLookupsOf: new Set(),
+};
 function mockSql(text: string, params: unknown[] = [], op: 'query' | 'exec' = 'query') {
   if (mockFault.auditInsert && /^\s*INSERT INTO audit_log/.test(text)) {
     const fault = mockFault.auditInsert;
     mockFault.auditInsert = null;
     return Promise.reject(fault);
+  }
+  // The PATCH's row lock: a hook runs the moment before it, as a concurrent write that commits first would.
+  if (mockFault.beforeLock && /FOR NO KEY UPDATE/.test(text)) {
+    const hook = mockFault.beforeLock;
+    mockFault.beforeLock = null;
+    return hook().then(() => mockSql(text, params, op));
   }
   // The production PostgresClient's statements; the harness itself switches roles only with exec.
   if (op === 'query') assertAppStatement(text);
@@ -87,6 +95,7 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({
     findUserById: async (id: string) => {
       userLookups.push(id);
+      if (mockFault.failLookupsOf.has(id)) throw new Error('identity store down');
       return Object.values(USERS).find(user => user._id === id) ?? null;
     },
     findApiKeyByKey: async () => null,
@@ -168,7 +177,7 @@ beforeAll(async () => {
   await assertAppLogin(async sql => (await rows(sql)));
 }, 60000);
 afterAll(() => { host.kill(); });
-afterEach(() => { mockFault.auditInsert = null; });
+afterEach(() => { mockFault.auditInsert = null; mockFault.beforeLock = null; mockFault.failLookupsOf.clear(); });
 
 describe('scenario 1: live needs an owner principal (D15)', () => {
   it('planned -> live without owner_principal_id is 422 and changes nothing; with it the C1 read shows live and the owner', async () => {
@@ -272,6 +281,146 @@ describe('owner_principal_id must be an enabled user of the caller organization'
       success: false, error: 'Forbidden', message: 'owner_principal_id can be set or changed only by an admin' }]));
     expect(userLookups.filter(lookup => lookup !== USERS['o']!._id)).toEqual([]);
     expect([await stored(id), await auditCount(), await serviceCount()]).toEqual(before);
+  });
+});
+
+describe('a move into live/retiring that names no owner re-checks the STORED owner (the D15 approver)', () => {
+  const FOREIGN = USERS['t2']!._id;
+  const MISSING = 'idp|no-such-user';
+  const DISABLED = USERS['d']!._id;
+  const UNIFORM_422 = { success: false, error: 'Unprocessable Entity', message: 'owner_principal_id must be an enabled user of your organization' };
+  const serviceCount = async () => (await rows('SELECT count(*)::int AS n FROM dim_business_services'))[0]!['n'] as number;
+  /** A stored owner that went stale after it was set: written straight to the row, as a user disabled or moved later would leave it. */
+  const storeOwner = (id: string, owner: string) =>
+    rows('UPDATE dim_business_services SET owner_principal_id = $1 WHERE service_id = $2', [owner, id]);
+
+  it('FAIL-FIRST: a stored owner of another organization, an unknown or a disabled one is one byte-identical 422 and the row, the audit trail and the service count are unchanged', async () => {
+    const id = await created({ owner_principal_id: OWNER });
+    const texts = new Set<string>();
+    for (const stale of [FOREIGN, MISSING, DISABLED]) {
+      await storeOwner(id, stale);
+      const before = [await stored(id), await auditCount(), await serviceCount()];
+      const refused = [await patch(id, { lifecycle: 'live' }), await patch(id, { lifecycle: 'retiring' }, '"1"'),
+        await patch(id, { lifecycle: 'live', description: 'with other fields' })];
+      for (const res of refused) {
+        expect(res.status).toBe(422);
+        texts.add(res.text);
+        expect(res.text).not.toContain(stale);
+      }
+      expect(violations(declaredResponse('/business-services/{service_id}', 'patch', '422').schema!, refused[0]!.body)).toEqual([]);
+      expect([await stored(id), await auditCount(), await serviceCount()]).toEqual(before);
+      expect(before[0]).toMatchObject({ lifecycle: 'planned', owner_principal_id: stale, version: 1 });
+    }
+    expect([...texts]).toEqual([JSON.stringify(UNIFORM_422)]);
+  });
+
+  it('a valid stored owner passes: planned -> live -> retiring, one audited UPDATE each', async () => {
+    const id = await created({ owner_principal_id: OWNER });
+    userLookups.length = 0;
+    const live = await patch(id, { lifecycle: 'live' });
+    expect([live.status, live.body.data.lifecycle, live.body.data.owner_principal_id, live.body.data.version]).toEqual([200, 'live', OWNER, 2]);
+    expect(userLookups.filter(lookup => lookup === OWNER)).toEqual([OWNER]);
+    expect((await patch(id, { lifecycle: 'retiring' })).status).toBe(200);
+    expect((await audit(id)).map(row => row['action'])).toEqual(['CREATE', 'UPDATE', 'UPDATE']);
+  });
+
+  it('only a move into live/retiring that changes the lifecycle looks the stored owner up: a stale owner never blocks other edits', async () => {
+    const id = await created({ lifecycle: 'live', owner_principal_id: OWNER });
+    await storeOwner(id, DISABLED);
+    userLookups.length = 0;
+    expect((await patch(id, { lifecycle: 'live', description: 'lifecycle unchanged' })).status).toBe(200);
+    expect((await patch(id, { description: 'no lifecycle' })).status).toBe(200);
+    expect(userLookups.filter(lookup => lookup === DISABLED)).toEqual([]);
+    const retired = await patch(id, { lifecycle: 'retired' });
+    expect([retired.status, retired.body.data.lifecycle]).toEqual([200, 'retired']);
+    expect(userLookups.filter(lookup => lookup === DISABLED)).toEqual([]);
+  });
+
+  it('a refused or impossible move is answered as before, with no lookup of the stored owner', async () => {
+    const retired = await created({ lifecycle: 'retired' });
+    await storeOwner(retired, FOREIGN);
+    const noOwner = await created({});
+    userLookups.length = 0;
+    expect((await patch(retired, { lifecycle: 'live' })).status).toBe(409);
+    const required = await patch(noOwner, { lifecycle: 'live' });
+    expect([required.status, required.body.message]).toEqual([422, 'owner_principal_id is required for a live or retiring service']);
+    expect(userLookups.filter(lookup => lookup !== USERS['t']!._id)).toEqual([]);
+  });
+
+  it('FAIL-FIRST: a stored owner changed between the check and the row lock is a 409 and nothing is written (never an unchecked approver)', async () => {
+    const id = await created({ owner_principal_id: OWNER });
+    const before = [await stored(id), await auditCount()];
+    // The stored owner is swapped for another organization's user right before the PATCH's row lock is taken.
+    mockFault.beforeLock = () => storeOwner(id, FOREIGN);
+    const res = await patch(id, { lifecycle: 'live' });
+    expect([res.status, res.body.error]).toEqual([409, 'Conflict']);
+    expect(res.text).not.toContain(FOREIGN);
+    expect(await stored(id)).toEqual({ ...before[0], owner_principal_id: FOREIGN });
+    expect(await auditCount()).toBe(before[1]);
+    // Control: the same PATCH with no swap is accepted.
+    const other = await created({ owner_principal_id: OWNER });
+    expect((await patch(other, { lifecycle: 'live' })).status).toBe(200);
+  });
+});
+
+describe('an identity-store failure during an owner check is 503 and changes nothing', () => {
+  const serviceCount = async () => (await rows('SELECT count(*)::int AS n FROM dim_business_services'))[0]!['n'] as number;
+
+  it('create, a PATCH naming the owner and a lifecycle-only PATCH (stored owner) all answer the write-unavailable 503, with the row, the audit count and the service count unchanged', async () => {
+    const id = await created({ owner_principal_id: OWNER });
+    const before = [await stored(id), await auditCount(), await serviceCount()];
+    mockFault.failLookupsOf.add(OWNER);
+    mockFault.failLookupsOf.add('actor-o');
+    const refused = [await create({ ...BASE, owner_principal_id: OWNER }), await patch(id, { owner_principal_id: 'actor-o' }),
+      await patch(id, { lifecycle: 'live' })];
+    expect(refused.map(res => [res.status, res.body])).toEqual(Array(3).fill([503, {
+      success: false, error: 'Service Unavailable', message: 'Business service write temporarily unavailable' }]));
+    for (const res of refused) expect(res.text).not.toContain('identity store down');
+    expect([await stored(id), await auditCount(), await serviceCount()]).toEqual(before);
+  });
+});
+
+describe('C1 read: owner_valid says whether the owner can be an approver', () => {
+  const FOREIGN = USERS['t2']!._id;
+  const storeOwner = (id: string, owner: string | null) =>
+    rows('UPDATE dim_business_services SET owner_principal_id = $1 WHERE service_id = $2', [owner, id]);
+
+  it('FAIL-FIRST: true only for an enabled user of the service organization; false for no owner, another organization, an unknown or a disabled user', async () => {
+    const id = await created({ owner_principal_id: OWNER });
+    const seen: Array<[string | null, unknown]> = [];
+    for (const owner of [OWNER, USERS['o']!._id, null, FOREIGN, 'idp|no-such-user', USERS['d']!._id]) {
+      await storeOwner(id, owner);
+      const read = await readC1(id);
+      expect(read.status).toBe(200);
+      expect(violations(declaredResponse('/business-services/{service_id}', 'get', '200').schema!, read.body)).toEqual([]);
+      expect(read.body.data.owner.principal_id).toBe(owner);
+      seen.push([owner, read.body.data.owner_valid]);
+    }
+    expect(seen).toEqual([[OWNER, true], [USERS['o']!._id, true], [null, false], [FOREIGN, false], ['idp|no-such-user', false],
+      [USERS['d']!._id, false]]);
+  });
+
+  it('when the identity store fails the read still succeeds with owner_valid false', async () => {
+    const id = await created({ owner_principal_id: OWNER });
+    expect((await readC1(id)).body.data.owner_valid).toBe(true);
+    mockFault.failLookupsOf.add(OWNER);
+    const read = await readC1(id);
+    expect([read.status, read.body.success, read.body.data.owner_valid, read.body.data.owner.principal_id]).toEqual([200, true, false, OWNER]);
+    expect(read.text).not.toContain('identity store down');
+  });
+
+  it('every item of the list carries it, one identity lookup per distinct owner, and a failing owner marks only its own services', async () => {
+    const [a, b, c] = [await created({ owner_principal_id: OWNER, name: 'owner-valid-a' }),
+      await created({ owner_principal_id: OWNER, name: 'owner-valid-b' }), await created({ owner_principal_id: USERS['o']!._id, name: 'owner-valid-c' })];
+    userLookups.length = 0;
+    const listed = await request(app).get('/api/v1/business-services').query({ search: 'owner-valid-', limit: 10 }).set(headers('t'));
+    expect(listed.status).toBe(200);
+    expect(listed.body.items.map((item: any) => [item.service_id, item.owner_valid])).toEqual([[a, true], [b, true], [c, true]]);
+    expect(userLookups.filter(lookup => lookup !== USERS['t']!._id).sort()).toEqual([OWNER, USERS['o']!._id].sort());
+
+    mockFault.failLookupsOf.add(USERS['o']!._id);
+    const partial = await request(app).get('/api/v1/business-services').query({ search: 'owner-valid-', limit: 10 }).set(headers('t'));
+    expect(partial.body.items.map((item: any) => item.owner_valid)).toEqual([true, true, false]);
   });
 });
 

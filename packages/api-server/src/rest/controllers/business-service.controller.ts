@@ -22,7 +22,7 @@ import {
   boundedPgRead, estateFeedTimeoutMs, ESTATE_FEED_LIMIT_RESPONSE, isStatementTimeout,
 } from '../../services/bounded-pg-read';
 import {
-  C1Lifecycle, lifecycleMoveAllowed, lifecycleNeedsOwner, serviceReference, StoredDependencyRow,
+  C1Lifecycle, lifecycleMoveAllowed, lifecycleNeedsOwner, ownerInOrganization, readOwnerValidity, serviceReference, StoredDependencyRow,
 } from '../../services/business-service-reference';
 import { decodeListCursor, encodeListCursor } from '../../services/c1-list-cursor';
 import { parseAvailabilityOptions, readServiceAvailability } from '../../services/service-availability.service';
@@ -96,7 +96,7 @@ const OWNER_NOT_IN_ORGANIZATION = {
 async function ownerPrincipalRefusal(organizationId: string, principal: string): Promise<WriteRefusal | null> {
   try {
     const user = await getAuthService().findEnabledUser(principal);
-    return user !== null && user._organizationId === organizationId ? null : { status: 422, body: OWNER_NOT_IN_ORGANIZATION };
+    return ownerInOrganization(user, organizationId) ? null : { status: 422, body: OWNER_NOT_IN_ORGANIZATION };
   } catch (error) {
     logger.error('Business service owner lookup failed', { error: errorLogFields(error) });
     return { status: 503, body: WRITE_UNAVAILABLE };
@@ -126,9 +126,26 @@ const C1_SERVICE_COLUMNS = `s.*,
     ORDER BY o.created_at, o.offering_id
   ) x), '[]'::json) AS c1_offerings`;
 
-function c1ServiceRead({ c1_dependencies: dependencies, c1_offerings: offerings, ...row }: Record<string, unknown>): Record<string, unknown> {
+/**
+ * Owner validity (the C1 `owner_valid`) of the services in `rows`, all of `organizationId`: the same findEnabledUser and
+ * organization comparison an owner write applies. An identity-store failure reads as not valid (the read still
+ * succeeds) and is logged once per read.
+ */
+async function ownerValidityOf(organizationId: string, rows: Array<Record<string, unknown>>): Promise<ReadonlyMap<string, boolean>> {
+  const { valid, failures } = await readOwnerValidity(organizationId, rows.map(row => row['owner_principal_id'] as string | null),
+    principal => getAuthService().findEnabledUser(principal));
+  if (failures.length > 0) {
+    logger.error('Business service owner validity lookup failed', { failed: failures.length, error: errorLogFields(failures[0]) });
+  }
+  return valid;
+}
+
+function c1ServiceRead(
+  { c1_dependencies: dependencies, c1_offerings: offerings, ...row }: Record<string, unknown>, ownerValidity: ReadonlyMap<string, boolean>
+): Record<string, unknown> {
   const service = row as unknown as Parameters<typeof serviceReference>[0];
-  return { ...row, ...serviceReference(service, dependencies as StoredDependencyRow[]), offerings };
+  const ownerValid = service.owner_principal_id !== null && ownerValidity.get(service.owner_principal_id) === true;
+  return { ...row, ...serviceReference(service, dependencies as StoredDependencyRow[], ownerValid), offerings };
 }
 
 /*
@@ -221,9 +238,10 @@ export class BusinessServiceController {
       );
       const rows = result.rows.slice(0, limit);
       const last = rows.at(-1);
+      const ownerValidity = await ownerValidityOf(organizationId, rows);
       res.json({
         success: true,
-        items: rows.map(({ c1_sort_key: _key, ...row }) => c1ServiceRead(row)),
+        items: rows.map(({ c1_sort_key: _key, ...row }) => c1ServiceRead(row, ownerValidity)),
         next_cursor: result.rows.length > limit ? encodeListCursor(organizationId, { ts: last.c1_sort_key, id: last.service_id }) : null,
         as_of: asOf,
       });
@@ -243,10 +261,11 @@ export class BusinessServiceController {
   async getBusinessService(req: Request, res: Response): Promise<void> {
     try {
       const { service_id } = req.params;
+      const organizationId = requestOrganizationId(req);
 
       const result = await this.pgClient.query(
         `SELECT ${C1_SERVICE_COLUMNS} FROM dim_business_services s WHERE s.service_id = $1 AND s.organization_id = $2`,
-        [service_id, requestOrganizationId(req)]
+        [service_id, organizationId]
       );
 
       if (result.rows.length === 0) {
@@ -261,7 +280,7 @@ export class BusinessServiceController {
       // offerings[] (HAP-1424) and the child counts, which change without bumping this record's version, so
       // "<version>" would validate a stale 304. Express's default body-hash ETag stays; the body's `version` is the
       // If-Match value.
-      res.json({ success: true, data: c1ServiceRead(result.rows[0]) });
+      res.json({ success: true, data: c1ServiceRead(result.rows[0], await ownerValidityOf(organizationId, result.rows)) });
     } catch (error) {
       logger.error('Error getting business service', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
@@ -357,7 +376,8 @@ export class BusinessServiceController {
   /**
    * PATCH /api/v1/business-services/:service_id
    * Update an existing business service (HAP-1423): optional If-Match "<version>" (409 when stale); lifecycle moves
-   * only forward and `retired` is terminal (409); a move to live/retiring needs owner_principal_id (422). An accepted
+   * only forward and `retired` is terminal (409); a move to live/retiring needs owner_principal_id (422), named or stored (the
+   * stored one gets the same owner check as a named one; if it changed under the row lock: 409). An accepted
    * update bumps version by one and appends one UPDATE audit row in the same transaction.
    */
   async updateBusinessService(req: Request, res: Response): Promise<void> {
@@ -393,6 +413,26 @@ export class BusinessServiceController {
           return;
         }
       }
+      // A move into live/retiring that does not name the owner makes the STORED owner the D15 approver, so it gets the
+      // same check as a named one. The owner is read here, before the transaction (no connection is held on the
+      // identity store), and compared again under the row lock: an owner changed in between is a 409, never an
+      // approver nobody checked.
+      let checkedStoredOwner: string | null = null;
+      if (!('owner_principal_id' in updates) && typeof updates.lifecycle === 'string' && lifecycleNeedsOwner(updates.lifecycle)) {
+        const stored: Pick<ServiceRow, 'lifecycle' | 'owner_principal_id'> | undefined = (await this.pgClient.query(
+          'SELECT lifecycle, owner_principal_id FROM dim_business_services WHERE service_id = $1 AND organization_id = $2',
+          [service_id, organizationId]
+        )).rows[0];
+        // A missing row, a refused move and a missing owner are answered under the lock (404, 409, 422 OWNER_REQUIRED).
+        if (stored?.owner_principal_id && stored.lifecycle !== updates.lifecycle && lifecycleMoveAllowed(stored.lifecycle, updates.lifecycle)) {
+          const refusal = await ownerPrincipalRefusal(organizationId, stored.owner_principal_id);
+          if (refusal !== null) {
+            res.status(refusal.status).json(refusal.body);
+            return;
+          }
+          checkedStoredOwner = stored.owner_principal_id;
+        }
+      }
 
       const setClause = fields.map((field, index) => `${field} = $${index + 3}`).join(', ');
       const values = [service_id, organizationId, ...fields.map(field => {
@@ -424,6 +464,12 @@ export class BusinessServiceController {
         // principal of such a row, needs one.
         if (lifecycleNeedsOwner(lifecycle) && !principal && (lifecycle !== current.lifecycle || 'owner_principal_id' in updates)) {
           return { status: 422, body: OWNER_REQUIRED };
+        }
+        // The same predicate as the pre-check above, on the locked row: a move into live/retiring that names no owner
+        // approves with the stored one, which must be the owner that was checked.
+        if (!('owner_principal_id' in updates) && lifecycleNeedsOwner(lifecycle) && lifecycle !== current.lifecycle
+          && current.owner_principal_id !== checkedStoredOwner) {
+          return { status: 409, body: { success: false, error: 'Conflict', message: 'Business service changed; retry' } };
         }
         // HAP-1424: an offering is live only under a live service, so the service leaves live only once none is. A
         // concurrent offering write holds FOR SHARE on this row, so it commits before this check or sees the move.

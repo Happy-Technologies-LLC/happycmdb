@@ -18,6 +18,9 @@ import {
  */
 export const AGENT_NOT_FOUND = 'Agent not found';
 
+/** The counters are INTEGER columns; the running totals saturate here instead of raising 22003. */
+const INT4_MAX = 2147483647;
+
 export class DiscoveryAgentService {
   private postgresClient = getPostgresClient();
 
@@ -110,17 +113,17 @@ export class DiscoveryAgentService {
 
       if (heartbeat.stats?.jobs_completed !== undefined) {
         params.push(heartbeat.stats.jobs_completed);
-        updates.push(`total_jobs_completed = total_jobs_completed + $${params.length}`);
+        updates.push(`total_jobs_completed = LEAST(total_jobs_completed::bigint + $${params.length}, ${INT4_MAX})::integer`);
       }
 
       if (heartbeat.stats?.jobs_failed !== undefined) {
         params.push(heartbeat.stats.jobs_failed);
-        updates.push(`total_jobs_failed = total_jobs_failed + $${params.length}`);
+        updates.push(`total_jobs_failed = LEAST(total_jobs_failed::bigint + $${params.length}, ${INT4_MAX})::integer`);
       }
 
       if (heartbeat.stats?.cis_discovered !== undefined) {
         params.push(heartbeat.stats.cis_discovered);
-        updates.push(`total_cis_discovered = total_cis_discovered + $${params.length}`);
+        updates.push(`total_cis_discovered = LEAST(total_cis_discovered::bigint + $${params.length}, ${INT4_MAX})::integer`);
       }
 
       params.push(heartbeat.agent_id, organizationId);
@@ -259,8 +262,8 @@ export class DiscoveryAgentService {
         ORDER BY
           -- Prefer agents with better success rate
           CASE
-            WHEN (total_jobs_completed + total_jobs_failed) > 0
-            THEN total_jobs_completed::float / (total_jobs_completed + total_jobs_failed)
+            WHEN (total_jobs_completed::bigint + total_jobs_failed) > 0
+            THEN total_jobs_completed::float / (total_jobs_completed::bigint + total_jobs_failed)
             ELSE 0.5
           END DESC,
           -- Then prefer more recently active agents

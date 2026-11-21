@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { lookup } from 'dns/promises';
+import { assertPlanRepresentable, enc, PLAN_LIMITS } from '../../../database/src/journal/encoding';
 import { getRedisClient } from '@cmdb/database';
 import {
   DISCOVERY_BODY_TRUNCATED, DISCOVERY_PATTERN_MAX_TOTAL_BYTES, DISCOVERY_PATTERN_MAX_TOTAL_MS,
-  DISCOVERY_SKIPPED_KEY, DISCOVERY_STORED_BODY_MAX_BYTES, PatternMatcher,
+  DISCOVERY_SKIPPED_KEY, DISCOVERY_STORED_BODY_MAX_BYTES, DISCOVERY_STORED_MAX_DEPTH,
+  DISCOVERY_STORED_METADATA_MAX_BYTES, DISCOVERY_UNSTORED_KEY, PatternMatcher,
 } from '../pattern-matcher';
 import { DISCOVERY_HTTP_MAX_BYTES, DISCOVERY_RESPONSE_TOO_LARGE, safeDiscoveryHttp } from '../tools/safe-http';
 import type { PatternStorageService } from '../pattern-storage';
@@ -65,8 +67,9 @@ describe('executeDiscovery budgets', () => {
   });
 
   it('clips each request to the bytes left and treats a cut at that limit as budget spent', async () => {
+    // Every body is one byte under the ceiling: a transport cuts it only when the request's limit is lower.
     http.mockImplementation((async (_url: string, options: { maxContentLength: number }) => {
-      if (options.maxContentLength < DISCOVERY_HTTP_MAX_BYTES) throw new Error(DISCOVERY_RESPONSE_TOO_LARGE);
+      if (DISCOVERY_HTTP_MAX_BYTES - 1 > options.maxContentLength) throw new Error(DISCOVERY_RESPONSE_TOO_LARGE);
       return { status: 200, data: 'a'.repeat(DISCOVERY_HTTP_MAX_BYTES - 1) };
     }) as never);
     const ci = await run(paths(10));
@@ -74,6 +77,20 @@ describe('executeDiscovery budgets', () => {
     const limits = http.mock.calls.map(call => (call[1] as { maxContentLength: number }).maxContentLength);
     expect(limits).toEqual([...Array(4).fill(DISCOVERY_HTTP_MAX_BYTES), 4]);
     expect(ci.metadata[DISCOVERY_SKIPPED_KEY]).toEqual({ reason: 'bytes-budget', endpoints: paths(10).slice(5) });
+  });
+
+  it('counts every response cut at the per-request ceiling against the total byte budget', async () => {
+    // Each endpoint is larger than the ceiling, so it is cut at the ceiling with the full budget left.
+    http.mockImplementation((async (_url: string, options: { maxContentLength: number }) => {
+      if (2 * MIB > options.maxContentLength) throw new Error(DISCOVERY_RESPONSE_TOO_LARGE);
+      return { status: 200, data: 'a'.repeat(2 * MIB) };
+    }) as never);
+    const ci = await run(paths(64));
+    const requested = DISCOVERY_PATTERN_MAX_TOTAL_BYTES / DISCOVERY_HTTP_MAX_BYTES;
+    expect(http).toHaveBeenCalledTimes(requested);
+    expect(http.mock.calls.map(call => (call[1] as { maxContentLength: number }).maxContentLength))
+      .toEqual(Array(requested).fill(DISCOVERY_HTTP_MAX_BYTES));
+    expect(ci.metadata[DISCOVERY_SKIPPED_KEY]).toEqual({ reason: 'bytes-budget', endpoints: paths(64).slice(requested) });
   });
 
   it('skips the remaining endpoints once the total time budget is spent, and clips request deadlines', async () => {
@@ -114,5 +131,75 @@ describe('executeDiscovery budgets', () => {
     }
     expect(ci.metadata.quotes.length).toBeGreaterThan(DISCOVERY_BODY_TRUNCATED.length + 1000);
     expect(ci.metadata.small).toEqual({ small: true });
+  });
+
+  describe('stored metadata stays journal-representable', () => {
+    /** The create plan `Neo4jClient.createCI` derives: metadata is one JSON-string leaf, carried again in the audit change. */
+    const createPlan = (ci: any) => {
+      const props = { name: ci.name, type: ci._type, metadata: JSON.stringify(ci.metadata) };
+      return {
+        graph: { kind: 'create', label: 'application', params: enc({ id: 'ci-1', props }) },
+        audit: { action: 'CREATE', changes: enc([{ field: 'metadata', old_value: null, new_value: props.metadata }]) },
+      };
+    };
+    const longPaths = (count: number) => Array.from({ length: count }, (_, i) => `/${'p'.repeat(240)}${i}`);
+    const leaf = (ci: any) => Buffer.byteLength(JSON.stringify(JSON.stringify(ci.metadata)));
+
+    it('64 endpoints each returning a cap-sized body make a plan the journal accepts', async () => {
+      // Varied bodies; the escaping-heavy ones expand the most when the metadata is re-encoded as a leaf.
+      http.mockImplementation((async (url: string) => {
+        const index = Number(new URL(url).pathname.slice(-2).replace(/\D/g, ''));
+        const data = [
+          'x'.repeat(DISCOVERY_STORED_BODY_MAX_BYTES),
+          '"\n'.repeat(DISCOVERY_STORED_BODY_MAX_BYTES),
+          { rows: '\\"'.repeat(DISCOVERY_STORED_BODY_MAX_BYTES) },
+          'é'.repeat(DISCOVERY_STORED_BODY_MAX_BYTES),
+        ][index % 4];
+        return { status: 200, data };
+      }) as never);
+      const ci = await run(longPaths(64));
+      expect(() => assertPlanRepresentable(createPlan(ci) as never)).not.toThrow();
+      expect(leaf(ci)).toBeLessThanOrEqual(DISCOVERY_STORED_METADATA_MAX_BYTES);
+      expect(leaf(ci)).toBeLessThan(PLAN_LIMITS.valueBytes);
+      // Later endpoints did not fit: they are named, not silently dropped.
+      const stored = Object.keys(ci.metadata).filter(key => key.startsWith('p'));
+      expect(stored.length).toBeGreaterThan(0);
+      expect(ci.metadata[DISCOVERY_UNSTORED_KEY].reason).toBe('metadata-budget');
+      const unstored: string[] = ci.metadata[DISCOVERY_UNSTORED_KEY].endpoints;
+      expect(unstored.length).toBeGreaterThan(0);
+      expect(stored.length + unstored.length).toBe(64);
+      for (const endpoint of unstored) expect(ci.metadata).not.toHaveProperty(endpoint.slice(1));
+    });
+
+    it('truncates one body to the room left, then names the endpoints that no longer fit', async () => {
+      http.mockImplementation((async () => ({ status: 200, data: 'y'.repeat(DISCOVERY_STORED_BODY_MAX_BYTES) })) as never);
+      const ci = await run(paths(12));
+      const keys = paths(12).map(path => path.slice(1));
+      const full = ci.metadata.e0.length;
+      const stored = keys.filter(key => key in ci.metadata);
+      const partial = stored.filter(key => ci.metadata[key].length < full);
+      expect(partial).toEqual([stored[stored.length - 1]]);
+      expect(ci.metadata[partial[0]].endsWith(DISCOVERY_BODY_TRUNCATED)).toBe(true);
+      expect(ci.metadata[DISCOVERY_UNSTORED_KEY].endpoints).toEqual(paths(12).slice(stored.length));
+      expect(leaf(ci)).toBeLessThanOrEqual(DISCOVERY_STORED_METADATA_MAX_BYTES);
+    });
+
+    it('stores a body nested past the depth cap as text, keeping a shallow one as structure', async () => {
+      const nest = (levels: number): unknown => Array.from({ length: levels }).reduce<unknown>(inner => ({ a: inner }), 1);
+      const depthOf = (value: unknown): number => value !== null && typeof value === 'object'
+        ? 1 + Math.max(0, ...Object.values(value).map(depthOf)) : 0;
+      const bodies: Record<string, unknown> = {
+        '/deep': nest(DISCOVERY_STORED_MAX_DEPTH + 1),
+        '/edge': nest(DISCOVERY_STORED_MAX_DEPTH),
+        '/gone': nest(200),
+      };
+      http.mockImplementation((async (url: string) => ({ status: 200, data: bodies[new URL(url).pathname] })) as never);
+      const ci = await run(Object.keys(bodies));
+      expect(typeof ci.metadata.deep).toBe('string');
+      expect(JSON.parse(ci.metadata.deep)).toEqual(bodies['/deep']);
+      expect(depthOf(ci.metadata.edge)).toBe(DISCOVERY_STORED_MAX_DEPTH);
+      expect(typeof ci.metadata.gone).toBe('string');
+      expect(() => assertPlanRepresentable(createPlan(ci) as never)).not.toThrow();
+    });
   });
 });

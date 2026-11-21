@@ -21,19 +21,33 @@ import { detectWithPlan, parseDetectionPlan, parseDiscoveryPlan, PATTERN_NOT_ACT
  * Budgets for ONE executeDiscovery call, across all of a pattern's endpoints (a plan may list 64,
  * each otherwise allowed 1 MiB / 15 s). Code constants: raising them is a reviewed change.
  *  - bytes: decoded response bytes summed over the endpoints (JSON bodies measured as serialized).
+ *    A response cut at the limit it was requested with (DISCOVERY_RESPONSE_TOO_LARGE) was already
+ *    decoded up to that limit, so it spends that limit, whether the per-request ceiling or less.
  *  - time: wall clock from the first request; each request's deadline is clipped to what is left.
- *  - stored: one body is kept in `ci.metadata` only if its JSON encoding is at most this many bytes;
- *    otherwise it is cut (to a string ending in DISCOVERY_BODY_TRUNCATED) so the JSON encoding
- *    of the stored value fits. 8 KiB x 64 endpoints = 512 KiB, inside the HAP-443 limits a CI is
- *    refused above (64 KiB per value, 1 MiB per CI), so a probe can never make its CI unwritable.
+ *  - stored: `Neo4jClient.createCI` stores `ci.metadata` as ONE leaf, `JSON.stringify(metadata)`, and
+ *    the journal refuses a plan whose leaf JSON-encodes to more than PLAN_LIMITS.valueBytes (64 KiB)
+ *    (HAP-443). So the bound is on the whole metadata, measured as that leaf, not per endpoint:
+ *    one body is kept as received only if it is within DISCOVERY_STORED_BODY_MAX_BYTES of JSON and
+ *    DISCOVERY_STORED_MAX_DEPTH levels deep; every body is cut (to a string ending in
+ *    DISCOVERY_BODY_TRUNCATED) until the whole metadata leaf, with room reserved for the skipped and
+ *    unstored endpoint lists below, is within DISCOVERY_STORED_METADATA_MAX_BYTES. A body that does
+ *    not fit even as the marker alone is not stored and its endpoint is listed under
+ *    `ci.metadata[DISCOVERY_UNSTORED_KEY]`. The 48 KiB limit leaves headroom under the 64 KiB leaf
+ *    limit and keeps the plan, which carries the leaf twice (properties and audit change), far under
+ *    its 1 MiB total.
  * Endpoints not requested once a budget is spent are listed under `ci.metadata[DISCOVERY_SKIPPED_KEY]`.
+ * The base metadata (technology, category, scan version) is not budgeted here.
  */
 export const DISCOVERY_PATTERN_MAX_TOTAL_BYTES = 4 * DISCOVERY_HTTP_MAX_BYTES;
 export const DISCOVERY_PATTERN_MAX_TOTAL_MS = 2 * DISCOVERY_HTTP_TOTAL_MS;
 export const DISCOVERY_STORED_BODY_MAX_BYTES = 8192;
+export const DISCOVERY_STORED_METADATA_MAX_BYTES = 48 * 1024;
+/** Below PLAN_LIMITS.depth (32) in @cmdb/database, which counts the plan's own wrapper levels too. */
+export const DISCOVERY_STORED_MAX_DEPTH = 16;
 export const DISCOVERY_BODY_TRUNCATED = '... (truncated)';
-/** Contains ':', which an endpoint key (validated `[a-zA-Z0-9/_.-]`) can never contain. */
+/** Contain ':', which an endpoint key (validated `[a-zA-Z0-9/_.-]`) can never contain. */
 export const DISCOVERY_SKIPPED_KEY = 'discovery:skipped';
+export const DISCOVERY_UNSTORED_KEY = 'discovery:unstored';
 
 function bodyBytes(data: unknown): number {
   if (data === undefined || data === null) return 0;
@@ -42,16 +56,55 @@ function bodyBytes(data: unknown): number {
 
 const jsonBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value) ?? '');
 
-/** Keep small bodies as received; cut an oversized one (JSON re-serialized) to a string. */
-function storableBody(data: unknown): unknown {
-  if (jsonBytes(data) <= DISCOVERY_STORED_BODY_MAX_BYTES) return data;
-  const text = Buffer.from(typeof data === 'string' ? data : JSON.stringify(data));
-  let keep = DISCOVERY_STORED_BODY_MAX_BYTES;
+/** Size of the leaf `createCI` stores for this metadata, measured the way the plan limit measures it. */
+const leafBytes = (metadata: unknown): number => jsonBytes(JSON.stringify(metadata));
+
+/** True when a container sits `max` or more levels down (so the value has more than `max` levels). */
+function nestsDeeperThan(value: unknown, max: number, depth = 0): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  if (depth >= max) return true;
+  return Object.values(value).some(member => nestsDeeperThan(member, max, depth + 1));
+}
+
+/** Bytes of the endpoint lists a finished call may add to the metadata (each endpoint is in at most one). */
+function listsReserve(endpoints: string[]): number {
+  return leafBytes({
+    [DISCOVERY_SKIPPED_KEY]: { reason: 'bytes-budget', endpoints },
+    [DISCOVERY_UNSTORED_KEY]: { reason: 'metadata-budget', endpoints: [] },
+  });
+}
+
+/**
+ * The value to keep under `key` in `metadata`: the body as received when it is small, shallow and
+ * leaves the metadata leaf (plus `reserve`) within the metadata cap, else its text cut to fit (JSON
+ * re-serialized for an object). Undefined when not even the cut marker fits.
+ */
+function storableBody(metadata: Record<string, unknown>, key: string, data: unknown, reserve: number): unknown {
+  const cost = (value: unknown): number => leafBytes({ ...metadata, [key]: value }) + reserve;
+  const small = jsonBytes(data) <= DISCOVERY_STORED_BODY_MAX_BYTES;
+  if (small && !nestsDeeperThan(data, DISCOVERY_STORED_MAX_DEPTH) && cost(data) <= DISCOVERY_STORED_METADATA_MAX_BYTES) return data;
+  if (small && typeof data === 'object' && data !== null) {
+    // Only too deep: its JSON text loses nothing, so it carries no truncation marker.
+    const text = JSON.stringify(data);
+    if (jsonBytes(text) <= DISCOVERY_STORED_BODY_MAX_BYTES && cost(text) <= DISCOVERY_STORED_METADATA_MAX_BYTES) return text;
+  }
+  const markerOnly = cost(DISCOVERY_BODY_TRUNCATED);
+  if (markerOnly > DISCOVERY_STORED_METADATA_MAX_BYTES) return undefined;
+  const markerJson = jsonBytes(DISCOVERY_BODY_TRUNCATED);
+  const text = Buffer.from(typeof data === 'string' ? data : (JSON.stringify(data) ?? ''));
+  let keep = Math.min(text.length, DISCOVERY_STORED_BODY_MAX_BYTES);
   for (;;) {
     const cut = text.subarray(0, keep).toString('utf8') + DISCOVERY_BODY_TRUNCATED;
-    const size = jsonBytes(cut); // JSON escapes can expand the cut: shrink in proportion and retry
-    if (size <= DISCOVERY_STORED_BODY_MAX_BYTES || keep <= 0) return cut;
-    keep = Math.max(0, Math.min(keep - 1, Math.floor(keep * DISCOVERY_STORED_BODY_MAX_BYTES / size)));
+    const total = cost(cut);
+    const own = jsonBytes(cut);
+    if (total <= DISCOVERY_STORED_METADATA_MAX_BYTES && own <= DISCOVERY_STORED_BODY_MAX_BYTES) return cut;
+    // JSON escapes and split characters make size nonlinear in `keep`: shrink in proportion, strictly, and retry.
+    const ratio = Math.min(
+      total <= DISCOVERY_STORED_METADATA_MAX_BYTES ? 1
+        : (DISCOVERY_STORED_METADATA_MAX_BYTES - markerOnly) / (total - markerOnly),
+      own <= DISCOVERY_STORED_BODY_MAX_BYTES ? 1
+        : (DISCOVERY_STORED_BODY_MAX_BYTES - markerJson) / (own - markerJson));
+    keep = Math.max(0, Math.min(keep - 1, Math.floor(keep * ratio)));
   }
 }
 
@@ -324,6 +377,8 @@ export class PatternMatcher implements IPatternMatcher {
     let bytesLeft = DISCOVERY_PATTERN_MAX_TOTAL_BYTES;
     let exhausted: 'bytes' | 'time' | undefined;
     const skipped: string[] = [];
+    const unstored: string[] = [];
+    const reserve = listsReserve(plan.endpoints);
     for (const endpoint of plan.endpoints) {
       const msLeft = DISCOVERY_PATTERN_MAX_TOTAL_MS - (Date.now() - started);
       if (!exhausted && bytesLeft <= 0) exhausted = 'bytes';
@@ -337,13 +392,16 @@ export class PatternMatcher implements IPatternMatcher {
         );
         bytesLeft -= bodyBytes(response.data);
         if (response.status >= 200 && response.status < 300) {
-          ci.metadata[endpoint.slice(1)] = storableBody(response.data);
+          const key = endpoint.slice(1);
+          const stored = storableBody(ci.metadata, key, response.data, reserve);
+          if (stored === undefined) unstored.push(endpoint); else ci.metadata[key] = stored;
         }
       } catch (error) {
         if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) throw error;
-        // A response cut by the remaining budget (not by the per-request ceiling) spends it.
-        if (error instanceof Error && error.message === DISCOVERY_RESPONSE_TOO_LARGE &&
-          bytesLeft < DISCOVERY_HTTP_MAX_BYTES) bytesLeft = 0;
+        // A response cut at its limit was decoded up to that limit: it spends the limit it was cut at.
+        if (error instanceof Error && error.message === DISCOVERY_RESPONSE_TOO_LARGE) {
+          bytesLeft -= Math.min(bytesLeft, DISCOVERY_HTTP_MAX_BYTES);
+        }
         if (error instanceof Error && error.message === DISCOVERY_RESPONSE_DEADLINE &&
           msLeft < DISCOVERY_HTTP_TOTAL_MS) exhausted = 'time';
         // An unavailable public endpoint does not discard the discovered CI.
@@ -351,6 +409,9 @@ export class PatternMatcher implements IPatternMatcher {
     }
     if (skipped.length) {
       ci.metadata[DISCOVERY_SKIPPED_KEY] = { reason: `${exhausted}-budget`, endpoints: skipped };
+    }
+    if (unstored.length) {
+      ci.metadata[DISCOVERY_UNSTORED_KEY] = { reason: 'metadata-budget', endpoints: unstored };
     }
     return [ci];
   }

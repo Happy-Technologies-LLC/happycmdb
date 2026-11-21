@@ -28,10 +28,16 @@ const metadataFilterValue = Joi.alternatives().try(
   Joi.boolean()
 );
 // validate() strips unknown keys, so an out-of-bounds key must match a forbidden pattern to be refused.
-const metadataFiltersSchema = Joi.object()
+const metadataFilterEntries = Joi.object()
   .pattern(Joi.string().min(1).max(METADATA_FILTER_MAX_KEY_LENGTH), metadataFilterValue)
   .pattern(Joi.string().allow(''), Joi.forbidden())
   .max(METADATA_FILTER_MAX_KEYS);
+// Joi rebuilds the object and silently drops a JSON-parsed own `__proto__` key (broadening the filter), so a
+// second alternative inspects the original value and refuses it.
+const metadataFiltersSchema = Joi.alternatives().match('all').try(
+  Joi.object().custom((value, helpers) => (Object.keys(value).includes('__proto__') ? helpers.error('any.invalid') : value)),
+  metadataFilterEntries
+);
 
 const advancedSearchSchema = Joi.object({
   query: Joi.string().required().min(1).max(SEARCH_QUERY_MAX_LENGTH),

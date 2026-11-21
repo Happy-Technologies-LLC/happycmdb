@@ -20,9 +20,14 @@ export type MetadataFilterValue = string | number | boolean;
 /**
  * The text `JSON.stringify` stores for one metadata pair, so `ci.metadata CONTAINS needle`
  * matches strings, numbers, booleans and keys or values holding quotes, backslashes or control characters.
+ * A string or boolean needle ends at a token boundary (closing quote, `true`, `false`). A number has no
+ * terminator, so `"n":3` alone would also match 30, 3.5 and 31: the value must be followed by `,` or `}`.
+ * Returns the alternatives: the pair matches when ANY needle is contained.
  */
-export const metadataNeedle = (key: string, value: MetadataFilterValue): string =>
-  `${JSON.stringify(key)}:${JSON.stringify(value)}`;
+export const metadataNeedles = (key: string, value: MetadataFilterValue): string[] => {
+  const needle = `${JSON.stringify(key)}:${JSON.stringify(value)}`;
+  return typeof value === 'number' ? [`${needle},`, `${needle}}`] : [needle];
+};
 
 /** Defence in depth behind the route schema: the same bounds, as a refusal message or null. */
 export function metadataFilterRefusal(filters: unknown): string | null {
@@ -39,9 +44,9 @@ export function metadataFilterRefusal(filters: unknown): string | null {
       return `metadata_filters keys must be 1 to ${METADATA_FILTER_MAX_KEY_LENGTH} characters`;
     }
     const valid = (typeof value === 'string' && value.length <= METADATA_FILTER_MAX_VALUE_LENGTH) ||
-      (typeof value === 'number' && Number.isFinite(value)) || typeof value === 'boolean';
+      (typeof value === 'number' && Math.abs(value) <= Number.MAX_SAFE_INTEGER) || typeof value === 'boolean';
     if (!valid) {
-      return `metadata_filters values must be a string of at most ${METADATA_FILTER_MAX_VALUE_LENGTH} characters, a finite number or a boolean`;
+      return `metadata_filters values must be a string of at most ${METADATA_FILTER_MAX_VALUE_LENGTH} characters, a safe number or a boolean`;
     }
   }
   return null;
@@ -100,11 +105,15 @@ export class SearchController {
           if (status) { conditions.push('ci.status = $status'); params.status = status; }
           if (environment) { conditions.push('ci.environment = $environment'); params.environment = environment; }
           if (metadata_filters) {
-            Object.entries(metadata_filters as Record<string, MetadataFilterValue>).forEach(([key, value], index) => {
-              const paramName = `metaValue${index}`;
-              conditions.push(`ci.metadata CONTAINS $${paramName}`);
-              params[paramName] = metadataNeedle(key, value);
-            });
+            let needleIndex = 0;
+            for (const [key, value] of Object.entries(metadata_filters as Record<string, MetadataFilterValue>)) {
+              const clauses = metadataNeedles(key, value).map((needle) => {
+                const paramName = `metaValue${needleIndex++}`;
+                params[paramName] = needle;
+                return `ci.metadata CONTAINS $${paramName}`;
+              });
+              conditions.push(clauses.length === 1 ? clauses[0] : `(${clauses.join(' OR ')})`);
+            }
           }
           const whereClause = conditions.join(' AND ');
           const countResult = await session.run(

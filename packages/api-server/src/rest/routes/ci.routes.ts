@@ -4,6 +4,7 @@
 import { Router } from 'express';
 import Joi from 'joi';
 import { CIController } from '../controllers/ci.controller';
+import { SEARCH_QUERY_MAX_LENGTH } from '../controllers/search.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
@@ -46,7 +47,7 @@ const updateCISchema = ciUpdateSchema.keys({
 });
 
 const searchCISchema = Joi.object({
-  query: Joi.string().required().min(1).max(500),
+  query: Joi.string().required().min(1).max(SEARCH_QUERY_MAX_LENGTH),
   limit: Joi.number().integer().min(1).max(1000).default(50),
 });
 

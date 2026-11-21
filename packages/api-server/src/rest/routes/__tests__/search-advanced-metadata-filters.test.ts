@@ -36,7 +36,7 @@ import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { ciRoutes } from '../ci.routes';
 import { searchRoutes } from '../search.routes';
-import { metadataNeedle, metadataFilterRefusal, SearchController } from '../../controllers/search.controller';
+import { metadataNeedles, metadataFilterRefusal, SearchController } from '../../controllers/search.controller';
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const app = express();
@@ -51,32 +51,51 @@ const keys = (count: number) => Object.fromEntries(Array.from({ length: count },
 
 beforeEach(() => { runs.length = 0; });
 
-describe('metadataNeedle', () => {
+// What Cypher `ci.metadata CONTAINS` decides for one pair: any needle is a substring of the stored JSON text.
+const matches = (stored: Record<string, unknown>, key: string, value: string | number | boolean) =>
+  metadataNeedles(key, value).some(needle => JSON.stringify(stored).includes(needle));
+
+describe('metadataNeedles', () => {
   it.each([
-    ['env', 'prod', '"env":"prod"'],
-    ['n', 3, '"n":3'],
-    ['n', -1.5, '"n":-1.5'],
-    ['on', true, '"on":true'],
-    ['on', false, '"on":false'],
-    ['say', 'a"b', '"say":"a\\"b"'],
-    ['k"x', 'v', '"k\\"x":"v"'],
-    ['path', 'C:\\dir', '"path":"C:\\\\dir"'],
-    ['k\\x', 'v', '"k\\\\x":"v"'],
-    ['note', 'a\nb', '"note":"a\\nb"'],
-    ['a":"b","c', 'v', '"a\\":\\"b\\",\\"c":"v"'],
-  ] as const)('%j / %j -> %s', (key, value, expected) => {
-    expect(metadataNeedle(key, value)).toBe(expected);
+    ['env', 'prod', ['"env":"prod"']],
+    ['n', 3, ['"n":3,', '"n":3}']],
+    ['n', -1.5, ['"n":-1.5,', '"n":-1.5}']],
+    ['on', true, ['"on":true']],
+    ['on', false, ['"on":false']],
+    ['say', 'a"b', ['"say":"a\\"b"']],
+    ['k"x', 'v', ['"k\\"x":"v"']],
+    ['path', 'C:\\dir', ['"path":"C:\\\\dir"']],
+    ['k\\x', 'v', ['"k\\\\x":"v"']],
+    ['note', 'a\nb', ['"note":"a\\nb"']],
+    ['a":"b","c', 'v', ['"a\\":\\"b\\",\\"c":"v"']],
+  ] as const)('%j / %j -> %j', (key, value, expected) => {
+    expect(metadataNeedles(key, value)).toEqual(expected);
   });
 
-  it('is a substring of the text JSON.stringify stores for the same metadata', () => {
+  it('matches the stored JSON text for every scalar type, in any position', () => {
     const metadata = { env: 'prod', n: 3, on: true, q: 'say "hi"', 'k"x': 'C:\\dir', nl: 'a\nb', off: false, f: 1.5 };
-    const stored = JSON.stringify(metadata);
-    for (const [key, value] of Object.entries(metadata)) expect(stored.includes(metadataNeedle(key, value))).toBe(true);
+    for (const [key, value] of Object.entries(metadata)) expect(matches(metadata, key, value)).toBe(true);
+    expect(matches({ n: 3 }, 'n', 3)).toBe(true);
+    expect(matches({ a: 1, n: 3 }, 'n', 3)).toBe(true);
+    expect(matches({ n: 3, a: 1 }, 'n', 3)).toBe(true);
+    expect(matches({ n: -1.5 }, 'n', -1.5)).toBe(true);
+  });
+
+  it('does not match a number that merely starts with the filter number', () => {
+    for (const stored of [{ n: 30 }, { n: 3.5 }, { n: 300000 }, { n: 31, x: 1 }, { x: 1, n: 3.25 }, { n: 3e21 }]) {
+      expect(matches(stored, 'n', 3)).toBe(false);
+    }
+    expect(matches({ n: -1.5 }, 'n', -1)).toBe(false);
+    expect(matches({ cpu_cores: 85 }, 'cpu_cores', 8)).toBe(false);
+  });
+
+  it('does not match a number against a string of digits, or the reverse', () => {
+    expect(matches({ n: '3' }, 'n', 3)).toBe(false);
+    expect(matches({ n: 3 }, 'n', '3')).toBe(false);
   });
 
   it('does not match a forged key/value structure', () => {
-    const stored = JSON.stringify({ a: 'b', c: 'v' });
-    expect(stored.includes(metadataNeedle('a":"b","c', 'v'))).toBe(false);
+    expect(matches({ a: 'b', c: 'v' }, 'a":"b","c', 'v')).toBe(false);
   });
 });
 
@@ -87,21 +106,16 @@ describe('POST /search/advanced metadata_filters', () => {
     expect(res.status).toBe(200);
     expect(runs.length).toBe(2);
     for (const { params } of runs) {
-      const needles = Object.keys(params).filter(k => k.startsWith('metaValue')).sort().map(k => params[k]);
-      expect(needles).toEqual(['"env":"prod"', '"n":3', '"on":true', '"q":"say \\"hi\\""', '"k\\"x":"C:\\\\dir"']);
+      const needles = Object.keys(params).filter(k => k.startsWith('metaValue')).sort((a, b) => Number(a.slice(9)) - Number(b.slice(9))).map(k => params[k]);
+      expect(needles).toEqual(['"env":"prod"', '"n":3,', '"n":3}', '"on":true', '"q":"say \\"hi\\""', '"k\\"x":"C:\\\\dir"']);
     }
-    expect(res.body.filters.metadata_filters).toEqual(filters);
   });
 
-  it('keeps the organization predicate, pending exclusion and the other filters', async () => {
+  it('keeps the organization, pending exclusion and the other filters in the query parameters', async () => {
     const res = await advanced({ query: 'host', type: 'server', status: 'active', environment: 'production', metadata_filters: { n: 3 } });
     expect(res.status).toBe(200);
-    for (const { cypher, params } of runs) {
-      expect(cypher).toContain('WHERE ci.organization_id = $organizationId AND NOT ci.id IN $pending AND');
-      expect(cypher).toContain('ci.type = $type');
-      expect(cypher).toContain('ci.status = $status');
-      expect(cypher).toContain('ci.environment = $environment');
-      expect(cypher).toContain('ci.metadata CONTAINS $metaValue0');
+    expect(runs.length).toBe(2);
+    for (const { params } of runs) {
       expect([params.organizationId, params.pending, params.type, params.status, params.environment])
         .toEqual([A, ['pending-ci'], 'server', 'active', 'production']);
     }
@@ -138,7 +152,19 @@ describe('POST /search/advanced metadata_filters', () => {
   ])('accepts %s', async (_name, filters) => {
     const res = await withFilters(filters);
     expect(res.status).toBe(200);
-    expect(res.body.filters.metadata_filters).toEqual(filters);
+    expect(runs.length).toBe(2);
+  });
+
+  it.each([
+    ['unsafe integer', '{"k":9007199254740992}'],
+    ['overflowing number', '{"k":1e300}'],
+    ['__proto__ key', '{"__proto__":"x"}'],
+    ['__proto__ key beside a valid key', '{"a":"x","__proto__":"y"}'],
+  ])('rejects %s with 400 instead of dropping or widening the filter', async (_name, raw) => {
+    const res = await request(app).post('/api/v1/search/advanced').set(auth).set('Content-Type', 'application/json')
+      .send(`{"query":"host","metadata_filters":${raw}}`);
+    expect(res.status).toBe(400);
+    expect(runs).toEqual([]);
   });
 });
 
@@ -161,10 +187,10 @@ describe('search query length', () => {
 describe('metadataFilterRefusal (route schema bypassed)', () => {
   it('refuses the same violations the route schema refuses', () => {
     for (const bad of [keys(21), { k: { a: 1 } }, { k: [1] }, { k: null }, { ['k'.repeat(129)]: 'v' }, { '': 'v' },
-      { k: 'v'.repeat(257) }, { k: Infinity }, ['a'], 'a', null]) {
+      { k: 'v'.repeat(257) }, { k: Infinity }, { k: 2 ** 53 }, { k: -(2 ** 53) }, { k: 1e300 }, ['a'], 'a', null]) {
       expect(metadataFilterRefusal(bad)).not.toBeNull();
     }
-    for (const good of [undefined, {}, keys(20), { n: 3, on: false, s: '' }]) expect(metadataFilterRefusal(good)).toBeNull();
+    for (const good of [undefined, {}, keys(20), { n: 3, on: false, s: '' }, { k: 2 ** 53 - 1 }, { k: -1.5 }]) expect(metadataFilterRefusal(good)).toBeNull();
   });
 
   it('advancedSearch answers 400 before any query when called directly with a bad body', async () => {

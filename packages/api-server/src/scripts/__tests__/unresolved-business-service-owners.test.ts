@@ -18,6 +18,7 @@ import { join } from 'path';
 import {
   main, OWNER_USERS_CYPHER, reportUnresolvedOwners, type OwnerReport,
 } from '../unresolved-business-service-owners';
+import { MALFORMED_AMBIENT_TLS_ENV, runOperatorCli } from './fixtures/run-operator-cli';
 
 const host = fork(join(__dirname, '../../rest/routes/__tests__/fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let nextId = 0;
@@ -190,4 +191,30 @@ describe('main', () => {
     expect(await main(['--apply'], {}, { stdout: () => undefined, stderr: line => err.push(line) })).toBe(1);
     expect(err[0]).toContain('usage: unresolved-business-service-owners');
   });
+});
+
+/**
+ * The `require.main === module` block as a real process: it calls isolateOperatorEnvironment before any client exists
+ * (an import from the wrong module is a TypeError only a child process sees; `main` takes `env` explicitly).
+ */
+describe('unresolved-business-service-owners CLI process', () => {
+  const SCRIPT = join(__dirname, '../unresolved-business-service-owners.ts');
+  const ENV = {
+    CMDB_ROTATE_POSTGRES_HOST: '127.0.0.1', CMDB_ROTATE_POSTGRES_PORT: '1', CMDB_ROTATE_POSTGRES_DB: 'unused',
+    CMDB_ROTATE_POSTGRES_USER: 'unused', CMDB_ROTATE_POSTGRES_PASSWORD: 'pg-secret-value',
+    CMDB_ROTATE_NEO4J_URI: 'bolt://127.0.0.1:1', CMDB_ROTATE_NEO4J_USERNAME: 'unused', CMDB_ROTATE_NEO4J_PASSWORD: 'neo4j-secret-value',
+  };
+
+  it('ignores malformed ambient API-server TLS toggles, builds its own Neo4j client and fails closed with nothing on stdout', async () => {
+    const { code, stdout, stderr, driverConfigs } = await runOperatorCli(SCRIPT, [], { ...ENV, ...MALFORMED_AMBIENT_TLS_ENV });
+
+    expect(stderr).not.toContain('is not a function');
+    expect(stderr).not.toContain('must be true or false');
+    expect(driverConfigs).toHaveLength(1);
+    expect(driverConfigs[0]).toMatchObject({ encrypted: 'ENCRYPTION_OFF' });
+    expect([code, stdout]).toEqual([1, '']);
+    expect(stderr).toContain('unresolved-business-service-owners:');
+    expect(stderr).not.toContain('pg-secret-value');
+    expect(stderr).not.toContain('neo4j-secret-value');
+  }, 20000);
 });

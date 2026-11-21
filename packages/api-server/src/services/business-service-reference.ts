@@ -18,6 +18,8 @@
  *   refuses an owner that is not valid.
  */
 
+import { boundedStatementTimeoutMs } from '../rest/impact-envelope';
+
 export type C1Lifecycle = 'planned' | 'live' | 'retiring' | 'retired';
 
 /** C1 lifecycle in pipeline order: a move to an earlier state is backward. */
@@ -79,40 +81,67 @@ export function ownerInOrganization(user: OwnerUser | null, organizationId: stri
   return user !== null && user._organizationId === organizationId;
 }
 
-/** At most this many identity-store lookups of one read run at once. */
-const OWNER_LOOKUP_CONCURRENCY = 8;
+/** Time bound of one owner-validity lookup, in milliseconds (`OWNER_VALIDITY_TIMEOUT_MS`). */
+export const OWNER_VALIDITY_TIMEOUT_MS = 3000;
+
+/** Positive integer up to the int4 ceiling, else the default (`boundedStatementTimeoutMs`). */
+export const ownerValidityTimeoutMs = (env: NodeJS.ProcessEnv = process.env): number =>
+  boundedStatementTimeoutMs(env['OWNER_VALIDITY_TIMEOUT_MS'], OWNER_VALIDITY_TIMEOUT_MS);
+
+/** The owner-validity lookup outlasted its time bound. The message is fixed: it never carries an id. */
+export class OwnerValidityTimeoutError extends Error {
+  constructor() {
+    super('Owner validity lookup timed out');
+    this.name = 'OwnerValidityTimeoutError';
+  }
+}
 
 export interface OwnerValidity {
-  /** principal -> whether it resolves to an enabled user of the organization; a failed lookup is false. */
+  /** principal -> whether it resolves to an enabled user of the organization; a failed or timed-out lookup is false. */
   valid: ReadonlyMap<string, boolean>;
-  /** One entry per lookup the identity store failed (the owner is then reported not valid). */
+  /** The lookup's failure (the identity store's error, or OwnerValidityTimeoutError), at most one; every owner is then not valid. */
   failures: unknown[];
 }
 
 /**
- * Owner validity of every distinct non-null principal in `principals`, one lookup each (a list page repeats owners).
- * A lookup error is recorded in `failures` and reads as not valid; it never rejects.
+ * Owner validity of every distinct non-null principal in `principals`, in one batched identity-store lookup
+ * (`findEnabledUsers`: the enabled users among the ids, by id; a page repeats owners). A principal absent from the
+ * result is not valid. The lookup is bounded by `timeoutMs` (handed to it too, so the store can cancel); when it fails
+ * or times out the error is recorded in `failures` and every owner reads as not valid. It never rejects.
  */
 export async function readOwnerValidity(
   organizationId: string, principals: ReadonlyArray<string | null>,
-  findEnabledUser: (principal: string) => Promise<OwnerUser | null>
+  findEnabledUsers: (ids: string[], timeoutMs: number) => Promise<ReadonlyMap<string, OwnerUser>>,
+  timeoutMs: number = ownerValidityTimeoutMs()
 ): Promise<OwnerValidity> {
   const ids = [...new Set(principals.filter((principal): principal is string => principal !== null))];
   const valid = new Map<string, boolean>();
-  const failures: unknown[] = [];
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(OWNER_LOOKUP_CONCURRENCY, ids.length) }, async () => {
-    while (next < ids.length) {
-      const principal = ids[next++]!;
-      try {
-        valid.set(principal, ownerInOrganization(await findEnabledUser(principal), organizationId));
-      } catch (error) {
-        valid.set(principal, false);
-        failures.push(error);
-      }
+  if (ids.length === 0) {
+    return { valid, failures: [] };
+  }
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const lookup = findEnabledUsers(ids, timeoutMs);
+    // A lookup that loses the race may still reject later: that must not become an unhandled rejection.
+    lookup.catch(() => undefined);
+    const users = await Promise.race([
+      lookup,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new OwnerValidityTimeoutError()), timeoutMs);
+      }),
+    ]);
+    for (const id of ids) {
+      valid.set(id, ownerInOrganization(users.get(id) ?? null, organizationId));
     }
-  }));
-  return { valid, failures };
+    return { valid, failures: [] };
+  } catch (error) {
+    for (const id of ids) {
+      valid.set(id, false);
+    }
+    return { valid, failures: [error] };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** The C1 fields for `row`, added next to the stored columns of the service read. */

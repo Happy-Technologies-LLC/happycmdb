@@ -73,6 +73,9 @@ class FakeRepository implements AuthRepository {
     const user = this.users.get(id);
     return user ? { ...user } : null;
   }
+  async findUsersByIds(ids: readonly string[]): Promise<Map<string, User>> {
+    return new Map(ids.flatMap(id => (this.users.has(id) ? [[id, { ...this.users.get(id)! }] as [string, User]] : [])));
+  }
   async updateUserLastLogin(): Promise<void> {}
   async updateUser(id: string, updates: UserProfileUpdate): Promise<User> {
     const updated = { ...this.users.get(id)!, ...(updates.name !== undefined ? { _name: updates.name } : {}) };

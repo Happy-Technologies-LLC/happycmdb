@@ -47,6 +47,10 @@ class InMemoryAuthRepository implements AuthRepository {
     return this.users.get(id) || null;
   }
 
+  async findUsersByIds(ids: readonly string[]): Promise<Map<string, User>> {
+    return new Map(ids.flatMap(id => (this.users.has(id) ? [[id, this.users.get(id)!] as [string, User]] : [])));
+  }
+
   async updateUserLastLogin(): Promise<void> {}
 
   async updateUser(id: string, updates: UserProfileUpdate): Promise<User> {
@@ -157,6 +161,20 @@ describe('AuthService profile/password/account lifecycle', () => {
       _createdAt: new Date('2024-01-01'),
       _updatedAt: new Date('2024-01-01'),
     } as User);
+  });
+
+  describe('findEnabledUsers', () => {
+    it('keeps only the enabled users among the ids, the same answer findEnabledUser gives one by one', async () => {
+      repository.users.set('user-off', { ...repository.users.get('user-1')!, _id: 'user-off', _enabled: false } as User);
+      const ids = ['user-1', 'user-off', 'ghost'];
+
+      const batch = await service.findEnabledUsers(ids, 1000);
+
+      expect([...batch.keys()]).toEqual(['user-1']);
+      for (const id of ids) {
+        expect((await service.findEnabledUser(id))?._id).toBe(batch.get(id)?._id);
+      }
+    });
   });
 
   describe('getUserProfile', () => {

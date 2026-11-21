@@ -92,6 +92,8 @@ export interface CredentialEventInput {
 export interface AuthRepository {
   findUserByUsername(username: string): Promise<User | null>;
   findUserById(id: string): Promise<User | null>;
+  /** Users by id in one batched read: an id with no node, or with more than one (ambiguous), is absent. */
+  findUsersByIds(ids: readonly string[], timeoutMs: number): Promise<Map<string, User>>;
   updateUserLastLogin(userId: string): Promise<void>;
   /** Applies a partial profile update (name/avatar) and returns the updated user. */
   updateUser(id: string, updates: UserProfileUpdate): Promise<User>;
@@ -497,6 +499,15 @@ export class AuthService {
   async findEnabledUser(userId: string): Promise<User | null> {
     const user = await this.repository.findUserById(userId);
     return user && user._enabled ? user : null;
+  }
+
+  /**
+   * The enabled users among `ids` (one batched identity-store read bounded by `timeoutMs`), by id. A missing,
+   * disabled or ambiguous (two nodes) id is absent. Same per-id result as findEnabledUser, without a read per id.
+   */
+  async findEnabledUsers(ids: readonly string[], timeoutMs: number): Promise<Map<string, User>> {
+    const found = await this.repository.findUsersByIds(ids, timeoutMs);
+    return new Map([...found].filter(([, user]) => user._enabled));
   }
 
   /**

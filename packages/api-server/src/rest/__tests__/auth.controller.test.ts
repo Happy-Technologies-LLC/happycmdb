@@ -60,6 +60,10 @@ class InMemoryAuthRepository implements AuthRepository {
     return this.users.get(id) || null;
   }
 
+  async findUsersByIds(ids: readonly string[]): Promise<Map<string, User>> {
+    return new Map(ids.flatMap(id => (this.users.has(id) ? [[id, this.users.get(id)!] as [string, User]] : [])));
+  }
+
   async updateUserLastLogin(): Promise<void> {}
 
   async updateUser(id: string, updates: UserProfileUpdate): Promise<User> {

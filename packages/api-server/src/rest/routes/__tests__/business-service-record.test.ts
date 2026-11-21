@@ -42,8 +42,10 @@ host.on('message', ({ id, rows, rowCount, error, code }: { id: number; rows: Rec
   else call.resolve({ rows, rowCount: rowCount || rows.length });
 });
 /** Fails the next audit_log INSERT with this error (a failed append after the service row was written). */
-const mockFault: { auditInsert: Error | null; beforeLock: (() => Promise<unknown>) | null; failLookupsOf: Set<string> } = {
-  auditInsert: null, beforeLock: null, failLookupsOf: new Set(),
+const mockFault: {
+  auditInsert: Error | null; beforeLock: (() => Promise<unknown>) | null; failLookupsOf: Set<string>; hangBatchLookups: boolean;
+} = {
+  auditInsert: null, beforeLock: null, failLookupsOf: new Set(), hangBatchLookups: false,
 };
 function mockSql(text: string, params: unknown[] = [], op: 'query' | 'exec' = 'query') {
   if (mockFault.auditInsert && /^\s*INSERT INTO audit_log/.test(text)) {
@@ -91,6 +93,8 @@ const USERS: Record<string, { _id: string; _username: string; _role: 'admin' | '
 };
 /** Every user id the identity store was asked for (token verification asks for the caller's own on each request). */
 const userLookups: string[] = [];
+/** Every batched owner-validity lookup: the ids asked for and the time bound handed to the store. */
+const batchLookups: Array<{ ids: string[]; timeoutMs: number }> = [];
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({
     findUserById: async (id: string) => {
@@ -98,13 +102,19 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
       if (mockFault.failLookupsOf.has(id)) throw new Error('identity store down');
       return Object.values(USERS).find(user => user._id === id) ?? null;
     },
+    findUsersByIds: async (ids: string[], timeoutMs: number) => {
+      batchLookups.push({ ids: [...ids], timeoutMs });
+      if (mockFault.hangBatchLookups) return new Promise<never>(() => undefined);
+      if (ids.some(id => mockFault.failLookupsOf.has(id))) throw new Error('identity store down');
+      return new Map(Object.values(USERS).filter(user => ids.includes(user._id)).map(user => [user._id, user]));
+    },
     findApiKeyByKey: async () => null,
   })),
 }));
 // bcrypt's native binding is only used for password hashing/login, which token verification never calls.
 jest.mock('bcrypt', () => ({}));
 
-import { loadConfig } from '@cmdb/common';
+import { loadConfig, logger } from '@cmdb/common';
 import { getAuditService, getPostgresClient } from '@cmdb/database';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
@@ -177,7 +187,9 @@ beforeAll(async () => {
   await assertAppLogin(async sql => (await rows(sql)));
 }, 60000);
 afterAll(() => { host.kill(); });
-afterEach(() => { mockFault.auditInsert = null; mockFault.beforeLock = null; mockFault.failLookupsOf.clear(); });
+afterEach(() => {
+  mockFault.auditInsert = null; mockFault.beforeLock = null; mockFault.failLookupsOf.clear(); mockFault.hangBatchLookups = false;
+});
 
 describe('scenario 1: live needs an owner principal (D15)', () => {
   it('planned -> live without owner_principal_id is 422 and changes nothing; with it the C1 read shows live and the owner', async () => {
@@ -409,18 +421,59 @@ describe('C1 read: owner_valid says whether the owner can be an approver', () =>
     expect(read.text).not.toContain('identity store down');
   });
 
-  it('every item of the list carries it, one identity lookup per distinct owner, and a failing owner marks only its own services', async () => {
+  it('every item of the list carries it, from ONE batched lookup of the distinct owners', async () => {
     const [a, b, c] = [await created({ owner_principal_id: OWNER, name: 'owner-valid-a' }),
       await created({ owner_principal_id: OWNER, name: 'owner-valid-b' }), await created({ owner_principal_id: USERS['o']!._id, name: 'owner-valid-c' })];
     userLookups.length = 0;
+    batchLookups.length = 0;
     const listed = await request(app).get('/api/v1/business-services').query({ search: 'owner-valid-', limit: 10 }).set(headers('t'));
     expect(listed.status).toBe(200);
     expect(listed.body.items.map((item: any) => [item.service_id, item.owner_valid])).toEqual([[a, true], [b, true], [c, true]]);
-    expect(userLookups.filter(lookup => lookup !== USERS['t']!._id).sort()).toEqual([OWNER, USERS['o']!._id].sort());
+    expect(batchLookups.map(lookup => lookup.ids.sort())).toEqual([[OWNER, USERS['o']!._id].sort()]);
+    // The only per-user reads left are the token verification of the caller.
+    expect(userLookups.filter(lookup => lookup !== USERS['t']!._id)).toEqual([]);
+  });
 
-    mockFault.failLookupsOf.add(USERS['o']!._id);
-    const partial = await request(app).get('/api/v1/business-services').query({ search: 'owner-valid-', limit: 10 }).set(headers('t'));
-    expect(partial.body.items.map((item: any) => item.owner_valid)).toEqual([true, true, false]);
+  it('a failed batch marks every owner of the page not valid, the list still answers 200, and the log carries no id', async () => {
+    await created({ owner_principal_id: OWNER, name: 'owner-valid-fail-a' });
+    await created({ owner_principal_id: USERS['o']!._id, name: 'owner-valid-fail-b' });
+    const logged = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    try {
+      mockFault.failLookupsOf.add(USERS['o']!._id);
+      const failed = await request(app).get('/api/v1/business-services').query({ search: 'owner-valid-fail-', limit: 10 }).set(headers('t'));
+      expect([failed.status, failed.body.success]).toEqual([200, true]);
+      expect(failed.body.items.map((item: any) => item.owner_valid)).toEqual([false, false]);
+      const entries = logged.mock.calls.filter(call => call[0] === 'Business service owner validity lookup failed');
+      expect(entries).toHaveLength(1);
+      expect(JSON.stringify(entries[0])).not.toContain(OWNER);
+      expect(JSON.stringify(entries[0])).not.toContain(USERS['o']!._id);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it('a lookup that outlasts OWNER_VALIDITY_TIMEOUT_MS answers 200 with owner_valid false and logs fixed error fields only', async () => {
+    const id = await created({ owner_principal_id: OWNER });
+    const logged = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    process.env['OWNER_VALIDITY_TIMEOUT_MS'] = '50';
+    try {
+      batchLookups.length = 0;
+      mockFault.hangBatchLookups = true;
+      const started = Date.now();
+      const read = await readC1(id);
+      expect([read.status, read.body.success, read.body.data.owner_valid, read.body.data.owner.principal_id]).toEqual([200, true, false, OWNER]);
+      expect(Date.now() - started).toBeLessThan(2500);
+      // The store is handed the same bound, so it can cancel the query server-side.
+      expect(batchLookups.map(lookup => lookup.timeoutMs)).toEqual([50]);
+      const entries = logged.mock.calls.filter(call => call[0] === 'Business service owner validity lookup failed');
+      expect(entries).toHaveLength(1);
+      expect((entries[0]![1] as { error: { name: string; message: string } }).error).toMatchObject({
+        name: 'OwnerValidityTimeoutError', message: 'Owner validity lookup timed out' });
+      expect(JSON.stringify(entries[0])).not.toContain(OWNER);
+    } finally {
+      delete process.env['OWNER_VALIDITY_TIMEOUT_MS'];
+      logged.mockRestore();
+    }
   });
 });
 

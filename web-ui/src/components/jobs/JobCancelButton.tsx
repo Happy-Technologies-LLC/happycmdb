@@ -8,16 +8,15 @@
  */
 
 import React, { useState } from 'react';
-import { Icon } from '@happy-technologies/design-system';
-import { Button } from '../ui/button';
 import {
+  Banner,
+  Button,
   Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../ui/dialog';
+  FieldList,
+  SectionHeading,
+  type ButtonVariant,
+} from '@happy-technologies/design-system';
+import { usePermission } from '@/hooks/usePermission';
 import { Job } from '../../services/jobs.service';
 
 interface JobCancelButtonProps {
@@ -28,6 +27,16 @@ interface JobCancelButtonProps {
   size?: 'sm' | 'default' | 'lg';
 }
 
+const VARIANT: Record<NonNullable<JobCancelButtonProps['variant']>, ButtonVariant> = {
+  default: 'primary',
+  outline: 'outline',
+  ghost: 'ghost',
+  secondary: 'secondary',
+  destructive: 'danger',
+};
+
+const SIZE = { sm: 'sm', default: 'md', lg: 'lg' } as const;
+
 export const JobCancelButton: React.FC<JobCancelButtonProps> = ({
   job,
   onCancel,
@@ -35,9 +44,13 @@ export const JobCancelButton: React.FC<JobCancelButtonProps> = ({
   variant = 'outline',
   size = 'sm',
 }) => {
+  // The server route (DELETE /jobs/:queue/:id) is the authority; this only hides the control from read-only roles.
+  const canWrite = usePermission('write');
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  if (!canWrite) return null;
 
   const handleOpen = () => {
     setOpen(true);
@@ -67,71 +80,44 @@ export const JobCancelButton: React.FC<JobCancelButtonProps> = ({
   return (
     <>
       <Button
-        variant={variant}
-        size={size}
+        variant={VARIANT[variant]}
+        size={SIZE[size]}
+        icon="x-circle"
         onClick={handleOpen}
         disabled={disabled || !canCancel}
         title={canCancel ? 'Cancel this job' : 'Cannot cancel this job'}
-        className="gap-1 text-destructive hover:text-destructive"
       >
-        <Icon name="x-circle" size={16} />
         Cancel
       </Button>
 
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Cancel Job</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to cancel this job? This action cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2 py-4">
-            <div className="grid gap-1">
-              <span className="text-sm">
-                <strong>Job:</strong> {job.name}
-              </span>
-              <span className="text-sm">
-                <strong>Queue:</strong> {job.queueName}
-              </span>
-              <span className="text-sm">
-                <strong>Status:</strong> {job.status}
-              </span>
-            </div>
-            {error && (
-              <div className="text-sm text-destructive mt-2">
-                Error: {error}
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={handleClose}
-              disabled={loading}
-            >
+      <Dialog open={open} onClose={handleClose} aria-label="Cancel Job">
+        <div className="space-y-4 p-6">
+          <SectionHeading className="mb-0 pr-8">Cancel Job</SectionHeading>
+          <p className="text-sm text-[var(--hh-text-body)]">
+            Are you sure you want to cancel this job? This action cannot be undone.
+          </p>
+          <FieldList
+            fields={[
+              ['Job', job.name],
+              ['Queue', job.queueName],
+              ['Status', job.status],
+            ]}
+          />
+          {error && <Banner tone="danger">Error: {error}</Banner>}
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={handleClose} disabled={loading}>
               No, Keep Job
             </Button>
             <Button
-              variant="destructive"
+              variant="danger"
+              icon="x-circle"
               onClick={handleConfirm}
-              disabled={loading}
-              className="gap-1"
+              loading={loading}
             >
-              {loading ? (
-                <>
-                  <Icon name="spinner-gap" size={16} className="animate-spin" />
-                  Canceling...
-                </>
-              ) : (
-                <>
-                  <Icon name="x-circle" size={16} />
-                  Yes, Cancel Job
-                </>
-              )}
+              {loading ? 'Canceling...' : 'Yes, Cancel Job'}
             </Button>
-          </DialogFooter>
-        </DialogContent>
+          </div>
+        </div>
       </Dialog>
     </>
   );

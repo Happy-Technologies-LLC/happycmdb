@@ -10,19 +10,17 @@
 import React from 'react';
 import { format } from 'date-fns';
 import {
+  Badge,
+  Banner,
+  Button,
   Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../ui/dialog';
-import { Button } from '../ui/button';
-import { Badge } from '../ui/badge';
-import { Card, CardContent } from '../ui/card';
-import { Alert, AlertDescription } from '../ui/alert';
-import { Separator } from '../ui/separator';
+  Eyebrow,
+  FieldList,
+  SectionHeading,
+  Separator,
+} from '@happy-technologies/design-system';
 import { Job } from '../../services/jobs.service';
-import { JobProgress } from './JobProgress';
+import { JobProgress, jobStatusVariant } from './JobProgress';
 import { JobRetryButton } from './JobRetryButton';
 import { JobCancelButton } from './JobCancelButton';
 
@@ -62,124 +60,64 @@ export const JobDetail: React.FC<JobDetailProps> = ({
     }
   };
 
-  const getStatusColor = (): 'default' | 'secondary' | 'destructive' | 'outline' => {
-    switch (job.status) {
-      case 'completed':
-        return 'default';
-      case 'failed':
-        return 'destructive';
-      case 'active':
-        return 'default';
-      case 'waiting':
-      case 'delayed':
-        return 'secondary';
-      default:
-        return 'outline';
-    }
-  };
-
   return (
-    <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
-      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Job Details</DialogTitle>
-        </DialogHeader>
+    <Dialog open={open} onClose={onClose} aria-label="Job Details" className="max-w-3xl">
+      <div className="max-h-[90vh] space-y-4 overflow-y-auto p-6">
+        <SectionHeading className="mb-0 pr-8">Job Details</SectionHeading>
 
-        <div className="space-y-4">
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-lg font-semibold">{job.name}</h2>
-              <Badge variant={getStatusColor()}>
+        <div>
+          <SectionHeading
+            level={3}
+            right={
+              <Badge variant={jobStatusVariant(job.status)} dot>
                 {job.status.toUpperCase()}
               </Badge>
-            </div>
-            <JobProgress job={job} />
-          </div>
-
-          <Separator />
-
-          <div>
-            <h3 className="text-sm font-semibold mb-2">Job Information</h3>
-            <Card>
-              <CardContent className="p-4 bg-muted">
-                <div className="grid grid-cols-[150px_1fr] gap-2 text-sm">
-                  <span className="text-muted-foreground">ID:</span>
-                  <span className="font-mono">{job.id}</span>
-
-                  <span className="text-muted-foreground">Queue:</span>
-                  <span>{job.queueName}</span>
-
-                  <span className="text-muted-foreground">Created:</span>
-                  <span>{formatTimestamp(job.timestamp)}</span>
-
-                  {job.processedOn && (
-                    <>
-                      <span className="text-muted-foreground">Started:</span>
-                      <span>{formatTimestamp(job.processedOn)}</span>
-                    </>
-                  )}
-
-                  {job.finishedOn && (
-                    <>
-                      <span className="text-muted-foreground">Finished:</span>
-                      <span>{formatTimestamp(job.finishedOn)}</span>
-                    </>
-                  )}
-
-                  {job.processedOn && (
-                    <>
-                      <span className="text-muted-foreground">Duration:</span>
-                      <span>{formatDuration(job.processedOn, job.finishedOn)}</span>
-                    </>
-                  )}
-
-                  <span className="text-muted-foreground">Attempts:</span>
-                  <span>
-                    {job.attempts} / {job.maxAttempts}
-                  </span>
-
-                  {job.delay && (
-                    <>
-                      <span className="text-muted-foreground">Delay:</span>
-                      <span>{job.delay}ms</span>
-                    </>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-
-          {job.failedReason && (
-            <div>
-              <h3 className="text-sm font-semibold mb-2">Error Message</h3>
-              <Alert variant="destructive">
-                <AlertDescription>{job.failedReason}</AlertDescription>
-              </Alert>
-            </div>
-          )}
-
+            }
+          >
+            {job.name}
+          </SectionHeading>
+          <JobProgress job={job} />
         </div>
 
-        <DialogFooter>
-          <div className="flex gap-2 flex-grow">
+        <Separator />
+
+        <div className="space-y-2">
+          <Eyebrow>Job Information</Eyebrow>
+          <FieldList
+            fields={[
+              ['ID', <span key="id" className="font-mono">{job.id}</span>],
+              ['Queue', job.queueName],
+              ['Created', formatTimestamp(job.timestamp)],
+              ['Started', job.processedOn ? formatTimestamp(job.processedOn) : null],
+              ['Finished', job.finishedOn ? formatTimestamp(job.finishedOn) : null],
+              ['Duration', job.processedOn ? formatDuration(job.processedOn, job.finishedOn) : null],
+              ['Attempts', `${job.attempts} / ${job.maxAttempts}`],
+              ['Delay', job.delay ? `${job.delay}ms` : null],
+            ]}
+          />
+        </div>
+
+        {job.failedReason && (
+          <div className="space-y-2">
+            <Eyebrow tone="danger">Error Message</Eyebrow>
+            <Banner tone="danger">{job.failedReason}</Banner>
+          </div>
+        )}
+
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-grow gap-2">
             {job.status === 'failed' && (
-              <JobRetryButton
-                job={job}
-                onRetry={onRetry}
-                variant="default"
-              />
+              <JobRetryButton job={job} onRetry={onRetry} variant="default" />
             )}
             {(job.status === 'active' || job.status === 'waiting') && (
-              <JobCancelButton
-                job={job}
-                onCancel={onCancel}
-                variant="outline"
-              />
+              <JobCancelButton job={job} onCancel={onCancel} variant="outline" />
             )}
           </div>
-          <Button variant="outline" onClick={onClose}>Close</Button>
-        </DialogFooter>
-      </DialogContent>
+          <Button variant="secondary" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </div>
     </Dialog>
   );
 };

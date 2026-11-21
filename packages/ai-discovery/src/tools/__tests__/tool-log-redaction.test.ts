@@ -6,10 +6,10 @@ import { Client } from 'ssh2';
 import { logger } from '@cmdb/common';
 import { sshExecuteTool } from '../ssh-tool';
 import { httpProbeTool } from '../http-tool';
-import { safeDiscoveryHttp } from '../safe-http';
+import { DiscoveryHttpError, safeDiscoveryHttp } from '../safe-http';
 
 jest.mock('ssh2', () => ({ Client: jest.fn() }));
-jest.mock('../safe-http', () => ({ safeDiscoveryHttp: jest.fn() }));
+jest.mock('../safe-http', () => ({ ...jest.requireActual('../safe-http'), safeDiscoveryHttp: jest.fn() }));
 
 const secret = 'SENSITIVE-TEST-VALUE';
 afterEach(() => jest.restoreAllMocks());
@@ -75,7 +75,7 @@ it('does not log or throw HTTP path/query credentials on network and setup failu
   const warn = jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
   const error = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
   const url = `http://8.8.8.8:80/password/${secret}?token=${secret}`;
-  jest.mocked(safeDiscoveryHttp).mockRejectedValueOnce({ request: {}, message: `No response from ${url}` });
+  jest.mocked(safeDiscoveryHttp).mockRejectedValueOnce(new DiscoveryHttpError('ECONNRESET'));
   await expect(httpProbeTool.execute({ host: '8.8.8.8',
     path: `/password/${secret}?token=${secret}` })).rejects.not.toThrow(secret);
   jest.mocked(safeDiscoveryHttp).mockRejectedValueOnce(new Error(`Invalid URL ${url}`));

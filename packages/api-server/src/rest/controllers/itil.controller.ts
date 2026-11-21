@@ -49,6 +49,18 @@ function approvalAssignments(approver: string, params: unknown[]): string[] {
   return ["status = 'approved'", "approval_status = 'approved'", `approved_by = $${params.length}`, 'approved_at = NOW()'];
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * The cleared approval stamp's approver for the trail event: ids only. approved_by is free text and legacy rows can
+ * hold an email or a name, so only a UUID is logged; anything else is reported as a kind with no value.
+ */
+function previousApproverFields(approvedBy: string | null): Record<string, unknown> {
+  if (approvedBy == null) return { previous_approved_by: null };
+  return UUID_PATTERN.test(approvedBy)
+    ? { previous_approved_by: approvedBy }
+    : { previous_approved_by_kind: 'legacy' };
+}
+
 /**
  * ITIL Controller
  *
@@ -869,7 +881,8 @@ export class ITILController {
           };
           if (before.approved_by != null || before.approved_at != null) {
             clearedStamp = {
-              change_id: id, organization_id: organizationId, previous_approved_by: before.approved_by,
+              change_id: id, organization_id: organizationId,
+              ...previousApproverFields(before.approved_by),
               previous_approved_at: before.approved_at == null ? null : new Date(before.approved_at).toISOString(),
               actor_user_id: (req as AuthenticatedRequest).user?._userId ?? null,
             };
@@ -1066,7 +1079,7 @@ export class ITILController {
   async closeChange(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
-      const { result: changeResult, notes, closedBy } = req.body;
+      const { result: changeResult, notes, closedBy: claimedClosedBy } = req.body;
 
       const outcomeMap: Record<string, string> = {
         SUCCESS: 'successful',
@@ -1076,7 +1089,10 @@ export class ITILController {
       };
       const outcome = outcomeMap[changeResult] ?? null;
 
-      logger.info('Closing change', { id, closedBy });
+      // closed_by is the verified actor; the body's closedBy is only what the caller claimed.
+      logger.info('Closing change', {
+        id, closed_by: (req as AuthenticatedRequest).user?._userId ?? null, claimed_closed_by: claimedClosedBy,
+      });
 
       const pool = this.postgresClient.pool;
       const result = await pool.query(

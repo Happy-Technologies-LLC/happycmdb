@@ -672,7 +672,7 @@ Update a change's status or implementation details.
 
 All fields are optional but at least one must be sent: an empty body answers `400 {"success": false, "error": "Bad Request", "message": "No fields to update"}`. A value outside the limits answers `400 {"success": false, "error": "Bad Request", "message": "Invalid request"}`.
 
-Only the named columns are written, with these status effects. `APPROVED` is accepted only from `draft` or `pending_approval` and stamps `approval_status = approved`, `approved_by` (the verified caller) and `approved_at`, like [POST /changes/:id/approve](#post-changes-id-approve); from any other status it answers `409 CHANGE_NOT_APPROVABLE`. `DRAFT` and `PENDING_APPROVAL` clear `approved_by` and `approved_at` and set `approval_status = pending` in the same statement. That write is conditional on the status and approval stamp read just before it: if an approval (or any other write to those columns) committed in between, nothing is written and the answer is `409 CHANGE_APPROVAL_CHANGED`; reload and retry. When a stamp is cleared the server logs one `Change approval stamp cleared` event carrying ids only (`change_id`, `organization_id`, `previous_approved_by`, `previous_approved_at`, `actor_user_id`). No other status transition is enforced, and `closed` does not stamp `closed_at` (use [POST /changes/:id/close](#post-changes-id-close)).
+Only the named columns are written, with these status effects. `APPROVED` is accepted only from `draft` or `pending_approval` and stamps `approval_status = approved`, `approved_by` (the verified caller) and `approved_at`, like [POST /changes/:id/approve](#post-changes-id-approve); from any other status it answers `409 CHANGE_NOT_APPROVABLE`. `DRAFT` and `PENDING_APPROVAL` clear `approved_by` and `approved_at` and set `approval_status = pending` in the same statement. That write is conditional on the status and approval stamp read just before it: if an approval (or any other write to those columns) committed in between, nothing is written and the answer is `409 CHANGE_APPROVAL_CHANGED`; reload and retry. When a stamp is cleared the server logs one `Change approval stamp cleared` event carrying ids only (`change_id`, `organization_id`, `previous_approved_by`, `previous_approved_at`, `actor_user_id`). `previous_approved_by` is logged only when the stored value is a UUID; a legacy value (an email or a name) is not logged, and the event carries `previous_approved_by_kind: "legacy"` instead. No other status transition is enforced, and `closed` does not stamp `closed_at` (use [POST /changes/:id/close](#post-changes-id-close)).
 
 **Response:**
 
@@ -698,6 +698,7 @@ Only the named columns are written, with these status effects. `APPROVED` is acc
 | 200 | Change updated |
 | 400 | Body failed validation, `Invalid request`, or `No fields to update` |
 | 404 | `Change not found` (unknown id, other organization, or id not a UUID) |
+| 409 | `Conflict`, `code: CHANGE_NOT_APPROVABLE` or `CHANGE_APPROVAL_CHANGED`; nothing is written |
 | 500 | `Failed to update change` |
 
 ---
@@ -779,6 +780,7 @@ Update a change's `status`, `implementedBy` or `actualDuration`. Requires the `w
 | 403 | The credential lacks the `write` permission, or carries no organization claim (`ORGANIZATION_REQUIRED`) |
 | 404 | `Not Found`: no change with this id in the caller's organization |
 | 409 | `Conflict`, `code: CHANGE_NOT_APPROVABLE`: `status` is `APPROVED` and the change is not in `draft` or `pending_approval`; nothing is written |
+| 409 | `Conflict`, `code: CHANGE_APPROVAL_CHANGED`: `status` is `DRAFT` or `PENDING_APPROVAL` and the change's status or approval stamp changed between the read and the write (for example an approval committed in between); nothing is written, reload the change and retry |
 
 ---
 
@@ -874,7 +876,7 @@ Close a change with a result.
 |-------|----------|-------------|
 | `result` | Yes | `SUCCESS`, `PARTIAL_SUCCESS`, `FAILED` or `ROLLED_BACK` |
 | `notes` | No | String, stored as `closure_notes` (`null` when omitted) |
-| `closedBy` | Yes | String, but accepted and not stored: it is only written to the server log (the change row has no `closed_by` column) |
+| `closedBy` | Yes | String, but accepted and not stored: it is only written to the server log as `claimed_closed_by`, next to `closed_by`, the verified caller's user id (the change row has no `closed_by` column) |
 
 **Result Values:**
 

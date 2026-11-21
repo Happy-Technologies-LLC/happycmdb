@@ -28,6 +28,7 @@ jest.mock('@cmdb/database', () => ({
 jest.mock('bcrypt', () => ({}));
 
 import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { logger } from '@cmdb/common';
 import { ITILController } from '../itil.controller';
 
 const ORG_A = '11111111-1111-4111-8111-111111111111';
@@ -236,6 +237,127 @@ describe('moving back to a pre-approval status clears the approval stamp', () =>
     expect(stored['status']).toBe('scheduled');
     expect(stored['approved_by']).toBe('u-1');
     expect(stored['approved_at']).not.toBeNull();
+  });
+
+  it('PATCH to a pre-approval status sets approval_status back to pending in the same write', async () => {
+    const id = await addChange(ORG_A);
+    await approve(U1, id);
+    expect((await row(id))['approval_status']).toBe('approved');
+    const back = await patch(U2, id, { status: 'DRAFT' });
+    expect(back.statusCode).toBe(200);
+    const cleared = await row(id);
+    expect([cleared['status'], cleared['approval_status'], cleared['approved_by'], cleared['approved_at']])
+      .toEqual(['draft', 'pending', null, null]);
+    expect(back.body.data.approval_status).toBe('pending');
+  });
+
+  it('answers 404 for an unknown or another organization change and writes nothing', async () => {
+    const id = await addChange(ORG_A);
+    await approve(U1, id);
+    const before = await row(id);
+    const foreign = await patch({ _userId: 'u-9', _organizationId: ORG_B }, id, { status: 'DRAFT' });
+    expect([foreign.statusCode, foreign.body.message]).toEqual([404, 'Change not found']);
+    const unknown = await patch(U1, '99999999-9999-4999-8999-999999999999', { status: 'DRAFT' });
+    expect(unknown.statusCode).toBe(404);
+    expect(await row(id)).toEqual(before);
+  });
+});
+
+/**
+ * PATCH to a pre-approval status reads the row, then writes conditionally on what it read. `between` runs after the
+ * read and before the write (the window of the race), through the same database.
+ */
+async function patchBetweenReadAndWrite(user: Record<string, unknown>, id: string, body: Record<string, unknown>,
+  between: () => Promise<unknown>) {
+  let interleaved = false;
+  const racing = {
+    query: async (text: string, params: unknown[] = []) => {
+      const result = await pool.query(text, params);
+      if (!interleaved && /SELECT status, approved_by/.test(text)) {
+        interleaved = true;
+        await between();
+      }
+      return result;
+    },
+  };
+  (getPostgresClient as jest.Mock).mockReturnValue({ pool: racing });
+  const out = res();
+  await new ITILController().updateChange(
+    { user, params: { id }, body } as unknown as Request, out as unknown as Response);
+  expect(interleaved).toBe(true);
+  return out;
+}
+
+describe('re-pend racing an approval that commits between its read and its write', () => {
+  it('a re-pend that read pending_approval does not undo an approve that committed first: 409, approval intact', async () => {
+    const id = await addChange(ORG_A);
+    const out = await patchBetweenReadAndWrite(U2, id, { status: 'PENDING_APPROVAL' }, () => approve(U1, id));
+    expect(out.statusCode).toBe(409);
+    expect(out.body.code).toBe('CHANGE_APPROVAL_CHANGED');
+    const stored = await row(id);
+    expect([stored['status'], stored['approval_status'], stored['approved_by']]).toEqual(['approved', 'approved', 'u-1']);
+    expect(stored['approved_at']).not.toBeNull();
+  });
+
+  it('a re-pend of an approved change does not clear a newer approval by the same approver: 409, newer stamp intact', async () => {
+    const id = await addChange(ORG_A);
+    await approve(U1, id);
+    await sql(`UPDATE itil_changes SET approved_at = '${FIXED_APPROVED}' WHERE id = $1`, [id]);
+    const out = await patchBetweenReadAndWrite(U2, id, { status: 'DRAFT' }, async () => {
+      expect((await patch(U2, id, { status: 'PENDING_APPROVAL' })).statusCode).toBe(200);
+      expect((await approve(U1, id)).statusCode).toBe(200);
+    });
+    expect(out.statusCode).toBe(409);
+    const stored = await row(id);
+    expect([stored['status'], stored['approval_status'], stored['approved_by']]).toEqual(['approved', 'approved', 'u-1']);
+    expect((stored['approved_at'] as Date).getTime()).toBeGreaterThan(new Date(FIXED_APPROVED).getTime());
+  });
+
+  it('an approve that lands after the re-pend committed finds a consistent pending row and approves it', async () => {
+    const id = await addChange(ORG_A);
+    await approve(U1, id);
+    expect((await patch(U2, id, { status: 'PENDING_APPROVAL' })).statusCode).toBe(200);
+    expect((await approve(U2, id)).statusCode).toBe(200);
+    const stored = await row(id);
+    expect([stored['status'], stored['approval_status'], stored['approved_by']]).toEqual(['approved', 'approved', 'u-2']);
+  });
+
+  it('a re-pend whose row changed to another status between read and write answers 409 and keeps that status', async () => {
+    const id = await addChange(ORG_A);
+    await approve(U1, id);
+    const out = await patchBetweenReadAndWrite(U2, id, { status: 'DRAFT' },
+      () => sql(`UPDATE itil_changes SET status = 'scheduled' WHERE id = $1`, [id]));
+    expect(out.statusCode).toBe(409);
+    const stored = await row(id);
+    expect([stored['status'], stored['approved_by']]).toEqual(['scheduled', 'u-1']);
+  });
+});
+
+describe('clearing an approval stamp leaves one id-only trail event', () => {
+  const cleared = () => (logger.info as jest.Mock).mock.calls.filter(([message]) => message === 'Change approval stamp cleared');
+  beforeEach(() => { (logger.info as jest.Mock).mockClear(); });
+
+  it('logs change id, org id, previous approver, previous approved_at and actor user id once', async () => {
+    const id = await addChange(ORG_A);
+    await approve(U1, id);
+    await sql(`UPDATE itil_changes SET approved_at = '${FIXED_APPROVED}' WHERE id = $1`, [id]);
+    expect((await patch({ _userId: 'u-2', _username: 'Bob Example', _organizationId: ORG_A }, id,
+      { status: 'PENDING_APPROVAL' })).statusCode).toBe(200);
+    expect(cleared()).toEqual([['Change approval stamp cleared', {
+      change_id: id, organization_id: ORG_A, previous_approved_by: 'u-1',
+      previous_approved_at: FIXED_APPROVED, actor_user_id: 'u-2',
+    }]]);
+  });
+
+  it('logs nothing when there was no stamp to clear, or when the write is refused', async () => {
+    const unstamped = await addChange(ORG_A);
+    expect((await patch(U2, unstamped, { status: 'DRAFT' })).statusCode).toBe(200);
+    const stamped = await addChange(ORG_A);
+    await approve(U1, stamped);
+    const lost = await patchBetweenReadAndWrite(U2, stamped, { status: 'DRAFT' },
+      () => sql(`UPDATE itil_changes SET status = 'scheduled' WHERE id = $1`, [stamped]));
+    expect(lost.statusCode).toBe(409);
+    expect(cleared()).toEqual([]);
   });
 });
 

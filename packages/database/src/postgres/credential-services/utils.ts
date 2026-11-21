@@ -7,19 +7,28 @@
 
 import { MAX_IPV4_LENGTH, MAX_NETWORK_LENGTH } from '@cmdb/common';
 
+/** One octet: 1-3 ASCII digits, no sign, no padding, no leading zero (`010` is refused, not read as 10 or as octal). */
+const IPV4_OCTET = /^(?:0|[1-9]\d{0,2})$/;
+
 /**
  * Convert a dotted-quad IPv4 address to a 32-bit integer, or null when it is not one.
  *
  * The length is checked before anything else, so an oversize string (the match
  * context `ip` is caller-controlled) is refused without a split or any other
- * allocation. It never throws and never logs the input.
+ * allocation. Every octet must match `IPV4_OCTET` before it is parsed, so `1x`,
+ * `+1`, whitespace and leading-zero octets are refused rather than coerced by
+ * `parseInt`. It never throws and never logs the input.
  */
 export function ipToInt(ip: string): number | null {
   if (ip.length > MAX_IPV4_LENGTH) {
     return null;
   }
-  const parts = ip.split('.').map((part) => parseInt(part, 10));
-  if (parts.length !== 4 || parts.some((p) => isNaN(p) || p < 0 || p > 255)) {
+  const octets = ip.split('.');
+  if (octets.length !== 4 || !octets.every((octet) => IPV4_OCTET.test(octet))) {
+    return null;
+  }
+  const parts = octets.map((octet) => parseInt(octet, 10));
+  if (parts.some((p) => p > 255)) {
     return null;
   }
   const p0 = parts[0] ?? 0;

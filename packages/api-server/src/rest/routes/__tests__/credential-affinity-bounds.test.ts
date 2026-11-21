@@ -89,6 +89,8 @@ describe.each(['select', 'match', 'rank'] as const)('%s match-context ip bound',
     ['an ip with a prefix length', '10.0.0.1/8'],
     ['an IPv6 address', '::1'],
     ['a non-address', 'not-an-ip'],
+    ['a leading-zero octet', '010.000.000.001'],
+    ['a single leading-zero octet', '10.0.0.01'],
   ])('refuses %s with 400 before the service is reached', async (_label, ip) => {
     const { send, spy } = calls[route]({ ip });
     expect((await send()).status).toBe(400);

@@ -6,10 +6,9 @@
  * Allows AI to probe HTTP/HTTPS endpoints
  */
 
-import { AxiosError } from 'axios';
 import { DiscoveryTool } from '../types';
 import { logger, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
-import { safeDiscoveryHttp } from './safe-http';
+import { DiscoveryHttpError, safeDiscoveryHttp } from './safe-http';
 
 export const httpProbeTool: DiscoveryTool = {
   name: 'http_probe',
@@ -102,18 +101,17 @@ export const httpProbeTool: DiscoveryTool = {
       return result;
     } catch (error) {
       if (error instanceof Error && error.message === DISCOVERY_TARGET_REFUSED) throw error;
-      const axiosError = error as AxiosError;
 
-      if (axiosError.response) {
+      if (error instanceof DiscoveryHttpError && error.response) {
         // Got response but with error status
         return {
           url,
-          status: axiosError.response.status,
-          statusText: axiosError.response.statusText,
-          headers: axiosError.response.headers,
+          status: error.response.status,
+          statusText: error.response.statusText,
+          headers: error.response.headers,
           error: 'HTTP response error',
         };
-      } else if (axiosError.request) {
+      } else if (error instanceof DiscoveryHttpError) {
         // Request made but no response
         logger.warn('HTTP probe failed - no response', { method: methodLabel });
         throw new Error('No HTTP response');

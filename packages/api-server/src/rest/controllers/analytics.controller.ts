@@ -14,8 +14,8 @@ import {
   assertNoCIGap, CIGapError, CI_GAP_RESPONSE, CIListUnavailableError, CI_LIST_UNAVAILABLE_RESPONSE, readCIList, readSingleCI,
 } from '../../read-admission';
 import { criticalTiersParam } from '../../services/critical-ci';
-import { parseRecentChangesOptions, readRecentChanges } from '../../services/recent-changes.service';
 import { readEstateKpis, readEstateKpiHistory, recordEstateKpiSnapshot } from '../../services/estate-kpi.service';
+import { parseRecentChangesOptions, readRecentChanges } from '../../services/recent-changes.service';
 
 /** readCIList's 10 s budget plus its snapshot and recheck round trips. */
 const TOPOLOGY_DEADLINE_MS = 12_000;
@@ -656,7 +656,7 @@ export class AnalyticsController {
 
       // BW1/BW4/BW5/BW6: definitions live in services/estate-kpi.service.ts. A figure that cannot be computed is null
       // and named in `unavailable`; it never fails the dashboard and is never a placeholder 0.
-      const totalCis = ciCountsResult.records[0]?.get('total_cis')?.toNumber() || 0;
+      const totalCis = (ciCountsResult.records[0]?.get('total_cis')?.toNumber() || 0) as number;
       const estateKpis = await readEstateKpis(session, this.postgresClient, organizationId, totalCis);
 
       // BW7: today's snapshot, then the series and deltas. Fail-open: a history failure never fails the dashboard; it

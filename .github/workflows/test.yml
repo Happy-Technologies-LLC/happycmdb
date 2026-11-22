@@ -156,8 +156,31 @@ jobs:
           cache: 'npm'
       - name: Install dependencies
         run: npm ci
-      - name: Lint the web UI (HAP-1951; the root "npm run lint" is not a gate, see the PR)
+      - name: Lint the web UI (HAP-1951; the backend packages are covered by the report-only backend-lint)
         run: npm run lint --workspace=web-ui
+
+  backend-lint:
+    name: Backend Lint (eslint ratchet, report-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Announce report-only mode
+        run: echo "::warning::backend-lint is report-only until the follow-up gate PR; a red result here does not fail ci-rollup."
+      - name: Lint the backend packages against the committed baseline (HAP-1951, scripts/lint-ratchet.mjs)
+        run: npm run lint
 
   integration-tests:
     name: Integration Tests

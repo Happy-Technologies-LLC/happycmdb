@@ -192,7 +192,7 @@ npm run dev               # Start all services in dev mode
 npm run build             # Build all packages
 npm run test:unit         # Unit tests
 npm run test:integration  # Integration tests (requires Docker services)
-npm run lint              # ESLint
+npm run lint              # ESLint (backend packages, against .eslint-baseline.json; CI job backend-lint is report-only for now)
 npm run format            # Prettier
 ```
 

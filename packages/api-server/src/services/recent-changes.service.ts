@@ -21,7 +21,7 @@ import type { Session } from 'neo4j-driver';
 
 /** The one pg method these reads need; both the pool and a pooled client satisfy it. */
 interface Sql {
-  query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
+  query<R = Record<string, unknown>>(text: string, params?: unknown[]): Promise<{ rows: R[] }>;
 }
 
 export const RECENT_CHANGES_WINDOWS = { '1h': 1, '24h': 24 } as const;
@@ -64,6 +64,17 @@ export function parseRecentChangesOptions(query: Record<string, unknown>): Recen
   return { window: window as RecentChangesWindow, limit };
 }
 
+interface ChangeRow {
+  id: string;
+  ci_id: string;
+  change_type: string;
+  changed_by: string | null;
+  change_source: string;
+  changed_fields: string[] | null;
+  changed_at: Date | string;
+  total: number | string;
+}
+
 export async function readRecentChanges(
   sql: Sql,
   session: Pick<Session, 'run'>,
@@ -71,8 +82,10 @@ export async function readRecentChanges(
   organizationId: string,
   options: { window: RecentChangesWindow; limit: number }
 ): Promise<RecentChanges> {
-  if (incarnations.length === 0) return { window: options.window, total: 0, changes: [] };
-  const result = await sql.query(
+  if (incarnations.length === 0) {
+    return { window: options.window, total: 0, changes: [] };
+  }
+  const result = await sql.query<ChangeRow>(
     `SELECT h.id, h.ci_id, h.change_type, h.changed_by, h.change_source, h.changed_fields, h.changed_at,
             count(*) OVER ()::int AS total
      FROM ci_change_history h
@@ -84,9 +97,11 @@ export async function readRecentChanges(
      LIMIT $4`,
     [organizationId, JSON.stringify(incarnations.map(({ ciId, incarnationId }) => ({ ciId, incarnationId }))),
       RECENT_CHANGES_WINDOWS[options.window], options.limit]);
-  if (result.rows.length === 0) return { window: options.window, total: 0, changes: [] };
+  if (result.rows.length === 0) {
+    return { window: options.window, total: 0, changes: [] };
+  }
 
-  const ciIds = [...new Set(result.rows.map((row: { ci_id: string }) => row.ci_id))];
+  const ciIds = [...new Set(result.rows.map(row => row.ci_id))];
   const described = await session.run(
     `MATCH (ci:CI) WHERE ci.organization_id = $organizationId AND ci.id IN $ciIds
      RETURN ci.id AS ciId, ci.name AS name, coalesce(ci.type, ci.ci_type) AS ciType`,
@@ -98,7 +113,7 @@ export async function readRecentChanges(
   return {
     window: options.window,
     total: Number(result.rows[0].total),
-    changes: result.rows.map((row: Record<string, any>): RecentChange => ({
+    changes: result.rows.map((row): RecentChange => ({
       id: row.id,
       changed_at: new Date(row.changed_at).toISOString(),
       change_type: row.change_type,

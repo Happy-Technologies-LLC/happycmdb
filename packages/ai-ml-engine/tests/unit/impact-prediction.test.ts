@@ -645,6 +645,81 @@ describe('ImpactPredictionEngine', () => {
       expect(session.run).toHaveBeenCalledTimes(1);
       expect(session.run.mock.calls[0][1]).toMatchObject({ ciId: mockCIs.database.id, organizationId: 'org-b' });
     });
+
+    // The route test mocks the engine, so only this test fails if a traversal node pattern loses its tenant predicate.
+    describe('organization predicate of the dependent traversal', () => {
+      type Call = { cypher: string; params: Record<string, unknown> };
+      const recordPreview = async (organizationId: string): Promise<Call[]> => {
+        const calls: Call[] = [];
+        const session = createMockNeo4jSession([]);
+        session.run.mockImplementation(async (cypher: string, params: Record<string, unknown>) => {
+          calls.push({ cypher, params });
+          // The root lookup and the criticality read need a row; every traversal frontier stays empty.
+          const records = /RETURN ci\.id as id/.test(cypher)
+            ? [createMockNeo4jRecord({ id: mockCIs.database.id, name: mockCIs.database.name, ci_type: mockCIs.database.ci_type })]
+            : /RETURN ci\.id as ci_id/.test(cypher)
+              ? [createMockNeo4jRecord({
+                ci_id: mockCIs.database.id, ci_name: mockCIs.database.name,
+                dependent_count: { toNumber: () => 0 }, dependency_count: { toNumber: () => 0 }, dependent_ids: [],
+              })]
+              : [];
+          return { records };
+        });
+        mockNeo4jClient.getSession.mockReturnValue(session);
+        await engine.previewChangeImpact(mockCIs.database.id, ChangeType.FAILOVER, organizationId);
+        return calls;
+      };
+      const ciNodePatterns = (cypher: string) => cypher.match(/\(\s*\w*\s*:CI\b[^)]*\)/g) ?? [];
+      const traversals = (calls: Call[]) => calls.filter(call => /UNWIND \$frontier/.test(call.cypher) && ciNodePatterns(call.cypher).length > 0);
+      const rootLookups = (calls: Call[]) => calls.filter(call => /RETURN ci\.id as id\b/.test(call.cypher) && 'ciId' in call.params);
+
+      it('puts organization_id: $organizationId on every CI node pattern of every traversal statement', async () => {
+        const calls = await recordPreview('org-a');
+        const found = traversals(calls);
+        // Affected-CI walk and critical-path walk.
+        expect(found.length).toBeGreaterThanOrEqual(2);
+        for (const { cypher } of found) {
+          const patterns = ciNodePatterns(cypher);
+          const guarded = patterns.filter(pattern => /\borganization_id:\s*\$organizationId\b/.test(pattern));
+          expect(patterns.length).toBeGreaterThanOrEqual(3);
+          expect(guarded).toEqual(patterns);
+        }
+      });
+
+      it('binds the caller\'s organization, and a different organization binds a different value', async () => {
+        const forA = await recordPreview('org-a');
+        const forB = await recordPreview('org-b');
+        for (const [calls, organization] of [[forA, 'org-a'], [forB, 'org-b']] as const) {
+          const mentioning = calls.filter(call => call.cypher.includes('$organizationId'));
+          // Root lookup + every traversal + criticality read: the floor no longer hides a dropped root predicate.
+          expect(mentioning.length).toBeGreaterThanOrEqual(rootLookups(calls).length + traversals(calls).length + 1);
+          for (const call of mentioning) expect(call.params.organizationId).toBe(organization);
+        }
+        expect(forA[0].params.organizationId).not.toBe(forB[0].params.organizationId);
+      });
+
+      it('guards the seed CI of the root lookup with the caller\'s organization, for two organizations', async () => {
+        for (const organization of ['org-a', 'org-b']) {
+          const calls = await recordPreview(organization);
+          const roots = rootLookups(calls);
+          expect(roots).toHaveLength(1);
+          expect(roots[0].cypher).toMatch(/\(ci:CI \{id: \$ciId\}\)\s*WHERE\s+ci\.organization_id\s*=\s*\$organizationId\b/);
+          // Nothing but whitespace may sit between the predicate and RETURN: an `OR true`, `OR ci.id = $ciId`,
+          // `AND ...` or a second WHERE would reopen the cross-tenant read of the root CI.
+          const clause = /\(ci:CI \{id: \$ciId\}\)\s*WHERE\s+([\s\S]*?)\s+RETURN\s+ci\.id\s+as\s+id\b/.exec(roots[0].cypher)?.[1];
+          expect(clause).toBeDefined();
+          expect(clause!.trim().replace(/\s+/g, ' ')).toBe('ci.organization_id = $organizationId');
+          // The whole statement, anchored at both ends: also rejects a trailing `UNION MATCH (ci:CI {id: $ciId}) RETURN ...`
+          // (a second read of the root CI with no organization predicate), a second MATCH, WITH, OPTIONAL MATCH and `;`.
+          // A legitimate edit of the RETURN column list in the engine fails here by design: the predicate has no real-Neo4j coverage.
+          const statement = roots[0].cypher.trim().replace(/\s+/g, ' ');
+          expect(statement).toMatch(
+            /^MATCH \(ci:CI \{id: \$ciId\}\) WHERE ci\.organization_id = \$organizationId RETURN ci\.id as id, ci\.name as name, ci\.ci_type as ci_type$/
+          );
+          expect(roots[0].params).toMatchObject({ ciId: mockCIs.database.id, organizationId: organization });
+        }
+      });
+    });
   });
 
   describe('change type weight', () => {

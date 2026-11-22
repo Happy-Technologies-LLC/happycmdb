@@ -1,21 +1,30 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import React, { useState } from 'react';
+import React from 'react';
 import { DiscoveryJob, DiscoveryProvider, JobStatus } from '../../services/discovery.service';
 import { useDiscoveryJobs } from '../../hooks/useDiscoveryJobs';
 import DiscoveryJobStatus from './DiscoveryJobStatus';
 import { useDiscovery } from '../../hooks/useDiscovery';
-import { LiquidGlass } from '../ui/liquid-glass';
-import { Badge } from '../ui/badge';
-import { Icon } from '@happy-technologies/design-system';
+import {
+  Badge,
+  Banner,
+  Button,
+  DataTable,
+  NativeSelect,
+  Pagination,
+  ProgressBar,
+  type BadgeVariant,
+  type Column,
+} from '@happy-technologies/design-system';
+import { QueryState } from '@/components/estate/SurfaceState';
 
-const STATUS_CONFIG: Record<JobStatus, { variant: 'default' | 'secondary' | 'destructive' | 'outline'; label: string }> = {
-  pending: { variant: 'outline', label: 'Pending' },
-  running: { variant: 'default', label: 'Running' },
-  completed: { variant: 'secondary', label: 'Completed' },
-  failed: { variant: 'destructive', label: 'Failed' },
-  cancelled: { variant: 'outline', label: 'Cancelled' },
+const STATUS_CONFIG: Record<JobStatus, { variant: BadgeVariant; label: string }> = {
+  pending: { variant: 'neutral', label: 'Pending' },
+  running: { variant: 'info', label: 'Running' },
+  completed: { variant: 'success', label: 'Completed' },
+  failed: { variant: 'danger', label: 'Failed' },
+  cancelled: { variant: 'neutral', label: 'Cancelled' },
 };
 
 const PROVIDERS: DiscoveryProvider[] = ['nmap', 'ssh', 'active-directory', 'snmp'];
@@ -24,18 +33,17 @@ const STATUSES: JobStatus[] = ['pending', 'running', 'completed', 'failed', 'can
 export const DiscoveryJobList: React.FC = () => {
   const {
     jobs,
-    total,
     page,
     totalPages,
     loading,
+    error,
+    loadJobs,
     setFilters,
     setPage,
     filters,
   } = useDiscoveryJobs({}, true);
 
   const { retryJob, cancelJob } = useDiscovery();
-  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
-  const [showDefinitionFilter, setShowDefinitionFilter] = useState(false);
 
   const handleProviderChange = (providers: string[]) => {
     setFilters({
@@ -58,10 +66,6 @@ export const DiscoveryJobList: React.FC = () => {
     });
   };
 
-  const handleRowClick = (jobId: string) => {
-    setExpandedJobId(expandedJobId === jobId ? null : jobId);
-  };
-
   // Get unique definition names from jobs for filter
   const uniqueDefinitions = Array.from(
     new Map(
@@ -71,37 +75,70 @@ export const DiscoveryJobList: React.FC = () => {
     ).entries()
   ).map(([id, name]) => ({ id, name }));
 
-  const formatLabel = (value: string) => {
-    return value
-      .split('-')
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-  };
+  const columns: Array<Column<DiscoveryJob>> = [
+    { header: 'Job ID', render: (job) => <span className="hh-mono text-sm">{job.id}</span> },
+    {
+      header: 'Definition',
+      render: (job) =>
+        job.definitionName ? (
+          <span className="text-sm font-medium">{job.definitionName}</span>
+        ) : (
+          <span className="text-sm italic text-[var(--hh-text-muted)]">Ad-hoc</span>
+        ),
+    },
+    { header: 'Provider', render: (job) => <Badge variant="neutral">{job.provider.toUpperCase()}</Badge> },
+    {
+      header: 'Status',
+      render: (job) => (
+        <Badge variant={STATUS_CONFIG[job.status].variant} dot>
+          {STATUS_CONFIG[job.status].label}
+        </Badge>
+      ),
+    },
+    {
+      header: 'Progress',
+      render: (job) => (
+        <div className="flex w-full max-w-[150px] items-center gap-2">
+          <ProgressBar value={job.progress} aria-label={`Progress of job ${job.id}`} />
+          <span className="text-xs">{job.progress}%</span>
+        </div>
+      ),
+    },
+    // A job that reports no count shows a dash, not a zero.
+    { header: 'CIs', render: (job) => <span className="text-sm font-medium">{job.discoveredCIs ?? '\u2013'}</span> },
+    {
+      header: 'Created',
+      render: (job) => (
+        <span className="text-sm text-[var(--hh-text-muted)]">{new Date(job.createdAt).toLocaleString()}</span>
+      ),
+    },
+  ];
 
   return (
-    <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
+    <div className="space-y-4">
       {/* Filters */}
-      <div className="p-4 flex flex-wrap gap-3 items-center border-b border-border/50">
-        <div className="relative min-w-[150px]">
-          <Icon name="funnel" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <select
-            value={filters.provider || 'all'}
-            onChange={(e) => handleProviderChange(e.target.value === 'all' ? [] : [e.target.value])}
-            className="w-full pl-10 pr-8 py-2 border border-input rounded-md text-sm appearance-none bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            <option value="all">All Providers</option>
-            {PROVIDERS.map((provider) => (
-              <option key={provider} value={provider}>
-                {provider.toUpperCase()}
-              </option>
-            ))}
-          </select>
-        </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <NativeSelect
+          size="sm"
+          aria-label="Filter by provider"
+          containerClassName="min-w-[150px]"
+          value={filters.provider || 'all'}
+          onChange={(e) => handleProviderChange(e.target.value === 'all' ? [] : [e.target.value])}
+        >
+          <option value="all">All Providers</option>
+          {PROVIDERS.map((provider) => (
+            <option key={provider} value={provider}>
+              {provider.toUpperCase()}
+            </option>
+          ))}
+        </NativeSelect>
 
-        <select
+        <NativeSelect
+          size="sm"
+          aria-label="Filter by status"
+          containerClassName="min-w-[150px]"
           value={filters.status || 'all'}
           onChange={(e) => handleStatusChange(e.target.value === 'all' ? [] : [e.target.value])}
-          className="min-w-[150px] px-3 py-2 border border-input rounded-md text-sm appearance-none bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
         >
           <option value="all">All Statuses</option>
           {STATUSES.map((status) => (
@@ -109,13 +146,15 @@ export const DiscoveryJobList: React.FC = () => {
               {STATUS_CONFIG[status].label}
             </option>
           ))}
-        </select>
+        </NativeSelect>
 
         {uniqueDefinitions.length > 0 && (
-          <select
+          <NativeSelect
+            size="sm"
+            aria-label="Filter by definition"
+            containerClassName="min-w-[200px]"
             value={filters.definitionId || 'all'}
             onChange={(e) => handleDefinitionFilterChange(e.target.value)}
-            className="min-w-[200px] px-3 py-2 border border-input rounded-md text-sm appearance-none bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
           >
             <option value="all">All Definitions</option>
             {uniqueDefinitions.map((def) => (
@@ -123,133 +162,42 @@ export const DiscoveryJobList: React.FC = () => {
                 {def.name}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         )}
       </div>
 
-      {/* Table */}
-      <div className="overflow-x-auto">
-        <table className="w-full">
-          <thead className="bg-muted/30 border-b border-border/50">
-            <tr>
-              <th className="px-4 py-3 text-left w-[50px]"></th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Job ID</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Definition</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Provider</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Status</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Progress</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">CIs</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">Created</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border/30">
-            {!jobs || jobs.length === 0 ? (
-              <tr>
-                <td colSpan={8} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                  No jobs found
-                </td>
-              </tr>
-            ) : (
-              jobs.map((job) => (
-                <React.Fragment key={job.id}>
-                  <tr
-                    className="hover:bg-muted/50 cursor-pointer transition-colors"
-                    onClick={() => handleRowClick(job.id)}
-                  >
-                    <td className="px-4 py-3">
-                      <Icon
-                        name="caret-down"
-                        size={16}
-                        className={`text-muted-foreground transition-transform ${
-                          expandedJobId === job.id ? 'rotate-180' : ''
-                        }`}
-                      />
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="font-mono text-sm text-foreground">
-                        {job.id}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      {job.definitionName ? (
-                        <span className="text-sm font-medium text-foreground">{job.definitionName}</span>
-                      ) : (
-                        <span className="text-sm text-muted-foreground italic">Ad-hoc</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge variant="outline">{job.provider.toUpperCase()}</Badge>
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge variant={STATUS_CONFIG[job.status].variant}>
-                        {STATUS_CONFIG[job.status].label}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2 w-full max-w-[150px]">
-                        <div className="flex-1 h-2 bg-line-soft rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-sky transition-all"
-                            style={{ width: `${job.progress}%` }}
-                          />
-                        </div>
-                        <span className="text-xs text-foreground">{job.progress}%</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="text-sm font-medium text-foreground">{job.discoveredCIs}</span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="text-sm text-muted-foreground">
-                        {new Date(job.createdAt).toLocaleString()}
-                      </span>
-                    </td>
-                  </tr>
-                  {expandedJobId === job.id && (
-                    <tr className="animate-in fade-in-0 slide-in-from-top-2 duration-200">
-                      <td colSpan={8} className="p-0 bg-muted/30">
-                        <div className="w-full">
-                          <DiscoveryJobStatus
-                            job={job}
-                            onRetry={retryJob}
-                            onCancel={cancelJob}
-                          />
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </React.Fragment>
-              ))
+      {loading && jobs.length === 0 ? (
+        <QueryState what="discovery jobs" loading />
+      ) : error && jobs.length === 0 ? (
+        <QueryState what="discovery jobs" error={new Error(error)} onRetry={loadJobs} />
+      ) : (
+        <>
+          {error && (
+            <Banner tone="danger" icon="warning-circle">
+              Could not load discovery jobs: {error}{' '}
+              <Button size="sm" variant="secondary" onClick={loadJobs}>
+                Try again
+              </Button>
+            </Banner>
+          )}
+          <DataTable
+            rows={jobs}
+            columns={columns}
+            rowKey={(job) => job.id}
+            emptyLabel="No jobs found"
+            caption="Discovery jobs"
+            renderExpanded={(job) => (
+              <DiscoveryJobStatus job={job} onRetry={retryJob} onCancel={cancelJob} />
             )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="px-4 py-3 flex items-center justify-between border-t border-border/50">
-          <p className="text-sm text-foreground">
-            Page {page} of {totalPages}
-          </p>
-          <div className="flex gap-1">
-            <button
-              onClick={() => setPage(Math.max(1, page - 1))}
-              disabled={page === 1}
-              className="px-3 py-1 border border-input rounded text-sm bg-background text-foreground hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Previous
-            </button>
-            <button
-              onClick={() => setPage(Math.min(totalPages, page + 1))}
-              disabled={page === totalPages}
-              className="px-3 py-1 border border-input rounded text-sm bg-background text-foreground hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Next
-            </button>
-          </div>
-        </div>
+            footer={
+              totalPages > 1 ? (
+                <Pagination page={page} pageCount={totalPages} onChange={setPage} />
+              ) : undefined
+            }
+          />
+        </>
       )}
-    </LiquidGlass>
+    </div>
   );
 };
 

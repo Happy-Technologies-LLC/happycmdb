@@ -242,12 +242,17 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
 }
 
 let holdIncarnationRead: (() => Promise<void>) | undefined;
+// Every statement the fake session receives, and an error the next statements throw (cm-fu-ci-list-sort-by-whitelist-400).
+const runLog: string[] = [];
+let runFailure: Error | undefined;
 let incarnationRunTimeout: number | undefined;
 const fakeDriver = {
   session: () => ({
     // Plain functions (not jest.fn): the unit config resets mock implementations.
     run: async (cypher: string, params?: Props, config?: { timeout: number }) => {
       queryCount++;
+      runLog.push(cypher.replace(/\s+/g, ' ').trim());
+      if (runFailure) throw runFailure;
       if (cypher.includes('SET ci.incarnation_id = coalesce(')) incarnationRunTimeout = config?.timeout;
       if (cypher.includes('AS incarnationId') && !cypher.includes('ci.id > $afterId')) await holdIncarnationRead?.();
       return { records: run(cypher, params) };
@@ -386,11 +391,12 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 }));
 
 // Imported after mocks are registered (jest hoists jest.mock).
-import { loadConfig } from '@cmdb/common';
+import { loadConfig, logger, VALID_CI_SORT_FIELDS } from '@cmdb/common';
 import { getImpactPredictionEngine } from '@cmdb/ai-ml-engine';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { ciRoutes } from '../ci.routes';
+import { CIController } from '../../controllers/ci.controller';
 import { IMPACT_LINEAGE_TIMEOUT_MS, MAX_IMPACT_LINEAGE_TIMEOUT_MS, impactLineageTimeoutMs } from '../../impact-envelope';
 import { itilRoutes } from '../itil.routes';
 import { driftRoutes, impactRoutes, askRoutes } from '../drift-impact.routes';
@@ -1207,7 +1213,7 @@ describe('/api/v1/cis tenant scoping', () => {
       const preview = (value: unknown = predicted()) => jest.spyOn(getImpactPredictionEngine(), 'previewChangeImpact')
         .mockResolvedValue(value as never);
 
-      it('streams the impact answer for a CI of the caller as happy-ui/v1 JSON Lines, failover by default, storing nothing', async () => {
+      it('streams the impact answer for a CI of the caller as happy-ui/v1 JSON Lines, failover by default, via the preview method and without storing a prediction', async () => {
         const previewed = preview();
         const stored = jest.spyOn(getImpactPredictionEngine(), 'predictChangeImpact');
         await ciRow('ci-a-db', ORG_A);
@@ -1438,6 +1444,83 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(queryCount).toBe(0);
     expect(auditHistoryReads).toBe(0);
     expect(graph.nodes.has('ci-legacy')).toBe(true);
+  });
+});
+
+describe('GET /cis sort_by whitelist (cm-fu-ci-list-sort-by-whitelist-400)', () => {
+  const listPage = () => runLog.filter(statement => statement.includes(' RETURN ci ORDER BY '));
+  const orderBy = (statement: string) => statement.match(/ORDER BY (ci\.\w+) (ASC|DESC), ci\.id/)?.slice(1, 3);
+  beforeEach(() => { runLog.length = 0; });
+  afterEach(() => { runFailure = undefined; jest.restoreAllMocks(); });
+
+  it.each(['hostname', 'created', 'name;DROP', 'name DESC', 'NAME', 'ci.name'])(
+    'sort_by=%s is a 400 from the route and never reaches the graph', async value => {
+      const error = jest.spyOn(logger, 'error');
+      const res = await request(app).get('/api/v1/cis').query({ sort_by: value }).set(AS_A);
+      expect(res.status).toBe(400);
+      // validateOptional's body, unchanged: its keys carry a leading underscore.
+      expect(res.body).toMatchObject({ _success: false, _error: 'Validation Error', _details: [{ _field: 'sort_by', _type: 'any.only' }] });
+      expect(listPage()).toEqual([]);
+      expect(error).not.toHaveBeenCalled();
+    });
+
+  it('an empty sort_by is a 400 (Joi rejects the empty string)', async () => {
+    const res = await request(app).get('/api/v1/cis?sort_by=').set(AS_A);
+    expect(res.status).toBe(400);
+    expect(listPage()).toEqual([]);
+  });
+
+  it('a repeated sort_by is a 400', async () => {
+    const res = await request(app).get('/api/v1/cis?sort_by=name&sort_by=type').set(AS_A);
+    expect(res.status).toBe(400);
+  });
+
+  it.each([...VALID_CI_SORT_FIELDS])('sort_by=%s is a 200 and orders by that field', async field => {
+    const res = await request(app).get('/api/v1/cis').query({ sort_by: field }).set(AS_A);
+    expect(res.status).toBe(200);
+    expect(listPage().map(orderBy)).toEqual([[`ci.${field}`, 'ASC']]);
+  });
+
+  it('without sort_by the list orders by name ascending', async () => {
+    const res = await request(app).get('/api/v1/cis').set(AS_A);
+    expect(res.status).toBe(200);
+    expect(listPage().map(orderBy)).toEqual([['ci.name', 'ASC']]);
+  });
+
+  it('sort_order=desc is honoured and sort_order=up is a 400', async () => {
+    const desc = await request(app).get('/api/v1/cis?sort_by=type&sort_order=desc').set(AS_A);
+    expect(desc.status).toBe(200);
+    expect(listPage().map(orderBy)).toEqual([['ci.type', 'DESC']]);
+    runLog.length = 0;
+    const up = await request(app).get('/api/v1/cis?sort_order=up').set(AS_A);
+    expect(up.status).toBe(400);
+    expect(listPage()).toEqual([]);
+  });
+
+  it('the handler alone answers a non-whitelisted sort_by with a 400, no error log and no graph session', async () => {
+    const error = jest.spyOn(logger, 'error');
+    const session = jest.spyOn(neo4jClient, 'getSession');
+    const before = queryCount;
+    const json = jest.fn();
+    const res = { status: jest.fn(() => ({ json })), json };
+    const req = { query: { sort_by: 'hostname' }, user: { _organizationId: ORG_A } };
+    await new CIController().getAllCIs(req as never, res as never);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(json).toHaveBeenCalledWith({
+      success: false, error: 'Bad Request', message: expect.stringContaining('Invalid sort field: hostname'),
+    });
+    expect(error).not.toHaveBeenCalled();
+    expect(session).not.toHaveBeenCalled();
+    expect(queryCount).toBe(before);
+  });
+
+  it('an unrelated failure of the list read is still a logged 500', async () => {
+    const error = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    runFailure = new Error('neo4j unavailable');
+    const res = await request(app).get('/api/v1/cis?sort_by=name').set(AS_A);
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ success: false, error: 'Failed to retrieve CIs', message: 'Internal error' });
+    expect(error).toHaveBeenCalledTimes(1);
   });
 });
 

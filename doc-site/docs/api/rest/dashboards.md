@@ -33,7 +33,7 @@ See [Authentication Guide](/api/authentication) for JWT token generation.
 
 ### Tenancy
 
-- Every `/api/v1/dashboards/*` endpoint requires an organization claim on the token. A token without one gets `403 {"_error":"Forbidden","_message":"Organization claim required"}` before any data is read. The organization always comes from the token, never from request parameters.
+- Every `/api/v1/dashboards/*` endpoint requires an organization claim on the token. A token without one gets `403 {"success":false,"error":"Forbidden","message":"Organization claim required","_error":"Forbidden","_message":"Organization claim required","code":"ORGANIZATION_REQUIRED"}` before any data is read; read `code`, show `message` (every refusal built by the role-contract middleware carries `code`). The organization always comes from the token, never from request parameters.
 - Every dashboard is computed only from your organization's CIs (`:CI.organization_id`); dependency traversals never pass through or return another organization's CI.
 - `GET /business-service/:serviceId` (and `?serviceId=`) only covers business services your organization owns (`dim_business_services.organization_id`). Another organization's service, a missing service, and an owned id whose Neo4j `:BusinessService` node belongs to another organization or has no `organization_id` return the same `404 {"success":false,"error":"Not Found","message":"Business service not found"}`. An owned service with no `:BusinessService` node is served from your organization's CIs.
 - Business-service dependency graphs use at most three undirected, organization-scoped hops, 100 distinct CIs, and 400 adjacency rows. Each Neo4j statement has a five-second transaction timeout; the mounted endpoint admits at most one active dashboard analysis per principal and two per tenant, with rate and five-second deadline protection. A graph exceeding its budget returns `503 {"success":false,"error":"CI traversal resource limit exceeded"}` rather than a partial graph; admission refusal returns HTTP 429.
@@ -48,7 +48,7 @@ Get Executive Dashboard summary data for strategic IT leadership.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `days` | number | No | 30 | Time range in days (7, 30, 90, 365) |
+| `days` | number | No | 30 | Time range in days: an integer from 1 to 3650; anything else is `400`. The dashboards UI offers 7, 30, 90 and 365 |
 
 **Example Request:**
 
@@ -194,7 +194,7 @@ Get CIO Dashboard operational metrics for IT leadership.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `days` | number | No | 30 | Time range in days |
+| `days` | number | No | 30 | Time range in days: an integer from 1 to 3650; anything else is `400` |
 
 **Example Request:**
 
@@ -397,7 +397,7 @@ Get FinOps Dashboard data for cost optimization and financial operations.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `days` | number | No | 30 | Time range in days |
+| `days` | number | No | 30 | Time range in days: an integer from 1 to 3650; anything else is `400` |
 
 **Example Request:**
 
@@ -669,11 +669,25 @@ All endpoints return errors in this format:
 }
 ```
 
+A rejected `days` is answered before any dashboard work starts, with the validation error format:
+
+```json
+{
+  "_success": false,
+  "_error": "Validation Error",
+  "_message": "\"days\" must be less than or equal to 3650",
+  "_details": [
+    { "_field": "days", "_message": "\"days\" must be less than or equal to 3650", "_type": "number.max" }
+  ]
+}
+```
+
 **HTTP Status Codes:**
 
 | Code | Meaning | Common Cause |
 |------|---------|--------------|
 | 200 | Success | Data fetched successfully |
+| 400 | Validation Error | `days` on `/executive`, `/cio` or `/finops` is not an integer from 1 to 3650 (zero, negative, fractional, empty, non-numeric, repeated or too large) |
 | 401 | Unauthorized | Missing or invalid JWT token |
 | 403 | Forbidden | Token has no organization claim |
 | 404 | Not Found | `business-service/:serviceId` is not a service your organization owns |

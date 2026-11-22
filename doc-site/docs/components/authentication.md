@@ -165,8 +165,9 @@ removing a user's organization takes effect immediately. Request bodies can neve
 Refresh tokens are accepted only by the refresh endpoint; as a bearer token they get **401**.
 
 - `/api/v1/business-services/**` and `/api/v1/architecture/business-services/:serviceId/analysis`
-  return **403** `{"_error":"Forbidden","_message":"Organization claim required"}` when the
-  user has no organization or it is not a UUID. The check runs before any data access.
+  return **403** `{"success":false,"error":"Forbidden","message":"Organization claim required","_error":"Forbidden","_message":"Organization claim required","code":"ORGANIZATION_REQUIRED"}`
+  when the user has no organization or it is not a UUID; every refusal built by the role-contract
+  middleware carries `code`, so read `code` and show `message`. The check runs before any data access.
 - Reads and writes only see rows whose `dim_business_services.organization_id`
   equals the tenant. Another organization's service returns the same **404**
   as a service that does not exist.
@@ -230,6 +231,88 @@ packages/api-server/src/scripts/identity-window.ts assign-organization --user-id
   the user's existing access token or API key acts in the new organization. Every enabled API key
   of the user gains it at once; `enabledApiKeys` counts them, so you can decide whether to revoke
   them with the operator rotation.
+
+### TLS for the operator tools
+
+The operator tools drop the API server's own `POSTGRES_SSL_*` and `NEO4J_*` TLS variables before any
+client exists, so `POSTGRES_SSL_CA_FILE`, `NEO4J_ENCRYPTED` and the rest have no effect on them. Each
+tool reads only its own variables: prefix `CMDB_ROTATE` (the rotation and the identity window) or
+`CMDB_BACKFILL` (the organization backfill). `migrate-legacy-discovery-definitions` uses
+`CMDB_MIGRATION_POSTGRES_SSL` and accepts only `verify-full` off loopback. The tenant fixture seed has
+no such variable (loopback databases only).
+
+| Variable | Values | Unset |
+|----------|--------|-------|
+| `<PREFIX>_POSTGRES_SSL` | `verify-full`, `require`, `disable` | Refused for a non-loopback host; plaintext on loopback |
+| `<PREFIX>_POSTGRES_SSL_CA_FILE` | Path to a PEM CA bundle; needs `<PREFIX>_POSTGRES_SSL=verify-full` | The built-in public CA store (plus `NODE_EXTRA_CA_CERTS`) |
+| `<PREFIX>_NEO4J_ENCRYPTED` | `true`, `false` | Refused for a non-loopback host and for any `neo4j://` URI; plaintext only for `bolt://` to loopback |
+
+**A non-loopback host needs an explicit setting.** Loopback is `127.0.0.0/8`, `::1`, `localhost` and (Postgres
+only) a Unix socket directory; anything else, including `localhost.example`, `0.0.0.0` and
+`::ffff:127.0.0.1`, is remote. For a remote host an unset `<PREFIX>_POSTGRES_SSL` or
+`<PREFIX>_NEO4J_ENCRYPTED` makes the tool exit 1 before any connection opens, naming the variable. A
+`neo4j://` (routing) URI counts as remote even for `localhost`: the driver dials the hosts the server's
+routing table advertises, so a tunnel to a loopback port can still send credentials in plaintext to another
+host. Only a direct `bolt://` URI to loopback may leave `<PREFIX>_NEO4J_ENCRYPTED` unset. Plaintext
+to a remote host is possible only by spelling it out, `<PREFIX>_POSTGRES_SSL=disable` or
+`<PREFIX>_NEO4J_ENCRYPTED=false`; the tool then logs a warning that the connection is not encrypted. Use it
+only on a private network you control. `<PREFIX>_POSTGRES_SSL=require` to a remote host also logs a warning
+(the connection is encrypted but the server certificate is not verified). Warnings name the variable only.
+
+**Trusting a private Postgres CA.**
+
+- `verify-full` checks the certificate chain and host name against Node's built-in public CA store.
+  A database whose certificate was issued by a private CA fails with a certificate error
+  (`UNABLE_TO_VERIFY_LEAF_SIGNATURE`) until that CA is trusted.
+- Preferred: set `CMDB_ROTATE_POSTGRES_SSL_CA_FILE` (or `CMDB_BACKFILL_POSTGRES_SSL_CA_FILE`) to the CA
+  bundle. The file is read at start and handed to the client with `rejectUnauthorized: true`, so **only** that
+  bundle is trusted for the database, and nothing else in the process (Neo4j included) is affected. Fail-closed:
+  a missing, unreadable or empty file, or a CA file next to any mode other than `verify-full`, makes the tool
+  exit 1 before connecting. The file must hold CA certificates only, never a private key.
+- Alternative: set `NODE_EXTRA_CA_CERTS=/path/to/ca.pem`. Node reads it once at process start and **adds** the
+  CA to the built-in store; it does not replace the store, and it applies to **every** TLS connection of the
+  process, the Neo4j connection included. It works for every tool, `migrate-legacy-discovery-definitions`
+  included. Set it on the single command, not with `export` in the shell or a profile, so no other process
+  inherits it.
+- Check the CA file before using it, on either route. Do the three steps in this order, and stop without using
+  the file if any fails. Get the expected fingerprint out of band (from the database operator, not from the
+  same host or channel that gave you the file):
+  1. `grep -c -- '-----BEGIN' ca.pem` must print `1`, **and**
+     `openssl crl2pkcs7 -nocrl -certfile ca.pem | openssl pkcs7 -print_certs -noout | grep -c '^subject='`
+     must print `1`.
+  2. `openssl x509 -noout -fingerprint -sha256 -in ca.pem` must equal the expected fingerprint.
+  3. `openssl x509 -noout -ext basicConstraints -in ca.pem` must show `CA:TRUE`.
+
+  Step 1 is not optional, and both of its checks are needed. `openssl x509` reads only the **first**
+  certificate in a file, but both routes trust **every** certificate in it: `_POSTGRES_SSL_CA_FILE` passes the
+  whole file as the client's `ca`, and `NODE_EXTRA_CA_CERTS` adds all of it to the store. A file with the real
+  CA first and an attacker's CA second passes step 2 and still makes the tool trust the attacker's CA; under
+  `verify-full` that attacker can impersonate Postgres (and, with `NODE_EXTRA_CA_CERTS`, Neo4j) and receive the
+  privileged `CMDB_ROTATE_*` / `CMDB_BACKFILL_*` passwords. OpenSSL accepts more than one PEM label for a
+  certificate (for example the legacy `-----BEGIN X509 CERTIFICATE-----`), so a count of one label proves
+  nothing. The `-----BEGIN` count covers every PEM block of any label (it can only overcount, which fails
+  safe); the `subject=` count covers every certificate OpenSSL actually parses, whatever its label.
+- The CA file must be owned by the operator running the tool, mode `0644` or stricter, in a directory
+  that other users cannot write to, and never under `/tmp`. Anyone who can replace the file can make the
+  tool trust their own CA.
+- Do not fall back to `require`: it encrypts the connection but does **not** verify the server
+  certificate, so it gives no protection against an impersonated database.
+- With `verify-full` the tools pass `rejectUnauthorized: true` explicitly, with or without a CA file. That wins
+  over `NODE_TLS_REJECT_UNAUTHORIZED=0` and over `PGSSLMODE` in the environment (pg reads `PGSSLMODE` only when
+  no `ssl` option is given). The API server's `POSTGRES_SSL_*` variables are dropped before any client exists.
+  The `verify-full` override is Postgres only: `require` and `disable` do not verify. Neo4j needs none: the
+  Neo4j driver sets `rejectUnauthorized: false` on its socket but then checks `socket.authorized` itself and
+  refuses an unauthorized socket (with the system-CA trust strategy the operator tools use), so
+  `NODE_TLS_REJECT_UNAUTHORIZED=0` does not weaken the Neo4j connection either. The `TRUST_ALL_CERTIFICATES`
+  strategy does not check `socket.authorized`, so it has no such protection. What can still change the Neo4j
+  connection is trust, not verification: `NODE_EXTRA_CA_CERTS` adds its CA to the store Neo4j verifies against
+  (see above); `NODE_TLS_REJECT_UNAUTHORIZED=0` does not.
+
+```bash
+CMDB_ROTATE_POSTGRES_SSL=verify-full CMDB_ROTATE_POSTGRES_SSL_CA_FILE=/path/to/ca.pem \
+  CMDB_ROTATE_NEO4J_ENCRYPTED=true \
+  node packages/api-server/dist/tenant-fixture/api-server/src/scripts/rotate-user-password.js ...
+```
 
 ### Neo4j `:BusinessService.organization_id`
 
@@ -548,7 +631,8 @@ trends, and the 011-aware ETL fails its `cmdb.dim_ci` reads and writes.
 Neo4j `:CI` nodes carry an `organization_id` property, set only from the token's
 organization when a CI is created through `POST /api/v1/cis` or GraphQL `createCI`.
 
-- Every `/api/v1/cis/**` route returns **403** `{"_error":"Forbidden","_message":"Organization claim required"}`
+- Every `/api/v1/cis/**` route returns the same **403** `ORGANIZATION_REQUIRED` body as the
+  [business-services example](#tenant-scoping-organization-claim) above
   without an organization claim, before any Neo4j query.
 - List, search, read, update, delete, relationships, dependencies, impact and audit
   history only match CIs whose `organization_id` equals the tenant. Another

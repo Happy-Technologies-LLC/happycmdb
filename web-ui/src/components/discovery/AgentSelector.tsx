@@ -3,17 +3,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { apiClient } from '@/lib/api-client';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { Label } from '@/components/ui/label';
-import { Badge } from '@/components/ui/badge';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Icon } from '@happy-technologies/design-system';
+import { Badge, Banner, Button, FieldList, Select } from '@happy-technologies/design-system';
 import { logClientError } from '@/utils/logger';
 
 interface Agent {
@@ -43,6 +33,8 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
 }) => {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [recommendedAgent, setRecommendedAgent] = useState<string | null>(null);
 
   useEffect(() => {
@@ -67,9 +59,12 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
         },
       });
       setAgents(response.data || []);
+      setLoadFailed(false);
     } catch (err) {
+      setLoadFailed(true);
       logClientError('Error fetching agents:', err);
     } finally {
+      setLoaded(true);
       setLoading(false);
     }
   };
@@ -97,119 +92,93 @@ export const AgentSelector: React.FC<AgentSelectorProps> = ({
 
   const activeAgents = agents.filter((a) => a.status === 'active');
 
+  const networkSummary = (agent: Agent) =>
+    agent.reachable_networks.slice(0, 2).join(', ') +
+    (agent.reachable_networks.length > 2 ? ` +${agent.reachable_networks.length - 2} more` : '');
+
+  const options = [
+    { value: 'auto', label: `Auto-select (Smart Routing)${recommendedAgent ? ' - Recommended' : ''}` },
+    ...activeAgents.map((agent) => ({
+      value: agent.agent_id,
+      label: `${agent.hostname}${agent.agent_id === recommendedAgent ? ' (Best Match)' : ''} [${networkSummary(agent)}]`,
+    })),
+  ];
+
+  const selectedAgent =
+    selectedAgentId && selectedAgentId !== 'auto'
+      ? agents.find((a) => a.agent_id === selectedAgentId)
+      : undefined;
+
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <Label htmlFor="agent-selector" className="flex items-center gap-2">
-          <Icon name="computer-tower" size={16} />
-          Discovery Agent
-        </Label>
-
         <Select
+          id="agent-selector"
+          label="Discovery Agent"
           value={selectedAgentId || 'auto'}
-          onValueChange={(value) => {
+          onChange={(value) => {
             onAgentChange(value === 'auto' ? undefined : value);
           }}
+          options={options}
           disabled={loading}
-        >
-          <SelectTrigger id="agent-selector">
-            <SelectValue placeholder="Select an agent..." />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="auto">
-              <div className="flex items-center gap-2">
-                <Icon name="sparkle" size={16} />
-                Auto-select (Smart Routing)
-                {recommendedAgent && (
-                  <Badge variant="outline" className="ml-2 text-xs">
-                    Recommended
-                  </Badge>
-                )}
-              </div>
-            </SelectItem>
-
-            {activeAgents.length > 0 && (
-              <>
-                <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">
-                  Available Agents
-                </div>
-                {activeAgents.map((agent) => (
-                  <SelectItem key={agent.agent_id} value={agent.agent_id}>
-                    <div className="flex flex-col">
-                      <div className="flex items-center gap-2">
-                        {agent.hostname}
-                        {agent.agent_id === recommendedAgent && (
-                          <Badge variant="secondary" className="text-xs">
-                            Best Match
-                          </Badge>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
-                        <Icon name="graph" size={12} />
-                        {agent.reachable_networks.slice(0, 2).join(', ')}
-                        {agent.reachable_networks.length > 2 && (
-                          <span>+{agent.reachable_networks.length - 2} more</span>
-                        )}
-                      </div>
-                    </div>
-                  </SelectItem>
-                ))}
-              </>
-            )}
-          </SelectContent>
-        </Select>
+          hint={loading ? 'Loading agents…' : undefined}
+        />
 
         {selectedAgentId === undefined && (
-          <Alert className="mt-2">
-            <Icon name="sparkle" size={16} />
-            <AlertDescription>
-              <strong>Smart Routing Enabled:</strong> The system will automatically
-              select the best agent based on network reachability and performance.
-              {recommendedAgent && (
-                <div className="mt-1 text-sm">
-                  Recommended agent:{' '}
-                  <code className="text-xs bg-muted px-1 py-0.5 rounded">
-                    {agents.find((a) => a.agent_id === recommendedAgent)?.hostname ||
-                      recommendedAgent}
-                  </code>
-                </div>
-              )}
-            </AlertDescription>
-          </Alert>
+          <Banner tone="info" icon="sparkle" className="mt-2">
+            <strong>Smart Routing Enabled:</strong> The system will automatically
+            select the best agent based on network reachability and performance.
+            {recommendedAgent && (
+              <span className="mt-1 block text-sm">
+                Recommended agent:{' '}
+                <code className="hh-mono text-xs">
+                  {agents.find((a) => a.agent_id === recommendedAgent)?.hostname ||
+                    recommendedAgent}
+                </code>
+              </span>
+            )}
+          </Banner>
         )}
 
-        {activeAgents.length === 0 && (
-          <Alert variant="destructive" className="mt-2">
-            <Icon name="warning-circle" size={16} />
-            <AlertDescription>
-              No active agents found for provider <strong>{provider}</strong>.
-              Please deploy and register an agent before using agent-based discovery.
-            </AlertDescription>
-          </Alert>
+        {loadFailed && (
+          <Banner tone="danger" icon="warning-circle" className="mt-2">
+            Could not load agents for provider <strong>{provider}</strong>.{' '}
+            <Button size="sm" variant="secondary" onClick={fetchAgents}>
+              Try again
+            </Button>
+          </Banner>
+        )}
+
+        {loaded && !loading && !loadFailed && activeAgents.length === 0 && (
+          <Banner tone="danger" icon="warning-circle" className="mt-2">
+            No active agents found for provider <strong>{provider}</strong>.
+            Please deploy and register an agent before using agent-based discovery.
+          </Banner>
         )}
 
         {selectedAgentId && selectedAgentId !== 'auto' && (
-          <div className="mt-2 p-3 bg-muted rounded-md">
-            <div className="text-sm font-medium mb-1">Selected Agent Details:</div>
-            {(() => {
-              const agent = agents.find((a) => a.agent_id === selectedAgentId);
-              if (!agent) return <div className="text-sm text-muted-foreground">Loading...</div>;
-
-              return (
-                <div className="space-y-1 text-sm">
-                  <div><strong>Hostname:</strong> {agent.hostname}</div>
-                  <div><strong>Networks:</strong> {agent.reachable_networks.join(', ')}</div>
-                  <div>
-                    <strong>Capabilities:</strong>{' '}
-                    {agent.provider_capabilities.map((cap) => (
-                      <Badge key={cap} variant="secondary" className="ml-1 text-xs">
-                        {cap}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              );
-            })()}
+          <div className="mt-2 rounded-[var(--hh-radius-md)] bg-[var(--hh-bg-elevated)] p-3">
+            <div className="mb-1 text-sm font-medium">Selected Agent Details:</div>
+            {selectedAgent ? (
+              <FieldList
+                fields={[
+                  ['Hostname', selectedAgent.hostname],
+                  ['Networks', selectedAgent.reachable_networks.join(', ')],
+                  [
+                    'Capabilities',
+                    <span key="caps" className="flex flex-wrap gap-1">
+                      {selectedAgent.provider_capabilities.map((cap) => (
+                        <Badge key={cap} variant="neutral">
+                          {cap}
+                        </Badge>
+                      ))}
+                    </span>,
+                  ],
+                ]}
+              />
+            ) : (
+              <div className="text-sm text-[var(--hh-text-muted)]">Loading...</div>
+            )}
           </div>
         )}
       </div>

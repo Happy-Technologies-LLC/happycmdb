@@ -18,10 +18,10 @@ info:
 
     All API endpoints (except `/api/v1/auth/login`) require authentication via:
     - **JWT Token**: Include `Authorization: Bearer <token>` header
-    - **API Key**: Include `X-API-Key: <key>` header
+    - **API Key**: Include `X-API-Key: <key>` header (the default name; `API_KEY_HEADER_NAME` changes it)
     Account operations (`PUT /auth/profile`, `PUT /auth/password`, `POST /auth/sessions/revoke-others`,
     `DELETE /auth/account`, `GET /auth/api-keys`, `DELETE /auth/api-key/{keyId}`)
-    and API-key creation require a verified JWT user session. An authenticated
+    and API-key creation (`POST /auth/api-key`) require a verified JWT user session. An authenticated
     API key receives HTTP 403 with `_error: Forbidden` and
     `_message: JWT user session required`, before route validation.
     Missing or disabled users receive HTTP 401.
@@ -30,7 +30,7 @@ info:
 
     The API mounts no global rate limiter (`ApiServer.setupMiddleware`), so there is
     no per-token or per-API-key hourly or burst budget. Limiters sit on four auth
-    routes registered in `AuthController`:
+    routes registered in `AuthController` and on `POST /agents/heartbeat`:
     - `POST /auth/login`: `RateLimitMiddleware.limit('auth', …)` with
       `rateLimit.endpoints.auth` (default 20 per hour per client address),
       `endpoints.authAccount` (5 per 15 minutes per account and client address) and
@@ -46,6 +46,9 @@ info:
       `RateLimitMiddleware.custom(endpointBudget('rest'), 'auth-refresh')`, on
       `endpoints.rest` (default 1000 per hour per client address); not mounted when
       `endpoints.rest.max` is 0.
+    - `POST /agents/heartbeat`: `RateLimitMiddleware.custom(…, 'agent-heartbeat', { admittedOnly: true })` on
+      `endpoints.agentHeartbeat` (default 600 per hour per verified user: the user behind the JWT or API key,
+      ahead of body validation; only admitted requests count; not mounted when `max` is 0).
 
     Analysis requests (`executeBoundedAnalysis`) and GraphQL requests
     (`admitGraphQLRequest`) have in-process admission gates that answer 429 without
@@ -57,8 +60,8 @@ info:
     https://github.com/Happy-Technologies-LLC/happycmdb/blob/main/packages/api-server/docs/API_DOCUMENTATION.md#rate-limiting
 
     Rate limit headers are sent only by `POST /auth/login`, `PUT /auth/password`,
-    `POST /auth/sessions/revoke-others` and `POST /auth/refresh`, on allowed and on 429 responses, and not when
-    `rateLimit.enabled` is false, on a bypass-header match, when the endpoint's
+    `POST /auth/sessions/revoke-others`, `POST /auth/refresh` and `POST /agents/heartbeat`, on allowed and on 429
+    responses, and not when `rateLimit.enabled` is false, on a bypass-header match, when the endpoint's
     `max` is 0 or on a limiter store error. No other route sends them:
     - `X-RateLimit-Limit`: Maximum requests per window
     - `X-RateLimit-Remaining`: Remaining requests
@@ -262,12 +265,19 @@ paths:
         '200':
           description: Set-Cookie expires __Secure-cmdb_rt (Max-Age=0)
 
-  /auth/api-keys:
+  /auth/api-key:
     post:
       tags: [Authentication]
       summary: Create API key
-      description: Generate a new API key for programmatic access
+      description: >-
+        Generates an API key for the calling user. The key is 64 lowercase hex characters, is returned once in
+        `data._apiKey` and only its hash is stored. The key carries the creating user's role (there is no `role`
+        field in the request); at use the effective role is the intersection of that stored role and the user's
+        current role. Requires a verified JWT user session. Refused with 403 while `auth.apiKeys.enabled`
+        (`API_KEYS_ENABLED`) is false.
       operationId: createApiKey
+      security:
+        - BearerAuth: []
       requestBody:
         required: true
         content:
@@ -278,73 +288,175 @@ paths:
               properties:
                 name:
                   type: string
+                  minLength: 3
+                  maxLength: 100
                   description: Descriptive name for the API key
                   example: Production Automation
-                expiresAt:
-                  type: string
-                  format: date-time
-                  description: Optional expiration date
+                expiresInDays:
+                  type: integer
+                  minimum: 1
+                  maximum: 365
+                  description: Days until the key expires; omitted means the key does not expire
       responses:
-        '201':
-          description: API key created
+        '200':
+          description: API key created (the status is 200, not 201)
           content:
             application/json:
               schema:
                 type: object
+                required: [success, data, message]
                 properties:
-                  apiKey:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    required: [_apiKey, _id, _name]
+                    properties:
+                      _apiKey:
+                        type: string
+                        description: The API key, 64 lowercase hex characters (shown once)
+                        pattern: '^[0-9a-f]{64}$'
+                      _id:
+                        type: string
+                        format: uuid
+                      _name:
+                        type: string
+                      expiresAt:
+                        type: string
+                        format: date-time
+                        nullable: true
+                        description: null when no expiresInDays was sent
+                  message:
                     type: string
-                    description: The API key (only shown once)
-                    example: cmdb_prod_abc123xyz789
-                  id:
-                    type: string
-                    format: uuid
-                  name:
-                    type: string
-                  createdAt:
-                    type: string
-                    format: date-time
+                    example: API key generated. Save it securely - it will not be shown again.
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
-          $ref: '#/components/responses/Unauthorized'
+          description: >-
+            Not authenticated (the middleware body, `_error`/`_message`), or the authorizing credential carries no
+            credential generation (`success`/`error`/`message` with `message: Credentials changed`)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/MiddlewareError'
+                  - type: object
+                    required: [success, error, message]
+                    properties:
+                      success:
+                        type: boolean
+                        example: false
+                      error:
+                        type: string
+                        example: Unauthorized
+                      message:
+                        type: string
+                        example: Credentials changed
+        '403':
+          description: >-
+            Either an API key was used (a JWT user session is required; `code` is `JWT_SESSION_REQUIRED`), or API
+            keys are disabled on this deployment (`auth.apiKeys.enabled` is false; the body has no `code`)
+          content:
+            application/json:
+              schema:
+                description: >-
+                  anyOf, not oneOf: a JWT_SESSION_REQUIRED body carries `success`/`error`/`message` too, so it satisfies
+                  both branches and oneOf would reject a body the server sends
+                anyOf:
+                  - $ref: '#/components/schemas/ForbiddenError'
+                  - type: object
+                    required: [success, error, message]
+                    properties:
+                      success:
+                        type: boolean
+                        example: false
+                      error:
+                        type: string
+                        example: Forbidden
+                      message:
+                        type: string
+                        example: API keys are disabled
+              examples:
+                jwtSessionRequired:
+                  summary: An API key called the endpoint
+                  value:
+                    success: false
+                    error: Forbidden
+                    message: JWT user session required
+                    _error: Forbidden
+                    _message: JWT user session required
+                    code: JWT_SESSION_REQUIRED
+                apiKeysDisabled:
+                  summary: auth.apiKeys.enabled is false
+                  value:
+                    success: false
+                    error: Forbidden
+                    message: API keys are disabled
+        '500':
+          description: Internal error (`error` is `API Key Generation Failed`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                success: false
+                error: API Key Generation Failed
+                message: Internal error
 
+  /auth/api-keys:
     get:
       tags: [Authentication]
       summary: List API keys
-      description: Get the authenticated user's API keys that are not revoked. A password change revokes every key created before it (HAP-1669), so those are not listed; an older-generation key whose revoke failed is still listed with _enabled false and never authenticates (HAP-1285).
+      description: >-
+        Lists the authenticated user's API keys that are not revoked, newest first; the key value and its hash are
+        never returned. A password change revokes every key created before it (HAP-1669), so those are not listed;
+        an older-generation key whose revoke failed is still listed with `_enabled` false and never authenticates
+        (HAP-1285). Still works while `auth.apiKeys.enabled` is false. Requires a verified JWT user session.
       security:
         - BearerAuth: []
       operationId: listApiKeys
       responses:
         '200':
-          description: List of API keys
+          description: The caller's API keys (`data` is a bare array; there is no wrapper object and no total)
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/ApiKey'
+                type: object
+                required: [success, data]
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApiKey'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: API keys cannot access account-level operations; JWT user session required
-
-  /auth/api-keys/{keyId}:
-    delete:
-      tags: [Authentication]
-      summary: Revoke API key
-      description: Permanently revoke an API key
-      operationId: revokeApiKey
-      parameters:
-        - $ref: '#/components/parameters/KeyId'
-      responses:
-        '204':
-          description: API key revoked
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
+          description: An API key was used; a JWT user session is required (`code` is `JWT_SESSION_REQUIRED`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenError'
+              example:
+                success: false
+                error: Forbidden
+                message: JWT user session required
+                _error: Forbidden
+                _message: JWT user session required
+                code: JWT_SESSION_REQUIRED
+        '500':
+          description: Internal error (`error` is `Failed to List API Keys`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                success: false
+                error: Failed to List API Keys
+                message: Internal error
 
   /auth/me:
     get:
@@ -553,24 +665,66 @@ paths:
   /auth/api-key/{keyId}:
     delete:
       tags: [Authentication]
-      summary: Revoke own API key
+      summary: Revoke API key
+      description: >-
+        Revokes one of the caller's own API keys (soft delete: `revoked_at` is set and the key stops authenticating).
+        There is no administrator override: a key that belongs to another user, does not exist or is already revoked
+        is 404. Still works while `auth.apiKeys.enabled` is false. Requires a verified JWT user session.
+      operationId: revokeApiKey
       security:
         - BearerAuth: []
       parameters:
-        - name: keyId
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: '#/components/parameters/KeyId'
       responses:
         '200':
-          description: Own API key revoked
+          description: API key revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, message]
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: API key revoked successfully
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: JWT user session required
+          description: An API key was used; a JWT user session is required (`code` is `JWT_SESSION_REQUIRED`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForbiddenError'
+              example:
+                success: false
+                error: Forbidden
+                message: JWT user session required
+                _error: Forbidden
+                _message: JWT user session required
+                code: JWT_SESSION_REQUIRED
         '404':
-          $ref: '#/components/responses/NotFound'
+          description: The key is not the caller's, does not exist or is already revoked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                success: false
+                error: Not Found
+                message: API key not found
+        '500':
+          description: Internal error (`error` is `API Key Revocation Failed`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                success: false
+                error: API Key Revocation Failed
+                message: Internal error
 
   # =============================================================================
   # CONFIGURATION ITEMS (CIs)
@@ -796,6 +950,114 @@ paths:
           $ref: '#/components/responses/CIForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /cis/{id}/oversized-delete:
+    post:
+      tags: [Configuration Items]
+      summary: Recovery delete of a CI with an oversized stored value (admin only)
+      operationId: deleteOversizedCI
+      description: >-
+        HAP-797. Admin role only: `write` is not enough (an operator or viewer gets 403). Deletes a legacy CI whose stored
+        value breaks a journal plan limit (a value over 64 KiB or an array over 1000 members), which `DELETE /cis/{id}`
+        refuses with 422 every time. Same journaled delete, except the history row and audit entry hold a bounded snapshot
+        (each oversized value replaced by its byte size and SHA-256) and the caller's `evidence_ref`. Preserve the full
+        values first with `GET /cis/{id}/stored-properties`. Only a CI with at least one oversized value is accepted; any
+        other answers 409 with message `not_oversized`: one the ordinary delete can plan (use `DELETE /cis/{id}`), and one
+        with more than 1000 stored properties and no oversized value (a key-count limit, so the ordinary delete answers
+        422 and this route 409). An oversized CI whose bounded plan still breaks another limit answers 422. A missing CI
+        and another organization's CI answer the same 404.
+      parameters:
+        - $ref: '#/components/parameters/CIId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [evidence_ref]
+              properties:
+                evidence_ref:
+                  type: string
+                  minLength: 1
+                  maxLength: 512
+                  description: Where the full values were preserved. Recorded in the audit entry, never resolved. Control and format characters (bidi override, zero-width) are refused with 400.
+      responses:
+        '204':
+          description: CI deleted
+        '400':
+          description: >-
+            Invalid CI id or request shape (`{success: false, error: Bad Request, message: Invalid request}`), or a
+            missing, empty, over-long or control-character `evidence_ref` (the validation error body with `_error:
+            Validation Error`)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            The journal refused the delete: `not_oversized` (see the description); the CI's class is owned by its source
+            (`code: source_owned`); the CI has an unresolved write (`CI is temporarily unavailable`); or the write was
+            aborted (`CI could not be reconciled`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                notOversized:
+                  value:
+                    success: false
+                    error: Conflict
+                    message: not_oversized
+        '422':
+          description: The bounded plan still breaks a journal plan limit (`CI cannot be changed through the audited path`)
+        '500':
+          description: 'Unexpected failure: `{success: false, error: Failed to delete CI}`'
+        '503':
+          description: >-
+            CI write temporarily unavailable: the journal schema or the audit chain key is not ready, so nothing was
+            written (no `correlation_id`), or the journal's second phase failed after the graph write (the body carries a
+            `correlation_id`)
+
+  /cis/{id}/stored-properties:
+    get:
+      tags: [Configuration Items]
+      summary: Read every stored property of a CI, HP1-encoded (admin only)
+      operationId: getCIStoredProperties
+      description: >-
+        HAP-797. Admin role only, though it is a read. The preservation copy for `POST /cis/{id}/oversized-delete`:
+        `GET /cis/{id}` narrows the node to fixed keys, this returns every stored property exactly as stored, in the HP1
+        JSON encoding (the form the recovery's `bytes` and `sha256` describe), unparsed and untruncated. A missing CI
+        and another organization's CI answer the same 404; a CI with an unresolved journal write answers 409.
+      parameters:
+        - $ref: '#/components/parameters/CIId'
+      responses:
+        '200':
+          description: The CI's stored properties
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, enum: [true] }
+                  data:
+                    type: object
+                    required: [id, properties]
+                    properties:
+                      id: { type: string }
+                      properties: { type: object, additionalProperties: true, description: 'Every stored property, HP1-encoded (`$hp1` tags keep integer, float, temporal and non-UTF-8 values lossless).' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The CI has an unresolved journal write (`CI is temporarily unavailable`)
+        '500':
+          description: 'Unexpected failure: `{success: false, error: Failed to retrieve CI}`'
 
   /cis/search:
     post:
@@ -1560,7 +1822,10 @@ paths:
         '403':
           $ref: '#/components/responses/CIForbidden'
         '503':
-          description: ITIL incident records are unavailable in this schema version
+          description: >-
+            Two causes, both `{success: false, error}`. `ITIL records unavailable`: the ITIL incident records are not
+            available in this schema version. `Analytics resource limit exceeded`: the bounded read hit its statement
+            timeout.
 
   # =============================================================================
   # RELATIONSHIPS
@@ -1692,7 +1957,8 @@ paths:
         request. Only receipts for the endpoints' current incarnations are returned, so a re-created CI starts with none.
         An edge written before receipts existed has none (`receipts: []`); that is not evidence of absence. Both CIs must
         belong to the caller's organization: a missing, foreign or unowned endpoint is the same 404. Receipts are
-        history, not currentness: read them against the live relationship.
+        history, not currentness: read them against the live relationship. While the receipt table is missing or this
+        API's database login lacks SELECT on it (a rollback window), the read answers 503.
       operationId: listRelationshipEvidence
       parameters:
         - name: from_id
@@ -1744,28 +2010,66 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+        '503':
+          description: >-
+            Relationship evidence temporarily unavailable: the receipt table is missing or this API's database login lacks
+            SELECT on it (SQLSTATE 42P01 or 42501). Fixed body, no database error text.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                success: false
+                error: Service Unavailable
+                message: Relationship evidence temporarily unavailable
 
   /relationships/type/{type}:
     get:
       tags: [Relationships]
       summary: Get relationships by type
-      description: Retrieve all relationships of a specific type
+      description: >-
+        Page through the relationships of one type between CIs of the caller's organization, ordered by source then target
+        name. The envelope carries the page and its totals; each row is a flat record with un-prefixed keys, not the
+        `Relationship` schema. `limit` and `offset` are validated by the route: a value outside the bounds below is a 400 before
+        the graph is read. The path accepts the nine types the REST write accepts (`RestRelationshipType`), not the set
+        `RelationshipType` lists.
       operationId: getRelationshipsByType
       parameters:
         - name: type
           in: path
           required: true
           schema:
-            $ref: '#/components/schemas/RelationshipType'
+            $ref: '#/components/schemas/RestRelationshipType'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
       responses:
         '200':
-          description: Relationships of specified type
+          description: One page of relationships of the requested type
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Relationship'
+                $ref: '#/components/schemas/RelationshipsByTypeResponse'
+        '400':
+          description: >-
+            The path type is not one of the nine accepted types (`RelationshipTypeRefusal`), or `limit` or `offset` is out of
+            range or not an integer (`MiddlewareError`, from the query validation).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - $ref: '#/components/schemas/RelationshipTypeRefusal'
+                  - $ref: '#/components/schemas/MiddlewareError'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1968,6 +2272,8 @@ paths:
                     type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialReadForbidden'
 
     post:
       tags: [Credentials]
@@ -2021,6 +2327,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialWriteForbidden'
 
   /credentials/{id}:
     get:
@@ -2044,6 +2352,8 @@ paths:
                 $ref: '#/components/schemas/Credential'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialReadForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -2098,6 +2408,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialWriteForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -2125,6 +2437,8 @@ paths:
           description: Credential deleted
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialWriteForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -2172,14 +2486,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: The caller lacks the `write` permission; refused before any lookup
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MiddlewareError'
-              example:
-                _error: Forbidden
-                _message: Permission 'write' required
+          $ref: '#/components/responses/CredentialForbidden'
 
   /credentials/rank:
     post:
@@ -2224,14 +2531,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: The caller lacks the `write` permission; refused before any lookup
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MiddlewareError'
-              example:
-                _error: Forbidden
-                _message: Permission 'write' required
+          $ref: '#/components/responses/CredentialForbidden'
 
   /credentials/{id}/validate:
     post:
@@ -2263,6 +2563,8 @@ paths:
                     format: date-time
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -2286,6 +2588,8 @@ paths:
                   $ref: '#/components/schemas/CredentialSet'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialReadForbidden'
 
     post:
       tags: [Credential Sets]
@@ -2344,6 +2648,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
 
   /credential-sets/{id}:
     get:
@@ -2366,6 +2672,8 @@ paths:
                 $ref: '#/components/schemas/CredentialSet'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialReadForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -2414,6 +2722,8 @@ paths:
                 $ref: '#/components/schemas/CredentialSet'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -2433,6 +2743,8 @@ paths:
           description: Credential set deleted
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -2484,6 +2796,8 @@ paths:
                     type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/CredentialForbidden'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -2775,9 +3089,12 @@ paths:
       tags: [Discovery Agents]
       summary: Register agent
       description: >-
-        Omit agent_id to create an agent and receive its server-assigned ID.
-        Supply that issued ID to retry/update within the same organization;
-        foreign and missing IDs both return 404. Keep the ID for heartbeat.
+        Omit agent_id to create an agent and receive its server-assigned ID; the caller is recorded as its owner.
+        Supply that issued ID to retry/update within the same organization. An agent-role credential can only
+        update an agent it registered, and a re-registration never moves a `disabled` agent out of `disabled`.
+        An operator or admin can update any agent of the organization (and re-enable a `disabled` one); doing so
+        on an ownerless agent (registered before migration 057) claims it for that operator or admin. Foreign,
+        ownerless-to-an-agent-role-caller and missing IDs all return 404. Keep the ID for heartbeat.
       operationId: registerDiscoveryAgent
       requestBody:
         required: true
@@ -2810,6 +3127,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -2817,7 +3136,17 @@ paths:
     post:
       tags: [Discovery Agents]
       summary: Update heartbeat
-      description: Update agent status and statistics
+      description: >-
+        Update agent status and statistics. An agent-role credential can only heartbeat an agent it registered
+        (the verified user behind the JWT or API key); a foreign, ownerless (registered before migration 057)
+        or missing agent all return the same 404. Operators and admins can heartbeat any agent of the
+        organization. `disabled` is operator-only: an agent-role caller sending it gets 403 ROLE_REQUIRED, and
+        its heartbeat never moves an agent out of `disabled` (the counters and liveness are still recorded).
+        Each verified principal is limited to 600 heartbeats per hour by default (`rateLimit.endpoints.agentHeartbeat`,
+        env `RATE_LIMIT_AGENT_HEARTBEAT_MAX`, about 10 agents per user at a 60 s interval); only admitted heartbeats
+        count, so a client that keeps retrying is admitted again once its oldest admitted heartbeat leaves the window.
+        Beyond the budget the endpoint returns 429 with X-RateLimit-* headers and a JSON body carrying _retryAfter
+        (seconds). The limit is checked before the body is validated, so malformed requests count too.
       operationId: updateAgentHeartbeat
       requestBody:
         required: true
@@ -2829,6 +3158,8 @@ paths:
               properties:
                 agent_id:
                   type: string
+                  minLength: 1
+                  maxLength: 255
                 status:
                   type: string
                   enum: [active, inactive, offline, disabled]
@@ -2837,17 +3168,29 @@ paths:
                   properties:
                     jobs_completed:
                       type: integer
+                      minimum: 0
+                      maximum: 1000000
                     jobs_failed:
                       type: integer
+                      minimum: 0
+                      maximum: 1000000
                     cis_discovered:
                       type: integer
+                      minimum: 0
+                      maximum: 1000000
       responses:
         '200':
           description: Heartbeat updated
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: >-
+            The caller lacks the `write` permission (a viewer: `PERMISSION_REQUIRED`), or an agent-role caller
+            attempted to set status `disabled` (`ROLE_REQUIRED`)
         '404':
-          description: Agent not found
+          description: Agent not found (also returned for an agent the caller did not register)
+        '429':
+          description: Per-principal heartbeat budget (default 600 per hour, counting only admitted heartbeats) exhausted
 
   /agents/find-best:
     post:
@@ -2914,7 +3257,11 @@ paths:
     delete:
       tags: [Discovery Agents]
       summary: Delete agent
-      description: Unregister a discovery agent
+      description: >-
+        Unregister a discovery agent. An agent-role credential can only delete an agent it registered; an
+        operator or admin can delete any agent of the organization. A foreign, ownerless (registered before
+        migration 057), `disabled` (an agent-role credential cannot delete one: it could otherwise delete and
+        re-register it as `active`; an operator or admin still can) or missing agent all return the same 404.
       operationId: deleteAgent
       parameters:
         - name: agentId
@@ -2923,10 +3270,24 @@ paths:
           schema:
             type: string
       responses:
-        '204':
+        '200':
           description: Agent deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+              example:
+                success: true
+                message: Agent deleted successfully
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -3457,15 +3818,16 @@ paths:
                     description: >-
                       Percentage (0 to 100, one decimal) of the caller's CIs whose `health` is `healthy`
                       (`ci_health.healthy / ci_health.total * 100`). Null, and named in `unavailable`, when the health
-                      signal is unavailable (the ITIL incident tables do not exist, or more than 5000 CIs have an open
-                      incident) or the organization has no CIs. A measured 0 means every CI is degraded or critical;
-                      it is never a placeholder.
+                      signal is unavailable (the ITIL incident tables do not exist, more than 5000 CIs have an open
+                      incident, or the incident read failed or timed out) or the organization has no CIs. A measured 0
+                      means every CI is degraded or critical; it is never a placeholder.
                   ci_health:
                     type: object
                     nullable: true
                     description: >-
                       The caller's CIs by derived `health` state (see the CI schema). The three states add up to
-                      `total`. Null when the health signal is unavailable.
+                      `total`. Null when the health signal is unavailable (the ITIL incident tables do not exist, more
+                      than 5000 CIs have an open incident, or the incident read failed or timed out).
                     properties:
                       healthy:
                         type: integer
@@ -4403,7 +4765,7 @@ paths:
         '403':
           $ref: '#/components/responses/BusinessServiceWriteForbidden'
         '422':
-          $ref: '#/components/responses/BusinessServiceOwnerRequired'
+          $ref: '#/components/responses/BusinessServiceOwnerRefused'
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
         '503':
@@ -4469,6 +4831,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/BusinessServiceForbidden'
+        '503':
+          description: 'Analytics resource limit exceeded: the bounded read hit its statement timeout (`{success: false, error}`).'
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
 
@@ -4480,7 +4844,7 @@ paths:
       summary: Get a business service (C1 service read)
       description: >-
         The service plus its mapped-CI and dependency counts, and the Suite
-        Contracts v2 C1 service-reference fields (tenant_id, owner,
+        Contracts v2 C1 service-reference fields (tenant_id, owner, owner_valid,
         owner_group, criticality, lifecycle, version, dependencies, offerings).
         Another organization's service answers the same 404 as a missing one;
         the tenant is the token's organization, never a request parameter.
@@ -4573,13 +4937,15 @@ paths:
           description: >-
             Stale If-Match (`message: Version mismatch`, with the current
             `version`), a backward or post-retirement lifecycle move, or a move
-            out of live while the service has a live offering (HAP-1424).
+            out of live while the service has a live offering (HAP-1424), or
+            the stored owner changed between the owner check of a lifecycle move
+            and the row lock (`message: Business service changed; retry`).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/BusinessServiceError'
         '422':
-          $ref: '#/components/responses/BusinessServiceOwnerRequired'
+          $ref: '#/components/responses/BusinessServiceOwnerRefused'
         '500':
           $ref: '#/components/responses/BusinessServiceServerError'
         '503':
@@ -5380,13 +5746,31 @@ paths:
             The authenticated user has no organization (`Organization claim
             required`) or does not hold the `portfolio:import` scope (`Scope
             'portfolio:import' required`, whatever the role). Nothing is written.
+            Read `code`; `message` is the text to show.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MiddlewareError'
-              example:
-                _error: Forbidden
-                _message: Scope 'portfolio:import' required
+                $ref: '#/components/schemas/ForbiddenError'
+              examples:
+                noOrganization:
+                  summary: The caller has no organization
+                  value:
+                    success: false
+                    error: Forbidden
+                    message: Organization claim required
+                    _error: Forbidden
+                    _message: Organization claim required
+                    code: ORGANIZATION_REQUIRED
+                scopeRequired:
+                  summary: The caller lacks the portfolio:import scope
+                  value:
+                    success: false
+                    error: Forbidden
+                    message: Scope 'portfolio:import' required
+                    _error: Forbidden
+                    _message: Scope 'portfolio:import' required
+                    code: SCOPE_REQUIRED
+                    required: { scope: 'portfolio:import' }
         '409':
           description: >-
             A CI is mid-write, a record the plan named is gone
@@ -5556,7 +5940,10 @@ components:
       type: apiKey
       in: header
       name: X-API-Key
-      description: API key from /auth/api-keys endpoint
+      description: >-
+        API key created by POST /auth/api-key. The header name is `X-API-Key` by default; the deployment can change
+        it with `API_KEY_HEADER_NAME` (or `auth.apiKeys.headerName`), so this scheme documents the default. While
+        `API_KEYS_ENABLED` is false the header is ignored and a key-only request is 401.
 
   parameters:
     CIId:
@@ -5683,14 +6070,33 @@ components:
       description: >-
         The authenticated user has no organization: every /cis endpoint is
         tenant-scoped and rejects the request before any data access. Mutations
-        also return 403 without the `write` permission.
+        also return 403 without the `write` permission. Read `code`; `message`
+        is the text to show.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/MiddlewareError'
-          example:
-            _error: Forbidden
-            _message: Organization claim required
+            $ref: '#/components/schemas/ForbiddenError'
+          examples:
+            noOrganization:
+              summary: The caller has no organization
+              value:
+                success: false
+                error: Forbidden
+                message: Organization claim required
+                _error: Forbidden
+                _message: Organization claim required
+                code: ORGANIZATION_REQUIRED
+            permissionRequired:
+              summary: A viewer calls a mutation
+              value:
+                success: false
+                error: Forbidden
+                message: Permission 'write' required
+                _error: Forbidden
+                _message: Permission 'write' required
+                code: PERMISSION_REQUIRED
+                required: { permission: write }
+                role: viewer
 
     CIBodyBadRequest:
       description: >-
@@ -5760,14 +6166,33 @@ components:
         endpoint is tenant-scoped and rejects the request before any data
         access (`Organization claim required`). Mutations (POST, PATCH,
         DELETE) also return 403 without the `write` permission
-        (`Permission 'write' required`).
+        (`Permission 'write' required`). Read `code`; `message` is the text to
+        show.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/MiddlewareError'
-          example:
-            _error: Forbidden
-            _message: Organization claim required
+            $ref: '#/components/schemas/ForbiddenError'
+          examples:
+            noOrganization:
+              summary: The caller has no organization
+              value:
+                success: false
+                error: Forbidden
+                message: Organization claim required
+                _error: Forbidden
+                _message: Organization claim required
+                code: ORGANIZATION_REQUIRED
+            permissionRequired:
+              summary: A viewer calls a mutation
+              value:
+                success: false
+                error: Forbidden
+                message: Permission 'write' required
+                _error: Forbidden
+                _message: Permission 'write' required
+                code: PERMISSION_REQUIRED
+                required: { permission: write }
+                role: viewer
 
     BusinessServiceNotFound:
       description: >-
@@ -5812,40 +6237,243 @@ components:
     BusinessServiceWriteForbidden:
       description: >-
         As BusinessServiceForbidden (`Organization claim required`,
-        `Permission 'write' required`, middleware body). Also (D38, HAP-1565)
-        a valid body naming owner_principal_id (on PATCH, null included)
-        from a caller whose role lacks the `admin` permission (only the admin
-        role holds it): refused after body validation (an invalid body is
-        400 first), nothing written and no audit row. A create without
-        owner_principal_id leaves it null.
+        `Permission 'write' required`, the `ForbiddenError` body with `code`).
+        Also (D38, HAP-1565) a valid body naming owner_principal_id (on PATCH,
+        null included) from a caller whose role lacks the `admin` permission
+        (only the admin role holds it): refused after body validation (an
+        invalid body is 400 first), nothing written and no audit row. That
+        refusal is the bare `{success, error, message}` body, with no `code`.
+        A create without owner_principal_id leaves it null.
       content:
         application/json:
           schema:
-            oneOf:
-              - $ref: '#/components/schemas/MiddlewareError'
-              - $ref: '#/components/schemas/BusinessServiceError'
-          example:
-            success: false
-            error: Forbidden
-            message: owner_principal_id can be set or changed only by an admin
+            anyOf:
+              - $ref: '#/components/schemas/ForbiddenError'
+              - $ref: '#/components/schemas/BusinessServiceOwnerPrincipalRefusal'
+          examples:
+            noOrganization:
+              summary: The caller has no organization
+              value:
+                success: false
+                error: Forbidden
+                message: Organization claim required
+                _error: Forbidden
+                _message: Organization claim required
+                code: ORGANIZATION_REQUIRED
+            permissionRequired:
+              summary: A viewer calls a mutation
+              value:
+                success: false
+                error: Forbidden
+                message: Permission 'write' required
+                _error: Forbidden
+                _message: Permission 'write' required
+                code: PERMISSION_REQUIRED
+                required: { permission: write }
+                role: viewer
+            ownerPrincipalAdminOnly:
+              summary: A non-admin names owner_principal_id (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: owner_principal_id can be set or changed only by an admin
 
-    BusinessServiceOwnerRequired:
+    CredentialForbidden:
       description: >-
-        A live or retiring service needs owner_principal_id, the
-        identity-provider subject of its one accountable human owner (D15).
+        POST /credentials/match, /credentials/rank and
+        /credentials/{id}/validate and the credential-set writes (POST, PUT,
+        DELETE and select), refused by the credential router, before any
+        credential or credential-set lookup. The GET operations use
+        CredentialReadForbidden. A caller without an organization gets
+        `ORGANIZATION_REQUIRED` (the `ForbiddenError` body). A caller with no
+        verified user id gets the bare `Verified credential owner required`
+        body. A caller with the `agent` role gets the bare `Credential
+        management requires a human user` body. Every mutation (and match and
+        rank) also needs the `write` permission and gets `PERMISSION_REQUIRED`
+        without it. The two bare bodies carry no `code`: read `message`. The
+        one refusal that comes after a lookup, the happylab-c4 tag rule, is
+        possible only on POST /credentials, PUT /credentials/{id} and DELETE
+        /credentials/{id}: see CredentialWriteForbidden.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/BusinessServiceError'
-          example:
-            success: false
-            error: Unprocessable Entity
-            message: owner_principal_id is required for a live or retiring service
+            anyOf:
+              - $ref: '#/components/schemas/ForbiddenError'
+              - $ref: '#/components/schemas/CredentialRefusalError'
+          examples:
+            noOrganization:
+              summary: The caller has no organization
+              value:
+                success: false
+                error: Forbidden
+                message: Organization claim required
+                _error: Forbidden
+                _message: Organization claim required
+                code: ORGANIZATION_REQUIRED
+            agentRole:
+              summary: An agent-role caller (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: Credential management requires a human user
+            noVerifiedOwner:
+              summary: The caller has no verified user id (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: Verified credential owner required
+            permissionRequired:
+              summary: A viewer calls a write route
+              value:
+                success: false
+                error: Forbidden
+                message: Permission 'write' required
+                _error: Forbidden
+                _message: Permission 'write' required
+                code: PERMISSION_REQUIRED
+                required: { permission: write }
+                role: viewer
+
+    CredentialReadForbidden:
+      description: >-
+        GET /credentials, GET /credentials/{id}, GET /credential-sets and GET
+        /credential-sets/{id}. Reads need no `write` permission (a viewer who
+        owns the record reads it), so `PERMISSION_REQUIRED` is never sent
+        here. Refused by the credential router before any lookup: a caller
+        without an organization gets `ORGANIZATION_REQUIRED` (the
+        `ForbiddenError` body); a caller with no verified user id gets the bare
+        `Verified credential owner required` body; a caller with the `agent`
+        role gets the bare `Credential management requires a human user` body.
+        The two bare bodies carry no `code`: read `message`.
+      content:
+        application/json:
+          schema:
+            anyOf:
+              - $ref: '#/components/schemas/ForbiddenError'
+              - $ref: '#/components/schemas/CredentialRefusalError'
+          examples:
+            noOrganization:
+              summary: The caller has no organization
+              value:
+                success: false
+                error: Forbidden
+                message: Organization claim required
+                _error: Forbidden
+                _message: Organization claim required
+                code: ORGANIZATION_REQUIRED
+            agentRole:
+              summary: An agent-role caller (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: Credential management requires a human user
+            noVerifiedOwner:
+              summary: The caller has no verified user id (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: Verified credential owner required
+
+    CredentialWriteForbidden:
+      description: >-
+        POST /credentials, PUT /credentials/{id} and DELETE /credentials/{id}.
+        Every refusal of CredentialForbidden, which the credential router
+        sends before any lookup: `ORGANIZATION_REQUIRED` and
+        `PERMISSION_REQUIRED` (the `ForbiddenError` body with `code`), and the
+        two bare bodies without a `code`. Also (HAP-1613) a caller below the
+        `admin` permission that creates a credential carrying the
+        `happylab-c4` tag, or updates or deletes a credential that carries it
+        or whose update would add or remove it. That refusal comes from the
+        controller and the CRUD service after the router, on the owner's own
+        credential (a foreign or missing id is the 404 first), changes nothing,
+        and is a third body: `{success, error, code, message}` with the code
+        `c4_principal_admin_required`, which `ForbiddenError` does not define
+        and which has no underscore keys.
+      content:
+        application/json:
+          schema:
+            anyOf:
+              - $ref: '#/components/schemas/ForbiddenError'
+              - $ref: '#/components/schemas/CredentialRefusalError'
+              - $ref: '#/components/schemas/CredentialC4Refusal'
+          examples:
+            noOrganization:
+              summary: The caller has no organization
+              value:
+                success: false
+                error: Forbidden
+                message: Organization claim required
+                _error: Forbidden
+                _message: Organization claim required
+                code: ORGANIZATION_REQUIRED
+            agentRole:
+              summary: An agent-role caller (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: Credential management requires a human user
+            noVerifiedOwner:
+              summary: The caller has no verified user id (bare body, no code)
+              value:
+                success: false
+                error: Forbidden
+                message: Verified credential owner required
+            permissionRequired:
+              summary: A viewer calls a write route
+              value:
+                success: false
+                error: Forbidden
+                message: Permission 'write' required
+                _error: Forbidden
+                _message: Permission 'write' required
+                code: PERMISSION_REQUIRED
+                required: { permission: write }
+                role: viewer
+            c4PrincipalAdminRequired:
+              summary: A non-admin manages the happylab-c4 credential tag
+              value:
+                success: false
+                error: Forbidden
+                code: c4_principal_admin_required
+                message: Only organization admins may manage the happylab-c4 credential tag
+
+    BusinessServiceOwnerRefused:
+      description: >-
+        A 422 about owner_principal_id. A live or retiring service needs one,
+        the identity-provider subject of its one accountable human owner
+        (D15). A non-null owner_principal_id (POST and PATCH, after the admin
+        gate and body validation) must also be an enabled user of the caller's
+        organization: a user of another organization, an id that does not
+        exist and a disabled user are refused with the one same body, which
+        echoes nothing from the request, so it cannot tell which ids exist in
+        other tenants. Nothing is written and no audit row is appended. An
+        identity-store failure during that check is the write-unavailable 503.
+        A PATCH that moves a service into live or retiring without naming
+        owner_principal_id approves with the stored owner, which gets the same
+        check and the same body when it does not resolve.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BusinessServiceOwnerRefusal'
+          examples:
+            ownerRequired:
+              summary: A live or retiring service without an owner
+              value:
+                success: false
+                error: Unprocessable Entity
+                message: owner_principal_id is required for a live or retiring service
+            ownerNotInOrganization:
+              summary: The owner is not an enabled user of the caller's organization
+              value:
+                success: false
+                error: Unprocessable Entity
+                message: owner_principal_id must be an enabled user of your organization
 
     BusinessServiceWriteUnavailable:
       description: >-
         The audit chain is unavailable (AUDIT_CHAIN_KEY unset, or the chain
-        lock timed out); nothing was written.
+        lock timed out), or the identity store could not verify a non-null
+        owner_principal_id; nothing was written.
       content:
         application/json:
           schema:
@@ -6099,6 +6727,99 @@ components:
           additionalProperties: true
           description: Additional relationship metadata
 
+    RestRelationshipType:
+      type: string
+      description: >-
+        The relationship types the REST routes accept (the allow-list of `GET /relationships/type/{type}` and the `type` rule of
+        the relationship write and evidence routes). Not the same set as `RelationshipType`, which lists types no REST route
+        accepts and omits `INSTANCE_OF`.
+      enum: [DEPENDS_ON, HOSTS, CONNECTS_TO, USES, OWNED_BY, PART_OF, DEPLOYED_ON, BACKED_UP_BY, INSTANCE_OF]
+
+    TypedRelationshipRow:
+      type: object
+      description: >-
+        One relationship as `GET /relationships/type/{type}` sends it: flat, un-prefixed keys (not the `Relationship` schema).
+        The names and types are the endpoints' stored CI values and are omitted when a CI node has none.
+      additionalProperties: false
+      required: [from_id, to_id, type, properties]
+      properties:
+        from_id:
+          type: string
+        from_name:
+          type: string
+        from_type:
+          type: string
+        to_id:
+          type: string
+        to_name:
+          type: string
+        to_type:
+          type: string
+        type:
+          $ref: '#/components/schemas/RestRelationshipType'
+        properties:
+          type: object
+          additionalProperties: true
+          description: Every property stored on the relationship, `created_at` and `updated_at` included
+        created_at:
+          type: object
+          additionalProperties: true
+          description: >-
+            The relationship's stored `created_at`, omitted when the edge has none. It is a Neo4j `datetime()` passed through
+            unconverted, so JSON carries the driver's component object (`year`, `month`, `day`, `hour`, `minute`, `second`,
+            `nanosecond`, `timeZoneOffsetSeconds`, each a `{low, high}` integer pair), not an ISO string.
+        updated_at:
+          type: object
+          additionalProperties: true
+          description: The relationship's stored `updated_at`, omitted when the edge has none; same representation as `created_at`
+
+    RelationshipsByTypeResponse:
+      type: object
+      additionalProperties: false
+      required: [success, data, pagination, type]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/TypedRelationshipRow'
+        pagination:
+          type: object
+          additionalProperties: false
+          required: [total, count, offset, limit]
+          properties:
+            total:
+              type: integer
+              description: Relationships of this type in the organization, whatever the page
+            count:
+              type: integer
+              description: Rows in `data`
+            offset:
+              type: integer
+            limit:
+              type: integer
+              description: The limit applied, at most 1000
+        type:
+          $ref: '#/components/schemas/RestRelationshipType'
+
+    RelationshipTypeRefusal:
+      type: object
+      description: Body of the 400 for a path type outside `RestRelationshipType`
+      additionalProperties: false
+      required: [success, error, message]
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          enum: [Bad Request]
+        message:
+          type: string
+          example: 'Invalid relationship type. Must be one of: DEPENDS_ON, HOSTS, CONNECTS_TO, USES, OWNED_BY, PART_OF, DEPLOYED_ON, BACKED_UP_BY, INSTANCE_OF'
+
     RelationshipInput:
       type: object
       required: [_from_id, _to_id, _type]
@@ -6265,25 +6986,36 @@ components:
 
     ApiKey:
       type: object
+      description: >-
+        One key of the caller as GET /auth/api-keys returns it: the key value, its hash and the credential generation
+        are never included. Dates are ISO 8601 strings; an absent expiry or last use is null.
       properties:
         _id:
           type: string
           format: uuid
+        _userId:
+          type: string
+          description: The owning user (always the caller)
         _name:
           type: string
         _role:
           type: string
+          enum: [admin, operator, viewer, agent]
+          description: The creating user's role at creation; the role at use is the intersection with the user's current role
         _enabled:
           type: boolean
+          description: false for a key of an older credential generation that is still listed; it never authenticates
         _createdAt:
           type: string
           format: date-time
         expiresAt:
           type: string
           format: date-time
+          nullable: true
         lastUsedAt:
           type: string
           format: date-time
+          nullable: true
 
     # =========================================================================
     # CREDENTIALS
@@ -6644,29 +7376,43 @@ components:
       properties:
         agent_id:
           type: string
+          minLength: 1
+          maxLength: 255
           description: Omit to create; supply an issued ID only to update an owned agent
         hostname:
           type: string
+          minLength: 1
+          maxLength: 255
         provider_capabilities:
           type: array
+          minItems: 1
           items:
             $ref: '#/components/schemas/DiscoveryProvider'
         reachable_networks:
           type: array
+          minItems: 1
           items:
             type: string
+            description: IPv4 CIDR
         version:
           type: string
+          maxLength: 50
         platform:
           type: string
+          maxLength: 50
         arch:
           type: string
+          maxLength: 50
         api_endpoint:
           type: string
+          format: uri
+          maxLength: 500
         tags:
           type: array
+          maxItems: 50
           items:
             type: string
+            maxLength: 100
 
     # =========================================================================
     # CONNECTORS
@@ -7005,12 +7751,57 @@ components:
           enum: [admin, operator, viewer, agent]
           description: The caller's own server role; present for permission and role refusals
 
+    CredentialRefusalError:
+      type: object
+      description: >-
+        The bare 403 body of the credential router's owner and agent-role
+        refusals: no `code` and no underscore keys (those come with
+        ForbiddenError).
+      required: [success, error, message]
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          enum: [Forbidden]
+        message:
+          type: string
+          enum:
+            - Verified credential owner required
+            - Credential management requires a human user
+
+    CredentialC4Refusal:
+      type: object
+      description: >-
+        The 403 body of the happylab-c4 credential tag rule (HAP-1613): the
+        one credential refusal that carries a `code` outside ForbiddenError's
+        enum, and no underscore keys. It names the rule only.
+      required: [success, error, code, message]
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          enum: [Forbidden]
+        code:
+          type: string
+          enum: [c4_principal_admin_required]
+        message:
+          type: string
+          enum:
+            - Only organization admins may manage the happylab-c4 credential tag
+
     MiddlewareError:
       type: object
       description: >-
         Error body produced by the auth and request-validation middleware and
-        the global error handler (underscore-prefixed keys), e.g. the /cis
-        403, the body-validation 400 and the malformed-body 400.
+        the global error handler (underscore-prefixed keys), e.g. the 401 for
+        missing or invalid credentials, the body-validation 400 and the
+        malformed-body 400.
       required: [_error, _message]
       properties:
         _success:
@@ -7048,6 +7839,47 @@ components:
         error:
           type: string
           example: Business service not found
+
+    BusinessServiceOwnerPrincipalRefusal:
+      type: object
+      description: >-
+        The bare 403 body of the D38 owner_principal_id refusal (POST and PATCH
+        /business-services): no `code` and no underscore keys (those come with
+        ForbiddenError). It is the only 403 the business-service routes send
+        without ForbiddenError.
+      required: [success, error, message]
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          enum: [Forbidden]
+        message:
+          type: string
+          enum:
+            - owner_principal_id can be set or changed only by an admin
+
+    BusinessServiceOwnerRefusal:
+      type: object
+      description: >-
+        The 422 body of the owner_principal_id refusals (POST and PATCH
+        /business-services): closed, exactly these two fixed messages.
+      required: [success, error, message]
+      additionalProperties: false
+      properties:
+        success:
+          type: boolean
+          enum: [false]
+        error:
+          type: string
+          enum: [Unprocessable Entity]
+        message:
+          type: string
+          enum:
+            - owner_principal_id is required for a live or retiring service
+            - owner_principal_id must be an enabled user of your organization
 
     PortfolioImportResult:
       type: object
@@ -7271,7 +8103,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/BusinessService'
         - type: object
-          required: [mapped_cis_count, dependencies_count, tenant_id, owner, owner_group, criticality, lifecycle, version, dependencies, offerings]
+          required: [mapped_cis_count, dependencies_count, tenant_id, owner, owner_valid, owner_group, criticality, lifecycle, version, dependencies, offerings]
           properties:
             mapped_cis_count:
               type: integer
@@ -7297,6 +8129,16 @@ components:
                   type: string
                   nullable: true
                   description: The stored owned_by
+            owner_valid:
+              type: boolean
+              description: >-
+                Whether owner.principal_id resolves, at read time, to an enabled
+                user of this service's organization (the check an owner write
+                applies). false when there is no principal, when it is unknown,
+                disabled or a user of another organization, and when the
+                identity store cannot answer (the read still succeeds). A
+                consumer that routes a D15 approval to the owner must refuse an
+                owner that is not valid.
             owner_group:
               type: string
               nullable: true
@@ -7555,7 +8397,9 @@ components:
           type: number
           nullable: true
           description: >-
-            Sum of the services' `cost_per_hour`, rounded to cents (N3: annual revenue / 8760 per service). Null, never 0,
+            The sum of the priced services' annual revenue divided by 8760 and rounded to cents once (N3), so it may differ from
+            the sum of the per-service `cost_per_hour` values, which are each rounded on their own, by up to half a cent per
+            priced service. Null, never 0,
             when no affected service has revenue. When only some do, it is a lower bound: see `cost_per_hour_services_priced`.
         cost_per_hour_services_priced:
           type: integer
@@ -7860,7 +8704,8 @@ components:
           maxLength: 255
           description: >-
             Identity-provider subject of the one accountable human owner
-            (trimmed). Admin role only (D38); null when omitted.
+            (trimmed). Admin role only (D38); null when omitted. Must be an
+            enabled user of the caller's organization (else 422).
         owner_group:
           type: string
           minLength: 1
@@ -7940,6 +8785,8 @@ components:
           description: >-
             Identity-provider subject of the one accountable human owner
             (trimmed); null clears it. Admin role only (D38), null included.
+            A non-null value must be an enabled user of the caller's
+            organization (else 422).
         owner_group:
           type: string
           nullable: true

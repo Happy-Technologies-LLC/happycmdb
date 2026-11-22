@@ -32,14 +32,17 @@ TZ=UTC
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `NEO4J_URI` | Yes | - | Neo4j connection URI (`bolt://hostname:7687`) |
+| `NEO4J_URI` | Yes | - | Neo4j connection URI (`bolt://hostname:7687`). The schemes `bolt+s://`, `bolt+ssc://`, `neo4j+s://` and `neo4j+ssc://` select TLS from the URL (`+s` verifies the certificate chain, `+ssc` accepts any certificate: no chain or hostname check, the driver sets `TRUST_ALL_CERTIFICATES`, so it is not for production, and the client logs a warning that certificate verification is disabled; an explicit `NEO4J_SSL_TRUST_STRATEGY` other than `TRUST_ALL_CERTIFICATES` next to a `+ssc` URI refuses to start); the client then sets neither encryption nor trust itself, so `NEO4J_ENCRYPTED`, `NEO4J_SSL_ENABLED`, `NEO4J_ENCRYPTION` and `NEO4J_SSL_TRUST_STRATEGY` do not change the connection (a malformed toggle still refuses to start) |
 | `NEO4J_USERNAME` | Yes | `neo4j` | Neo4j username |
 | `NEO4J_PASSWORD` | Yes | - | Neo4j password (use secrets management) |
 | `NEO4J_DATABASE` | No | `neo4j` | Database name |
 | `NEO4J_MAX_CONNECTION_POOL_SIZE` | No | `50` | Maximum connection pool size |
 | `NEO4J_ACQUISITION_TIMEOUT` | No | `60000` | Connection acquisition timeout (ms) |
 | `NEO4J_MAX_TRANSACTION_RETRY_TIME` | No | `30000` | Max transaction retry time (ms) |
-| `NEO4J_ENCRYPTED` | No | `false` | Enable SSL/TLS for Neo4j connection |
+| `NEO4J_ENCRYPTED` | No | `false` | Alias of `NEO4J_SSL_ENABLED` and `NEO4J_ENCRYPTION`: any of the three set to the exact string `true` turns TLS on for a plain `bolt://` or `neo4j://` URI (`packages/database/src/neo4j/client.ts`); any other value (`TRUE`, `True`, `1`, `yes`, a value with surrounding whitespace) refuses to start: the client throws `<VARIABLE> must be true or false when set` before it builds a driver, whatever the URI scheme. Unset or empty leaves it off. With none set the connection is plaintext Bolt and the API only logs the warning `Neo4j client initialized WITHOUT encryption (development mode)`; it does not refuse to start. Not used with a `+s` URI; with a `+ssc` URI only `TRUST_ALL_CERTIFICATES` is accepted, any other value refuses to start |
+| `NEO4J_SSL_ENABLED` | No | `false` | See `NEO4J_ENCRYPTED` |
+| `NEO4J_ENCRYPTION` | No | `false` | See `NEO4J_ENCRYPTED` |
+| `NEO4J_SSL_TRUST_STRATEGY` | No | `TRUST_SYSTEM_CA_SIGNED_CERTIFICATES` | Certificate trust when TLS is turned on by the variables above: the server certificate must be signed by a CA in the system trust store. The other value the driver takes is `TRUST_ALL_CERTIFICATES`, which disables certificate verification: not for production. Not used with a `+s` URI; with a `+ssc` URI only `TRUST_ALL_CERTIFICATES` is accepted and any other value refuses to start |
 
 **Example:**
 
@@ -64,11 +67,25 @@ NEO4J_ENCRYPTED=true
 | `POSTGRES_MAX_CONNECTIONS` | No | `20` | Maximum connection pool size |
 | `POSTGRES_IDLE_TIMEOUT` | No | `30000` | Idle connection timeout (ms) |
 | `POSTGRES_CONNECTION_TIMEOUT` | No | `5000` | Connection timeout (ms) |
-| `POSTGRES_SSL_MODE` | Yes in production | unset (cleartext) | `disable`, `require` (TLS, certificate not verified), `prefer` (same as `require`; no cleartext fallback), or `verify-full` (certificate chain and host name). Any other value refuses to start. With `NODE_ENV=production` and a non-local host, setting neither `POSTGRES_SSL_MODE` nor `POSTGRES_SSL_ENABLED` refuses to start. |
+| `POSTGRES_SSL_MODE` | Yes in production | unset (cleartext) | `disable` (aliases `off` and `false`), `require` (TLS, certificate not verified), `prefer` (same as `require`; no cleartext fallback), or `verify-full` (certificate chain and host name). Any other value refuses to start. With `NODE_ENV=production` and a non-local host, setting neither `POSTGRES_SSL_MODE` nor `POSTGRES_SSL_ENABLED` refuses to start. Outside production, or in production for a local host (loopback or a Unix socket), an unset mode connects in cleartext and logs one `error` line that says whether the host is local or non-local (never the host itself). |
 | `POSTGRES_SSL_ENABLED` | No | - | Used only when `POSTGRES_SSL_MODE` is unset: `on` (= `require`), or any other value taken as the mode itself (`off`, `false`, `disable`, `require`, `prefer`, `verify-full`); an unsupported value such as `true` refuses to start. The shipped compose always sets `POSTGRES_SSL_MODE` for the api-server, so there it only drives the postgres server's `-c ssl=` flag |
-| `POSTGRES_SSL_CA_FILE` | No | Node.js trust store | Path to the CA bundle that `verify-full` trusts |
+| `POSTGRES_SSL_CA_FILE` | No | Node.js trust store | Path to the CA bundle that `verify-full` trusts. Under `verify-full`, a set-but-empty or whitespace-only value, an unreadable file or an empty file refuses to start (the read error names only the variable and the error code, never the path); unset the variable to use the Node.js trust store. Under any other mode (or an unset mode) a non-empty value refuses to start, because the CA would be ignored and the connection left unverified |
+| `REQUIRE_NON_SUPERUSER_DB` | No | `false` (log only) | Startup check of the API's PostgreSQL login. Only the string `true` (case-insensitive, surrounding whitespace ignored) enforces; `1`, `yes`, empty and unset do not. Enforcing makes the API exit non-zero before it listens when the login is privileged (see below), and also when the probe cannot run (fail closed). Off, the same check logs one `error` line for a privileged login and the API starts. |
 
 `POSTGRES_SSL_CA_FILE` only takes effect in a process that receives it. The shipped `infrastructure/docker/docker-compose.yml` does not forward it to the api-server or mount a CA, so `verify-full` needs the additions described in [Production Configuration](../deployment/PRODUCTION_CONFIGURATION.md).
+
+`REQUIRE_NON_SUPERUSER_DB` counts the login as privileged when any of these eight flags is set (the probe runs one read-only query as the API's own login):
+
+- `rolsuper`: the role is a superuser.
+- `rolbypassrls`: the role has `BYPASSRLS`.
+- `session_user_privileged`: the session login (before any `SET ROLE`) is a superuser or has `BYPASSRLS`.
+- `can_set_privileged_role`: the role or the session login is a member of another superuser or `BYPASSRLS` role, so it can `SET ROLE` to it.
+- `session_authorization_masked`: a superuser login used `SET SESSION AUTHORIZATION` to look like another role. Detected on PostgreSQL 16 and later only; always false below 16.
+- `dangerous_builtin_role_member`: the role or the session login is a member of `pg_execute_server_program`, `pg_write_server_files`, `pg_read_server_files`, `pg_read_all_data` or `pg_write_all_data`.
+- `createrole_escalation`: PostgreSQL 15 or older only: a member of a `CREATEROLE` role, which can grant itself any role.
+- `replication_escalation`: a member of a role with `REPLICATION`.
+
+The shipped `infrastructure/docker/docker-compose.yml` does not forward `REQUIRE_NON_SUPERUSER_DB` and logs the API in as `POSTGRES_USER=cmdb_user`, the bootstrap superuser, so setting it in `.env` alone does nothing there, and forwarding it with the shipped `cmdb_user` would make the API refuse to start. Use it only with a dedicated non-privileged login, such as the `cmdb_app` role of `deploy/build01-staging.compose.yml`; see `deploy/BUILD01-STAGING.md` for the role creation, migration order and rollback.
 
 **Example:**
 
@@ -179,8 +196,8 @@ ETL_FULL_SYNC_SCHEDULE="0 3 * * *"  # 3 AM daily
 | `JWT_SECRET` | Yes | - | Secret key for JWT token signing (use secrets management) |
 | `JWT_ACCESS_TOKEN_EXPIRES_IN` | No | `15m` | Access token lifetime, a number plus one unit `s`, `m`, `h` or `d` (`15m`, `1h`); a bare number such as `3600` is rejected by `JwtService.getTokenExpiresIn`. Config key `auth.jwt.accessTokenExpiresIn` in `packages/common/src/config/config.loader.ts`. The web UI renews it from the refresh cookie before it expires |
 | `JWT_REFRESH_TOKEN_EXPIRES_IN` | No | `7d` | Refresh token lifetime (`auth.jwt.refreshTokenExpiresIn`); the refresh token travels only in the `__Secure-cmdb_rt` cookie, and `POST /api/v1/auth/refresh` refuses a session more than 7 days past its login whatever this is set to ([Authentication](/api/authentication#refresh-token)) |
-| `API_KEY` | No | - | Static API key (for backward compatibility) |
-| `API_KEY_HEADER` | No | `X-API-Key` | Header name for API key |
+| `API_KEY_HEADER_NAME` | No | `X-API-Key` | Header that carries an API key (`auth.apiKeys.headerName`, `packages/common/src/config/config.loader.ts`) |
+| `API_KEYS_ENABLED` | No | `true` | Config key `auth.apiKeys.enabled`. API keys are created per user through the API; there is no static API key variable (`API_KEY` and `API_KEY_HEADER` are not read by anything). As the loader reads it today the flag is `true` unless the config file sets `auth.apiKeys.enabled: false`; the variable can only force it on (the exact string `true`), any other value, `false` included, changes nothing; and no code consumes the flag yet, so it does not switch API key authentication on or off |
 | `SESSION_SECRET` | No | - | Session secret for cookie-based auth |
 | `RATE_LIMIT_REST_MAX` | No | `1000` | `POST /api/v1/auth/refresh` only (per client address, `rateLimit.endpoints.rest`); `0` mounts no limiter. Window: `RATE_LIMIT_REST_WINDOW_MS` (default `3600000`). The login and password-change variables are under [Proxy Trust & Login Rate Limiting](#proxy-trust-login-rate-limiting) |
 | `BCRYPT_ROUNDS` | No | `12` | Bcrypt cost, an integer 10-15 (`auth.bcrypt.rounds`); the one cost of the login dummy hash, every password create or change, and the operator scripts `rotate-user-password` and `seed-tenant-fixture` (which read only this variable, not the config file; `CMDB_ROTATE_BCRYPT_ROUNDS` is refused). A successful login rewrites a stored hash at another cost to this one, keeping sessions and API keys. Only `$2a$`/`$2b$` hashes of cost 04-30 are compared as stored; any other shape fails login at the cost of one dummy compare |
@@ -190,7 +207,6 @@ ETL_FULL_SYNC_SCHEDULE="0 3 * * *"  # 3 AM daily
 ```bash
 JWT_SECRET=${JWT_SECRET}  # From secrets - minimum 32 characters
 JWT_ACCESS_TOKEN_EXPIRES_IN=30m  # access token lifetime (default 15m)
-API_KEY=${API_KEY}        # From secrets
 RATE_LIMIT_AUTH_MAX=20    # login and password change, per client address
 RATE_LIMIT_REST_MAX=1000  # POST /api/v1/auth/refresh only
 BCRYPT_ROUNDS=12
@@ -211,6 +227,8 @@ never read.
 | `RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS` | No | `900000` | Window of the per-account+client limit (15 minutes) |
 | `RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_MAX` | No | `20` | Login per account across all client addresses; `0` turns it off |
 | `RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_WINDOW_MS` | No | `900000` | Window of the per-account limit (15 minutes) |
+| `RATE_LIMIT_AGENT_HEARTBEAT_MAX` | No | `600` | `POST /agents/heartbeat` per verified user across all of its keys and addresses; only admitted heartbeats count; `0` = no limiter. 600 per hour is about 10 agents per user at a 60 s interval |
+| `RATE_LIMIT_AGENT_HEARTBEAT_WINDOW_MS` | No | `3600000` | Window of the heartbeat limit (1 hour) |
 
 **Docker:** `infrastructure/docker/docker-compose.yml` and `deploy/build01-staging.compose.yml` forward every `RATE_LIMIT_*` variable that `config.schema.ts` (`rateLimit`) defines to `api-server` as `RATE_LIMIT_X=${RATE_LIMIT_X:-<schema default>}`. Set the value in the host repository-root `.env`, then recreate the container with that whole file loaded, as `./deploy.sh` does, so `JWT_SECRET` and the other required variables are set too (`( set -a; . ./.env; set +a; docker compose -f infrastructure/docker/docker-compose.yml up -d --force-recreate api-server )`, whose subshell leaves no `.env` secret exported in your shell, or `docker compose --env-file .env -f ...`); `docker restart` keeps the old environment, and a `.env` inside the image is not read (`.dockerignore`: `**/.env*`). `RATE_LIMIT_BYPASS_SECRET` is optional (empty = bypass off); `ConfigurationLoader` (`usableBypassSecret`) trims surrounding whitespace, including a CRLF `.env`'s trailing CR, then turns the bypass off with one WARN for a value under 32 characters or a placeholder the repo shipped. `RateLimitMiddleware.checkBypass` compares SHA-256 digests of the header and the secret with `crypto.timingSafeEqual`.
 

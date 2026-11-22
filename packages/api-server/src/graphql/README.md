@@ -268,6 +268,8 @@ The API uses standard GraphQL error codes:
 - **NOT_FOUND**: Resource not found (404)
 - **INTERNAL_SERVER_ERROR**: Server error (500)
 
+An ITIL record mutation refused by the REST controller with a 4xx other than 404 (for example `updateChange` on a change) answers `BAD_USER_INPUT` and adds the controller's machine code as `extensions.controllerCode` (for example `CHANGE_NOT_APPROVABLE`, or the retryable `CHANGE_APPROVAL_CHANGED`: reload the change and retry).
+
 Example error response:
 ```json
 {

@@ -7,14 +7,11 @@
  */
 
 import React, { useState } from 'react';
-import { Button } from '@/components/ui/button';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { Icon } from '@happy-technologies/design-system';
+  Button,
+  ExportButton as DsExportButton,
+  type ExportFormat,
+} from '@happy-technologies/design-system';
 import { analyticsService } from '../../services/analytics.service';
 import { logClientError } from '../../utils/logger';
 
@@ -23,8 +20,6 @@ export interface ExportButtonProps {
   filename: string;
   disabled?: boolean;
 }
-
-type ExportFormat = 'csv' | 'json';
 
 export const ExportButton: React.FC<ExportButtonProps> = ({
   data,
@@ -53,35 +48,13 @@ export const ExportButton: React.FC<ExportButtonProps> = ({
     }
   };
 
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="default"
-          size="sm"
-          disabled={disabled || exporting}
-        >
-          {exporting ? (
-            <>
-              <Icon name="spinner-gap" size={16} className="animate-spin" />
-              Exporting...
-            </>
-          ) : (
-            <>
-              <Icon name="download-simple" size={16} />
-              Export
-            </>
-          )}
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem onClick={() => handleExport('csv')}>
-          Export as CSV
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => handleExport('json')}>
-          Export as JSON
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
+  if (disabled || exporting) {
+    return (
+      <Button variant="secondary" icon="download-simple" loading={exporting} disabled>
+        {exporting ? 'Exporting...' : 'Export'}
+      </Button>
+    );
+  }
+
+  return <DsExportButton formats={['csv', 'json']} onExport={handleExport} />;
 };

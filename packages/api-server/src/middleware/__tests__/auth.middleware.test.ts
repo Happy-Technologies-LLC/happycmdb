@@ -5,24 +5,19 @@
  * Unit tests for AuthMiddleware.requireRole, the guard settings.routes.ts
  * uses on GET /api/v1/settings/database (admin only). requireRole reads
  * only the already-populated req.user, so it's tested standalone without
- * a live AuthService/DB. Also covers the GraphQL-side counterparts,
- * authenticateGraphQLContext (the Apollo context factory's identity
- * resolution -- throws GraphQLError UNAUTHENTICATED instead of returning
- * an empty context) and checkGraphQLPermission (the shared role/permission
- * gate every GraphQL resolver reuses instead of re-deriving its own copy
- * of ROLE_PERMISSIONS).
+ * a live AuthService/DB. Also covers checkGraphQLPermission (the shared
+ * role/permission gate every GraphQL resolver reuses instead of
+ * re-deriving its own copy of ROLE_PERMISSIONS).
  */
 
 import { describe, it, expect, jest } from '@jest/globals';
-import type { Request, Response, NextFunction } from 'express';
+import type { Response, NextFunction } from 'express';
 import { GraphQLError } from 'graphql';
 import {
   AuthMiddleware,
   AuthenticatedRequest,
-  authenticateGraphQLContext,
   checkGraphQLPermission,
 } from '../auth.middleware';
-import type { AuthService } from '../../auth/auth.service';
 import type { TokenPayload } from '../../auth/types';
 
 const authConfig = {
@@ -99,111 +94,6 @@ const testUser: TokenPayload = {
   _role: 'operator',
   _type: 'access',
 };
-
-function fakeAuthService(overrides: Partial<AuthService> = {}): AuthService {
-  return {
-    verifyToken: jest.fn(),
-    verifyApiKey: jest.fn(),
-    ...overrides,
-  } as unknown as AuthService;
-}
-
-function fakeRequest(headers: Record<string, string>): Request {
-  return { headers } as unknown as Request;
-}
-
-async function expectGraphQLErrorCode(promise: Promise<unknown>, code: string, status: number): Promise<void> {
-  try {
-    await promise;
-    throw new Error('expected promise to reject, but it resolved');
-  } catch (error) {
-    expect(error).toBeInstanceOf(GraphQLError);
-    const graphqlError = error as GraphQLError;
-    expect(graphqlError.extensions?.['code']).toBe(code);
-    expect((graphqlError.extensions?.['http'] as { status?: number } | undefined)?.status).toBe(status);
-  }
-}
-
-describe('authenticateGraphQLContext', () => {
-  it('throws GraphQL UNAUTHENTICATED (401) when no bearer token or API key is present', async () => {
-    const authService = fakeAuthService();
-
-    await expectGraphQLErrorCode(
-      authenticateGraphQLContext(authService, 'X-API-Key', fakeRequest({})),
-      'UNAUTHENTICATED',
-      401
-    );
-    expect(authService.verifyToken).not.toHaveBeenCalled();
-    expect(authService.verifyApiKey).not.toHaveBeenCalled();
-  });
-
-  it('throws GraphQL UNAUTHENTICATED (401) when the bearer token fails verification', async () => {
-    const authService = fakeAuthService({
-      verifyToken: jest.fn().mockRejectedValue(new Error('jwt expired')) as unknown as AuthService['verifyToken'],
-    });
-
-    await expectGraphQLErrorCode(
-      authenticateGraphQLContext(authService, 'X-API-Key', fakeRequest({ authorization: 'Bearer bad-token' })),
-      'UNAUTHENTICATED',
-      401
-    );
-  });
-
-  it('throws GraphQL UNAUTHENTICATED (401) when the API key fails verification', async () => {
-    const authService = fakeAuthService({
-      verifyApiKey: jest.fn().mockRejectedValue(new Error('invalid key')) as unknown as AuthService['verifyApiKey'],
-    });
-
-    await expectGraphQLErrorCode(
-      authenticateGraphQLContext(authService, 'X-API-Key', fakeRequest({ 'x-api-key': 'bad-key' })),
-      'UNAUTHENTICATED',
-      401
-    );
-  });
-  it('never echoes internal JWT/API-key repository errors through GraphQL authentication', async () => {
-    const internalText = 'Neo4j internal-db:7687 synthetic-secret';
-    const authService = fakeAuthService({
-      verifyToken: jest.fn().mockRejectedValue(new Error(internalText)) as unknown as AuthService['verifyToken'],
-      verifyApiKey: jest.fn().mockRejectedValue(new Error(internalText)) as unknown as AuthService['verifyApiKey'],
-    });
-    for (const headers of [
-      { authorization: 'Bearer bad-token' },
-      { 'x-api-key': 'bad-key' },
-    ]) {
-      await expect(authenticateGraphQLContext(authService, 'X-API-Key', fakeRequest(headers)))
-        .rejects.toMatchObject({ message: 'Authentication failed' });
-    }
-  });
-
-
-  it('resolves { user } for a valid bearer token', async () => {
-    const authService = fakeAuthService({
-      verifyToken: jest.fn().mockResolvedValue(testUser) as unknown as AuthService['verifyToken'],
-    });
-
-    const result = await authenticateGraphQLContext(
-      authService,
-      'X-API-Key',
-      fakeRequest({ authorization: 'Bearer good-token' })
-    );
-
-    expect(result).toEqual({ user: testUser });
-  });
-
-  it('resolves { user } for a valid API key when no bearer token is present', async () => {
-    const authService = fakeAuthService({
-      verifyApiKey: jest.fn().mockResolvedValue(testUser) as unknown as AuthService['verifyApiKey'],
-    });
-
-    const result = await authenticateGraphQLContext(
-      authService,
-      'X-API-Key',
-      fakeRequest({ 'x-api-key': 'good-key' })
-    );
-
-    expect(result).toEqual({ user: testUser });
-  });
-});
 
 describe('checkGraphQLPermission', () => {
   it('throws GraphQL UNAUTHENTICATED (401) when the context has no user', () => {

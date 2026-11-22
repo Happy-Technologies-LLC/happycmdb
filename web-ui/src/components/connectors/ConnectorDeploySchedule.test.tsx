@@ -8,7 +8,10 @@ import { MemoryRouter } from 'react-router-dom';
 
 const { apiClient } = vi.hoisted(() => ({ apiClient: { get: vi.fn(), post: vi.fn() } }));
 vi.mock('@/lib/api-client', () => ({ apiClient }));
-vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null }));
+vi.mock('@happy-technologies/design-system', async (importActual) => ({
+  ...(await importActual<typeof import('@happy-technologies/design-system')>()),
+  Icon: () => null,
+}));
 
 import { ConnectorDefinitionList } from './ConnectorDefinitionList';
 import { ConnectorMarketplace } from './ConnectorMarketplace';

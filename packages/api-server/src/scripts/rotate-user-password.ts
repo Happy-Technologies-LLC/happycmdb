@@ -46,7 +46,8 @@ import neo4j from 'neo4j-driver';
 import { DEFAULT_PLAINTEXTS, newPasswordAllowed, ROTATION_MIN_LENGTH } from '../auth/default-credentials';
 import { configuredBcryptRounds } from '../auth/password.service';
 import { LOCK_USER } from '../auth/user-lock';
-import { isolateOperatorEnvironment, LockBusyError, openOperatorStores, type OperatorStores } from './operator-stores';
+import { LockBusyError, openOperatorStores, type OperatorStores } from './operator-stores';
+import { isolateOperatorEnvironment } from './operator-tls';
 
 // ---------------------------------------------------------------------------
 // Statements

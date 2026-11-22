@@ -129,3 +129,40 @@ it('HAP-499/HAP-1732: a reconciliation 500 never reflects the database error; on
   expect(logged.map(([, detail]) => detail)).toEqual(Array(5).fill({ errorClass: 'Error' }));
   expect(JSON.stringify(logged)).not.toMatch(/secret-ext|Node\(42\)/);
 });
+
+describe('POST /reconciliation/conflicts/:id/resolve id shape', () => {
+  const UUID_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const body = { resolution: 'accept_source', expected_revision: 'a'.repeat(64) };
+  const resolve = (id: string) => request(app).post(`/api/v1/reconciliation/conflicts/${id}/resolve`).set('authorization', 'Bearer org-a').send(body);
+  let engineResolve: jest.SpyInstance;
+  beforeEach(() => { engineResolve = jest.spyOn(IdentityReconciliationEngine.getInstance(), 'resolveConflict'); });
+  afterEach(() => engineResolve.mockRestore());
+
+  it('answers the missing-conflict 404 for a non-UUID id without calling the engine or reaching the 22P02 500', async () => {
+    engineResolve.mockRejectedValue(Object.assign(new Error('invalid input syntax for type uuid'), { code: '22P02' }));
+    const response = await resolve('not-a-uuid');
+    expect([response.status, response.body]).toEqual([404, { success: false, error: 'Not Found', message: 'Conflict not found' }]);
+    expect(engineResolve).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('gives a valid UUID the engine verdict: null is the same 404, a result is 200 echoing the id', async () => {
+    engineResolve.mockResolvedValueOnce(null);
+    const missing = await resolve(UUID_ID);
+    expect([missing.status, missing.body]).toEqual([404, { success: false, error: 'Not Found', message: 'Conflict not found' }]);
+
+    engineResolve.mockResolvedValueOnce({ status: 'resolved', correlation_id: 'corr-1' } as never);
+    const resolved = await resolve(UUID_ID);
+    expect(resolved.status).toBe(200);
+    expect(resolved.body.data).toMatchObject({ conflict_id: UUID_ID, resolution: 'accept_source', status: 'resolved', correlation_id: 'corr-1' });
+    expect(engineResolve).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts an uppercase UUID', async () => {
+    engineResolve.mockResolvedValueOnce({ status: 'resolved', correlation_id: 'corr-2' } as never);
+    const response = await resolve(UUID_ID.toUpperCase());
+    expect(response.status).toBe(200);
+    expect(response.body.data.conflict_id).toBe(UUID_ID.toUpperCase());
+    expect(engineResolve).toHaveBeenCalledTimes(1);
+  });
+});

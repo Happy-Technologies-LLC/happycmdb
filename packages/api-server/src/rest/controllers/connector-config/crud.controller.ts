@@ -16,6 +16,21 @@ import { ownedConfig, requestScopeValues } from './ownership';
 import { sendForbidden } from '../../../middleware/forbidden-response';
 import { ConnectorJsonPatchBudget, ConnectorJsonPatchError, isConnectorJsonResultLimit, CONNECTOR_JSON_LIMIT_MESSAGE } from '../../../services/connector-json-merge';
 
+const UNIQUE_VIOLATION = '23505';
+
+function isUniqueViolation(error: unknown): boolean {
+  return (error as { code?: string } | null)?.code === UNIQUE_VIOLATION;
+}
+
+/** Fixed 409 body shared by the pre-check and the unique-index race; never carries driver detail. */
+function sendDuplicateName(res: Response, name: string): void {
+  res.status(409).json({
+    success: false,
+    error: 'Conflict',
+    message: `Configuration with name '${name}' already exists`
+  });
+}
+
 export class ConnectorConfigCRUDController {
   constructor(private pool: Pool) {}
 
@@ -150,11 +165,7 @@ export class ConnectorConfigCRUDController {
       );
 
       if (existingResult.rows.length > 0) {
-        res.status(409).json({
-          success: false,
-          error: 'Conflict',
-          message: `Configuration with name '${name}' already exists`
-        });
+        sendDuplicateName(res, name);
         return;
       }
 
@@ -201,6 +212,10 @@ export class ConnectorConfigCRUDController {
     } catch (error) {
       if (error instanceof ConnectorJsonPatchError || isConnectorJsonResultLimit(error)) {
         res.status(400).json({ success: false, error: 'Bad Request', message: CONNECTOR_JSON_LIMIT_MESSAGE });
+        return;
+      }
+      if (isUniqueViolation(error)) {
+        sendDuplicateName(res, req.body?.name);
         return;
       }
       logger.error('Error creating configuration');
@@ -258,6 +273,10 @@ export class ConnectorConfigCRUDController {
     } catch (error) {
       if (error instanceof ConnectorJsonPatchError || isConnectorJsonResultLimit(error)) {
         res.status(400).json({ success: false, error: 'Bad Request', message: CONNECTOR_JSON_LIMIT_MESSAGE });
+        return;
+      }
+      if (isUniqueViolation(error) && typeof req.body?.name === 'string') {
+        sendDuplicateName(res, req.body.name);
         return;
       }
       logger.error('Error updating configuration');

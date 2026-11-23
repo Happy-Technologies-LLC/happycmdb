@@ -20,7 +20,9 @@ vi.mock('../../hooks/useCredentials', () => ({
 }));
 // CI also runs this file under vitest.connector-wizard.config.ts, which aliases the design system to an Icon-only stub.
 // The form renders DS inputs, selects and buttons, so load the installed package's real source whichever config runs.
-vi.mock('@happy-technologies/design-system', () => import('../../../../node_modules/@happy-technologies/design-system/src/index'));
+// Resolve the package through Node (not a hard-coded node_modules path), so hoisting layout does not matter.
+const dsEntry = vi.hoisted(async () => (await import('node:module')).createRequire(import.meta.url).resolve('@happy-technologies/design-system'));
+vi.mock('@happy-technologies/design-system', async () => import(/* @vite-ignore */ await dsEntry));
 
 import DiscoveryDefinitionForm from './DiscoveryDefinitionForm';
 import { discoveryService, type DiscoveryDefinitionInput } from '../../services/discovery.service';

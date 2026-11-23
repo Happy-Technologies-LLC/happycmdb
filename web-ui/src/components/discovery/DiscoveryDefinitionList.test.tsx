@@ -160,3 +160,31 @@ describe('DiscoveryDefinitionList actions', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 });
+
+describe('DiscoveryDefinitionList dialog Escape handling', () => {
+  const openCreate = () => {
+    render(<DiscoveryDefinitionList definitions={[]} loading={false} {...handlers()} />);
+    fireEvent.click(screen.getByRole('button', { name: /create definition/i }));
+    const dialog = screen.getByRole('dialog', { name: 'Create Discovery Definition' });
+    const name = within(dialog).getByLabelText(/^name/i) as HTMLInputElement;
+    fireEvent.change(name, { target: { value: 'half typed' } });
+    return { dialog, name };
+  };
+
+  it('Escape on an open dropdown closes only the dropdown and keeps the half-filled form', () => {
+    const { dialog, name } = openCreate();
+    const provider = within(dialog).getByRole('combobox', { name: /^provider/i });
+    fireEvent.click(provider);
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    fireEvent.keyDown(provider, { key: 'Escape' });
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Create Discovery Definition' })).toBeInTheDocument();
+    expect(name.value).toBe('half typed');
+  });
+
+  it('Escape with no dropdown open still closes the dialog', () => {
+    const { name } = openCreate();
+    fireEvent.keyDown(name, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+});

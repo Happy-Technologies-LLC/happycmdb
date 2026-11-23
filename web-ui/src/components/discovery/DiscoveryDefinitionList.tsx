@@ -107,7 +107,15 @@ const FormModal: React.FC<{
   children: React.ReactNode;
 }> = ({ open, title, onClose, children }) => (
   <Dialog open={open} onClose={onClose} aria-label={title} className="max-w-3xl">
-    <div className="max-h-[85vh] overflow-y-auto p-6">
+    <div
+      className="max-h-[85vh] overflow-y-auto p-6"
+      // The DS Dialog closes on any Escape that bubbles to document, and the DS Select (a listbox that preventDefaults
+      // its own Escape) does not stop it, so one Escape would close the dropdown and discard the form. Keep an Escape
+      // a child already handled from reaching the Dialog. Root fix belongs in the design system.
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && e.defaultPrevented) e.stopPropagation();
+      }}
+    >
       <SectionHeading level={2} className="pr-10">
         {title}
       </SectionHeading>

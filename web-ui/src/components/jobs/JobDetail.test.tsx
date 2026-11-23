@@ -6,6 +6,7 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { Job } from '../../services/jobs.service';
 import { JobDetail } from './JobDetail';
+import { winningDeclaration } from '../../tests/utils/tailwindCascade';
 
 const auth = vi.hoisted(() => ({ role: 'operator' as string }));
 vi.mock('@contexts/AuthContext', () => ({ useAuth: () => ({ user: { role: auth.role } }) }));
@@ -115,5 +116,21 @@ describe('JobDetail', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await userEvent.click(screen.getByRole('button', { name: 'Yes, Cancel Job' }));
     expect(onCancel).toHaveBeenCalledExactlyOnceWith('job-42');
+  });
+
+  // The DS Dialog joins its own max-w-md with the caller's className without tailwind-merge, so the width
+  // override only holds if it wins the cascade; main's wide 48rem layout must survive the restyle.
+  it('keeps the wide dialog layout: the width override wins over the DS default', async () => {
+    auth.role = 'viewer';
+    renderDetail(failedJob);
+    const panel = screen.getByRole('dialog', { name: 'Job Details' });
+    expect(await winningDeclaration(panel.className, 'max-width')).toBe('48rem');
+  });
+
+  it('closes the heading gap of the dialog title', async () => {
+    auth.role = 'viewer';
+    renderDetail(failedJob);
+    const heading = screen.getByRole('heading', { name: 'Job Details' });
+    expect(await winningDeclaration(heading.parentElement!.className, 'margin-bottom')).toBe('calc(0.25rem * 0)');
   });
 });

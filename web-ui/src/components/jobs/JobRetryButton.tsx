@@ -91,7 +91,7 @@ export const JobRetryButton: React.FC<JobRetryButtonProps> = ({
 
       <Dialog open={open} onClose={handleClose} aria-label="Retry Job">
         <div className="space-y-4 p-6">
-          <SectionHeading className="mb-0 pr-8">Retry Job</SectionHeading>
+          <SectionHeading className="mb-0! pr-8">Retry Job</SectionHeading>
           <p className="text-sm text-[var(--hh-text-body)]">Are you sure you want to retry this job?</p>
           <FieldList
             fields={[

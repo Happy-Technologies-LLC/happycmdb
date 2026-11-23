@@ -92,7 +92,7 @@ export const JobCancelButton: React.FC<JobCancelButtonProps> = ({
 
       <Dialog open={open} onClose={handleClose} aria-label="Cancel Job">
         <div className="space-y-4 p-6">
-          <SectionHeading className="mb-0 pr-8">Cancel Job</SectionHeading>
+          <SectionHeading className="mb-0! pr-8">Cancel Job</SectionHeading>
           <p className="text-sm text-[var(--hh-text-body)]">
             Are you sure you want to cancel this job? This action cannot be undone.
           </p>

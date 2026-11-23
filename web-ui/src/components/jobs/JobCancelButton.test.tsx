@@ -9,6 +9,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import type { Job } from '../../services/jobs.service';
 import { JobCancelButton } from './JobCancelButton';
+import { winningDeclaration } from '../../tests/utils/tailwindCascade';
 
 const auth = vi.hoisted(() => ({ role: 'operator' as string | undefined }));
 vi.mock('@contexts/AuthContext', () => ({ useAuth: () => ({ user: auth.role ? { role: auth.role } : null }) }));
@@ -77,5 +78,13 @@ describe('JobCancelButton', () => {
     auth.role = 'operator';
     render(<JobCancelButton job={{ ...activeJob, status: 'completed' }} onCancel={vi.fn()} />);
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+  });
+
+  it('closes the heading gap of the confirm dialog title', async () => {
+    auth.role = 'operator';
+    render(<JobCancelButton job={activeJob} onCancel={vi.fn()} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    const heading = screen.getByRole('heading', { name: 'Cancel Job' });
+    expect(await winningDeclaration(heading.parentElement!.className, 'margin-bottom')).toBe('calc(0.25rem * 0)');
   });
 });

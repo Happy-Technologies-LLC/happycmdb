@@ -9,6 +9,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import type { Job } from '../../services/jobs.service';
 import { JobRetryButton } from './JobRetryButton';
+import { winningDeclaration } from '../../tests/utils/tailwindCascade';
 
 const auth = vi.hoisted(() => ({ role: 'operator' as string | undefined }));
 vi.mock('@contexts/AuthContext', () => ({ useAuth: () => ({ user: auth.role ? { role: auth.role } : null }) }));
@@ -77,5 +78,13 @@ describe('JobRetryButton', () => {
     auth.role = 'operator';
     render(<JobRetryButton job={{ ...failedJob, attempts: 3 }} onRetry={vi.fn()} />);
     expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled();
+  });
+
+  it('closes the heading gap of the confirm dialog title', async () => {
+    auth.role = 'operator';
+    render(<JobRetryButton job={failedJob} onRetry={vi.fn()} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    const heading = screen.getByRole('heading', { name: 'Retry Job' });
+    expect(await winningDeclaration(heading.parentElement!.className, 'margin-bottom')).toBe('calc(0.25rem * 0)');
   });
 });

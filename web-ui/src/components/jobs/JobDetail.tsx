@@ -61,9 +61,9 @@ export const JobDetail: React.FC<JobDetailProps> = ({
   };
 
   return (
-    <Dialog open={open} onClose={onClose} aria-label="Job Details" className="max-w-3xl">
+    <Dialog open={open} onClose={onClose} aria-label="Job Details" className="max-w-3xl!">
       <div className="max-h-[90vh] space-y-4 overflow-y-auto p-6">
-        <SectionHeading className="mb-0 pr-8">Job Details</SectionHeading>
+        <SectionHeading className="mb-0! pr-8">Job Details</SectionHeading>
 
         <div>
           <SectionHeading

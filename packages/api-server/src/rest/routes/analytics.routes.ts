@@ -42,6 +42,9 @@ const ciIdParamSchema = Joi.object({
 // Dashboard summary statistics
 analyticsRoutes.get('/dashboard', controller.getDashboardStats.bind(controller));
 
+// Estate topology summary (category counts, capped node sample, capped edge list)
+analyticsRoutes.get('/topology-summary', controller.getTopologySummary.bind(controller));
+
 // CI counts by type
 analyticsRoutes.get('/ci-counts', controller.getCICountsByType.bind(controller));
 
@@ -94,6 +97,9 @@ analyticsRoutes.get(
   validateOptional(dateRangeSchema, 'query'),
   controller.getChangeTimeline.bind(controller)
 );
+
+// Caller-organization recent CI changes feed (last hour or day)
+analyticsRoutes.get('/recent-changes', controller.getRecentChanges.bind(controller));
 
 // CI health metrics derived from anomaly detections
 analyticsRoutes.get(

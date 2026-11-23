@@ -20,6 +20,7 @@ import { createHash, randomBytes } from 'crypto';
 import type { Response } from 'express';
 import { logger } from '@cmdb/common';
 import { AuthService, AuthRepository, UserProfileUpdate } from '../auth.service';
+import type { GuardedEpochBump } from '../auth.service';
 import { JWTService } from '../jwt.service';
 import { bcryptKey, isDefaultEquivalent } from '../default-credentials';
 import { PasswordService } from '../password.service';
@@ -79,12 +80,12 @@ class FakeRepository implements AuthRepository {
     return updated;
   }
   async updatePasswordHashGuarded(args: {
-    userId: string; elementId?: string; credentialEpoch: number; readHash: string; newHash: string;
+    userId: string; elementId?: string; credentialEpoch: number; readHash: string; newHash: string; organizationId: string;
   }): Promise<boolean> {
     await this.beforeWrite?.();
     const user = this.users.get(args.userId);
     if (!user || (user._credentialEpoch ?? 0) !== args.credentialEpoch || user._defaultPasswordSuspect === true
-      || user._passwordHash !== args.readHash) return false;
+      || user._passwordHash !== args.readHash || user._organizationId !== args.organizationId) return false;
     this.users.set(args.userId, { ...user, _passwordHash: args.newHash });
     return true;
   }
@@ -97,6 +98,15 @@ class FakeRepository implements AuthRepository {
     if (!user || (user._credentialEpoch ?? 0) !== args.credentialEpoch || user._defaultPasswordSuspect === true
       || user._passwordHash !== args.readHash) return false;
     this.users.set(args.userId, { ...user, _passwordHash: args.newHash });
+    return true;
+  }
+  /** Like GUARDED_BUMP_EPOCH_CYPHER: the same guards as the password change, but only the generation moves (by one); the hash never changes. */
+  async bumpCredentialEpochGuarded(args: GuardedEpochBump): Promise<boolean> {
+    await this.beforeWrite?.();
+    const user = this.users.get(args.userId);
+    if (!user || (user._credentialEpoch ?? 0) !== args.credentialEpoch || user._defaultPasswordSuspect === true
+      || user._passwordHash !== args.readHash || !user._organizationId || user._organizationId !== args.organizationId) return false;
+    this.users.set(args.userId, { ...user, _credentialEpoch: args.credentialEpoch + 1 });
     return true;
   }
   async disableUserGuarded(args: { userId: string; elementId?: string; credentialEpoch: number }): Promise<boolean> {
@@ -131,6 +141,7 @@ class FakeRepository implements AuthRepository {
   }
   async updateApiKeyLastUsed(): Promise<void> {}
   async deleteApiKey(): Promise<number> { return 0; }
+  async revokeApiKeysBelowEpoch(): Promise<number> { return 0; }
   async listApiKeys(): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]> { return []; }
 
   /** What the operator rotation does to the user node (scripts/rotate-user-password.ts). */
@@ -289,8 +300,8 @@ describe('N-21 (b) a marked account cannot log in or use any credential until op
 
   it('refuses access tokens, refresh tokens and API keys of a marked user', async () => {
     repository.users.set('m', user('m', { _defaultPasswordSuspect: true }));
-    const access = jwt.generateAccessToken('m', 'm', 'admin', ORG_A);
-    const refresh = jwt.generateRefreshToken('m', 'm', 'admin');
+    const access = jwt.generateAccessToken('m', 'm', 'admin', ORG_A, 0, Math.floor(Date.now() / 1000));
+    const refresh = jwt.generateRefreshToken('m', 'm', 'admin', 0, Math.floor(Date.now() / 1000));
     const key = await addKey('m', 0);
 
     await expect(service.verifyToken(access)).rejects.toThrow();
@@ -328,7 +339,7 @@ describe('N-21 (c)/(d) the credential generation kills every pre-rotation creden
 
   it('a key created in flight by a pre-rotation credential is born dead', async () => {
     repository.users.set('u', user('u', { _passwordHash: operatorHash }));
-    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A));
+    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A, 0, Math.floor(Date.now() / 1000)));
     repository.rotate('u', operatorHash);
 
     const created = await service.generateApiKey('u', { name: 'late' }, authorizing._cep!);
@@ -340,7 +351,7 @@ describe('N-21 (c)/(d) the credential generation kills every pre-rotation creden
     repository.users.set('u', user('u', { _passwordHash: operatorHash, _credentialEpoch: Number.NaN }));
 
     await expect(service.login({ username: 'u', password: OPERATOR_PASSWORD })).rejects.toMatchObject(INVALID);
-    await expect(service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A))).rejects.toThrow();
+    await expect(service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A, 0, Math.floor(Date.now() / 1000)))).rejects.toThrow();
   });
 });
 
@@ -375,14 +386,14 @@ describe('N-21 (i) login race: a rotation committing during login yields no usab
 describe('N-21 (h5) in-flight self-service writes across a live rotation (SEC16-01)', () => {
   it('a password change authorized before the rotation cannot overwrite the operator hash', async () => {
     repository.users.set('u', user('u', { _passwordHash: operatorHash }));
-    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A));
+    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A, 0, Math.floor(Date.now() / 1000)));
     const rotated = await bcrypt.hash('rotated-by-operator', 4);
     repository.beforeWrite = () => {
       repository.beforeWrite = undefined;
       repository.rotate('u', rotated);
     };
 
-    await expect(service.changePassword('u', OPERATOR_PASSWORD, 'attacker-chosen-pass', authorizing._cep!))
+    await expect(service.changePassword('u', OPERATOR_PASSWORD, 'attacker-chosen-pass', authorizing._cep!, ORG_A))
       .rejects.toThrow('Credentials changed');
 
     expect(repository.users.get('u')!._passwordHash).toBe(rotated);
@@ -390,7 +401,7 @@ describe('N-21 (h5) in-flight self-service writes across a live rotation (SEC16-
 
   it('an account delete authorized before the rotation is refused and the account survives', async () => {
     repository.users.set('u', user('u', { _passwordHash: operatorHash }));
-    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A));
+    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A, 0, Math.floor(Date.now() / 1000)));
     repository.beforeWrite = () => {
       repository.beforeWrite = undefined;
       repository.rotate('u', operatorHash);
@@ -403,9 +414,9 @@ describe('N-21 (h5) in-flight self-service writes across a live rotation (SEC16-
 
   it('an unraced password change still works', async () => {
     repository.users.set('u', user('u', { _passwordHash: operatorHash }));
-    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A));
+    const authorizing = await service.verifyToken(jwt.generateAccessToken('u', 'u', 'admin', ORG_A, 0, Math.floor(Date.now() / 1000)));
 
-    await service.changePassword('u', OPERATOR_PASSWORD, 'a-new-long-password', authorizing._cep!);
+    await service.changePassword('u', OPERATOR_PASSWORD, 'a-new-long-password', authorizing._cep!, ORG_A);
 
     await expect(service.login({ username: 'u', password: 'a-new-long-password' })).resolves.toBeDefined();
   });
@@ -417,7 +428,7 @@ describe('N-21 new-password rules (every environment)', () => {
     repository.users.set('u', user('u', { _passwordHash: operatorHash }));
 
     for (const newPassword of [DEFAULT, CYCLE.slice(0, 72), 'long-enough\u0000x', 'é'.repeat(37)]) {
-      await expect(service.changePassword('u', OPERATOR_PASSWORD, newPassword, 0)).rejects.toThrow('Password not allowed');
+      await expect(service.changePassword('u', OPERATOR_PASSWORD, newPassword, 0, ORG_A)).rejects.toThrow('Password not allowed');
     }
     expect(repository.users.get('u')!._passwordHash).toBe(operatorHash);
   });
@@ -428,8 +439,8 @@ describe('N-21 SEC12-02: per-request paths never run bcrypt; a non-bcrypt hash i
     const users = Array.from({ length: 5000 }, (_, i) => `scale-${i}`);
     for (const id of users) repository.users.set(id, user(id, { _passwordHash: operatorHash }));
     const credentials = await Promise.all(users.map(async id => ({
-      access: jwt.generateAccessToken(id, id, 'admin', ORG_A, 0),
-      refresh: jwt.generateRefreshToken(id, id, 'admin', 0),
+      access: jwt.generateAccessToken(id, id, 'admin', ORG_A, 0, Math.floor(Date.now() / 1000)),
+      refresh: jwt.generateRefreshToken(id, id, 'admin', 0, Math.floor(Date.now() / 1000)),
       key: await addKey(id, 0),
     })));
     const compare = jest.spyOn(PasswordService.prototype, 'verify');
@@ -455,7 +466,7 @@ describe('N-21 SEC12-02: per-request paths never run bcrypt; a non-bcrypt hash i
   it.each([['missing', undefined], ['plaintext', 'Admin123!'], ['garbage', '$2b$xx']])(
     'a %s stored hash: login gives the same 401 without throwing; an existing token keeps working until expiry', async (_label, stored) => {
       repository.users.set('n', user('n', { _passwordHash: stored as string }));
-      const existing = jwt.generateAccessToken('n', 'n', 'admin', ORG_A);
+      const existing = jwt.generateAccessToken('n', 'n', 'admin', ORG_A, 0, Math.floor(Date.now() / 1000));
 
       await expect(service.login({ username: 'n', password: 'some-other-password' })).rejects.toMatchObject(INVALID);
       await expect(service.verifyToken(existing)).resolves.toMatchObject({ _userId: 'n', _cep: 0 });
@@ -519,7 +530,7 @@ describe('HAP-552 every login attempt costs exactly one bcrypt compare, whatever
 });
 
 describe('N-21 P-6 dedicated platform-admin flag with seeded-account exclusion', () => {
-  const access = (id: string) => jwt.generateAccessToken(id, id, 'admin', ORG_A);
+  const access = (id: string) => jwt.generateAccessToken(id, id, 'admin', ORG_A, 0, Math.floor(Date.now() / 1000));
   type Outcome = { status: number; body: unknown; nextCalled: boolean };
   const response = () => ({ statusCode: 200, body: undefined as unknown,
     status(code: number) { this.statusCode = code; return this; }, json(body: unknown) { this.body = body; return this; } });
@@ -539,7 +550,7 @@ describe('N-21 P-6 dedicated platform-admin flag with seeded-account exclusion',
     return { status: res.statusCode, body: res.body, nextCalled };
   }
   const bearer = (id: string) => ({ authorization: `Bearer ${access(id)}` });
-  const FORBIDDEN = { status: 403, nextCalled: false, body: { success: false, error: 'Forbidden', message: 'Platform administrator required' } };
+  const FORBIDDEN = { status: 403, nextCalled: false, body: expect.objectContaining({ success: false, error: 'Forbidden', message: 'Platform administrator required', code: 'PLATFORM_ADMIN_REQUIRED' }) };
 
   it('grants platform admin only from the flag, never from role or org', async () => {
     repository.users.set('p', user('p', { _passwordHash: operatorHash, _platformAdmin: true, _role: 'viewer' }));
@@ -701,7 +712,7 @@ describe('HAP-1090 a successful login converges the stored hash to the configure
 
       await expect(single.login({ username: 'ghost', password: OPERATOR_PASSWORD })).rejects.toMatchObject(INVALID);
       const dummy = verify.mock.calls[0]![1];
-      await single.changePassword('u', OPERATOR_PASSWORD, NEXT, 0);
+      await single.changePassword('u', OPERATOR_PASSWORD, NEXT, 0, ORG_A);
       const changed = stored();
       repository.users.set('u', user('u', { _passwordHash: operatorHash }));
       await single.login({ username: 'u', password: OPERATOR_PASSWORD });

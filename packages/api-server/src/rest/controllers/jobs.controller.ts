@@ -36,6 +36,49 @@ const MAX_JOB_START = 10_000;
 const INVALID_JOB_PAGINATION = { success: false, error: 'Invalid job pagination' };
 const DEEP_JOB_PAGES_UNAVAILABLE = { success: false, error: 'Deep job pages unavailable' };
 
+const MAX_CLEAN_GRACE_MS = 31_536_000_000;
+const MAX_CLEAN_LIMIT = 10_000;
+const INVALID_CLEAN_REQUEST = { success: false, error: 'Invalid clean request' };
+
+interface CleanRequest {
+  grace: number;
+  limit: number;
+  type: 'completed' | 'failed';
+}
+
+function boundedInteger(value: unknown, fallback: number, min: number, max: number): number | null {
+  if (value === undefined) {
+    return fallback;
+  }
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+    return null;
+  }
+  return value >= min && value <= max ? value : null;
+}
+
+/**
+ * Strict body parse for the clean endpoint: BullMQ `clean` also accepts wait, active, paused and
+ * delayed, so only the two history states are allowed, and grace and limit are bounded integers.
+ * Returns null for anything else; the caller answers with a fixed body that never echoes input.
+ */
+function cleanRequest(body: unknown): CleanRequest | null {
+  const input = body === undefined ? {} : body;
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return null;
+  }
+  const { grace, limit, type } = input as Record<string, unknown>;
+  if (type !== undefined && type !== 'completed' && type !== 'failed') {
+    return null;
+  }
+  const validType: CleanRequest['type'] = type === 'failed' ? 'failed' : 'completed';
+  const validGrace = boundedInteger(grace, 3_600_000, 0, MAX_CLEAN_GRACE_MS);
+  const validLimit = boundedInteger(limit, 1000, 1, MAX_CLEAN_LIMIT);
+  if (validGrace === null || validLimit === null) {
+    return null;
+  }
+  return { grace: validGrace, limit: validLimit, type: validType };
+}
+
 function nonNegativePageInteger(value: unknown, fallback: number): number | null {
   if (value === undefined) return fallback;
   if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
@@ -43,7 +86,11 @@ function nonNegativePageInteger(value: unknown, fallback: number): number | null
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-function jobPage(query: Request['query']): { start: number; end: number; limit: number } | 'deep' | null {
+/**
+ * `readEnd` is the inclusive last queue position to read: one past the page, so the read learns
+ * whether a next page exists without ever touching more than limit + 1 positions.
+ */
+function jobPage(query: Request['query']): { start: number; readEnd: number; limit: number } | 'deep' | null {
   const start = nonNegativePageInteger(query.start, 0);
   const requestedEnd = nonNegativePageInteger(query.end, 99);
   const requestedLimit = nonNegativePageInteger(query.limit, MAX_JOB_PAGE_SIZE);
@@ -51,8 +98,12 @@ function jobPage(query: Request['query']): { start: number; end: number; limit: 
   if (start > MAX_JOB_START) return 'deep';
   if (requestedEnd < start) return null;
   const limit = Math.min(requestedEnd - start + 1, requestedLimit, MAX_JOB_PAGE_SIZE);
-  const end = start + limit - 1;
-  return { start, end, limit };
+  return { start, readEnd: start + limit, limit };
+}
+
+/** Drops the one-past-the-page probe job; `hasMore` is true exactly when it was present. */
+function takePage<T>(read: T[], limit: number): { items: T[]; hasMore: boolean } {
+  return { items: read.slice(0, limit), hasMore: read.length > limit };
 }
 
 /**
@@ -161,36 +212,36 @@ export class JobsController {
       const { state = 'waiting' } = req.query;
       const queue = page.limit > 0 ? this.queueManager.getQueue(queueName) : null;
 
-      let jobs: Job[] = [];
+      let read: Job[] = [];
       if (queue) {
         switch (state) {
           case 'waiting':
-            jobs = await queue.getWaiting(page.start, page.end);
+            read = await queue.getWaiting(page.start, page.readEnd);
             break;
           case 'active':
-            jobs = await queue.getActive(page.start, page.end);
+            read = await queue.getActive(page.start, page.readEnd);
             break;
           case 'completed':
-            jobs = await queue.getCompleted(page.start, page.end);
+            read = await queue.getCompleted(page.start, page.readEnd);
             break;
           case 'failed':
-            jobs = await queue.getFailed(page.start, page.end);
+            read = await queue.getFailed(page.start, page.readEnd);
             break;
           case 'delayed':
-            jobs = await queue.getDelayed(page.start, page.end);
+            read = await queue.getDelayed(page.start, page.readEnd);
             break;
           default:
-            jobs = await queue.getWaiting(page.start, page.end);
+            read = await queue.getWaiting(page.start, page.readEnd);
         }
       }
 
+      const { items: jobs, hasMore } = takePage(read, page.limit);
       const jobsData = await Promise.all(jobs.map((job) => publicJob(job, queueName)));
 
-      // Queue offsets may omit jobs outside this bounded read.
       res.json({
         success: true,
         data: { queueName, state, jobs: jobsData, count: jobsData.length },
-        pagination: { limit: page.limit, offset: page.start, truncated: page.limit > 0 },
+        pagination: { limit: page.limit, offset: page.start, hasMore },
       });
     } catch {
       logger.error('Error listing jobs');
@@ -631,9 +682,10 @@ export class JobsController {
       const page = jobPage(req.query);
       if (!page) { res.status(400).json(INVALID_JOB_PAGINATION); return; }
       if (page === 'deep') { res.status(400).json(DEEP_JOB_PAGES_UNAVAILABLE); return; }
-      const failedJobs = page.limit > 0
-        ? await this.queueManager.getFailedJobs(queueName, page.start, page.end)
+      const read = page.limit > 0
+        ? await this.queueManager.getFailedJobs(queueName, page.start, page.readEnd)
         : [];
+      const { items: failedJobs, hasMore } = takePage(read, page.limit);
 
       const jobsData = await Promise.all(
         failedJobs.map((job) => publicJob(job, queueName))
@@ -646,7 +698,7 @@ export class JobsController {
           failedJobs: jobsData,
           count: jobsData.length,
         },
-        pagination: { limit: page.limit, offset: page.start, truncated: page.limit > 0 },
+        pagination: { limit: page.limit, offset: page.start, hasMore },
       });
     } catch {
       logger.error('Error getting failed jobs');
@@ -670,25 +722,24 @@ export class JobsController {
         return;
       }
 
-      const { grace = 3600000, limit = 1000, type = 'completed' } = req.body;
+      const clean = cleanRequest(req.body);
+      if (clean === null) {
+        res.status(400).json(INVALID_CLEAN_REQUEST);
+        return;
+      }
 
-      await this.queueManager.cleanQueue(
-        queueName,
-        Number(grace),
-        Number(limit),
-        type as 'completed' | 'failed'
-      );
+      await this.queueManager.cleanQueue(queueName, clean.grace, clean.limit, clean.type);
 
-      logger.info(`Cleaned ${type} jobs from queue ${queueName}`, {
-        grace,
-        limit,
+      logger.info(`Cleaned ${clean.type} jobs from queue ${queueName}`, {
+        grace: clean.grace,
+        limit: clean.limit,
       });
 
       res.json({
         success: true,
         data: {
           queueName,
-          message: `Cleaned ${type} jobs older than ${grace}ms`,
+          message: `Cleaned ${clean.type} jobs older than ${clean.grace}ms`,
         },
       });
     } catch (err: any) {

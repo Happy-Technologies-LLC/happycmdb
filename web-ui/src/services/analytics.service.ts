@@ -14,9 +14,50 @@ export interface DashboardStats {
   by_status: Record<string, number>;
   by_environment: Record<string, number>;
   recent_discoveries: DashboardRecentDiscovery[];
-  health_score: number;
+  /**
+   * null: unavailable (the incident tables are absent, more than 5000 CIs have an open incident, there are no CIs, or
+   * the incident read failed or timed out; see services/ci-health.ts and `unavailable`); never a placeholder 0.
+   */
+  health_score: number | null;
+  /** CIs by derived health state; null when the signal is unavailable. Optional: older servers omit it. */
+  ci_health?: { healthy: number; degraded: number; critical: number; total: number } | null;
+  /** Relationships with at least one endpoint that is a critical CI (bsm_business_criticality tier_1 or tier_2). */
   critical_relationships: number;
+  /**
+   * BW5: CIs in the caller's organization whose latest drift detection shows drift. null: unavailable (named in
+   * `unavailable`); never a placeholder 0.
+   */
+  open_drift_count?: number | null;
+  /**
+   * BW6: CIs with both an owner and a discovery source (a ci_source_lineage row), over all CIs. `ratio` is null when
+   * `total` is 0. The whole object is null when unavailable (named in `unavailable`).
+   */
+  configuration_coverage?: ConfigurationCoverage | null;
+  /** Fields of this payload that are null because they could not be computed. */
+  unavailable?: string[];
+  /**
+   * BW7: up to the newest 10 RECORDED daily values per metric, ascending by date (sparse: a day without a dashboard
+   * read has no point). null when the history is unavailable (`kpi_history` is then listed in `unavailable`).
+   */
+  kpi_history?: KpiHistory | null;
+  /** BW7: latest recorded value minus the previous recorded value per metric; null with fewer than 2 points. */
+  kpi_delta?: KpiDelta | null;
 }
+
+export interface ConfigurationCoverage {
+  with_owner_and_source: number;
+  total: number;
+  ratio: number | null;
+}
+
+export type KpiHistoryMetric = 'health_score' | 'open_drift_count' | 'configuration_coverage_ratio' | 'total_cis';
+export interface KpiHistoryPoint {
+  /** UTC day, YYYY-MM-DD. */
+  date: string;
+  value: number;
+}
+export type KpiHistory = Record<KpiHistoryMetric, KpiHistoryPoint[]>;
+export type KpiDelta = Record<KpiHistoryMetric, number | null>;
 
 export interface DashboardRecentDiscovery {
   id: string;
@@ -25,6 +66,49 @@ export interface DashboardRecentDiscovery {
   status: string;
   environment: string | null;
   last_discovered: string | null;
+}
+
+export type TopologyCategory = 'services' | 'apps' | 'data' | 'infra';
+
+export interface TopologyNode {
+  id: string;
+  name: string;
+  type: string;
+  category: TopologyCategory;
+  status: string | null;
+  critical: boolean;
+  /** CI health state (BW1) does not exist yet; always null. */
+  health: null;
+}
+
+export interface TopologyEdge {
+  source: string;
+  target: string;
+  type: string;
+}
+
+export interface TopologySummary {
+  categories: Record<TopologyCategory | 'critical', number>;
+  /** Stored CI types with no category mapping (counted under infra). */
+  unmapped_types: string[];
+  nodes: TopologyNode[];
+  edges: TopologyEdge[];
+  totals: {
+    cis: number;
+    relationships: number;
+    nodes_returned: number;
+    edges_returned: number;
+    truncated: boolean;
+  };
+}
+
+export interface TopologySummaryParams {
+  /** Node sample cap; the server clamps to 1..500 (default 200). */
+  limit?: number;
+  /** Edge cap; the server clamps to 1..1000 (default 400). */
+  edgeLimit?: number;
+  /** Include decommissioned CIs (excluded by default). */
+  includeInactive?: boolean;
 }
 
 export interface CICountByType {
@@ -177,6 +261,18 @@ class AnalyticsService {
    */
   async getDashboardStats(): Promise<DashboardStats> {
     const response = await apiClient.get<DashboardStats>('/analytics/dashboard');
+    return response.data;
+  }
+
+  /**
+   * Get the estate topology summary: category counts, capped node sample, capped edge list
+   */
+  async getTopologySummary(params: TopologySummaryParams = {}): Promise<TopologySummary> {
+    const query: Record<string, string | number> = {};
+    if (params.limit !== undefined) query['limit'] = params.limit;
+    if (params.edgeLimit !== undefined) query['edge_limit'] = params.edgeLimit;
+    if (params.includeInactive) query['includeInactive'] = 'true';
+    const response = await apiClient.get<TopologySummary>('/analytics/topology-summary', { params: query });
     return response.data;
   }
 

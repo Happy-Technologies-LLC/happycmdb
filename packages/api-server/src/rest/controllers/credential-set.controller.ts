@@ -20,6 +20,8 @@ import { requestOrganizationId } from '../../middleware/auth.middleware';
 
 /** SQLSTATE of a pg error, if it carries one. */
 const sqlState = (error: unknown): unknown => (error as { code?: unknown } | null)?.code;
+// ON DELETE RESTRICT refusal: 23503 (foreign_key_violation, PostgreSQL <= 16), 23001 (restrict_violation, PostgreSQL 18, PGlite)
+const isRestrictRefusal = (error: unknown): boolean => sqlState(error) === '23503' || sqlState(error) === '23001';
 
 /**
  * A duplicate name: the typed service error, or a raw unique violation (23505). The only text echoed is the request's
@@ -260,7 +262,7 @@ export class CredentialSetController {
       }
 
       // Check for in-use error
-      if (error instanceof CredentialSetInUseError || sqlState(error) === '23503') {
+      if (error instanceof CredentialSetInUseError || isRestrictRefusal(error)) {
         res.status(409).json({
           success: false,
           error: 'Conflict',

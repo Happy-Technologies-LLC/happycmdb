@@ -40,10 +40,16 @@ export class JWTService {
    * tenant claim (omitted => no claim). AuthService.verifyToken replaces it
    * with the user's current organization on every request. `credentialEpoch`
    * becomes the `_cep` claim: the token is only accepted while it equals the
-   * user's current credential generation (HP1-S6).
+   * user's current credential generation (HP1-S6). `authTime` becomes the
+   * `_authTime` claim (HAP-1716): the login time of the session this token
+   * belongs to: a login passes the current time, a refresh passes the
+   * presented token's own. It is required (HAP-2077): a caller that omitted it
+   * would silently start a new session family. It is the session-family id that
+   * bounds password guesses at revoke-other-sessions.
    */
   generateAccessToken(
-    userId: string, username: string, role: UserRole, organizationId?: string, credentialEpoch = 0
+    userId: string, username: string, role: UserRole, organizationId: string | undefined, credentialEpoch: number,
+    authTime: number
   ): string {
     const payload: Omit<TokenPayload, 'iat' | 'exp' | 'iss' | 'aud'> = {
       _userId: userId,
@@ -52,6 +58,7 @@ export class JWTService {
       _type: 'access',
       _organizationId: organizationId,
       _cep: credentialEpoch,
+      _authTime: authTime,
     };
 
     return jwt.sign(payload, this.secret, {
@@ -65,11 +72,11 @@ export class JWTService {
    * Generate refresh token. It carries no tenant claim: refreshToken()
    * re-reads the organization from the user record. It carries the
    * credential generation like the access token, and `authTime` as the
-   * `_authTime` claim (HAP-1285): the login time, now unless a refresh
-   * passes the presented token's own.
+   * `_authTime` claim (HAP-1285): the login time. It is required (HAP-2077):
+   * a login passes the current time, a refresh passes the presented token's own.
    */
   generateRefreshToken(
-    userId: string, username: string, role: UserRole, credentialEpoch = 0, authTime = Math.floor(Date.now() / 1000)
+    userId: string, username: string, role: UserRole, credentialEpoch: number, authTime: number
   ): string {
     const payload: Omit<TokenPayload, 'iat' | 'exp' | 'iss' | 'aud'> = {
       _userId: userId,

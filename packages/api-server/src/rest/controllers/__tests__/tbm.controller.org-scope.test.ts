@@ -245,7 +245,7 @@ const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (userId: string, organizationId?: string) => {
   const user = USERS[userId]!;
   return {
-    Authorization: `Bearer ${jwt.generateAccessToken(userId, user._username, user._role as UserRole, organizationId)}`,
+    Authorization: `Bearer ${jwt.generateAccessToken(userId, user._username, user._role as UserRole, organizationId, 0, Math.floor(Date.now() / 1000))}`,
   };
 };
 const AS_A = bearer('user-a', ORG_A);
@@ -416,7 +416,7 @@ describe('fail closed without an organization claim', () => {
       for (const headers of [bearer('user-none'), bearer('user-bad', 'not-a-uuid'), { 'x-api-key': KEY_NONE }]) {
         const res = await call(method, path, body, headers);
         expect(res.status).toBe(403);
-        expect(res.body).toEqual({ _error: 'Forbidden', _message: 'Organization claim required' });
+        expect(res.body).toMatchObject({ _error: 'Forbidden', _message: 'Organization claim required', code: 'ORGANIZATION_REQUIRED' });
       }
       expect(queryCount()).toBe(0);
     }

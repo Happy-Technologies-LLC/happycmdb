@@ -64,14 +64,8 @@ function renderWebUi(composeFiles: string[]): { service: Node; projectDir: strin
   return { service, projectDir: dirname(paths[0]) };
 }
 
-function probeOf(service: Node): { socket: Socket; path: string } {
-  const healthcheck = service.healthcheck;
-  if (!isMap(healthcheck) || healthcheck.disable === true) throw new Error('no web-ui healthcheck');
-  const test = healthcheck.test;
-  if (!Array.isArray(test) || test[0] !== 'CMD' || test[1] !== 'wget') {
-    throw new Error(`unexpected web-ui healthcheck test: ${JSON.stringify(test)}`);
-  }
-  const url = new URL(String(test.find((arg) => /^https?:\/\//.test(String(arg)))));
+function socketOfUrl(rawUrl: string): { socket: Socket; path: string } {
+  const url = new URL(rawUrl);
   const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
   const host = url.hostname;
   if (host === 'localhost')
@@ -83,6 +77,28 @@ function probeOf(service: Node): { socket: Socket; path: string } {
     return { socket: { family: 6, address: host.slice(1, -1), port }, path: url.pathname };
   }
   throw new Error(`probe host ${host} has no modelled in-container resolution`);
+}
+
+function probeOf(service: Node): { socket: Socket; path: string } {
+  const healthcheck = service.healthcheck;
+  if (!isMap(healthcheck) || healthcheck.disable === true) throw new Error('no web-ui healthcheck');
+  const test = healthcheck.test;
+  if (!Array.isArray(test) || test[0] !== 'CMD' || !['wget', 'curl'].includes(String(test[1]))) {
+    throw new Error(`unexpected web-ui healthcheck test: ${JSON.stringify(test)}`);
+  }
+  return socketOfUrl(String(test.find((arg) => /^https?:\/\//.test(String(arg)))));
+}
+
+// Final-stage HEALTHCHECK of a Dockerfile (shell form), as the URL it fetches.
+function dockerfileProbeOf(dockerfile: string): { socket: Socket; path: string } {
+  const finalStage = dockerfile.split(/^FROM\s/m).pop() ?? '';
+  const instruction = finalStage
+    .replace(/\\\n/g, ' ')
+    .split('\n')
+    .find((l) => /^\s*HEALTHCHECK\s/.test(l));
+  const url = instruction?.match(/https?:\/\/\S+/)?.[0];
+  if (!url) throw new Error('final stage has no HEALTHCHECK URL');
+  return socketOfUrl(url);
 }
 
 function nginxListens(service: Node, projectDir: string): Socket[] {
@@ -102,7 +118,11 @@ function nginxListens(service: Node, projectDir: string): Socket[] {
   const source = copy.slice(1, -1).filter((word) => !word.startsWith('--'));
   if (source.length !== 1) throw new Error(`unexpected COPY sources: ${source.join(' ')}`);
 
-  const conf = readFileSync(resolve(context, source[0]), 'utf8').replace(/#.*$/gm, '');
+  return listensOf(resolve(context, source[0]));
+}
+
+function listensOf(confPath: string): Socket[] {
+  const conf = readFileSync(confPath, 'utf8').replace(/#.*$/gm, '');
   return [...conf.matchAll(/^\s*listen\s+([^\s;]+)[^;]*;/gm)].map(([, value]) => {
     const v6 = /^\[([^\]]+)\](?::(\d+))?$/.exec(value);
     if (v6) return { family: 6, address: v6[1] === '::' ? null : v6[1], port: Number(v6[2] ?? 80) };
@@ -139,6 +159,47 @@ describe.each([
       listens,
       bound: listens.some((l) => accepts(l, probe.socket)),
     }).toEqual({ probe: probe.socket, listens, bound: true });
+    expect(probe).toEqual({
+      socket: { family: 4, address: '127.0.0.1', port: 80 },
+      path: '/health',
+    });
+  });
+});
+
+describe('web-ui image (Dockerfile.web) HEALTHCHECK', () => {
+  const dockerfile = readFileSync(resolve(REPO, 'infrastructure/docker/Dockerfile.web'), 'utf8');
+
+  it('probes a socket the image nginx listens on, without resolving localhost', () => {
+    const probe = dockerfileProbeOf(dockerfile);
+    const listens = listensOf(resolve(REPO, 'web-ui/nginx.conf'));
+
+    expect({ bound: listens.some((l) => accepts(l, probe.socket)) }).toEqual({ bound: true });
+    expect(probe.socket).toEqual({ family: 4, address: '127.0.0.1', port: 80 });
+  });
+});
+
+describe('web-ui nginx.conf listeners', () => {
+  const listens = listensOf(resolve(REPO, 'web-ui/nginx.conf'));
+
+  it.each([
+    { name: 'IPv4 127.0.0.1', socket: { family: 4, address: '127.0.0.1', port: 80 } as Socket },
+    {
+      name: 'IPv6 ::1 (localhost resolution)',
+      socket: { family: 6, address: '::1', port: 80 } as Socket,
+    },
+  ])('accepts a connection on $name:80', ({ socket }) => {
+    expect({ bound: listens.some((l) => accepts(l, socket)) }).toEqual({ bound: true });
+  });
+});
+
+describe('docker-compose.test.yml web-ui healthcheck', () => {
+  it('probes /health on a socket the test-stack nginx listens on', () => {
+    const { service } = renderWebUi(['infrastructure/docker/docker-compose.test.yml']);
+    const probe = probeOf(service);
+    // The test stack builds Dockerfile.web.dev, which installs infrastructure/nginx/nginx.conf.
+    const listens = listensOf(resolve(REPO, 'infrastructure/nginx/nginx.conf'));
+
+    expect({ bound: listens.some((l) => accepts(l, probe.socket)) }).toEqual({ bound: true });
     expect(probe).toEqual({
       socket: { family: 4, address: '127.0.0.1', port: 80 },
       path: '/health',

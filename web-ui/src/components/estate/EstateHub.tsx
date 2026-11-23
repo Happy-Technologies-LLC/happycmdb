@@ -15,6 +15,8 @@ import {
 } from '@happy-technologies/design-system';
 import { Stage, StageChip } from '@happy-technologies/design-system/ai';
 import { RequirePermission } from '@/components/common/RequirePermission';
+import { useOrganizationId } from '@/contexts/OrganizationContext';
+import { orgScopedKey } from '@/lib/queryKeys';
 import CIStatusBadge from '@/components/ci/CIStatusBadge';
 import CITypeBadge from '@/components/ci/CITypeBadge';
 import {
@@ -62,17 +64,18 @@ export function EstateHub() {
   const view = asView(params.get('view'));
   const [filter, setFilter] = useState<Category | null>(null);
 
+  const organizationId = useOrganizationId();
   const stats = useQuery({
-    queryKey: ['dashboard-stats'],
+    queryKey: orgScopedKey('dashboard-stats', organizationId),
     queryFn: () => ciService.getDashboardStats(),
     staleTime: 60000,
   });
   const cis = useQuery({
-    queryKey: ['estate', 'cis'],
+    queryKey: orgScopedKey('estate', organizationId, 'cis'),
     queryFn: () => ciService.getCIs({ limit: SAMPLE_NODE_CAP }),
   });
   const relationships = useQuery({
-    queryKey: ['estate', 'relationships'],
+    queryKey: orgScopedKey('estate', organizationId, 'relationships'),
     queryFn: getRelationshipSample,
   });
 

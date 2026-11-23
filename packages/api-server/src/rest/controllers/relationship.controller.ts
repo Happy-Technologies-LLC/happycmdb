@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { Request, Response } from 'express';
-import { getNeo4jClient } from '@cmdb/database';
+import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { assertCIId, requestActor, sendJournalError } from '../../journal-http';
-import { logger, RelationshipType } from '@cmdb/common';
+import { ciIncarnationId, logger, RelationshipType } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
 
 export class RelationshipController {
@@ -243,6 +243,64 @@ export class RelationshipController {
   }
 
   /**
+   * HAP-2029: the evidence receipts of one edge, newest first.
+   * GET /relationships/evidence?from_id&to_id&type[&limit&offset]
+   * Both endpoints must be CIs of the caller's organization (a foreign, legacy NULL-owner or missing CI is the same 404,
+   * both looked up before answering). Receipts match the organization AND both endpoints' current incarnations, so a deleted
+   * and re-created CI does not inherit the old CI's receipts. An owned edge with no receipts is 200 with none. The
+   * organization and incarnation ids are never returned.
+   */
+  async listEvidence(req: Request, res: Response): Promise<void> {
+    try {
+      const { from_id, to_id, type, limit, offset } = req.query as unknown as {
+        from_id: string; to_id: string; type: string; limit: number; offset: number };
+      assertCIId(from_id);
+      assertCIId(to_id);
+      const organizationId = requestOrganizationId(req);
+      const [from, to] = await Promise.all([this.neo4jClient.getCI(from_id, organizationId),
+        this.neo4jClient.getCI(to_id, organizationId)]);
+      if (!from || !to) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'CI not found' });
+        return;
+      }
+      // A CI never written through a relationship has no incarnation yet: nothing can name it. A read assigns none.
+      const [fromIncarnation, toIncarnation] = [ciIncarnationId(from), ciIncarnationId(to)];
+      let receipts: unknown[] = [];
+      let total = 0;
+      if (fromIncarnation && toIncarnation) {
+        const edge = [organizationId, from_id, to_id, type, fromIncarnation, toIncarnation];
+        const where = `organization_id = $1 AND from_ci_id = $2 AND to_ci_id = $3 AND relationship_type = $4
+          AND from_incarnation_id = $5 AND to_incarnation_id = $6`;
+        try {
+          const postgres = getPostgresClient();
+          receipts = (await postgres.query(`SELECT receipt_id, evidence_class, polarity, source_name, source_id, source_version,
+              method, rationale_code, observed_at, observer, observer_type, correlation_id
+            FROM relationship_evidence_receipts WHERE ${where} ORDER BY observed_at DESC, receipt_id LIMIT $7 OFFSET $8`,
+          [...edge, limit, offset])).rows;
+          total = Number((await postgres.query(`SELECT count(*) AS total FROM relationship_evidence_receipts WHERE ${where}`,
+            edge)).rows[0]?.total ?? 0);
+        } catch (error) {
+          // SQLSTATE 42P01 (table missing: rollback window) or 42501 (login lacks SELECT): the write side's schemaFault classes.
+          // Scoped to the two receipt statements: the same codes from the CI lookup above are an ordinary failure. Only the code is logged.
+          const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
+          if (code !== '42P01' && code !== '42501') {
+            throw error;
+          }
+          logger.warn('Relationship evidence read unavailable: receipt table missing or not readable', { code });
+          res.status(503).json({ success: false, error: 'Service Unavailable', message: 'Relationship evidence temporarily unavailable' });
+          return;
+        }
+      }
+      res.json({ success: true, data: { from_id, to_id, type, receipts },
+        pagination: { total, count: receipts.length, offset, limit } });
+    } catch (error) {
+      if (sendJournalError(res, error)) return;
+      logger.error('Error listing relationship evidence', error);
+      res.status(500).json({ success: false, error: 'Failed to list relationship evidence', message: 'Internal error' });
+    }
+  }
+
+  /**
    * Get relationships by type
    * GET /relationships/type/:type
    */
@@ -295,8 +353,8 @@ export class RelationshipController {
         const total = countResult.records[0]!.get('total').toNumber();
 
         // Get paginated results
-        const limitNum = Math.min(parseInt(limit as string), 1000);
-        const offsetNum = parseInt(offset as string);
+        const limitNum = Math.min(Number(limit), 1000);
+        const offsetNum = Number(offset);
 
         const query = `
           MATCH (from:CI)-[r:${type}]->(to:CI)

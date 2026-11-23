@@ -123,7 +123,7 @@ app.use('/api/v1/cis', ciRoutes);
 app.use('/api/v1/reconciliation', reconciliationRoutes);
 app.use('/api/v1/relationships', relationshipRoutes);
 app.use('/api/v1/itil', itilRoutes);
-const bearer = `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken(admin._id, admin._username, admin._role, A)}`;
+const bearer = `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken(admin._id, admin._username, admin._role, A, 0, Math.floor(Date.now() / 1000))}`;
 const rows = async (text: string, params: unknown[] = []) => (await mockSql(text, params)).rows;
 const digest = (hex: string) => `sha256:${hex.repeat(64)}`;
 const CLASSES = ['agent-release', 'ai-model', 'cell', 'ai-deployment'] as const;
@@ -394,12 +394,12 @@ describe('A4: every other write path refuses an AI CI with source_owned and writ
     expect([await snapshot(ids['ai-deployment']), await snapshot(server)]).toEqual(before);
   });
 
-  it('the legacy unjournaled create (ETL Postgres-to-Neo4j repair) refuses every AI class', async () => {
+  it('a journaled createCI without the sync writer\'s grant (the ETL Postgres-to-Neo4j repair) refuses every AI class', async () => {
     for (const cls of CLASSES) {
       const id = randomUUID();
       const before = await snapshot(id);
-      await expect(getNeo4jClient().legacyCreateCIUnjournaled({ _id: id, name: 'forged', _type: cls } as unknown as CIInput, A))
-        .rejects.toBeInstanceOf(SourceOwnedError);
+      await expect(getNeo4jClient().createCI({ _id: id, name: 'forged', _type: cls } as unknown as CIInput, A,
+        'system:etl-reconciliation', undefined, 'system')).rejects.toBeInstanceOf(SourceOwnedError);
       expect(await snapshot(id)).toEqual(before);
       expect(mockGraph.nodes.has(id)).toBe(false);
     }

@@ -62,3 +62,19 @@ describe('PatternLibrary lifecycle actions by role', () => {
     expect(within(row('draft')).getByTitle('Delete')).toBeInTheDocument();
   });
 });
+
+// HAP-1951: the page-reset effect sits above the loading early return, so the hook count is the same in both
+// renders. A hook below it made React throw "Rendered more hooks than during the previous render" when the list
+// arrived.
+describe('PatternLibrary loading to loaded', () => {
+  it('renders the table when the list arrives after a loading render', () => {
+    const base = vi.mocked(useAIPatternsHook.useAIPatterns)();
+    vi.mocked(useAIPatternsHook.useAIPatterns).mockReturnValue({ ...base, patterns: [], loading: true });
+    const { rerender } = renderWithQueryClient(<PatternLibrary />);
+    expect(screen.queryByText('review pattern')).toBeNull();
+
+    vi.mocked(useAIPatternsHook.useAIPatterns).mockReturnValue(base);
+    rerender(<PatternLibrary />);
+    expect(screen.getByText('review pattern')).toBeInTheDocument();
+  });
+});

@@ -2,22 +2,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useEffect, useState } from 'react';
-import { Button } from '../ui/button';
-import { Input } from '../ui/input';
-import { Badge } from '../ui/badge';
-import { Label } from '../ui/label';
 import {
+  Badge,
+  Button,
   Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '../ui/dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
+  EmptyState,
+  Input,
+  ListRow,
+  SectionHeading,
+  Select,
+  type BadgeVariant,
+} from '@happy-technologies/design-system';
 import { apiClient } from '../../lib/api-client';
 import { useToast } from '../../contexts/ToastContext';
 import { logClientError } from '../../utils/logger';
 import { RequirePermission } from '@/components/common/RequirePermission';
+import { QueryState } from '@/components/estate/SurfaceState';
 
 // HAP-1424 (PoR S3): offerings under one business service, as served by the C1
 // offering read. The tenant and ids are the server's; the UI never sends them.
@@ -53,6 +53,18 @@ const LIFECYCLES: { value: Lifecycle; label: string }[] = [
   { value: 'retiring', label: 'Retiring' },
   { value: 'retired', label: 'Retired' },
 ];
+
+const AUDIENCES: { value: Audience; label: string }[] = [
+  { value: 'internal', label: 'Internal' },
+  { value: 'customer', label: 'Customer' },
+];
+
+const LIFECYCLE_VARIANTS: Record<Lifecycle, BadgeVariant> = {
+  planned: 'info',
+  live: 'success',
+  retiring: 'warning',
+  retired: 'neutral',
+};
 
 const EMPTY_FORM = {
   name: '',
@@ -101,6 +113,8 @@ export const ServiceOfferingsDialog: React.FC<ServiceOfferingsDialogProps> = ({ 
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState<ServiceOffering | null>(null);
   const [form, setForm] = useState<OfferingForm>(EMPTY_FORM);
+  const [loadError, setLoadError] = useState<unknown>(null);
+  const [attempt, setAttempt] = useState(0);
 
   const serviceId = service?.id;
 
@@ -108,6 +122,7 @@ export const ServiceOfferingsDialog: React.FC<ServiceOfferingsDialogProps> = ({ 
     setEditing(null);
     setForm(EMPTY_FORM);
     setOfferings([]);
+    setLoadError(null);
     if (!serviceId) return;
     let current = true;
     setLoading(true);
@@ -116,11 +131,14 @@ export const ServiceOfferingsDialog: React.FC<ServiceOfferingsDialogProps> = ({ 
       .then(response => { if (current) setOfferings(response.data); })
       .catch(error => {
         logClientError('Failed to load service offerings:', error);
-        if (current) showToast('Failed to load service offerings', 'error');
+        if (current) {
+          setLoadError(error);
+          showToast('Failed to load service offerings', 'error');
+        }
       })
       .finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
-  }, [serviceId, showToast]);
+  }, [serviceId, showToast, attempt]);
 
   const startEdit = (offering: ServiceOffering) => {
     setEditing(offering);
@@ -168,47 +186,56 @@ export const ServiceOfferingsDialog: React.FC<ServiceOfferingsDialogProps> = ({ 
     }
   };
 
-  // Lifecycle moves only forward; the server refuses a backward move with 409.
+  // Lifecycle moves only forward; the server refuses a backward move with 409, so a backward step is not offered.
   const lifecycleFloor = editing ? LIFECYCLES.findIndex(l => l.value === editing.lifecycle) : 0;
   const set = (key: keyof OfferingForm) => (event: React.ChangeEvent<HTMLInputElement>) =>
     setForm(f => ({ ...f, [key]: event.target.value }));
 
   return (
-    <Dialog open={service !== null} onOpenChange={open => { if (!open) onClose(); }}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Offerings: {service?.name}</DialogTitle>
-          <DialogDescription>
+    <Dialog
+      open={service !== null}
+      onClose={onClose}
+      aria-label={`Offerings: ${service?.name}`}
+      className="max-w-2xl overflow-visible!"
+    >
+      <div className="grid gap-4 p-6">
+        <div className="pr-8">
+          <SectionHeading className="mb-1">Offerings: {service?.name}</SectionHeading>
+          <p className="text-sm text-[var(--hh-text-muted)]">
             What this service offers and at which service level. Retire an offering by moving it to Retired.
-          </DialogDescription>
-        </DialogHeader>
+          </p>
+        </div>
 
-        {loading ? (
-          <p className="text-sm text-muted-foreground">Loading offerings...</p>
+        {loading || loadError !== null ? (
+          <QueryState what="offerings" loading={loading} error={loadError} onRetry={() => setAttempt(n => n + 1)} />
         ) : offerings.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No offerings yet.</p>
+          <EmptyState label="No offerings yet." />
         ) : (
-          <ul className="divide-y rounded-md border">
+          <ul className="max-h-64 overflow-y-auto">
             {offerings.map(offering => (
-              <li key={offering.offering_id} className="flex items-center justify-between gap-3 px-3 py-2">
-                <div className="min-w-0">
-                  <div className="font-medium truncate">{offering.name}</div>
-                  <div className="text-xs text-muted-foreground">
+              <ListRow
+                key={offering.offering_id}
+                as="li"
+                title={offering.name}
+                description={
+                  <>
                     {offering.audience}
                     {offering.service_level.availability_target !== undefined &&
                       ` · ${offering.service_level.availability_target}% availability`}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline">{offering.lifecycle}</Badge>
-                  {/* PATCH /service-offerings/:id requires 'write' */}
-                  <RequirePermission permission="write">
-                    <Button size="sm" variant="ghost" aria-label={`Edit ${offering.name}`} onClick={() => startEdit(offering)}>
-                      Edit
-                    </Button>
-                  </RequirePermission>
-                </div>
-              </li>
+                  </>
+                }
+                actions={
+                  <>
+                    <Badge variant={LIFECYCLE_VARIANTS[offering.lifecycle] ?? 'neutral'}>{offering.lifecycle}</Badge>
+                    {/* PATCH /service-offerings/:id requires 'write' */}
+                    <RequirePermission permission="write">
+                      <Button size="sm" variant="ghost" aria-label={`Edit ${offering.name}`} onClick={() => startEdit(offering)}>
+                        Edit
+                      </Button>
+                    </RequirePermission>
+                  </>
+                }
+              />
             ))}
           </ul>
         )}
@@ -216,58 +243,28 @@ export const ServiceOfferingsDialog: React.FC<ServiceOfferingsDialogProps> = ({ 
         {/* POST /business-services/:id/offerings requires 'write' */}
         <RequirePermission permission="write">
           <div className="grid gap-3 pt-2">
-            <div className="grid gap-2">
-              <Label htmlFor="offering-name">Offering name</Label>
-              <Input id="offering-name" value={form.name} onChange={set('name')} placeholder="e.g. Standard access request" />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="offering-description">Description</Label>
-              <Input id="offering-description" value={form.description} onChange={set('description')} />
-            </div>
+            <Input label="Offering name" value={form.name} onChange={set('name')} placeholder="e.g. Standard access request" />
+            <Input label="Description" value={form.description} onChange={set('description')} />
             <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-2">
-                <Label htmlFor="offering-audience">Audience</Label>
-                <Select value={form.audience} onValueChange={value => setForm(f => ({ ...f, audience: value as Audience }))}>
-                  <SelectTrigger id="offering-audience" aria-label="Audience">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="internal">Internal</SelectItem>
-                    <SelectItem value="customer">Customer</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="offering-lifecycle">Lifecycle</Label>
-                <Select value={form.lifecycle} onValueChange={value => setForm(f => ({ ...f, lifecycle: value as Lifecycle }))}>
-                  <SelectTrigger id="offering-lifecycle" aria-label="Lifecycle">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {LIFECYCLES.map((option, index) => (
-                      <SelectItem key={option.value} value={option.value} disabled={index < lifecycleFloor}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+              <Select
+                label="Audience"
+                value={form.audience}
+                onChange={value => setForm(f => ({ ...f, audience: value as Audience }))}
+                options={AUDIENCES}
+              />
+              <Select
+                label="Lifecycle"
+                value={form.lifecycle}
+                onChange={value => setForm(f => ({ ...f, lifecycle: value as Lifecycle }))}
+                options={LIFECYCLES.filter((_, index) => index >= lifecycleFloor)}
+              />
             </div>
             <div className="grid grid-cols-3 gap-3">
-              <div className="grid gap-2">
-                <Label htmlFor="offering-availability">Availability target (%)</Label>
-                <Input id="offering-availability" type="number" min={0} max={100} step="0.01"
-                  value={form.availabilityTarget} onChange={set('availabilityTarget')} />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="offering-response">Response target (hours)</Label>
-                <Input id="offering-response" type="number" min={0} max={8760}
-                  value={form.responseTargetHours} onChange={set('responseTargetHours')} />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="offering-support">Support hours</Label>
-                <Input id="offering-support" value={form.supportHours} onChange={set('supportHours')} placeholder="e.g. 24x7" />
-              </div>
+              <Input label="Availability target (%)" type="number" min={0} max={100} step="0.01"
+                value={form.availabilityTarget} onChange={set('availabilityTarget')} />
+              <Input label="Response target (hours)" type="number" min={0} max={8760}
+                value={form.responseTargetHours} onChange={set('responseTargetHours')} />
+              <Input label="Support hours" value={form.supportHours} onChange={set('supportHours')} placeholder="e.g. 24x7" />
             </div>
             <div className="flex justify-end gap-2">
               {editing && (
@@ -281,7 +278,7 @@ export const ServiceOfferingsDialog: React.FC<ServiceOfferingsDialogProps> = ({ 
             </div>
           </div>
         </RequirePermission>
-      </DialogContent>
+      </div>
     </Dialog>
   );
 };

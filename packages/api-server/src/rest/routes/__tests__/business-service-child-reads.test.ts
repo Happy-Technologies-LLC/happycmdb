@@ -227,7 +227,7 @@ afterAll(() => {
 
 describe('business-service child reads: missing-parent semantics (PGlite)', () => {
   const app = buildApp();
-  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer', ORG);
+  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer', ORG, 0, Math.floor(Date.now() / 1000));
   const auth = { Authorization: `Bearer ${token}` };
 
   beforeEach(async () => {
@@ -318,7 +318,7 @@ const METRIC_TABLE: Record<string, string> = {
 
 describe('business-service metric reads: missing-parent semantics (PGlite)', () => {
   const app = buildApp();
-  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer', ORG);
+  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer', ORG, 0, Math.floor(Date.now() / 1000));
   const auth = { Authorization: `Bearer ${token}` };
 
   beforeEach(async () => {
@@ -380,7 +380,7 @@ describe('business-service metric reads: missing-parent semantics (PGlite)', () 
 
 describe('business-service health: daily-counter windows (PGlite)', () => {
   const app = buildApp();
-  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer', ORG);
+  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer', ORG, 0, Math.floor(Date.now() / 1000));
   const auth = { Authorization: `Bearer ${token}` };
   const health = async (serviceId: string) => {
     const res = await request(app).get(`/api/v1/business-services/${serviceId}/health`).set(auth);
@@ -508,7 +508,7 @@ describe('business-service health: daily-counter windows (PGlite)', () => {
 
 describe('business-service costs: one CI mapped under several relationship types (PGlite)', () => {
   const app = buildApp();
-  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer', ORG);
+  const token = new JWTService(loadConfig().auth.jwt).generateAccessToken(VIEWER_ID, 'viewer', 'viewer', ORG, 0, Math.floor(Date.now() / 1000));
   const auth = { Authorization: `Bearer ${token}` };
 
   beforeEach(async () => {

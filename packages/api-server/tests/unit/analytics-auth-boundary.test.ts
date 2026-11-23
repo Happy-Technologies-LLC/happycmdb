@@ -46,7 +46,7 @@ app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/analytics', analyticsRoutes);
 const bearer = (key: keyof typeof users) => {
   const user = users[key];
-  return { authorization: `Bearer ${jwt.generateAccessToken(user._id, user._username, user._role, '_organizationId' in user ? user._organizationId : undefined)}` };
+  return { authorization: `Bearer ${jwt.generateAccessToken(user._id, user._username, user._role, '_organizationId' in user ? user._organizationId : undefined, 0, Math.floor(Date.now() / 1000))}` };
 };
 let server: { stop(): Promise<void> };
 beforeAll(async () => { ({ server } = await createGraphQLServer(app)); });
@@ -56,7 +56,7 @@ it('returns 403 before any store access for tenantless REST analytics', async ()
   for (const path of ['/ci-counts', '/ci-status', '/ci-environments', '/relationship-counts',
     '/discovery-stats', '/discovery-timeline', '/top-connected', '/dependency-depth',
     '/change-history?ci_id=analytics-own', '/relationship-matrix', '/change-timeline',
-    '/health-metrics/analytics-own', '/dashboard']) {
+    '/health-metrics/analytics-own', '/dashboard', '/topology-summary']) {
     const response = await request(app).get(`/api/v1/analytics${path}`).set(bearer('none'));
     expect(response.status).toBe(403);
   }

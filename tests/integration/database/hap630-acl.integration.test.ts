@@ -15,6 +15,14 @@ const secretViews = ['active_api_keys', 'credential_summaries',
   'credential_set_summaries', 'discovery_definitions_with_credentials'];
 const privateTables = ['ci_reconciliation_operations', 'ci_reconciliation_epochs'];
 const reporting = ['public.recent_audit_activity', 'cmdb.v_ci_discovery_summary'];
+/**
+ * The nine BI-granted cost views of cost-analysis.sql that need security_barrier: eight unbounded ones, plus
+ * v_top_cost_drivers_bi (its per-organization row_number() filter no longer blocks push-down). 051 sets the first
+ * eight; cost-analysis.sql sets all nine.
+ */
+const costBarrierViews = ['v_executive_cost_summary', 'v_cost_by_tower', 'v_cost_trends', 'v_unit_economics',
+  'v_cloud_vs_onprem_costs', 'v_cost_allocation_summary', 'v_depreciation_summary', 'v_underutilized_resources',
+  'v_top_cost_drivers_bi'];
 const poolFor = (database?: string) => new Pool({
   host: process.env['POSTGRES_HOST'], port: Number(process.env['POSTGRES_PORT']),
   database: database || process.env['POSTGRES_DB'], user: process.env['POSTGRES_USER'],
@@ -28,6 +36,36 @@ const biSetup = () => {
   return sql.slice(sql.indexOf('-- Only audited reporting views'),
     sql.indexOf('-- Create Helper Functions for Metabase'));
 };
+
+/** Top-level statements, `--` comments dropped, dollar-quoted bodies and string literals kept whole. */
+function statements(sql: string): string[] {
+  const text = sql.replace(/--[^\n]*/g, '');
+  const out: string[] = [];
+  let cur = '';
+  for (let i = 0; i < text.length;) {
+    const tag = /^\$[A-Za-z_]*\$/.exec(text.slice(i, i + 40));
+    if (tag) {
+      const end = text.indexOf(tag[0], i + tag[0].length);
+      const stop = end < 0 ? text.length : end + tag[0].length;
+      cur += text.slice(i, stop);
+      i = stop;
+    } else if (text[i] === "'") {
+      let j = i + 1;
+      while (j < text.length && (text[j] !== "'" || text[j + 1] === "'")) j += text[j] === "'" ? 2 : 1;
+      cur += text.slice(i, j + 1);
+      i = j + 1;
+    } else if (text[i] === ';') {
+      out.push(cur.trim());
+      cur = '';
+      i += 1;
+    } else {
+      cur += text[i];
+      i += 1;
+    }
+  }
+  return [...out, cur.trim()].filter(Boolean);
+}
+
 let db: Pool;
 
 async function asRole(pool: Pool, role: string, sql: string, denied: boolean) {
@@ -178,7 +216,130 @@ if (process.env['HAP630_ACCEPTANCE'] === '1') {
           `SELECT * FROM ${view} LIMIT 1`, false);
         await db.query(readFileSync(join(root, 'infrastructure/database/views/cost-analysis.sql'), 'utf8'));
         await asRole(db, 'metabase_readonly', 'SELECT * FROM v_cost_by_tower LIMIT 1', false);
+        // HAP-659: BI reads the bounded views (no ci.metadata) and never v_top_cost_drivers, which carries it.
+        for (const view of ['v_top_cost_drivers_bi', 'v_underutilized_resources']) {
+          await asRole(db, 'metabase_readonly', `SELECT * FROM ${view} LIMIT 1`, false);
+          const { rows } = await db.query(`SELECT count(*)::int AS n FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'metadata'`, [view]);
+          expect(rows[0].n).toBe(0);
+        }
         await asRole(db, 'metabase_readonly', 'SELECT * FROM v_top_cost_drivers LIMIT 1', true);
+        await asRole(db, 'metabase_readonly', 'SELECT * FROM cmdb.dim_ci LIMIT 1', true);
+        // cmdb#318 review: the unbounded BI-granted cost views are security barriers (no LIMIT to stop push-down).
+        const { rows: barrier } = await db.query(`SELECT c.relname, c.reloptions::text AS options FROM pg_class c
+          WHERE c.relkind = 'v' AND c.relname = ANY($1)`, [costBarrierViews]);
+        expect(barrier.sort((a, b) => (a.relname < b.relname ? -1 : 1))).toEqual(
+          [...costBarrierViews].sort().map(relname => ({ relname, options: '{security_barrier=true}' })));
+      }, 180000);
+
+      // HAP-659 review B1/B2: the BI grant on a per-CI cost view depends on the view's shape, not only its name.
+      it('cost views: an old-shape view present before BI setup, or left by a failed CREATE, is never readable by BI', async () => {
+        const costSql = readFileSync(join(root, 'infrastructure/database/views/cost-analysis.sql'), 'utf8');
+        const mig050 = readFileSync(join(root,
+          'packages/database/src/postgres/migrations/050_bi_cost_view_grants.sql'), 'utf8');
+        const stale = 'CREATE VIEW v_top_cost_drivers_bi AS SELECT ci_id, metadata FROM cmdb.dim_ci';
+        const grantStale = 'GRANT SELECT ON v_top_cost_drivers_bi TO metabase_readonly';
+        const drop = 'DROP VIEW IF EXISTS v_top_cost_drivers_bi, v_underutilized_resources CASCADE';
+        const canRead = async (view: string) => (await db.query(
+          `SELECT has_table_privilege('metabase_readonly', $1, 'SELECT') AS allowed`, [view])).rows[0].allowed;
+        // psql without ON_ERROR_STOP: each top-level statement runs; a failure only prints an error.
+        const loose = async (sql: string) => {
+          const errors: string[] = [];
+          for (const statement of statements(sql)) {
+            try { await db.query(statement); } catch (error) { errors.push((error as Error).message); }
+          }
+          return errors;
+        };
+        try {
+          await db.query(costSql); // v_top_cost_drivers exists, with ci.metadata
+          // B1: old shapes present, then BI setup runs.
+          await db.query(drop);
+          await db.query(stale);
+          await db.query(grantStale);
+          await db.query(biSetup());
+          expect(await canRead('v_top_cost_drivers_bi')).toBe(false);
+          await asRole(db, 'metabase_readonly', 'SELECT * FROM v_top_cost_drivers_bi LIMIT 1', true);
+          expect(await canRead('v_top_cost_drivers')).toBe(false);
+          await asRole(db, 'metabase_readonly', 'SELECT * FROM v_top_cost_drivers LIMIT 1', true);
+          // B2: the stale view makes the CREATE fail; the file still runs to its end, as psql would run it.
+          await db.query(grantStale);
+          const errors = await loose(costSql);
+          expect(errors.some(e => /cannot (change name of|drop columns from) view/.test(e))).toBe(true);
+          expect(await canRead('v_top_cost_drivers_bi')).toBe(false);
+          await asRole(db, 'metabase_readonly', 'SELECT * FROM v_top_cost_drivers_bi LIMIT 1', true);
+          await asRole(db, 'metabase_readonly', 'SELECT * FROM v_top_cost_drivers LIMIT 1', true);
+          // 050 (post-restore re-grant) refuses the stale shape too, and grants the bounded shape.
+          await db.query(grantStale);
+          await db.query(mig050);
+          expect(await canRead('v_top_cost_drivers_bi')).toBe(false);
+          await db.query(drop);
+          await db.query(costSql);
+          await db.query('REVOKE ALL ON v_top_cost_drivers_bi, v_underutilized_resources FROM metabase_readonly');
+          expect(await canRead('v_top_cost_drivers_bi')).toBe(false);
+          await db.query(mig050);
+          for (const view of ['v_top_cost_drivers_bi', 'v_underutilized_resources']) {
+            expect(await canRead(view)).toBe(true);
+            await asRole(db, 'metabase_readonly', `SELECT * FROM ${view} LIMIT 1`, false);
+          }
+          expect(await canRead('v_top_cost_drivers')).toBe(false);
+        } finally {
+          await db.query(drop);
+          await db.query(costSql);
+        }
+      }, 180000);
+
+      // cmdb#328 review: 051 warns and skips a cost view owned by another role (its owner could redefine it).
+      // CREATE OR REPLACE VIEW keeps the owner, and cost-analysis.sql cannot replace a view the login does not own, so
+      // the view has to be dropped (or handed back with ALTER VIEW ... OWNER TO) before the file is re-run.
+      it('051 warns and skips a cost view owned by another role; dropping it and re-running cost-analysis.sql restores the barrier', async () => {
+        const costSql = readFileSync(join(root, 'infrastructure/database/views/cost-analysis.sql'), 'utf8');
+        const mig051 = readFileSync(join(root,
+          'packages/database/src/postgres/migrations/051_bi_view_security_barrier.sql'), 'utf8');
+        const other = 'hap630_view_owner';
+        const view = 'v_cost_by_tower';
+        const barrier = async () => Object.fromEntries((await db.query(`SELECT c.relname, c.reloptions::text AS options,
+          pg_get_userbyid(c.relowner) AS owner FROM pg_class c WHERE c.relkind = 'v' AND c.relname = ANY($1)`,
+          [costBarrierViews])).rows.map(r => [r.relname, r]));
+        // 051 is a transaction-scoped migration (SET LOCAL); a dedicated client sees its WARNINGs as notices.
+        const run051 = async () => {
+          const client = await db.connect();
+          const notices: string[] = [];
+          client.on('notice', n => notices.push(n.message));
+          try {
+            await client.query('BEGIN');
+            await client.query(mig051);
+            await client.query('COMMIT');
+          } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+          } finally {
+            client.release();
+          }
+          return notices.filter(m => m.includes(view));
+        };
+        await db.query(`CREATE ROLE ${other}`);
+        try {
+          await db.query(costSql);
+          const owner = (await barrier())[view].owner;
+          await db.query(`ALTER VIEW ${view} OWNER TO ${other}`);
+          await db.query(`ALTER VIEW ${view} RESET (security_barrier)`); // as after a restore of an older dump
+          const warnings = await run051(); // must not throw
+          expect(warnings).toHaveLength(1);
+          const skipped = await barrier();
+          expect(skipped[view]).toMatchObject({ options: null, owner: other });
+          for (const name of costBarrierViews.filter(n => n !== view)) {
+            expect(skipped[name].options).toBe('{security_barrier=true}');
+          }
+          // the documented fix
+          await db.query(`DROP VIEW ${view}`);
+          await db.query(costSql);
+          expect(await run051()).toEqual([]);
+          expect((await barrier())[view]).toMatchObject({ options: '{security_barrier=true}', owner });
+        } finally {
+          await db.query(`DROP OWNED BY ${other}`);
+          await db.query(`DROP ROLE ${other}`);
+          await db.query(costSql);
+        }
       }, 180000);
 
       it('guarded manual down refuses wrong relation and removes exactly its ledger entry', async () => {

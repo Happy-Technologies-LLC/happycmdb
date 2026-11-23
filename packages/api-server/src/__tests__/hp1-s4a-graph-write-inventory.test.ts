@@ -14,15 +14,13 @@ const LIBRARY_ONLY = ['bsm-impact-engine', 'itil-service-manager', 'framework-in
 // Exact per-file counts: a new mutation in a listed file fails too.
 const ALLOWED: Record<string, { count: number; reason: string }> = {
   'database/src/journal/journal.ts': { count: 10, reason: 'the journaled W statements and the recovery fence' },
-  'database/src/neo4j/client.ts': { count: 2, reason: 'legacyCreateCIUnjournaled (HP1-S5 ETL residual) and the incarnation marker' },
-  'identity-resolution/src/engine/identity-reconciliation-engine.ts': { count: 2, reason: 'create-if-missing path, reached only by non-API writers (HP1-S5)' },
-  'etl-processor/src/jobs/reconciliation.job.ts': { count: 1, reason: 'ETL writer, journaled by HP1-S5 (A-12)' },
+  'database/src/neo4j/client.ts': { count: 1, reason: 'the incarnation marker' },
   'bsm-impact-engine/src/utils/graph-traversal.ts': { count: 1, reason: 'library with no deployable importer (asserted below)' },
   'itil-service-manager/src/repositories/ci-repository.ts': { count: 1, reason: 'library with no deployable importer (asserted below)' },
-  'api-server/src/auth/neo4j-auth.repository.ts': { count: 7, reason: ':User/:ApiKey nodes, not :CI' },
+  'api-server/src/auth/neo4j-auth.repository.ts': { count: 8, reason: ':User/:ApiKey nodes, not :CI' },
   'api-server/src/auth/user-lock.ts': { count: 2, reason: ':User lock, not :CI' },
   'api-server/src/scripts/backfill-business-service-organization.ts': { count: 4, reason: 'operator script, :BusinessService' },
-  'api-server/src/scripts/identity-window.ts': { count: 4, reason: 'operator script, :User (FD-5 adds the organization assignment)' },
+  'api-server/src/scripts/identity-window.ts': { count: 6, reason: 'operator script, :User (FD-5 organization assignment; HAP-1632 portfolio:import scope grant and revoke)' },
   'api-server/src/scripts/rotate-user-password.ts': { count: 2, reason: 'operator script, :User' },
   'api-server/src/scripts/seed-tenant-fixture.ts': { count: 1, reason: 'operator script, :User' },
 };

@@ -50,6 +50,7 @@ import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, relative } from 'path';
+import { GUARDED_PASSWORD_CYPHER } from '../neo4j-auth.repository';
 
 const ROOT = join(__dirname, '../../../../..');
 
@@ -97,10 +98,11 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
     reviewed: { 'packages/api-server/src/scripts/rotate-user-password.ts': 1 },
   },
   {
-    name: 'credentialEpoch (the operator rotation and the guarded self-service password change)',
+    name: 'credentialEpoch (the operator rotation and the guarded self-service password change and session revoke)',
     pattern: new RegExp(String.raw`\.\s*_?credentialEpoch\s*=(?!=)|${removes('_?credentialEpoch')}`, 'gi'),
     reviewed: {
-      'packages/api-server/src/auth/neo4j-auth.repository.ts': 1, // GUARDED_PASSWORD_CYPHER (HAP-1285)
+      // GUARDED_PASSWORD_CYPHER (HAP-1285) and GUARDED_BUMP_EPOCH_CYPHER (HAP-1716: the generation only, never a hash)
+      'packages/api-server/src/auth/neo4j-auth.repository.ts': 2,
       'packages/api-server/src/scripts/rotate-user-password.ts': 1,
     },
   },
@@ -131,16 +133,21 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
     },
   },
   {
-    name: 'bulk API-key revocation by user (the operator rotation only)',
+    name: 'bulk API-key revocation by user (the operator rotation; the self-service change, below its new generation only)',
     pattern: /UPDATE\s+api_keys\s+SET\s+enabled\s*=\s*false/gi,
-    reviewed: { 'packages/api-server/src/scripts/rotate-user-password.ts': 1 },
+    reviewed: {
+      'packages/api-server/src/auth/neo4j-auth.repository.ts': 1, // revokeApiKeysBelowEpoch (HAP-1669): credential_epoch < the new generation
+      'packages/api-server/src/scripts/rotate-user-password.ts': 1,
+    },
   },
   {
     name: 'auth_credential_events INSERT (login marker, window scan, rotation)',
     pattern: /INSERT\s+INTO\s+auth_credential_events/gi,
     reviewed: {
       'packages/api-server/src/auth/neo4j-auth.repository.ts': 1,
-      'packages/api-server/src/scripts/identity-window.ts': 1,
+      // Reviewed: the window scan row, SCOPE_EVENT_SQL (HAP-2039), the one statement behind the scope grant and the scope revoke,
+      // and RECORD_EVENT_SQL (HAP-2131), the record-only recovery's idempotent insert (the actor marks it as a recovery row).
+      'packages/api-server/src/scripts/identity-window.ts': 3,
       'packages/api-server/src/scripts/rotate-user-password.ts': 3,
     },
   },
@@ -155,9 +162,11 @@ const RULES: Array<{ name: string; pattern: RegExp; reviewed: Record<string, num
     },
   },
   {
-    name: 'scopes (no writer; the HAP-1632 operator grant only)',
+    name: 'scopes (the HAP-1632 operator grant and revoke only)',
     pattern: new RegExp(String.raw`\.\s*_?scopes\s*=(?!=)|${removes('_?scopes')}`, 'gi'),
     reviewed: {
+      // Reviewed (HAP-1632): GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER and REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER, one `SET u.scopes = $scopes` each.
+      'packages/api-server/src/scripts/identity-window.ts': 2,
       // Reviewed (HAP-1615): `auth.scopes = raw.scopes` maps a connector descriptor's OAuth scopes; not a :User write.
       'packages/integration-framework/src/descriptor-mapper.ts': 1,
     },
@@ -335,6 +344,12 @@ describe('inventory gate 4: user-security property writers', () => {
     expect(violations(sources)).toEqual([]);
   });
 
+  it('HAP-1714: the reviewed password writer only lands on a node that still holds an organization (either spelling), in its WHERE, before the SET', () => {
+    const where = GUARDED_PASSWORD_CYPHER.slice(GUARDED_PASSWORD_CYPHER.indexOf('WHERE (u._id'), GUARDED_PASSWORD_CYPHER.indexOf('SET u._passwordHash'));
+
+    expect(where).toMatch(/\bAND\s+coalesce\(u\._organizationId,\s*u\.organizationId\)\s+IS NOT NULL\b/);
+  });
+
   const REPOSITORY = 'packages/api-server/src/auth/neo4j-auth.repository.ts';
   const ROTATION = 'packages/api-server/src/scripts/rotate-user-password.ts';
   const IDENTITY_WINDOW = 'packages/api-server/src/scripts/identity-window.ts';
@@ -346,7 +361,10 @@ describe('inventory gate 4: user-security property writers', () => {
       "const AGAIN = 'MATCH (u:User) WHERE u._id = $id SET u.defaultPasswordSuspect = true';"],
     ['an underscore-spelling marker setter in the repository', REPOSITORY,
       "const U = 'MATCH (u:User) WHERE elementId(u) = $e SET u._defaultPasswordSuspect = true';"],
-    ['a generation writer in the repository', REPOSITORY, "const E = 'SET u.credentialEpoch = $epoch';"],
+    ['a third generation writer in the repository (HAP-1716 reviews exactly the password change and the session revoke)', REPOSITORY,
+      "const E = 'SET u.credentialEpoch = $epoch';"],
+    ['a hash write next to the epoch-only session revoke in the repository (HAP-1716)', REPOSITORY,
+      "const REVOKE_HASH = 'MATCH (u:User) WHERE elementId(u) = $e SET u._passwordHash = $h';"],
     ['a login rehash that also advances the generation in the repository (HAP-1090)', REPOSITORY,
       "const REHASH_BUMP = 'MATCH (u:User) WHERE elementId(u) = $e SET u._passwordHash = $h, u.passwordHash = $h, u.credentialEpoch = $n';"],
     ['an API-key generation update in the repository', REPOSITORY,
@@ -362,6 +380,8 @@ describe('inventory gate 4: user-security property writers', () => {
     ['an organization removal in the repository', REPOSITORY, "const R = 'MATCH (u:User) WHERE u._id = $id REMOVE u._organizationId';"],
     ['a scopes writer in the repository (HAP-1615)', REPOSITORY,
       "const GRANT = 'MATCH (u:User) WHERE u._id = $id SET u.scopes = $s';"],
+    ['a third scopes writer in the identity window (HAP-1632 reviews exactly the grant and the revoke)', IDENTITY_WINDOW,
+      "const AGAIN = 'MATCH (u:User) WHERE elementId(u) = $e SET u.scopes = $s';"],
   ])('fails on %s', (_label, file, addition) => {
     expect(violations(new Map([[file, sources.get(file)!]]))).toEqual([]);
     expect(violations(new Map([[file, `${sources.get(file)}\n${addition}\n`]]))).not.toEqual([]);
@@ -426,8 +446,8 @@ describe('inventory gate 4: user-security property writers', () => {
     platformAdmin: 'platformAdmin (set only by the reviewed operator grant)',
     seedProvenance: 'seedProvenance (seed writers and the window stamp; never cleared)',
     defaultPasswordSuspect: 'defaultPasswordSuspect cleared (the operator rotation only)',
-    credentialEpoch: 'credentialEpoch (the operator rotation and the guarded self-service password change)',
-    scopes: 'scopes (no writer; the HAP-1632 operator grant only)',
+    credentialEpoch: 'credentialEpoch (the operator rotation and the guarded self-service password change and session revoke)',
+    scopes: 'scopes (the HAP-1632 operator grant and revoke only)',
     organizationId: 'organizationId (seed writers and the FD-5 operator assignment only)',
   };
   it.each(REMOVE_KEYS.flatMap(key => REMOVE_SHAPES.map(([shape, line]): [string, string, string] => [key, shape, line(key)])))(

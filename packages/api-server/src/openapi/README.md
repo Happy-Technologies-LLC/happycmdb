@@ -89,15 +89,21 @@ is performed by this change.
 - `DELETE /auth/api-keys/{keyId}` - Revoke API key
 
 ### Configuration Items (`/api/v1/cis`)
-- `GET /cis` - List all CIs with filtering
+- `GET /cis` - List all CIs with filtering. `GET /cis` and `GET /cis/{id}` always carry `health` (`healthy`, `degraded` or `critical` from the caller organization's open incidents: priority 1 or 2 is `critical`, 3 to 5 `degraded`, none `healthy`; `null` when the incident tables are absent or unreadable, `services/ci-health.ts`) and `owner`, `provider`, `ip_address` and `tier`: a stored top-level property of that name is returned exactly as stored (`ip_address` may be an array), otherwise the value is derived at read time from the stored `metadata` JSON by a documented ordered key set (`services/ci-normalized-fields.ts`), or `null`; the raw `metadata` is unchanged and nothing is stored
 - `POST /cis` - Create a CI with server-assigned `id`; omit `id`, `external_id`, `organization_id`
 - `GET /cis/{id}` - Get CI by ID
 - `PUT /cis/{id}` - Update CI
 - `DELETE /cis/{id}` - Delete CI
+- `POST /cis/{id}/oversized-delete` - Admin-only recovery delete of a legacy CI whose stored value breaks a journal plan limit (HAP-797); body `{evidence_ref}` (1 to 512 characters, no control or format characters). Only a CI with at least one oversized value is accepted: any other CI is `409` (`not_oversized`), including a CI with more than 1000 stored properties and no oversized value (the ordinary `DELETE` is `422` for it). `204`, `400`, `401`, `403`, `404`, `409`, `422`, `500` or `503`
+- `GET /cis/{id}/stored-properties` - Admin-only read of every stored property of a CI, HP1-encoded (HAP-797): the preservation copy before the recovery delete. `404` for a missing or foreign CI, `409` while the CI has an unresolved journal write
 - `POST /cis/search` - Search CIs
 - `GET /cis/{id}/relationships` - Get CI relationships
-- `GET /cis/{id}/dependencies` - Get dependency tree
-- `GET /cis/{id}/impact` - Impact analysis
+- `GET /cis/{id}/dependencies` - Get dependency tree; `edges[]` lists every followed edge with `currentness` (`current|stale|contradicted|unsupported`) and an `evidence` aggregate (HAP-2030). Currentness is derived at read from the edge's receipts against the database clock (windows: declared 180 d, static_observed 7 d, runtime_observed 1 d, inferred never current; no receipt is `unsupported`), never stored, and `current` is not a runtime guarantee. A failed or timed-out evidence read is 504/503, never an optimistic body
+- `GET /cis/{id}/impact` - Impact analysis; same `edges[]` with `currentness` and `evidence` over the downstream and upstream edges (HAP-2030), 503/504 documented
+  The same response carries `affected_business_services`, `cost_per_hour`, `cost_per_hour_services_priced` and `unavailable` (HAP-1927, BW11): the services mapped to the CI or to a downstream CI, read in the caller's organization (service, mapped CI and reconciliation state all organization-checked, retired services skipped). The total `cost_per_hour` is the sum of the priced services' `annual_revenue_supported` (read from the service's `metadata`) divided by 8760 and rounded to cents once, so it may differ from the sum of the per-service `cost_per_hour` values, which are each rounded on their own, by up to half a cent per priced service; `null` and listed in `unavailable` when no service has revenue, never 0
+- `POST /impact/predict` - Change impact prediction (persists the analysis). Adds the same business context, `direction` on each affected CI (`downstream`), a `failover` change type (weight 1.2, downtime `15 + blast_radius * 3` minutes) and deterministic rule-based `recommendations` (rule ids in the OpenAPI description; no model) (HAP-1927, BW12)
+- `GET /impact/graph/{rootCiId}` - Bounded dependency graph; every `data.edges[]` item carries `currentness` and `evidence` (HAP-2030), 503/504 documented, never a partial graph
+- `POST /ask` - Ask Happy, phase 1 (HAP-1928, BW13): the impact question on one CI answered as `happy-ui/v1` JSON Lines (`application/x-ndjson`). Read-only (the prediction is previewed, never stored), organization-scoped, deterministic (no model, no conversation memory); `select`/`focus`/`highlight` effects, a risk/dependents/cost/downtime `StatGroup`, affected-service and dependency `ImpactChain`s and rule-based recommendation `Callout`s. Cost and downtime are omitted without backing data (a computed 0 is shown as 0)
 - `GET /cis/{id}/audit` - Audit history
 
 Every REST/GraphQL CI and relationship write (create, update, delete, ITIL
@@ -132,10 +138,10 @@ pending/failed for the caller's organization they answer 409 `CI is temporarily
 unavailable` with no row or event; an admission lock timeout answers 503.
 
 Per-organization read gate (HAP-850, X-29): `GET /cis`, `POST /cis/search`, the four
-`/search` endpoints and `GET /impact/graph/{rootCiId}` run at most 2 at once per verified
+`/search` endpoints, `GET /impact/graph/{rootCiId}` and `POST /ask` run at most 2 at once per verified
 organization per API process. Others wait FIFO (at most 64, admitted at least 50 ms apart,
 for at most 5 s); overflow or an expired wait gets the route's existing body: 503 `CI list
-temporarily unavailable`, or 429 `Impact analysis rate limit exceeded` on the impact graph.
+temporarily unavailable`, or 429 `Impact analysis rate limit exceeded` on the impact graph and ask.
 A slot is held until the handler's work settles, even after a timed-out response. Writes,
 other reads and GraphQL are not gated, and other organizations never wait.
 Journaled writes (HAP-873): per organization and API process, only one write at a time waits for the
@@ -152,6 +158,7 @@ stream of the same organization's CI writes, about one queued referenced write p
 - `POST /relationships` - Create relationship
 - `DELETE /relationships/{id}` - Delete relationship
 - `GET /relationships/type/{type}` - Get by type
+- `GET /relationships/evidence` - An edge's server-assigned evidence receipts (HAP-2029): newest first, organization-scoped, `from_id`, `to_id` and `type` required, `limit` at most 200 (default 50). Both CIs must be the caller's: any other endpoint is the same 404. Receipts are history, not currentness; an edge written before receipts existed has none. `503` (fixed body `Relationship evidence temporarily unavailable`) while the receipt table is missing or the API's database login lacks SELECT on it; any other failure is `500`
 
 ### Search (`/api/v1/search`)
 - `POST /search/advanced` - Advanced search with filters
@@ -239,7 +246,9 @@ production scheduling. Credential-backed discovery is restored by HP1-S5
 - `GET /reconciliation/lineage/{ci_id}`, `GET /reconciliation/field-sources/{ci_id}` - Caller-owned CI lineage and field sources; foreign and missing CIs share one 404 (GraphQL `getCILineage`/`getCIFieldSources` NOT_FOUND). After the organization guard, both and their GraphQL counterparts return 503 `Service Unavailable` (GraphQL `SERVICE_UNAVAILABLE`) before any data query while the HP1 schema or the Neo4j fence constraint is missing (v16 §3.2)
 
 ### Analytics (`/api/v1/analytics`)
-- `GET /analytics/dashboard` - Dashboard statistics
+- `GET /analytics/dashboard` - Dashboard statistics for the caller's organization. `health_score` (HAP-1923 BW1/BW4) is the percentage of the organization's CIs with `health` `healthy` (one decimal), with the counts in `ci_health` (`{healthy, degraded, critical, total}`); both are `null`, and `health_score` is listed in `unavailable`, when the ITIL incident tables are absent, more than 5000 CIs have an open incident, the incident read failed or timed out, or (for `health_score`) the organization has no CIs; `critical_relationships` counts relationships with at least one endpoint whose `bsm_business_criticality` is `tier_1` or `tier_2` (`services/critical-ci.ts`). `open_drift_count` (HAP-1925 BW5) is the number of CIs whose latest drift detection of their current incarnation shows drift; `configuration_coverage` (BW6) is `{with_owner_and_source, total, ratio}`: CIs with both a normalized `owner` and at least one `ci_source_lineage` row, over all CIs (`ratio` is `null` at 0 CIs). Either is `null` when it cannot be computed (more than 5000 drifted or 20000 total CIs, or a failed read) and `unavailable` lists the null fields (`services/estate-kpi.service.ts`). `kpi_history` and `kpi_delta` (HAP-1925 BW7) give sparkline and delta data for `health_score`, `open_drift_count`, `configuration_coverage_ratio` and `total_cis`: `kpi_history.<metric>` is up to the newest 10 RECORDED daily values (`[{date: "YYYY-MM-DD", value}]`, ascending, `[]` when none) and `kpi_delta.<metric>` is the latest recorded value minus the previous recorded one (`null` with fewer than 2 points). The series is sparse: the first dashboard read of each UTC day records that day's value (table `estate_kpi_snapshots`, append-only, never rewritten), an unavailable (`null`) figure is never recorded, and a day with no read has no point, so a delta compares the two newest recorded days however far apart. Both are `null`, and `kpi_history` is listed in `unavailable`, when the history cannot be written or read; the current figures are unaffected
+- `GET /analytics/topology-summary` - Estate topology summary: per-category CI counts, a capped node sample (`limit` 1..500, default 200) and capped edges (`edge_limit` 1..1000, default 400); decommissioned CIs only with `includeInactive=true`. Reads inside the `readCIList` fence, so CIs with a pending or failed reconciliation operation are absent from every field. Shares the `analytics` admission scope (below); 503 for more than 100 CI types or an unavailable CI list, 504 for a Neo4j timeout.
+- `GET /analytics/recent-changes` - Tenant-wide recent CI changes (HAP-1926 BW9): `?window=1h|24h` (default `1h`) and `?limit=1..100` (default 20), newest first from `ci_change_history`. A row needs the caller's organization stamp AND a CI that still exists in the caller's organization at the incarnation the row was recorded against; `total` counts every qualifying row in the window. `ci_name`/`ci_type` are `null` when the graph has none. Poll only (no push). Invalid `window`/`limit` is 400, never clamped. Shares the `analytics` admission scope (below).
 - `GET /analytics/ci-counts` - CI counts by type
 - `GET /analytics/discovery-stats` - Discovery statistics
 - `GET /analytics/dependency-depth` and GraphQL `getDependencyDepthStats` share a bounded tenant-edge traversal (128 edges, depth 10, 5-second SQL timeout). Larger graphs return a fixed resource-limit failure; request admission holds REST slots until work finishes.
@@ -266,10 +275,11 @@ the same 404. Job data, results, failures, progress and free-form logs are not
 returned. Schedule responses omit stored configuration. Queue and failed-job
 lists accept non-negative integer `start`/`end` and optional `limit`, reject
 invalid ranges with fixed 400, and read at most 100 BullMQ jobs per request
-before filtering by organization. Pagination reports queue offsets, bounded
-`limit`, and `truncated: true` for every non-empty page: ownership filtering
-can make the bounded sample incomplete, and the flag does not reveal queue
-occupancy. It does not expose cross-tenant totals. Global queue clean,
+before filtering by organization. Pagination reports the queue offset, the
+bounded `limit`, and an explicit `hasMore`: each request reads one position
+past the page (at most `limit` + 1), returns `limit` jobs at most, and sets
+`hasMore` only when that extra position held a job. It carries no `total` and
+does not expose cross-tenant totals. Global queue clean,
 pause/resume, stats (including repeatable job metadata), worker status, queue
 health and metrics, discovery aggregates, schedule listings and both discovery
 and ETL provider/type schedule updates return the same fixed 403 for every
@@ -305,13 +315,14 @@ Scoped to the caller's organization: 403 without an organization claim; a servic
 - `GET /business-services` - C1 list (HAP-1425): `?lifecycle=&cursor=&limit=` (limit 1-100, default 50) answers `{items[], next_cursor|null, as_of}`, each item the C1 service read below; follow `next_cursor` until null. The cursor is opaque, bound to the token's organization and valid for 1 hour: altered, foreign or expired is 404. `tenant_id`/`organization_id` parameters and an unknown `lifecycle` are 400. Read-only consumers use a `viewer` principal, which every write route refuses with 403. `page` is deprecated (old `{data, pagination}` offset envelope)
 - `POST /business-services` - Create business service
 - `GET /business-services/{service_id}` - Get business service with mapped-CI and dependency counts, plus the Suite Contracts v2 C1 fields (`tenant_id`, `owner`, `criticality`, `lifecycle`, `dependencies[]`, `offerings[]`)
+- `GET /business-services/availability` - 24 h availability of the top services (HAP-1926 BW10), `?limit=1..50` (default 5). Incident-derived, not probed: P1/P2 incidents (not cancelled) on the service's mapped CIs, clipped to the last 24 h (a resolved/closed incident with no `resolved_at`/`closed_at` ends at `updated_at`), overlaps merged; `basis: "incident_derived"`. A mapped service with no such incident reads 100 (no P1/P2 recorded, not a verified uptime); a service with no mapped CI has `null` figures listed in `unavailable`. Services are `live`/`retiring`, most critical first. A read that hits its statement timeout is `503` `Analytics resource limit exceeded`. Registered before `/{service_id}`.
 - `PATCH /business-services/{service_id}` - Update business service (409 when moving out of live while an offering is live)
 - `DELETE /business-services/{service_id}` - Delete business service (409 when it has CI mappings, dependencies or offerings: retire it)
 - `GET /business-services/{service_id}/cis` - Mapped CIs
 - `POST /business-services/{service_id}/cis` - Map CIs
 - `DELETE /business-services/{service_id}/cis/{ci_id}` - Unmap CI
 - `GET /business-services/{service_id}/dependencies` - Service dependencies
-- `GET /business-services/{service_id}/context` - C1 context read: dependency and impact subgraph (services and mapped CIs, both directions, depth 5 / 100 nodes / 400 adjacency rows / 5 s statements; refused with 503/504 over a bound, never truncated)
+- `GET /business-services/{service_id}/context` - C1 context read: dependency and impact subgraph (services and mapped CIs, both directions, depth 5 / 100 nodes / 400 adjacency rows / 5 s statements; refused with 503/504 over a bound, never truncated). CI-to-CI edges carry `currentness` and `evidence` (HAP-2030); service-to-service and MAPPED_CI edges carry neither
 - `POST /business-services/{service_id}/dependencies` - Create dependency
 - `DELETE /business-services/{service_id}/dependencies/{depends_on_service_id}` - Delete dependency
 - `GET /business-services/{service_id}/health` - Incident and change metrics (7/30-day UTC windows)
@@ -368,17 +379,19 @@ curl -H "X-API-Key: YOUR_API_KEY" \
 
 ## Rate Limiting
 
-The API mounts no global rate limiter (`ApiServer.setupMiddleware`), so there is no per-token or per-API-key hourly or burst budget. Limiters sit on three auth routes registered in `AuthController`:
+The API mounts no global rate limiter (`ApiServer.setupMiddleware`), so there is no per-token or per-API-key hourly or burst budget. Limiters sit on four auth routes registered in `AuthController` and on `POST /api/v1/agents/heartbeat`:
 
 | Route | Limiter | Budget (`rateLimit.endpoints`) |
 |-------|---------|--------------------------------|
 | `POST /api/v1/auth/login` | `RateLimitMiddleware.limit('auth', …)` | `auth` (default 20 per hour per client address), `authAccount` (5 per 15 minutes per account and client address), `authAccountGlobal` (20 per 15 minutes per account) |
 | `PUT /api/v1/auth/password` | `RateLimitMiddleware.limit('auth', { perUser: true })` | `auth` per client address, `authAccount` per verified user |
+| `POST /api/v1/auth/sessions/revoke-others` | `RateLimitMiddleware.limit('auth', { perUserClient: true, perSession: true })` | `auth` per client address, `authAccount` per verified user AND client address, and `authAccount` per verified user AND session (the access token's `_authTime`, constant across refresh; across all client addresses; HAP-1716). A token without `_authTime` gets `401` before the limiter |
 | `POST /api/v1/auth/refresh` | `RateLimitMiddleware.custom(endpointBudget('rest'), 'auth-refresh')` | `rest` (default 1000 per hour per client address); not mounted when `rest.max` is `0` |
+| `POST /api/v1/agents/heartbeat` | `RateLimitMiddleware.custom(endpointBudget('agentHeartbeat'), 'agent-heartbeat', { admittedOnly: true })` | `agentHeartbeat` (default 600 per hour per verified user: the user behind the JWT or API key), checked before body validation; only admitted requests count; not mounted when `agentHeartbeat.max` is `0` |
 
 Analysis requests (`executeBoundedAnalysis`) and GraphQL requests (`admitGraphQLRequest`) have in-process admission gates that answer `429` without the headers below. The shipped `infrastructure/docker/nginx.conf` adds per-client-address zones, each answering `limit_req_status 429`: `api_limit` (100r/s, `burst=50`, `location /api/`), `auth_limit` (5r/m, `burst=2`, login and password change only), `auth_session_limit` (2r/s, `burst=20`, the other `/api/v1/auth/` paths) and `graphql_limit` (50r/s, `burst=20`, `location /graphql`). The full rules are in [API_DOCUMENTATION.md](../../docs/API_DOCUMENTATION.md#rate-limiting).
 
-Rate limit headers (sent only by the auth endpoints `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh` and `PUT /api/v1/auth/password`; no other route sends them; absent when `rateLimit.enabled` is `false`, on a bypass-header match, when the endpoint's `max` is `0` or on a limiter store error):
+Rate limit headers (sent only by the auth endpoints `POST /api/v1/auth/login`, `POST /api/v1/auth/refresh` and `PUT /api/v1/auth/password`, and by `POST /api/v1/agents/heartbeat`; no other route sends them; absent when `rateLimit.enabled` is `false`, on a bypass-header match, when the endpoint's `max` is `0` or on a limiter store error):
 - `X-RateLimit-Limit`: Maximum requests
 - `X-RateLimit-Remaining`: Remaining requests
 - `X-RateLimit-Reset`: Unix epoch milliseconds when the limit resets

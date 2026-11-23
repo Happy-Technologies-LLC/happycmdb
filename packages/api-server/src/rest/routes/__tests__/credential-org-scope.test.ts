@@ -55,10 +55,15 @@ const identities: Record<string, { _id: string; _username: string; _role: 'opera
   viewer: { _id: 'viewer', _username: 'vicky', _role: 'viewer', _enabled: true, _organizationId: A },
   admin: { _id: 'admin', _username: 'ada', _role: 'admin', _enabled: true, _organizationId: A },
   agent: { _id: 'agent', _username: 'worker', _role: 'agent', _enabled: true, _organizationId: A },
+  // Gate-order fixtures: an org-less agent, and identities whose verified subject is the empty string. The repository
+  // is this file's existing boundary fixture; the token, middleware and router are real.
+  agentNoOrg: { _id: 'agentNoOrg', _username: 'orphan-worker', _role: 'agent', _enabled: true },
+  '': { _id: '', _username: 'ownerless', _role: 'operator', _enabled: true, _organizationId: A },
 };
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({ findUserById: async (id: string) => identities[id] ?? null })),
 }));
+import { declaredResponse, violations } from '../../../openapi/__tests__/spec-schema';
 import { loadConfig } from '@cmdb/common';
 import { logger, EncryptionService, getEncryptionService } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
@@ -73,9 +78,14 @@ app.use(express.json());
 app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1', unifiedCredentialRoutes);
 const jwt = new JWTService(loadConfig().auth.jwt);
-const as = (id: string) => ({ Authorization: `Bearer ${jwt.generateAccessToken(id, identities[id]._username, identities[id]._role, identities[id]._organizationId)}` });
+const as = (id: string) => ({ Authorization: `Bearer ${jwt.generateAccessToken(id, identities[id]._username, identities[id]._role, identities[id]._organizationId, 0, Math.floor(Date.now() / 1000))}` });
 const credential = (name: string) => ({ name, protocol: 'api_key', scope: 'api', credentials: { key: `only-${name}` } });
 const missing = '99999999-9999-4999-8999-999999999999';
+// Exactly what the router-level gates send today. The agent and owner refusals are bare (no `code`, no `_error` family):
+// a later ForbiddenCode for them must change these `toEqual`s on purpose.
+const orgRequired = { success: false, error: 'Forbidden', message: 'Organization claim required', _error: 'Forbidden', _message: 'Organization claim required', code: 'ORGANIZATION_REQUIRED' };
+const agentRefused = { success: false, error: 'Forbidden', message: 'Credential management requires a human user' };
+const ownerRefused = { success: false, error: 'Forbidden', message: 'Verified credential owner required' };
 const legacyId = '88888888-8888-4888-8888-888888888888';
 let bId: string;
 let aId: string;
@@ -90,8 +100,10 @@ beforeAll(async () => {
   await sql(`${tables.join('\n')}
 CREATE UNIQUE INDEX idx_credentials_unique_name ON credentials(name, created_by);
 CREATE UNIQUE INDEX idx_credential_sets_unique_name ON credential_sets(name, created_by);
-CREATE TABLE discovery_definitions (credential_id UUID, credential_set_id UUID);
-CREATE TABLE connector_configurations (credential_id UUID);`, [], 'exec');
+-- Mirrors 001 + 018/024: credential_id REFERENCES credentials(id) ON DELETE RESTRICT (fk_discovery_definitions_credential,
+-- fk_connector_configurations_credential), while organization_id is a plain nullable UUID the FK does not check.
+CREATE TABLE discovery_definitions (credential_id UUID REFERENCES credentials(id) ON DELETE RESTRICT, credential_set_id UUID REFERENCES credential_sets(id) ON DELETE RESTRICT, created_by VARCHAR(255), organization_id UUID);
+CREATE TABLE connector_configurations (credential_id UUID REFERENCES credentials(id) ON DELETE RESTRICT, created_by VARCHAR(255), organization_id UUID);`, [], 'exec');
   await sql(`INSERT INTO credentials (id, name, protocol, scope, credentials, created_by)
     VALUES ($1, 'legacy', 'api_key', 'api', '{"key":"legacy-secret"}', 'a')`, [legacyId]);
   await sql(readFileSync(join(migrations, '021_credential_organization_scope.sql'), 'utf8'), [], 'exec');
@@ -139,7 +151,9 @@ it('org A and same-org nonowner cannot enumerate or read B; B owner reads redact
 
 it('foreign and missing writes/deletes are indistinguishable with no mutation; owner succeeds', async () => {
   const before = await sql('SELECT credentials::text AS encrypted FROM credentials WHERE id = $1', [bId]);
-  await sql('INSERT INTO discovery_definitions (credential_id) VALUES ($1)', [bId]);
+  // Same-org references by the owner (b) and by same-org non-owner c all block the delete and are all counted.
+  await sql(`INSERT INTO discovery_definitions (credential_id, created_by, organization_id) VALUES ($1, 'b', $2), ($1, 'c', $2), ($1, 'c', $2)`, [bId, B]);
+  await sql(`INSERT INTO connector_configurations (credential_id, created_by, organization_id) VALUES ($1, 'c', $2)`, [bId, B]);
   for (const principal of ['a', 'c']) {
     const foreignPut = await request(app).put(`/api/v1/credentials/${bId}`).set(as(principal)).send({ credentials: { key: 'poison' } });
     const missingPut = await request(app).put(`/api/v1/credentials/${missing}`).set(as(principal)).send({ credentials: { key: 'poison' } });
@@ -153,8 +167,9 @@ it('foreign and missing writes/deletes are indistinguishable with no mutation; o
   expect(await sql('SELECT credentials::text AS encrypted FROM credentials WHERE id = $1', [bId])).toEqual(before);
   expect((await sql('SELECT name FROM credentials WHERE id = $1', [bId]))[0].name).toBe('B-private');
   const inUse = await request(app).delete(`/api/v1/credentials/${bId}`).set(as('b'));
-  expect([inUse.status, inUse.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently used by 1 discovery definition(s)' }]);
+  expect([inUse.status, inUse.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently used by 3 discovery definition(s) and 1 connector configuration(s)' }]);
   await sql('DELETE FROM discovery_definitions WHERE credential_id = $1', [bId]);
+  await sql('DELETE FROM connector_configurations WHERE credential_id = $1', [bId]);
   const ownerPut = await request(app).put(`/api/v1/credentials/${bId}`).set(as('b'))
     .send({ name: 'B-renamed', credentials: { key: 'owner-test-only' } });
   expect(ownerPut.status).toBe(200);
@@ -164,8 +179,46 @@ it('foreign and missing writes/deletes are indistinguishable with no mutation; o
   expect(await sql('SELECT id FROM credentials WHERE id = $1', [bId])).toEqual([]);
 });
 
+// The FK on credential_id (001, ON DELETE RESTRICT) checks no organization, so a row of another organization (or with a
+// NULL organization) can reference any credential id. Such a row is neither counted nor reported (list and 409 alike),
+// but the FK still refuses the delete: the refusal is the count-free 409, never a 500 (documented residual existence bit).
+it('list counts and the 409 count same-organization references only; a foreign reference still refuses the delete without counts', async () => {
+  const created = await request(app).post('/api/v1/credentials').set(as('a')).send(credential('A-referenced'));
+  expect(created.status).toBe(201);
+  const id = created.body.data.id as string;
+  const listed = async () => {
+    const row = (await request(app).get('/api/v1/credentials').set(as('a'))).body.data.find((item: { id: string }) => item.id === id);
+    return [row.usage_count, row.connector_usage_count];
+  };
+  await sql(`INSERT INTO discovery_definitions (credential_id, created_by, organization_id) VALUES ($1, 'b', $2), ($1, 'b', $2), ($1, 'legacy', NULL)`, [id, B]);
+  await sql(`INSERT INTO connector_configurations (credential_id, created_by, organization_id) VALUES ($1, 'b', $2)`, [id, B]);
+  await sql(`INSERT INTO credential_sets (name, credential_ids, created_by, organization_id) VALUES ('B-set', ARRAY[$1]::uuid[], 'b', $2)`, [id, B]);
+  expect(await listed()).toEqual([0, 0]);
+
+  // Same-org references by another user (d) are counted, by the list and by the refusal alike.
+  await sql(`INSERT INTO discovery_definitions (credential_id, created_by, organization_id) VALUES ($1, 'd', $2), ($1, 'a', $2)`, [id, A]);
+  await sql(`INSERT INTO connector_configurations (credential_id, created_by, organization_id) VALUES ($1, NULL, $2)`, [id, A]);
+  expect(await listed()).toEqual([2, 1]);
+  const refused = await request(app).delete(`/api/v1/credentials/${id}`).set(as('a'));
+  expect([refused.status, refused.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently used by 2 discovery definition(s) and 1 connector configuration(s)' }]);
+
+  await sql(`DELETE FROM discovery_definitions WHERE credential_id = $1 AND organization_id = $2`, [id, A]);
+  await sql(`DELETE FROM connector_configurations WHERE credential_id = $1 AND organization_id = $2`, [id, A]);
+  expect(await listed()).toEqual([0, 0]);
+  const countFree = { success: false, error: 'Conflict', message: 'Cannot delete credential: it is currently in use' };
+  const fkRefused = await request(app).delete(`/api/v1/credentials/${id}`).set(as('a'));
+  expect([fkRefused.status, fkRefused.body]).toEqual([409, countFree]);
+  expect(await sql('SELECT id FROM credentials WHERE id = $1', [id])).toEqual([{ id }]);
+
+  await sql('DELETE FROM discovery_definitions WHERE credential_id = $1', [id]);
+  await sql('DELETE FROM connector_configurations WHERE credential_id = $1', [id]);
+  expect((await request(app).delete(`/api/v1/credentials/${id}`).set(as('a'))).status).toBe(204);
+  await sql('DELETE FROM credential_sets WHERE $1 = ANY(credential_ids)', [id]);
+});
+
 it('rejects org-less identities before SQL and prevents match/rank/validate enumeration', async () => {
-  expect((await request(app).get('/api/v1/credentials').set(as('none'))).status).toBe(403);
+  const orgLess = await request(app).get('/api/v1/credentials').set(as('none'));
+  expect([orgLess.status, orgLess.body]).toEqual([403, orgRequired]);
   expect((await request(app).post('/api/v1/credentials/rank').set(as('none')).send({})).status).toBe(403);
   expect((await request(app).post('/api/v1/credentials/match').set(as('none')).send({})).status).toBe(403);
   expect((await request(app).post(`/api/v1/credentials/${aId}/validate`).set(as('none')).send({})).status).toBe(403);
@@ -193,11 +246,41 @@ it('rejects org-less identities before SQL and prevents match/rank/validate enum
 
 it('requires authentication, an organization and write permission before credential mutation', async () => {
   expect((await request(app).get('/api/v1/credentials')).status).toBe(401);
-  expect((await request(app).post('/api/v1/credentials').set(as('none')).send(credential('forbidden'))).status).toBe(403);
+  const orgLessCreate = await request(app).post('/api/v1/credentials').set(as('none')).send(credential('forbidden'));
+  expect([orgLessCreate.status, orgLessCreate.body]).toEqual([403, orgRequired]);
   expect((await request(app).put(`/api/v1/credentials/${aId}`).set(as('viewer')).send({ name: 'forbidden' })).status).toBe(403);
-  expect((await request(app).post('/api/v1/credentials').set(as('agent')).send(credential('agent-forbidden'))).status).toBe(403);
-  expect((await request(app).get('/api/v1/credentials').set(as('agent'))).status).toBe(403);
+  const agentCreate = await request(app).post('/api/v1/credentials').set(as('agent')).send(credential('agent-forbidden'));
+  expect([agentCreate.status, agentCreate.body]).toEqual([403, agentRefused]);
+  const agentList = await request(app).get('/api/v1/credentials').set(as('agent'));
+  expect([agentList.status, agentList.body]).toEqual([403, agentRefused]);
   expect((await sql('SELECT name FROM credentials WHERE id = $1', [aId]))[0].name).toBe('A-private');
+});
+
+it('router gates refuse an agent, an org-less agent and an ownerless subject with their own bodies, in order, before any SQL', async () => {
+  const beforeSql = serial;
+  // Both mount points, a different path under each: the inline agent gate covers /credentials and /credential-sets.
+  const agentMatch = await request(app).post('/api/v1/credentials/match').set(as('agent')).send({});
+  expect([agentMatch.status, agentMatch.body]).toEqual([403, agentRefused]);
+  const agentSets = await request(app).get('/api/v1/credential-sets').set(as('agent'));
+  expect([agentSets.status, agentSets.body]).toEqual([403, agentRefused]);
+  // Order: requireOrganization() runs before the inline gate, so an org-less agent gets the organization body.
+  for (const [verb, path] of [['get', '/credentials'], ['post', '/credentials/match'], ['get', '/credential-sets']] as const) {
+    const response = await request(app)[verb](`/api/v1${path}`).set(as('agentNoOrg')).send({});
+    expect([path, response.status, response.body]).toEqual([path, 403, orgRequired]);
+  }
+  // The owner check runs before the agent check: an empty verified subject is refused as ownerless, even as an agent.
+  const ownerless = await request(app).get('/api/v1/credentials').set(as(''));
+  expect([ownerless.status, ownerless.body]).toEqual([403, ownerRefused]);
+  const ownerlessSets = await request(app).get('/api/v1/credential-sets').set(as(''));
+  expect([ownerlessSets.status, ownerlessSets.body]).toEqual([403, ownerRefused]);
+  identities[''] = { ...identities[''], _role: 'agent' };
+  try {
+    const ownerlessAgent = await request(app).get('/api/v1/credentials').set(as(''));
+    expect([ownerlessAgent.status, ownerlessAgent.body]).toEqual([403, ownerRefused]);
+  } finally {
+    identities[''] = { ...identities[''], _role: 'operator' };
+  }
+  expect(serial).toBe(beforeSql);
 });
 
 it('HAP-514: a viewer owner cannot validate a credential or select a set before any SQL; with write permission the owner can', async () => {
@@ -216,7 +299,7 @@ it('HAP-514: a viewer owner cannot validate a credential or select a set before 
   try {
     const beforeSql = serial;
     const refused = await callAs('viewer');
-    const denied = { _error: 'Forbidden', _message: "Permission 'write' required" };
+    const denied = expect.objectContaining({ _error: 'Forbidden', _message: "Permission 'write' required", code: 'PERMISSION_REQUIRED' });
     expect([refused.validate.status, refused.validate.body, refused.select.status, refused.select.body]).toEqual([403, denied, 403, denied]);
     expect(serial).toBe(beforeSql);
     expect(await stamp()).toEqual([{ validation_status: null, last_validated_at: null }]);
@@ -277,7 +360,7 @@ it('every credential route returns 401 anonymously; a viewer owner gets 403 on e
       const before = serial;
       const asViewer = await call(row, as('viewer'));
       if (row.kind === 'write') {
-        expect([label, asViewer.status, asViewer.body, serial]).toEqual([label, 403, { _error: 'Forbidden', _message: "Permission 'write' required" }, before]);
+        expect([label, asViewer.status, asViewer.body, serial]).toEqual([label, 403, expect.objectContaining({ _error: 'Forbidden', _message: "Permission 'write' required", code: 'PERMISSION_REQUIRED' }), before]);
       } else if (row.kind === 'oauth') {
         expect([label, asViewer.status, asViewer.body.message, serial]).toEqual([label, 403, 'Credential OAuth is unavailable', before]);
       } else {
@@ -307,9 +390,11 @@ it('scopes credential sets and their member IDs to the verified owner/org', asyn
   expect(owned.status).toBe(201);
   const setId: string = owned.body.data.id;
   expect((await request(app).get('/api/v1/credential-sets').set(as('d'))).body.data).toEqual([]);
-  expect((await request(app).get('/api/v1/credential-sets').set(as('none'))).status).toBe(403);
-  expect((await request(app).post('/api/v1/credential-sets').set(as('none'))
-    .send({ name: 'orgless', credential_ids: [aId] })).status).toBe(403);
+  const orgLessSets = await request(app).get('/api/v1/credential-sets').set(as('none'));
+  expect([orgLessSets.status, orgLessSets.body]).toEqual([403, orgRequired]);
+  const orgLessSetCreate = await request(app).post('/api/v1/credential-sets').set(as('none'))
+    .send({ name: 'orgless', credential_ids: [aId] });
+  expect([orgLessSetCreate.status, orgLessSetCreate.body]).toEqual([403, orgRequired]);
   expect((await request(app).get('/api/v1/credential-sets').set(as('b'))).body.data).toEqual([]);
   const foreign = await request(app).get(`/api/v1/credential-sets/${setId}`).set(as('b'));
   const absent = await request(app).get(`/api/v1/credential-sets/${missing}`).set(as('b'));
@@ -339,6 +424,43 @@ it('scopes credential sets and their member IDs to the verified owner/org', asyn
   expect(selected.body.data[0].credentials).toBe('***REDACTED***');
   expect((await request(app).delete(`/api/v1/credential-sets/${setId}`).set(as('a'))).status).toBe(204);
   expect((await request(app).delete(`/api/v1/credentials/${foreignId}`).set(as('b'))).status).toBe(204);
+});
+
+// credential_set_summaries (021) counts every discovery_definitions row naming the set, whatever its organization. The
+// set service recomputes usage_count over same-organization definitions only, so a foreign or org-less definition that
+// names the set id neither inflates the count nor reveals that it exists. The delete refusal applies the same rule; a
+// foreign-only reference is still refused by the fk_discovery_definitions_credential_set RESTRICT, count-free.
+it('credential set list and detail usage_count count same-organization definitions only', async () => {
+  const created = await request(app).post('/api/v1/credential-sets').set(as('a')).send({ name: 'A-counted-set', credential_ids: [aId] });
+  expect(created.status).toBe(201);
+  const setId: string = created.body.data.id;
+  const counts = async () => {
+    const listed = (await request(app).get('/api/v1/credential-sets').set(as('a'))).body.data.find((item: { id: string }) => item.id === setId);
+    const detail = await request(app).get(`/api/v1/credential-sets/${setId}`).set(as('a'));
+    expect(detail.status).toBe(200);
+    return [listed.usage_count, detail.body.data.usage_count];
+  };
+  await sql(`INSERT INTO discovery_definitions (credential_set_id, created_by, organization_id) VALUES ($1, 'b', $2), ($1, 'b', $2), ($1, 'legacy', NULL)`, [setId, B]);
+  expect(await counts()).toEqual([0, 0]);
+
+  await sql(`INSERT INTO discovery_definitions (credential_set_id, created_by, organization_id) VALUES ($1, 'd', $2), ($1, 'a', $2)`, [setId, A]);
+  expect(await counts()).toEqual([2, 2]);
+
+  const del = () => request(app).delete(`/api/v1/credential-sets/${setId}`).set(as('a'));
+  const countFree = { success: false, error: 'Conflict', message: 'Cannot delete credential set: it is currently in use' };
+  // Same-org references: the refusal counts them, and only them; the list/detail usage_count agrees.
+  const sameOrg = await del();
+  expect([sameOrg.status, sameOrg.body]).toEqual([409, { success: false, error: 'Conflict', message: 'Cannot delete credential set: it is currently used by 2 discovery definition(s)' }]);
+
+  // Foreign-only references (org B and NULL-org): count 0 everywhere, delete still refused by the FK, with no count.
+  await sql('DELETE FROM discovery_definitions WHERE credential_set_id = $1 AND organization_id = $2', [setId, A]);
+  expect(await counts()).toEqual([0, 0]);
+  const foreignOnly = await del();
+  expect([foreignOnly.status, foreignOnly.body]).toEqual([409, countFree]);
+  expect((await sql('SELECT count(*)::int AS n FROM credential_sets WHERE id = $1', [setId]))[0].n).toBe(1);
+
+  await sql('DELETE FROM discovery_definitions WHERE credential_set_id = $1', [setId]);
+  expect((await del()).status).toBe(204);
 });
 
 it('enforces owner and organization in SQL even when the service is called directly', async () => {
@@ -467,4 +589,58 @@ it('HAP-1613: an org admin manages the happylab-c4 credential and the C4 sync re
   expect(await c4(A)).toEqual({ token: 'tok-rotated' });
   expect((await request(app).delete(`/api/v1/credentials/${id}`).set(as('admin'))).status).toBe(204);
   expect(await c4(A)).toEqual({ code: 'c4_no_credential' });
+});
+
+// Runtime counterpart of openapi/__tests__/forbidden-spec.test.ts: the real 403 bodies of every credential refusal (router, permission and
+// the HAP-1613 C4 rule) must satisfy the 403 response the spec declares for that very operation. The OAuth routes are not in the spec.
+describe('real 403 bodies against the openapi.yaml 403 of the same operation', () => {
+  const noUserId = express();
+  noUserId.use(express.json());
+  noUserId.use('/api/v1', (req, _res, next) => {
+    (req as unknown as { user: unknown }).user = { _id: '', _userId: '', _username: 'no-id', _role: 'operator', _enabled: true, _organizationId: A };
+    next();
+  });
+  noUserId.use('/api/v1', unifiedCredentialRoutes);
+
+  const specRows = routeTable.filter(row => row.kind !== 'oauth');
+  const send = (target: express.Express, row: (typeof routeTable)[number], headers: Record<string, string>) =>
+    request(target)[row.verb](`/api/v1${row.path.replace(':id', aId)}`).set(headers).send({});
+  const specPath = (row: (typeof routeTable)[number]) => row.path.replace(':id', '{id}');
+  const check = (row: (typeof routeTable)[number], body: unknown) =>
+    violations(declaredResponse(specPath(row), row.verb, '403').schema!, body);
+
+  it('router, permission and agent refusals on every credential and credential-set route', async () => {
+    const seen = new Set<string>();
+    for (const row of specRows) {
+      const label = `${row.verb.toUpperCase()} ${row.path}`;
+      const callers: Array<[string, express.Express, Record<string, string>]> = [
+        ['no organization', app, as('none')],
+        ['agent', app, as('agent')],
+        ['no verified user id', noUserId, {}],
+        ...(row.kind === 'write' ? [['viewer', app, as('viewer')] as [string, express.Express, Record<string, string>]] : []),
+      ];
+      for (const [caller, target, headers] of callers) {
+        const response = await send(target, row, headers);
+        expect({ label, caller, status: response.status, violations: check(row, response.body) }).toEqual({ label, caller, status: 403, violations: [] });
+        seen.add(String(response.body.code ?? response.body.message));
+      }
+    }
+    expect([...seen].sort()).toEqual(['Credential management requires a human user', 'ORGANIZATION_REQUIRED', 'PERMISSION_REQUIRED', 'Verified credential owner required']);
+  });
+
+  it('the happylab-c4 refusal on create, update and delete', async () => {
+    const id = '55555555-5555-4555-8555-555555555556';
+    await sql(`INSERT INTO credentials (id, name, protocol, scope, credentials, tags, created_by, organization_id) VALUES ($1, 'A-spec-c4', 'bearer', 'api', $2, $3, 'd', $4)`,
+      [id, JSON.stringify(getEncryptionService().encrypt('{"token":"spec-c4-token"}')), [C4], A]);
+    const own = await request(app).post('/api/v1/credentials').set(as('a')).send(bearer('A-spec-own', ['ops']));
+    const refusals = [
+      ['POST /credentials', { path: '/credentials', verb: 'post' }, await request(app).post('/api/v1/credentials').set(as('a')).send(bearer('A-spec-plant', [C4]))],
+      ['PUT /credentials/{id}', { path: '/credentials/{id}', verb: 'put' }, await request(app).put(`/api/v1/credentials/${own.body.data.id}`).set(as('a')).send({ tags: [C4] })],
+      ['DELETE /credentials/{id}', { path: '/credentials/{id}', verb: 'delete' }, await request(app).delete(`/api/v1/credentials/${id}`).set(as('d'))],
+    ] as const;
+    for (const [label, operation, response] of refusals) {
+      expect({ label, status: response.status, body: response.body, violations: violations(declaredResponse(operation.path, operation.verb, '403').schema!, response.body) })
+        .toEqual({ label, status: 403, body: c4Refusal, violations: [] });
+    }
+  });
 });

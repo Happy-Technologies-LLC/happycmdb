@@ -3,6 +3,7 @@
 
 import axios from 'axios';
 import { attachSession } from '../lib/session';
+import type { AffectedBusinessService } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
@@ -15,6 +16,17 @@ export interface CI {
   description?: string;
   attributes: Record<string, any>;
   metadata?: Record<string, any>;
+  /**
+   * Normalized by the server at read time (services/ci-normalized-fields.ts): a stored top-level value exactly as
+   * stored (`ip_address` may be an array of addresses), else a trimmed string of at most 256 characters from the
+   * metadata bag, else null.
+   */
+  owner?: string | null;
+  provider?: string | null;
+  ip_address?: string | string[] | null;
+  tier?: string | null;
+  /** Derived by the server from open incidents (services/ci-health.ts); null: the signal is unavailable. */
+  health?: CIHealth | null;
   tags: string[];
   discovered_by?: string;
   last_discovered?: string;
@@ -34,6 +46,9 @@ export type CIType =
   | 'storage'
   | 'load-balancer'
   | 'cloud-resource';
+
+/** Derived CI health (BW1): critical = open incident of priority 1 or 2, degraded = priority 3 to 5, healthy = none. */
+export type CIHealth = 'healthy' | 'degraded' | 'critical';
 
 export type CIStatus = 'active' | 'inactive' | 'maintenance' | 'decommissioned';
 
@@ -85,7 +100,11 @@ export interface DashboardStats {
   by_status: Record<CIStatus, number>;
   by_environment: Record<Environment, number>;
   recent_discoveries: CI[];
-  health_score: number;
+  /** Percentage of CIs with health `healthy`; null: unavailable (BW1), never a placeholder 0. */
+  health_score: number | null;
+  /** CIs by derived health state; null when the signal is unavailable. Optional: older servers omit it. */
+  ci_health?: { healthy: number; degraded: number; critical: number; total: number } | null;
+  /** Relationships with at least one endpoint that is a critical CI (bsm_business_criticality tier_1 or tier_2). */
   critical_relationships: number;
 }
 
@@ -93,8 +112,90 @@ export interface ImpactAnalysis {
   ci: CI;
   upstream: CI[];
   downstream: CI[];
+  /** GET /cis/:id/impact: min(upstream + downstream count / 10, 1), a 0-1 ratio. Multiply by 100 to show a percentage. */
   impact_score: number;
   affected_environments: Environment[];
+  /** HAP-1927 BW11: business services mapped to this CI or its downstream CIs, with derived cost per hour. */
+  affected_business_services?: AffectedBusinessService[];
+  /** annual revenue / 8760 summed over the affected services that have revenue; null (listed in `unavailable`) when none does. */
+  cost_per_hour?: number | null;
+  cost_per_hour_services_priced?: number;
+  /** Fields that have no backing data on this response. */
+  unavailable?: string[];
+}
+
+/** HAP-2030: how current the receipts behind one edge are; derived by the server per read, never stored. */
+export type EdgeCurrentness = 'current' | 'stale' | 'contradicted' | 'unsupported';
+
+export type EvidenceClass = 'declared' | 'static_observed' | 'runtime_observed' | 'inferred';
+
+export type EvidencePolarity = 'supports' | 'contradicts';
+
+/** Receipt summary of one edge (edge-evidence.ts). Rendered as returned: the UI never recomputes currentness. */
+export interface EdgeEvidenceSummary {
+  classes: EvidenceClass[];
+  support: { supports: number; contradicts: number };
+  receipt_count: number;
+  /** More than 200 receipts exist; the counts cover the newest 200. */
+  receipts_truncated: boolean;
+  last_supported_at: string | null;
+  receipts_href: string;
+}
+
+/** One qualified DEPENDS_ON edge, oriented as stored (from = start CI), whichever way the traversal walked. */
+export interface ImpactEdge {
+  from: string;
+  to: string;
+  type: string;
+  currentness: EdgeCurrentness;
+  evidence: EdgeEvidenceSummary;
+}
+
+/** HAP-2028 coverage block of an impact read. */
+export interface ImpactCoverage {
+  ci_nodes_in_scope: number;
+  /** CIs in scope that no source has reported: their relationships may be missing from the graph. */
+  unreported_ci_ids: string[];
+  runtime_observed_receipts_in_scope: false;
+  note: string;
+}
+
+/** Top-level keys the impact reads carry beside `data` (impact-envelope.ts, edge-evidence.ts). */
+export interface ImpactEnvelope {
+  basis: 'declared_graph_reachability';
+  runtime_blast_radius: 'not_established';
+  coverage: ImpactCoverage;
+  edges: ImpactEdge[];
+}
+
+/** `envelope` is null when the server predates HAP-2028 and sends none. */
+export interface ImpactResponse {
+  data: ImpactAnalysis;
+  envelope: ImpactEnvelope | null;
+}
+
+/** One row of GET /relationships/evidence (HAP-2029). */
+export interface RelationshipReceipt {
+  receipt_id: string;
+  evidence_class: EvidenceClass;
+  polarity: EvidencePolarity;
+  source_name: string | null;
+  source_id: string | null;
+  source_version: string | null;
+  method: string | null;
+  rationale_code: string | null;
+  observed_at: string;
+  observer: string | null;
+  observer_type: string | null;
+  correlation_id: string | null;
+}
+
+export interface RelationshipEvidencePage {
+  from_id: string;
+  to_id: string;
+  type: string;
+  receipts: RelationshipReceipt[];
+  pagination: { total: number; count: number; offset: number; limit: number };
 }
 
 export interface CreateCIRequest {
@@ -183,11 +284,49 @@ class CIService {
   }
 
   async getImpactAnalysis(id: string): Promise<ImpactAnalysis> {
+    return (await this.getImpactEnvelope(id)).data;
+  }
+
+  /** GET /cis/:id/impact with the top-level basis, coverage and edges the server sends beside `data`. */
+  async getImpactEnvelope(id: string): Promise<ImpactResponse> {
+    const response = await this.axiosInstance.get<
+      { success: boolean; data: ImpactAnalysis } & Partial<ImpactEnvelope>
+    >(`/cis/${id}/impact`);
+    const { data, basis, runtime_blast_radius, coverage, edges } = response.data;
+    if (!basis || !coverage) return { data, envelope: null };
+    return {
+      data,
+      envelope: {
+        basis,
+        runtime_blast_radius: runtime_blast_radius ?? 'not_established',
+        coverage: {
+          ...coverage,
+          unreported_ci_ids: Array.isArray(coverage.unreported_ci_ids) ? coverage.unreported_ci_ids : [],
+        },
+        edges: Array.isArray(edges) ? edges : [],
+      },
+    };
+  }
+
+  /**
+   * GET /relationships/evidence: the receipts of one edge, newest first. `sideRead`: a refusal is shown by the
+   * evidence drawer itself, not as a page-level forbidden banner.
+   */
+  async getRelationshipEvidence(
+    fromId: string,
+    toId: string,
+    type: string,
+    { limit = 20, offset = 0 }: { limit?: number; offset?: number } = {}
+  ): Promise<RelationshipEvidencePage> {
     const response = await this.axiosInstance.get<{
       success: boolean;
-      data: ImpactAnalysis;
-    }>(`/cis/${id}/impact`);
-    return response.data.data;
+      data: Omit<RelationshipEvidencePage, 'pagination'>;
+      pagination: RelationshipEvidencePage['pagination'];
+    }>('/relationships/evidence', {
+      params: { from_id: fromId, to_id: toId, type, limit, offset },
+      sideRead: true,
+    });
+    return { ...response.data.data, pagination: response.data.pagination };
   }
 
   async getDashboardStats(): Promise<DashboardStats> {

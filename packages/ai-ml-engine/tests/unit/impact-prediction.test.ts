@@ -573,6 +573,153 @@ describe('ImpactPredictionEngine', () => {
 
       expect(impact.estimated_downtime_minutes).toBeUndefined();
     });
+
+    // HAP-1927 (BW12): failover is a change type with a heuristic downtime estimate and per-record direction.
+    it('estimates FAILOVER downtime and marks every affected CI as a downstream dependent', async () => {
+      const affectedRecords = Array.from({ length: 7 }, (_, i) => ({
+        ci_id: `ci-${i}`, ci_name: `server-${i}`, ci_type: 'server', hop_count: 1,
+        path_ids: [mockCIs.database.id, `ci-${i}`],
+      }));
+      setupPredictImpactMocks({
+        ciData: { id: mockCIs.database.id, name: mockCIs.database.name, ci_type: mockCIs.database.ci_type },
+        affectedRecords,
+        criticalPath: [mockCIs.database.id, 'ci-0'],
+        criticalityScore: 80,
+        ciId: mockCIs.database.id,
+      });
+
+      const impact = await engine.predictChangeImpact(mockCIs.database.id, ChangeType.FAILOVER, 'org-a');
+
+      // FAILOVER formula: 15 + blastRadius * 3
+      expect(impact.estimated_downtime_minutes).toBe(15 + 7 * 3);
+      expect(impact.affected_cis).toHaveLength(7);
+      expect(impact.affected_cis.every(affected => affected.direction === 'downstream')).toBe(true);
+    });
+  });
+
+  // HAP-1928 (BW13): the ask endpoint needs the prediction without the impact_analyses and criticality-cache writes.
+  describe('previewChangeImpact', () => {
+    const insertStatements = () => mockPgClient.query.mock.calls
+      .map(([text]: [string]) => String(text)).filter((text: string) => /INSERT/i.test(text));
+    const arrange = () => setupPredictImpactMocks({
+      ciData: { id: mockCIs.database.id, name: mockCIs.database.name, ci_type: mockCIs.database.ci_type },
+      affectedRecords: [{
+        ci_id: 'ci-0', ci_name: 'server-0', ci_type: 'server', hop_count: 1, path_ids: [mockCIs.database.id, 'ci-0'],
+      }],
+      criticalPath: [mockCIs.database.id, 'ci-0'],
+      criticalityScore: 80,
+      ciId: mockCIs.database.id,
+    });
+
+    it('stores nothing, where predictChangeImpact stores the analysis', async () => {
+      arrange();
+      await engine.predictChangeImpact(mockCIs.database.id, ChangeType.FAILOVER, 'org-a');
+      expect(insertStatements().some((text: string) => /impact_analyses/.test(text))).toBe(true);
+
+      mockPgClient.query.mockClear();
+      arrange();
+      await engine.previewChangeImpact(mockCIs.database.id, ChangeType.FAILOVER, 'org-a');
+      expect(insertStatements()).toEqual([]);
+    });
+
+    it('returns the prediction predictChangeImpact would store', async () => {
+      arrange();
+      const stored = await engine.predictChangeImpact(mockCIs.database.id, ChangeType.FAILOVER, 'org-a');
+      arrange();
+      const previewed = await engine.previewChangeImpact(mockCIs.database.id, ChangeType.FAILOVER, 'org-a');
+      expect({ ...previewed, analyzed_at: undefined }).toEqual({ ...stored, analyzed_at: undefined });
+    });
+
+    it('looks the root CI up in the caller\'s organization, so a CI another organization owns is refused', async () => {
+      const owner = 'org-a';
+      const session = createMockNeo4jSession([]);
+      // Like the graph: the CI exists only for its owning organization.
+      session.run.mockImplementation(async (_query: string, params: { ciId: string; organizationId: string }) => ({
+        records: params.ciId === mockCIs.database.id && params.organizationId === owner
+          ? [createMockNeo4jRecord({ id: mockCIs.database.id, name: mockCIs.database.name, ci_type: mockCIs.database.ci_type })]
+          : [],
+      }));
+      mockNeo4jClient.getSession.mockReturnValue(session);
+
+      await expect(engine.previewChangeImpact(mockCIs.database.id, ChangeType.RESTART, 'org-b')).rejects.toThrow('CI not found');
+      expect(session.run).toHaveBeenCalledTimes(1);
+      expect(session.run.mock.calls[0][1]).toMatchObject({ ciId: mockCIs.database.id, organizationId: 'org-b' });
+    });
+
+    // The route test mocks the engine, so only this test fails if a traversal node pattern loses its tenant predicate.
+    describe('organization predicate of the dependent traversal', () => {
+      type Call = { cypher: string; params: Record<string, unknown> };
+      const recordPreview = async (organizationId: string): Promise<Call[]> => {
+        const calls: Call[] = [];
+        const session = createMockNeo4jSession([]);
+        session.run.mockImplementation(async (cypher: string, params: Record<string, unknown>) => {
+          calls.push({ cypher, params });
+          // The root lookup and the criticality read need a row; every traversal frontier stays empty.
+          const records = /RETURN ci\.id as id/.test(cypher)
+            ? [createMockNeo4jRecord({ id: mockCIs.database.id, name: mockCIs.database.name, ci_type: mockCIs.database.ci_type })]
+            : /RETURN ci\.id as ci_id/.test(cypher)
+              ? [createMockNeo4jRecord({
+                ci_id: mockCIs.database.id, ci_name: mockCIs.database.name,
+                dependent_count: { toNumber: () => 0 }, dependency_count: { toNumber: () => 0 }, dependent_ids: [],
+              })]
+              : [];
+          return { records };
+        });
+        mockNeo4jClient.getSession.mockReturnValue(session);
+        await engine.previewChangeImpact(mockCIs.database.id, ChangeType.FAILOVER, organizationId);
+        return calls;
+      };
+      const ciNodePatterns = (cypher: string) => cypher.match(/\(\s*\w*\s*:CI\b[^)]*\)/g) ?? [];
+      const traversals = (calls: Call[]) => calls.filter(call => /UNWIND \$frontier/.test(call.cypher) && ciNodePatterns(call.cypher).length > 0);
+      const rootLookups = (calls: Call[]) => calls.filter(call => /RETURN ci\.id as id\b/.test(call.cypher) && 'ciId' in call.params);
+
+      it('puts organization_id: $organizationId on every CI node pattern of every traversal statement', async () => {
+        const calls = await recordPreview('org-a');
+        const found = traversals(calls);
+        // Affected-CI walk and critical-path walk.
+        expect(found.length).toBeGreaterThanOrEqual(2);
+        for (const { cypher } of found) {
+          const patterns = ciNodePatterns(cypher);
+          const guarded = patterns.filter(pattern => /\borganization_id:\s*\$organizationId\b/.test(pattern));
+          expect(patterns.length).toBeGreaterThanOrEqual(3);
+          expect(guarded).toEqual(patterns);
+        }
+      });
+
+      it('binds the caller\'s organization, and a different organization binds a different value', async () => {
+        const forA = await recordPreview('org-a');
+        const forB = await recordPreview('org-b');
+        for (const [calls, organization] of [[forA, 'org-a'], [forB, 'org-b']] as const) {
+          const mentioning = calls.filter(call => call.cypher.includes('$organizationId'));
+          // Root lookup + every traversal + criticality read: the floor no longer hides a dropped root predicate.
+          expect(mentioning.length).toBeGreaterThanOrEqual(rootLookups(calls).length + traversals(calls).length + 1);
+          for (const call of mentioning) expect(call.params.organizationId).toBe(organization);
+        }
+        expect(forA[0].params.organizationId).not.toBe(forB[0].params.organizationId);
+      });
+
+      it('guards the seed CI of the root lookup with the caller\'s organization, for two organizations', async () => {
+        for (const organization of ['org-a', 'org-b']) {
+          const calls = await recordPreview(organization);
+          const roots = rootLookups(calls);
+          expect(roots).toHaveLength(1);
+          expect(roots[0].cypher).toMatch(/\(ci:CI \{id: \$ciId\}\)\s*WHERE\s+ci\.organization_id\s*=\s*\$organizationId\b/);
+          // Nothing but whitespace may sit between the predicate and RETURN: an `OR true`, `OR ci.id = $ciId`,
+          // `AND ...` or a second WHERE would reopen the cross-tenant read of the root CI.
+          const clause = /\(ci:CI \{id: \$ciId\}\)\s*WHERE\s+([\s\S]*?)\s+RETURN\s+ci\.id\s+as\s+id\b/.exec(roots[0].cypher)?.[1];
+          expect(clause).toBeDefined();
+          expect(clause!.trim().replace(/\s+/g, ' ')).toBe('ci.organization_id = $organizationId');
+          // The whole statement, anchored at both ends: also rejects a trailing `UNION MATCH (ci:CI {id: $ciId}) RETURN ...`
+          // (a second read of the root CI with no organization predicate), a second MATCH, WITH, OPTIONAL MATCH and `;`.
+          // A legitimate edit of the RETURN column list in the engine fails here by design: the predicate has no real-Neo4j coverage.
+          const statement = roots[0].cypher.trim().replace(/\s+/g, ' ');
+          expect(statement).toMatch(
+            /^MATCH \(ci:CI \{id: \$ciId\}\) WHERE ci\.organization_id = \$organizationId RETURN ci\.id as id, ci\.name as name, ci\.ci_type as ci_type$/
+          );
+          expect(roots[0].params).toMatchObject({ ciId: mockCIs.database.id, organizationId: organization });
+        }
+      });
+    });
   });
 
   describe('change type weight', () => {
@@ -631,6 +778,44 @@ describe('ImpactPredictionEngine', () => {
 
       // Decommission should have higher impact score than config change
       expect(decommissionImpact.impact_score).toBeGreaterThan(configChangeImpact.impact_score);
+    });
+  });
+
+  describe('criticality walk minted incarnation validation (HAP-2126)', () => {
+    const FALLBACK = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const malformed = ['not-a-uuid', '', '00000000-0000-0000-0000-000000000000'];
+    // getCI yields no valid marker: absent, or itself malformed.
+    const graphMarkers: Array<Record<string, unknown>> = [{}, { _incarnation_id: 'not-a-uuid' }];
+    const cases = graphMarkers.flatMap(marker => malformed.map(fallback => [marker, fallback] as const));
+
+    it.each(cases)(
+      'refuses graph marker %j with minted fallback %j: no SQL, nothing stored',
+      async (marker, fallback) => {
+        mockNeo4jClient.getCI.mockImplementation(async (id: string) => ({ id, ...marker }));
+        mockNeo4jClient.ensureCIIncarnation.mockResolvedValue(fallback);
+
+        await expect(engine.getCriticalityScore('ci-legacy', 'org-a')).rejects.toThrow('CI not found: ci-legacy');
+
+        expect(mockNeo4jClient.ensureCIIncarnation).toHaveBeenCalledTimes(1);
+        expect(mockNeo4jClient.getSession).not.toHaveBeenCalled();
+        expect(mockPgClient.query).not.toHaveBeenCalled(); // neither the cache SELECT nor any store
+      }
+    );
+
+    it('passes a valid minted fallback to the cache SELECT unchanged', async () => {
+      mockNeo4jClient.getCI.mockImplementation(async (id: string) => ({ id }));
+      mockNeo4jClient.ensureCIIncarnation.mockResolvedValue(FALLBACK);
+      mockPgClient.query.mockResolvedValueOnce({
+        rows: [{ ci_id: 'ci-legacy', ci_name: 'legacy', criticality_score: 42, factors: {}, calculated_at: new Date() }],
+      });
+
+      const score = await engine.getCriticalityScore('ci-legacy', 'org-a');
+
+      expect(score.criticality_score).toBe(42);
+      expect(mockPgClient.query).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockPgClient.query.mock.calls[0];
+      expect(sql).toContain('ci_criticality_scores');
+      expect(params).toEqual(['ci-legacy', FALLBACK, 'org-a']);
     });
   });
 });

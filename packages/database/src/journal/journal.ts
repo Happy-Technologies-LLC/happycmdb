@@ -58,6 +58,25 @@ export interface StoredPlan {
    */
   audit?: { action: 'CREATE' | 'UPDATE' | 'DELETE' | 'RELATIONSHIP_ADD' | 'RELATIONSHIP_REMOVE'; changes?: Encoded;
     actorType?: JournalActorType; metadata?: Record<string, unknown> };
+  /**
+   * HAP-2029: the relationship evidence receipt T2 appends beside the lineage row. It carries neither the organization,
+   * the observer nor a time: T2 stamps those from the journal row and its own clock, never from the plan or the request.
+   */
+  receipt?: {
+    from: string; to: string; fromIncarnationId: string; toIncarnationId: string; type: string;
+    evidenceClass: RelationshipEvidenceClass; polarity: 'supports' | 'contradicts';
+    sourceName: string; sourceId: string | null; sourceVersion: string | null; method: string; rationaleCode: string | null;
+    /** HAP-2030: stamped by `run` from the write's explicit `actorType`; whatever a plan carries here is overwritten. */
+    observerType?: JournalActorType;
+  };
+}
+
+/** HAP-2029: the classes an in-process writer may assert. `runtime_observed` and `inferred` are valid table values with no producer. */
+export type RelationshipEvidenceClass = 'declared' | 'static_observed';
+/** HAP-2029: the trusted descriptor of who asserts a relationship write. Never built from a request. */
+export interface RelationshipEvidence {
+  evidenceClass: RelationshipEvidenceClass; sourceName: string; sourceId?: string; sourceVersion?: string;
+  method: string; rationaleCode?: string;
 }
 
 /** Graph runner for W and recovery: one auto-commit statement, records as plain objects. */
@@ -79,9 +98,16 @@ export class JournalAbortedError extends Error {
 export class JournalTargetMissingError extends Error {
   constructor() { super('CI not found'); }
 }
+/**
+ * HAP-2127 D4: the plan found nothing to write (a re-observation throttled under the slot). The group is aborted with the
+ * reason `throttled`, so journal-failure monitoring that counts `plan_failed` sees only real plan failures.
+ */
+export class JournalPlanThrottledError extends Error {
+  constructor() { super('nothing to append: throttled'); }
+}
 /** v16 §7 conflict precondition refused under the slot (409); the journal row is aborted with the reason. */
 export class JournalConflictError extends Error {
-  constructor(readonly reason: 'pending_content' | 'stale_conflict' | 'revision_mismatch' | 'not_stale') { super(reason); }
+  constructor(readonly reason: 'pending_content' | 'stale_conflict' | 'revision_mismatch' | 'not_stale' | 'not_oversized') { super(reason); }
 }
 export { PlanUnrepresentableError };
 
@@ -124,11 +150,21 @@ function errorCode(error: unknown): string {
 
 let schemaReady = false;
 let mergeReady = false;
+let receiptsReady = false;
 /**
  * v16 §3.2 schema/fence gate, before any journal or data query of a journaled writer.
  * `merge` (merge, hold, resolve) also refuses the initdb variant whose lineage/field `ci_id` is uuid.
+ * `receipts` (relationship writes only, HAP-2029) also needs the evidence receipt table: T2 runs after W changed the graph,
+ * so a missing table must be a 503 here, never an edge without evidence and a failed recovery. HAP-2126: it also needs
+ * INSERT and SELECT privilege on that table for the connected login (`has_table_privilege(current_user, ...)`, one probe each:
+ * T2's ON CONFLICT arbiter, RETURNING and compare need SELECT, and a combined 'SELECT, INSERT' list passes if either is held),
+ * else the same 503.
+ * Readiness is cached per process like the table check (a privilege changes only with a role re-creation, which comes with
+ * a deploy that restarts the API); a negative or errored probe is never cached, and an SQLSTATE 42501 (`schemaFault`)
+ * resets the cache so the next write re-probes. The first write after a revocation under a warm cache still fails in T2
+ * (W applied, group pending, later failed): closing that window would mean probing on every write.
  */
-export async function assertJournalSchema(graph: JournalGraphRunner, merge = false): Promise<void> {
+export async function assertJournalSchema(graph: JournalGraphRunner, merge = false, receipts = false): Promise<void> {
   try {
     if (!schemaReady) {
       const pg = await getPostgresClient().pool.query(`SELECT
@@ -148,10 +184,18 @@ export async function assertJournalSchema(graph: JournalGraphRunner, merge = fal
           AND column_name = 'ci_id' AND data_type = 'character varying'`);
       mergeReady = ids.rows[0]?.n === 2;
     }
+    if (schemaReady && receipts && !receiptsReady) {
+      const table = await getPostgresClient().pool.query(`SELECT to_regclass('public.relationship_evidence_receipts') IS NOT NULL
+        AND has_table_privilege(current_user, to_regclass('public.relationship_evidence_receipts'), 'INSERT')
+        AND has_table_privilege(current_user, to_regclass('public.relationship_evidence_receipts'), 'SELECT')
+        AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass('public.relationship_evidence_receipts')
+                    AND conname = 'relationship_evidence_receipts_class') AS ready`);
+      receiptsReady = table.rows[0]?.ready === true;
+    }
   } catch {
-    schemaReady = mergeReady = false;
+    schemaReady = mergeReady = receiptsReady = false;
   }
-  if (!schemaReady || (merge && !mergeReady)) throw new JournalUnavailableError();
+  if (!schemaReady || (merge && !mergeReady) || (receipts && !receiptsReady)) throw new JournalUnavailableError();
 }
 
 /**
@@ -177,8 +221,8 @@ export async function assertExternalIdSchema(graph: JournalGraphRunner): Promise
 
 function schemaFault(error: unknown): void {
   const code = errorCode(error);
-  if (code === '42P01' || code === '42703' ||
-    (code.startsWith('Neo.ClientError.Schema.') && !code.endsWith('ConstraintValidationFailed'))) schemaReady = mergeReady = false;
+  if (code === '42P01' || code === '42703' || code === '42501' ||
+    (code.startsWith('Neo.ClientError.Schema.') && !code.endsWith('ConstraintValidationFailed'))) schemaReady = mergeReady = receiptsReady = false;
 }
 
 interface Slot { id: string; ciId: string; operation: JournalOperation }
@@ -259,6 +303,46 @@ async function writeEvidence(client: PoolClient, row: { group_id: string; organi
       ON CONFLICT (organization_id, ci_id, source_name, source_id) DO UPDATE SET
         confidence_score = EXCLUDED.confidence_score, last_correlation_id = EXCLUDED.last_correlation_id, last_seen_at = now()`,
     [org, ci, plan.lineage.source, plan.lineage.sourceId, plan.lineage.confidence === null ? null : Math.round(plan.lineage.confidence), group]);
+  }
+  if (plan.receipt) {
+    // HAP-2029: organization, observer and replay key come from the journal row, the time from this transaction's server
+    // clock; the plan names the edge and the descriptor only. A replayed T2 (recovery sweep) conflicts with its own earlier
+    // row and writes nothing; a row under the same key with DIFFERENT content (HAP-2126) throws HP1RC, so the write is never
+    // committed as if its evidence had been recorded. DO UPDATE would need UPDATE privilege, which the logins never hold.
+    // HAP-2127 D3: a relationship plan stored before HAP-2030 has no receipt.observerType; its audit carries the write's
+    // actor type (`system` for `sync:<stream>`), so a replay by the sweep stamps the same observer type.
+    const observerType = plan.receipt.observerType ?? plan.audit?.actorType ?? 'user';
+    const receipt = plan.receipt;
+    const inserted = await client.query(`INSERT INTO relationship_evidence_receipts (organization_id, from_ci_id, to_ci_id, from_incarnation_id,
+        to_incarnation_id, relationship_type, evidence_class, polarity, source_name, source_id, source_version, method,
+        rationale_code, observed_at, observer, observer_type, correlation_id)
+      VALUES ($1, $2, $3, $4::uuid, $5::uuid, $6, $7, $8, $9, $10, $11, $12, $13, now(), $14, $15, $16::uuid)
+      ON CONFLICT (organization_id, correlation_id, from_ci_id, to_ci_id, relationship_type) DO NOTHING
+      RETURNING receipt_id`,
+    [org, receipt.from, receipt.to, receipt.fromIncarnationId, receipt.toIncarnationId, receipt.type, receipt.evidenceClass,
+      receipt.polarity, receipt.sourceName, receipt.sourceId, receipt.sourceVersion, receipt.method, receipt.rationaleCode,
+      actor, observerType, group]);
+    if (inserted.rows.length === 0) {
+      // observed_at and receipt_id are not compared: a replay legitimately stamps a later now().
+      const same = await client.query(`SELECT EXISTS (SELECT 1 FROM relationship_evidence_receipts
+        WHERE organization_id = $1 AND correlation_id = $2::uuid AND from_ci_id = $3 AND to_ci_id = $4 AND relationship_type = $5
+          AND from_incarnation_id IS NOT DISTINCT FROM $6::uuid AND to_incarnation_id IS NOT DISTINCT FROM $7::uuid
+          AND evidence_class IS NOT DISTINCT FROM $8 AND polarity IS NOT DISTINCT FROM $9
+          AND source_name IS NOT DISTINCT FROM $10 AND source_id IS NOT DISTINCT FROM $11
+          AND source_version IS NOT DISTINCT FROM $12 AND method IS NOT DISTINCT FROM $13
+          AND rationale_code IS NOT DISTINCT FROM $14 AND observer IS NOT DISTINCT FROM $15
+          AND observer_type IS NOT DISTINCT FROM $16) AS same`,
+      [org, group, receipt.from, receipt.to, receipt.type, receipt.fromIncarnationId, receipt.toIncarnationId,
+        receipt.evidenceClass, receipt.polarity, receipt.sourceName, receipt.sourceId, receipt.sourceVersion, receipt.method,
+        receipt.rationaleCode, actor, observerType]);
+      if (same.rows[0]?.same !== true) {
+        // HAP-2128 S-2: a pre-existing row under this group's random key with other content is a forgery or corruption
+        // signal. Identifiers only: no receipt payload, rationale or source.
+        logger.warn('HP1 receipt conflict: a different receipt already exists under this write\'s key', {
+          organization_id: org, correlation_id: group, from_ci_id: receipt.from, to_ci_id: receipt.to, relationship_type: receipt.type });
+        throw Object.assign(new Error('receipt conflict mismatch'), { code: 'HP1RC' });
+      }
+    }
   }
   const exactlyOne = (count: number | null) => {
     if (count !== 1) throw Object.assign(new Error('conflict lifecycle mismatch'), { code: 'HP1CF' });
@@ -361,7 +445,8 @@ export class ReconciliationJournal {
 
   async run<T>(write: JournaledWrite<T>): Promise<T> {
     if (!auditChainReady()) throw new JournalUnavailableError(); // HAP-1001 D12: every journaled write, before T1
-    await assertJournalSchema(this.graph, ['create', 'update', 'resolve_conflict'].includes(write.operation));
+    await assertJournalSchema(this.graph, ['create', 'update', 'resolve_conflict'].includes(write.operation),
+      write.operation === 'relationship_write');
     const groupId = randomUUID();
     const slots = [...new Set(write.ciIds)].sort().map(ciId => ({ id: randomUUID(), ciId, operation: write.operation }));
     await this.reserve(write, groupId, slots);
@@ -374,12 +459,15 @@ export class ReconciliationJournal {
         plan = { ...plan, audit: { ...plan.audit, actorType: write.actorType ?? 'user',
           ...(write.auditMetadata ? { metadata: write.auditMetadata } : {}) } };
       }
+      // HAP-2030: the receipt's observer type is the caller's too, not the audit stamp's (a plan without audit has none).
+      if (plan.receipt !== undefined) plan = { ...plan, receipt: { ...plan.receipt, observerType: write.actorType ?? 'user' } };
       assertPlanRepresentable(plan as unknown as Encoded);
       // Decoded before W: an undecodable value is a definitive 422, never an unproven W.
       try { params = plan.graph ? dec(plan.graph.params) as Record<string, unknown> : {}; } catch { throw new PlanUnrepresentableError(); }
     } catch (error) {
       await abortGroup(groupId, error instanceof PlanUnrepresentableError ? 'plan_unrepresentable'
         : error instanceof JournalTargetMissingError ? 'target_missing'
+        : error instanceof JournalPlanThrottledError ? 'throttled'
         : error instanceof JournalConflictError ? error.reason : 'plan_failed');
       schemaFault(error);
       throw error;

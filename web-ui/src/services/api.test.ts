@@ -72,3 +72,70 @@ describe('ApiService changePassword (HAP-1285, HAP-1211 H2)', () => {
     expect(getToken()).toBe(before);
   });
 });
+
+describe('ApiService revokeOtherSessions (HAP-1716)', () => {
+  const before = `before-${crypto.randomUUID()}`;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setToken(before);
+  });
+
+  it('posts only the current password and keeps this device signed in with the re-issued access token', async () => {
+    const reissued = `reissued-${crypto.randomUUID()}`;
+    const currentPassword = crypto.randomUUID();
+    request.post.mockResolvedValue({ data: { success: true, data: { _accessToken: reissued, _expiresIn: 900 } } });
+
+    await api.revokeOtherSessions(currentPassword);
+
+    expect(request.post).toHaveBeenCalledWith('/auth/sessions/revoke-others', { currentPassword });
+    expect(getToken()).toBe(reissued);
+    expect(localStorage.getItem('auth_token')).toBeNull();
+  });
+
+  it('a refusal rejects and keeps the current token', async () => {
+    request.post.mockRejectedValue(Object.assign(new Error('refused'), { response: { status: 400 } }));
+
+    await expect(api.revokeOtherSessions('wrong')).rejects.toThrow('refused');
+
+    expect(getToken()).toBe(before);
+  });
+});
+
+describe('ApiService user mapping (HAP-1911)', () => {
+  beforeEach(() => vi.clearAllMocks());
+  const base = { userId: 'u-1', username: 'alice', email: 'alice@example.com', role: 'operator' };
+
+  it('maps the server platformAdmin and organizationId on /auth/me and /auth/profile', async () => {
+    const data = { ...base, platformAdmin: true, organizationId: 'org-acme' };
+    request.get.mockResolvedValue({ data: { data } });
+    request.put.mockResolvedValue({ data: { data } });
+
+    for (const user of [await api.getCurrentUser(), await api.updateProfile({ name: 'Alice' })]) {
+      expect(user).toMatchObject({ platform_admin: true, organization_id: 'org-acme' });
+    }
+  });
+
+  it('an older server that sends neither field reads as no platform authority and no organization', async () => {
+    request.get.mockResolvedValue({ data: { data: base } });
+
+    expect(await api.getCurrentUser()).toMatchObject({ platform_admin: false, organization_id: null });
+  });
+
+  it('HAP-1930: carries the server permissions, keeps only known ones, and reads an older server as none', async () => {
+    request.get.mockResolvedValue({ data: { data: { ...base, permissions: ['read', 'write', 'root', 7] } } });
+    expect(await api.getCurrentUser()).toMatchObject({ role: 'operator', permissions: ['read', 'write'] });
+
+    request.get.mockResolvedValue({ data: { data: base } });
+    expect((await api.getCurrentUser()).permissions).toEqual([]);
+
+    request.get.mockResolvedValue({ data: { data: { ...base, permissions: 'read' } } });
+    expect((await api.getCurrentUser()).permissions).toEqual([]);
+  });
+
+  it('only a literal true is platform authority; a null organization stays null', async () => {
+    for (const platformAdmin of ['true', 1, 'yes', null]) {
+      request.get.mockResolvedValue({ data: { data: { ...base, platformAdmin, organizationId: null } } });
+      expect(await api.getCurrentUser()).toMatchObject({ platform_admin: false, organization_id: null });
+    }
+  });
+});

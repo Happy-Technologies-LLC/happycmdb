@@ -31,6 +31,9 @@ jest.mock('@cmdb/common', () => ({
 // Mock clients
 type PlannedMerge = { graph: { params: { props: Record<string, unknown> } } | null;
   fields?: Array<{ name: string; text: string; source: string }> };
+type JournaledWrite = { organizationId: string; actor: string; actorType?: string; operation: string; ciIds: string[];
+  plan: () => Promise<any>; result: (groupId: string) => Promise<unknown> };
+const journaled: Array<{ write: JournaledWrite; plan: any }> = [];
 const mockNeo4jClient = {
   getSession: jest.fn(),
   // The journaled merge (journal internals run in tests/integration): plans, then replays W on the
@@ -44,6 +47,14 @@ const mockNeo4jClient = {
       await mockPostgresClient.query('INSERT INTO ci_field_sources', [ciId, field.name, field.text, field.source]);
     }
     return written.records.length ? result('group') : null;
+  },
+  // HAP-2016: the journaled create (journal internals and the real create run in reconcile-create.journal.test.ts) is
+  // recorded as the engine planned it: who wrote, as what, and the stored plan.
+  journal: {
+    run: async (write: JournaledWrite) => {
+      journaled.push({ write, plan: await write.plan() });
+      return write.result('group');
+    },
   },
 };
 
@@ -62,6 +73,8 @@ const mockSession = {
 
 jest.mock('@cmdb/database', () => ({
   ...jest.requireActual('@cmdb/database/journal/journal'), enc: jest.requireActual('@cmdb/database/journal/encoding').enc,
+  dec: jest.requireActual('@cmdb/database/journal/encoding').dec,
+  PlanUnrepresentableError: jest.requireActual('@cmdb/database/journal/encoding').PlanUnrepresentableError,
   getNeo4jClient: jest.fn(() => mockNeo4jClient),
   getPostgresClient: jest.fn(() => mockPostgresClient),
 }));
@@ -74,13 +87,14 @@ jest.mock('@cmdb/event-processor', () => ({
   },
 }));
 
-import { getNeo4jClient, getPostgresClient } from '@cmdb/database';
+import { dec, getNeo4jClient, getPostgresClient } from '@cmdb/database';
 import { getEventProducer } from '@cmdb/event-processor';
 
 describe('IdentityReconciliationEngine - Unit Tests', () => {
   let engine: IdentityReconciliationEngine;
 
   beforeEach(() => {
+    journaled.length = 0;
     // Reset mocks
     jest.clearAllMocks();
     // Restore mock implementations after clearAllMocks
@@ -366,45 +380,21 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
   });
 
   describe('CI Creation', () => {
-    it('should create new CI when no match found', async () => {
+    it('creates a new CI through the journal, as the engine acting for itself, when no match is found', async () => {
       const ci = physicalServerDuplicates[0];
-
-      // No match found via any Neo4j strategy (uuid, mac, fqdn, composite fuzzy)
-      mockSession.run
-        .mockResolvedValueOnce({ records: [] }) // uuid - no match
-        .mockResolvedValueOnce({ records: [] }) // mac_address - no match
-        .mockResolvedValueOnce({ records: [] }) // fqdn - no match
-        .mockResolvedValueOnce({ records: [] }) // composite fuzzy - no match
-        .mockResolvedValueOnce({ // Create CI
-          records: [
-            {
-              get: jest.fn().mockReturnValue('ci_new_12345'),
-            },
-          ],
-        });
-      mockPostgresClient.query.mockResolvedValue({ rows: [] }); // Source lineage
+      mockSession.run.mockResolvedValue({ records: [] }); // no match by any Neo4j strategy
+      mockPostgresClient.query.mockResolvedValue({ rows: [] });
 
       const ciId = await engine.reconcileCI(ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
-      expect(ciId).toBeTruthy();
-      expect(ciId).toMatch(/^ci_/);
-      expect(mockSession.run).toHaveBeenCalledWith(
-        expect.stringContaining('CREATE (ci:CI:'),
-        expect.objectContaining({
-          properties: expect.objectContaining({
-            name: ci.name,
-            ci_type: ci.ci_type,
-          }),
-        })
-      );
-      expect(mockEventProducer.emit).toHaveBeenCalledWith(
-        'ci_discovered',
-        'identity-reconciliation-engine',
-        expect.objectContaining({
-          ci_name: ci.name,
-          ci_type: ci.ci_type,
-        })
-      );
+      expect(ciId).toMatch(/^ci_[0-9a-f]{32}$/);
+      expect(journaled).toHaveLength(1);
+      expect(journaled[0]!.write).toMatchObject({ organizationId: 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa',
+        actor: 'system:identity-reconciliation', actorType: 'system', operation: 'create', ciIds: [ciId] });
+      expect(dec(journaled[0]!.plan.graph.params)).toMatchObject({ id: ciId, props: { name: ci.name, ci_type: ci.ci_type } });
+      expect(mockSession.run.mock.calls.filter(([cypher]) => String(cypher).includes('CREATE (ci:CI'))).toEqual([]);
+      expect(mockEventProducer.emit.mock.calls.filter(([type]) => type === 'ci_discovered')).toEqual([
+        ['ci_discovered', 'identity-reconciliation-engine', expect.objectContaining({ ci_id: ciId, ci_name: ci.name, ci_type: ci.ci_type })]]);
     });
 
     it('refuses a create whose identifiers name an AI class (they are spread into the node) and writes nothing', async () => {
@@ -415,80 +405,51 @@ describe('IdentityReconciliationEngine - Unit Tests', () => {
       expect(mockSession.run).not.toHaveBeenCalled();
     });
 
-    it('should record source lineage when creating CI', async () => {
+    it('plans the source lineage with the journaled create, not a separate insert', async () => {
       const ci = physicalServerDuplicates[0];
-
-      // No match found via any strategy, then CREATE
-      mockSession.run
-        .mockResolvedValueOnce({ records: [] }) // uuid
-        .mockResolvedValueOnce({ records: [] }) // mac
-        .mockResolvedValueOnce({ records: [] }) // fqdn
-        .mockResolvedValueOnce({ records: [] }) // composite fuzzy
-        .mockResolvedValueOnce({
-          records: [{ get: jest.fn().mockReturnValue('ci_new_lineage') }],
-        });
+      mockSession.run.mockResolvedValue({ records: [] }); // no match by any strategy
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
 
       await engine.reconcileCI(ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
-      expect(mockPostgresClient.query).toHaveBeenCalledWith(
-        expect.stringContaining('INSERT INTO ci_source_lineage'),
-        expect.arrayContaining([
-          expect.any(String), // ci_id
-          ci.source,
-          ci.source_id,
-          expect.any(Number), // confidence
-        ])
-      );
+      expect(journaled[0]!.plan.lineage).toEqual({ source: ci.source, sourceId: ci.source_id, confidence: ci.confidence_score ?? null });
+      expect(mockPostgresClient.query.mock.calls.filter(([sql]) => String(sql).includes('INSERT INTO ci_source_lineage'))).toEqual([]);
     });
 
-    it('createNewCI uses caller organization instead of attributes.organization_id', async () => {
+    it('creates under the caller organization, never attributes.organization_id', async () => {
       const base = physicalServerDuplicates[0];
       const ci = {
         ...base,
         attributes: { ...base.attributes, organization_id: 'attacker-org' },
         identifiers: { ...base.identifiers, organization_id: 'attacker-org' } as typeof base.identifiers,
       };
-      let created: Record<string, unknown> | undefined;
-
-      mockSession.run.mockImplementation(async (cypher: string, params: { properties?: Record<string, unknown> }) => {
-        if (cypher.includes('SET ci = $properties')) {
-          created = { ...params.properties };
-          return { records: [{ get: () => created!['id'] }] };
-        }
-        return { records: [] }; // no match by any strategy
-      });
+      mockSession.run.mockResolvedValue({ records: [] }); // no match by any strategy
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
 
       await engine.reconcileCI(ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
-      expect(created).toBeDefined();
-      expect(created!['name']).toBe(base.name);
-      expect(created).toHaveProperty('organization_id', 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
+      const [{ write, plan }] = journaled;
+      const { props } = dec(plan.graph.params) as { props: Record<string, unknown> };
+      expect(write.organizationId).toBe('aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
+      expect(props['name']).toBe(base.name);
+      expect(props).not.toHaveProperty('organization_id'); // the journal's W stamps the verified organization
     });
 
     // HAP-1732
-    it('createNewCI keeps the top-level name, status and environment over same-named attributes and identifiers', async () => {
+    it('keeps the top-level name, status and environment over same-named attributes and identifiers', async () => {
       const base = physicalServerDuplicates[0];
       const ci = {
         ...base, name: 'top-name', status: 'retired', environment: 'production',
         attributes: { ...base.attributes, name: 'attr-name', status: 'attr-status', environment: 'attr-env', ci_type: 'attr-type', owner: 'o1' },
         identifiers: { ...base.identifiers, status: 'id-status', name: 'id-name' } as typeof base.identifiers,
       };
-      let created: Record<string, unknown> | undefined;
-
-      mockSession.run.mockImplementation(async (cypher: string, params: { properties?: Record<string, unknown> }) => {
-        if (cypher.includes('SET ci = $properties')) {
-          created = { ...params.properties };
-          return { records: [{ get: () => created!['id'] }] };
-        }
-        return { records: [] }; // no match by any strategy
-      });
+      mockSession.run.mockResolvedValue({ records: [] }); // no match by any strategy
       mockPostgresClient.query.mockResolvedValue({ rows: [] });
 
       await engine.reconcileCI(ci, 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa');
 
-      expect(created).toMatchObject({ name: 'top-name', ci_type: ci.ci_type, status: 'retired', environment: 'production', owner: 'o1' });
+      const { props } = dec(journaled[0]!.plan.graph.params) as { props: Record<string, unknown> };
+      expect(props).toMatchObject({ name: 'top-name', ci_type: ci.ci_type, status: 'retired', environment: 'production', owner: 'o1' });
     });
   });
 

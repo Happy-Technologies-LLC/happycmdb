@@ -7,7 +7,26 @@ import { logger, CIAnalyticsLimitError } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
 import { executeBoundedAnalysis } from '../../middleware/analysis-admission';
 import { AnalyticsService, DependencyDepthLimitError } from '../../services/analytics.service';
-import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, CIListUnavailableError, readSingleCI } from '../../read-admission';
+import {
+  parseTopologyOptions, readTopologySummary, TopologyGroupLimitError,
+} from '../../services/topology-summary.service';
+import {
+  assertNoCIGap, CIGapError, CI_GAP_RESPONSE, CIListUnavailableError, CI_LIST_UNAVAILABLE_RESPONSE, readCIList, readSingleCI,
+} from '../../read-admission';
+import { criticalTiersParam } from '../../services/critical-ci';
+import { readEstateKpis, readEstateKpiHistory, recordEstateKpiSnapshot } from '../../services/estate-kpi.service';
+import { parseRecentChangesOptions, readRecentChanges } from '../../services/recent-changes.service';
+
+/** readCIList's 10 s budget plus its snapshot and recheck round trips. */
+const TOPOLOGY_DEADLINE_MS = 12_000;
+class TopologyDeadlineError extends Error {}
+
+/** Same classification as dashboard.controller and traversal-failure: a Neo4j statement timeout or its termination. */
+function neo4jStatementTimedOut(error: unknown): boolean {
+  if (error instanceof TopologyDeadlineError) return true;
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  return typeof code === 'string' && (code.includes('TransactionTimedOut') || code.includes('Transaction.Terminated'));
+}
 
 export class AnalyticsController {
   private postgresClient = getPostgresClient();
@@ -387,6 +406,37 @@ export class AnalyticsController {
   }
 
   /**
+   * Tenant-wide recent CI changes feed for the estate hub's "Live changes" (HAP-1926 BW9).
+   * GET /analytics/recent-changes?window=1h|24h&limit=1..100. Rules and fences: services/recent-changes.service.ts.
+   */
+  async getRecentChanges(req: Request, res: Response): Promise<void> {
+    const options = parseRecentChangesOptions(req.query as Record<string, unknown>);
+    if ('error' in options) {
+      res.status(400).json({ success: false, error: 'Bad Request', message: options.error });
+      return;
+    }
+    await executeBoundedAnalysis(req, res, async () => {
+      const organizationId = requestOrganizationId(req);
+      const incarnations = await this.neo4jClient.listCIIncarnations(organizationId);
+      const session = this.neo4jClient.getSession();
+      try {
+        const data = await readRecentChanges(this.postgresClient, session, incarnations, organizationId, options);
+        return { status: 200, body: { success: true, data } };
+      } finally {
+        await session.close();
+      }
+    }, {
+      scope: 'analytics',
+      timeoutMs: 10_000,
+      withDeadline: (_deadline, operation) => operation(),
+      deadlineError: () => new CIAnalyticsLimitError(),
+      failure: error => error instanceof CIAnalyticsLimitError
+        ? { status: 503, message: 'Analytics resource limit exceeded' } : null,
+      internalError: 'Failed to retrieve recent changes',
+    });
+  }
+
+  /**
    * Get relationship type matrix (source CI type x target CI type x relationship type)
    * GET /analytics/relationship-matrix
    */
@@ -502,11 +552,14 @@ export class AnalyticsController {
           COUNT(DISTINCT ci.type) as unique_types,
           COUNT(DISTINCT ci.environment) as unique_environments
       `, { organizationId });
-      const relationshipCountResult = await session.run(`
+      // "Critical" is the shared definition in services/critical-ci.ts (bsm_business_criticality tier_1 or tier_2).
+      // A relationship counts once when at least one endpoint is critical; both endpoints stay in the caller's org.
+      const criticalRelationshipResult = await session.run(`
         MATCH (source:CI)-[r]->(target:CI)
         WHERE source.organization_id = $organizationId AND target.organization_id = $organizationId
-        RETURN COUNT(r) as total_relationships
-      `, { organizationId });
+          AND (source.bsm_business_criticality IN $criticalTiers OR target.bsm_business_criticality IN $criticalTiers)
+        RETURN COUNT(r) as critical_relationships
+      `, { organizationId, ...criticalTiersParam() });
 
       const byTypeResult = await session.run(`
         MATCH (ci:CI)
@@ -601,14 +654,36 @@ export class AnalyticsController {
         };
       });
 
+      // BW1/BW4/BW5/BW6: definitions live in services/estate-kpi.service.ts. A figure that cannot be computed is null
+      // and named in `unavailable`; it never fails the dashboard and is never a placeholder 0.
+      const totalCis = (ciCountsResult.records[0]?.get('total_cis')?.toNumber() || 0) as number;
+      const estateKpis = await readEstateKpis(session, this.postgresClient, organizationId, totalCis);
+
+      // BW7: today's snapshot, then the series and deltas. Fail-open: a history failure never fails the dashboard; it
+      // leaves `kpi_history` and `kpi_delta` null and names `kpi_history` in `unavailable`. The organization is the
+      // verified caller's (never query, header or body). A day with no dashboard read has no point (sparse series).
+      let history: Awaited<ReturnType<typeof readEstateKpiHistory>> | null = null;
+      try {
+        await recordEstateKpiSnapshot(this.postgresClient, organizationId, estateKpis, totalCis);
+        history = await readEstateKpiHistory(this.postgresClient, organizationId);
+      } catch (error) {
+        logger.warn('Estate KPI history unavailable', error);
+      }
+
       res.json({
-        total_cis: ciCountsResult.records[0]?.get('total_cis')?.toNumber() || 0,
+        total_cis: totalCis,
         by_type: byTypeMap,
         by_status: byStatusMap,
         by_environment: byEnvironmentMap,
         recent_discoveries: recentDiscoveries,
-        health_score: 0,
-        critical_relationships: relationshipCountResult.records[0]?.get('total_relationships')?.toNumber() || 0,
+        health_score: estateKpis.health_score,
+        ci_health: estateKpis.ci_health,
+        critical_relationships: criticalRelationshipResult.records[0]?.get('critical_relationships')?.toNumber() || 0,
+        open_drift_count: estateKpis.open_drift_count,
+        configuration_coverage: estateKpis.configuration_coverage,
+        unavailable: history === null ? [...estateKpis.unavailable, 'kpi_history'] : estateKpis.unavailable,
+        kpi_history: history?.kpi_history ?? null,
+        kpi_delta: history?.kpi_delta ?? null,
       });
     } catch (error) {
       logger.error('Error getting dashboard stats', error);
@@ -620,5 +695,52 @@ export class AnalyticsController {
     } finally {
       await session.close();
     }
+  }
+
+  /**
+   * Estate topology summary: per-category counts, capped node sample and capped edge list for the caller's
+   * organization (HAP-1924). `limit` (1..500, default 200), `edge_limit` (1..1000, default 400) and
+   * `includeInactive=true` are clamped/parsed, never rejected. Runs inside the HP1 `readCIList` fence, so CIs
+   * with a pending or failed reconciliation operation are excluded, behind the `analytics` admission scope.
+   * GET /analytics/topology-summary
+   */
+  async getTopologySummary(req: Request, res: Response): Promise<void> {
+    const organizationId = requestOrganizationId(req);
+    const options = parseTopologyOptions(req.query as Record<string, unknown>);
+    await executeBoundedAnalysis(req, res, async () => {
+      try {
+        const body = await readCIList(organizationId, async (pending, timeout) => {
+          const session = this.neo4jClient.getSession();
+          try {
+            return await readTopologySummary(session, organizationId, options, pending, timeout);
+          } finally {
+            await session.close();
+          }
+        });
+        return { status: 200, body };
+      } catch (error) {
+        // A list read has no single CI to report as a 409 gap: both are the same temporary 503.
+        if (error instanceof CIGapError) throw new CIListUnavailableError();
+        throw error;
+      }
+    }, {
+      scope: 'analytics',
+      timeoutMs: TOPOLOGY_DEADLINE_MS,
+      withDeadline: (_deadline, work) => work(),
+      deadlineError: () => new TopologyDeadlineError(),
+      failure: error => {
+        if (error instanceof TopologyGroupLimitError) {
+          return { status: 503, message: 'Topology summary resource limit exceeded' };
+        }
+        if (error instanceof CIListUnavailableError) {
+          return { status: 503, message: CI_LIST_UNAVAILABLE_RESPONSE.message };
+        }
+        if (neo4jStatementTimedOut(error)) {
+          return { status: 504, message: 'Topology summary timed out' };
+        }
+        return null;
+      },
+      internalError: 'Failed to retrieve topology summary',
+    });
   }
 }

@@ -8,6 +8,8 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
+import { useOrganizationId } from '../contexts/OrganizationContext';
+import { orgScopedKey } from '../lib/queryKeys';
 import dashboardService, {
   ExecutiveSummaryData,
   CIOMetricsData,
@@ -37,9 +39,10 @@ function timeRangeToDays(range: string): number {
 // Executive Dashboard Hook
 export const useExecutiveDashboard = (timeRange: TimeRange) => {
   const days = timeRangeToDays(timeRange.start);
+  const organizationId = useOrganizationId();
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['executive-dashboard', days],
+    queryKey: orgScopedKey('executive-dashboard', organizationId, days),
     queryFn: () => dashboardService.getExecutiveDashboard(days),
     staleTime: 30000, // 30 seconds
     refetchInterval: 30000, // Auto-refresh every 30 seconds
@@ -56,9 +59,10 @@ export const useExecutiveDashboard = (timeRange: TimeRange) => {
 // CIO Dashboard Hook
 export const useCIODashboard = (timeRange: TimeRange) => {
   const days = timeRangeToDays(timeRange.start);
+  const organizationId = useOrganizationId();
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['cio-dashboard', days],
+    queryKey: orgScopedKey('cio-dashboard', organizationId, days),
     queryFn: () => dashboardService.getCIODashboard(days),
     staleTime: 30000,
     refetchInterval: 30000,
@@ -75,15 +79,17 @@ export const useCIODashboard = (timeRange: TimeRange) => {
 // FinOps Dashboard Hook
 export const useFinOpsDashboard = (timeRange: TimeRange) => {
   const days = timeRangeToDays(timeRange.start);
+  const organizationId = useOrganizationId();
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['finops-dashboard', days],
+    queryKey: orgScopedKey('finops-dashboard', organizationId, days),
     queryFn: () => dashboardService.getFinOpsDashboard(days),
     staleTime: 60000, // 1 minute
     refetchInterval: 60000,
   });
 
   return {
+    unavailable: data?.unavailable ?? [],
     cloudCosts: {
       data: data?.cloudCosts || [],
       loading: isLoading,
@@ -125,8 +131,9 @@ export const useFinOpsDashboard = (timeRange: TimeRange) => {
 
 // Business Service Dashboard Hook
 export const useBusinessServiceDashboard = (serviceId?: string, _businessUnit?: string) => {
+  const organizationId = useOrganizationId();
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['business-service-dashboard', serviceId],
+    queryKey: orgScopedKey('business-service-dashboard', organizationId, serviceId),
     queryFn: () => dashboardService.getBusinessServiceDashboard(serviceId),
     staleTime: 30000,
     refetchInterval: 30000,
@@ -134,6 +141,7 @@ export const useBusinessServiceDashboard = (serviceId?: string, _businessUnit?: 
   });
 
   return {
+    unavailable: data?.unavailable ?? [],
     serviceHealth: {
       data: data?.serviceHealth,
       loading: isLoading,

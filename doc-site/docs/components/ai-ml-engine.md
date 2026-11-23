@@ -586,6 +586,7 @@ Different change types have different risk weights:
 | **VERSION_UPGRADE** | 1.5 | 30 min + (blast_radius × 5 min) |
 | **NETWORK_CHANGE** | 1.3 | Not estimated |
 | **SECURITY_CHANGE** | 1.3 | Not estimated |
+| **FAILOVER** | 1.2 | 15 min + (blast_radius × 3 min), a heuristic from the dependent count, not a measured switchover |
 | **RESTART** | 1.0 | 5 min + (blast_radius × 2 min) |
 | **CONFIGURATION_CHANGE** | 0.8 | Not estimated |
 | **PERFORMANCE_TUNING** | 0.8 | Not estimated |
@@ -687,6 +688,12 @@ impact.affected_cis.forEach(affected => {
   ]
 }
 ```
+
+#### Preview Without Storing, and the Ask Endpoint (HAP-1928)
+
+`previewChangeImpact(ciId, changeType, organizationId)` returns the same prediction as `predictChangeImpact` but writes nothing: no `impact_analyses` row and no criticality cache entry, so a read-only caller can use it.
+
+`POST /api/v1/ask` (`{ "ci_id": "...", "question": "impact", "change_type": "failover" }`) is built on it: the Ask Happy copilot's phase 1 answer. It streams `application/x-ndjson` in the design system's `happy-ui/v1` format (`begin`, `text`, `effect`, `node`, `end`; catalog `happy.core@1`). The answer is composed by rule from the impact prediction, the affected business services with cost per hour and the rule-based recommendations: no LLM and no conversation memory, so the same data always gives the same lines. The effects `select` and `focus` the CI and `highlight` its dependents so the topology follows. Cost per hour and estimated downtime are left out when there is no revenue or no estimate for the change type (a figure with data behind it is shown as computed, so it can be 0), and a muted `unavailable` text says so. It is organization-scoped: another organization's CI is a 404 and another organization's services are never counted. See `/ask` in the OpenAPI spec for the node list.
 
 #### Get CI Criticality Score
 

@@ -1,27 +1,40 @@
 import React, { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { allRunsQuery, connectorsApi, formatRunCount, formatRunTimestamp, runStatusDisplay } from '../../api/connectors';
 import { useNavigate } from 'react-router-dom';
-import { LiquidGlass } from '../ui/liquid-glass';
-import { Badge } from '../ui/badge';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '../ui/table';
+  Badge,
+  Button,
+  Card,
+  DataTable,
+  EmptyState,
+  MetricCard,
+  SectionHeading,
+  Skeleton,
+  type Column,
+} from '@happy-technologies/design-system';
+import {
+  allRunsQuery,
+  connectorsApi,
+  formatRunCount,
+  formatRunTimestamp,
+  UNKNOWN_VALUE,
+  type ConnectorRun,
+} from '../../api/connectors';
+import { QueryState } from '@/components/estate/SurfaceState';
+import { RunStatusBadge, RunsReadFailure } from './ConnectorJobList';
 
 /** The dashboard shows only the newest few runs; the jobs tab holds the full history. */
 const RECENT_RUN_LIMIT = 5;
 
+const CONNECTOR_STATUS_TONE = { active: 'success', error: 'danger' } as const;
+
 export const ConnectorDashboard: React.FC = () => {
   const navigate = useNavigate();
-  const { data: connectors = [], refetch } = useQuery({
+  const connectorsQuery = useQuery({
     queryKey: ['connectors'],
     queryFn: connectorsApi.list,
   });
+  const { refetch } = connectorsQuery;
   const runsQuery = useQuery(allRunsQuery());
   const runs = runsQuery.data?.runs ?? [];
   const recentRuns = runs.slice(0, RECENT_RUN_LIMIT);
@@ -31,105 +44,136 @@ export const ConnectorDashboard: React.FC = () => {
     refetch();
   }, [refetch]);
 
-  // Configuration-only stats (not derived from runs)
-  const totalConnectors = connectors.length;
-  const activeConnectors = connectors.filter((c) => c.status === 'active').length;
-  const errorConnectors = connectors.filter((c) => c.status === 'error').length;
-  const enabledShare = totalConnectors > 0 ? (activeConnectors / totalConnectors) * 100 : 0;
+  // Configuration-only stats (not derived from runs). A failed or pending read has no connectors:
+  // the figures are then unavailable, never a zero.
+  const connectors = connectorsQuery.isError ? undefined : connectorsQuery.data;
+  const loading = connectorsQuery.isPending;
+  const totalConnectors = connectors?.length;
+  const activeConnectors = connectors?.filter((c) => c.status === 'active').length;
+  const errorConnectors = connectors?.filter((c) => c.status === 'error').length;
+  const enabledShare =
+    connectors && connectors.length > 0 ? ((activeConnectors ?? 0) / connectors.length) * 100 : undefined;
+  const figure = (value: number | undefined) => (value === undefined ? UNKNOWN_VALUE : value);
+  const unavailable = connectorsQuery.isError ? 'Unavailable' : undefined;
+
+  const runColumns: Array<Column<ConnectorRun>> = [
+    { header: 'Run ID', render: (run) => <span className="font-mono text-sm break-all">{run.id}</span> },
+    { header: 'Connector', render: (run) => <span className="font-medium">{run.configName}</span> },
+    { header: 'Type', render: (run) => <Badge variant="neutral">{run.connectorType.toUpperCase()}</Badge> },
+    { header: 'Status', render: (run) => <RunStatusBadge status={run.status} /> },
+    { header: 'Records Loaded', className: 'text-right', render: (run) => formatRunCount(run.recordsLoaded) },
+    { header: 'Started', render: (run) => formatRunTimestamp(run.startedAt) },
+  ];
 
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-bold mb-2">Connector Dashboard</h2>
-        <p className="text-sm text-muted-foreground">
+        <SectionHeading level={2}>Connector Dashboard</SectionHeading>
+        <p className="-mt-2 text-sm text-[var(--hh-text-muted)]">
           Monitor and manage ITSM and monitoring platform integrations
         </p>
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
-        <LiquidGlass size="sm" rounded="xl">
-          <div className="p-6">
-            <p className="text-sm text-muted-foreground mb-2">Total Connectors</p>
-            <p className="text-3xl font-bold">{totalConnectors}</p>
-          </div>
-        </LiquidGlass>
-        <LiquidGlass size="sm" rounded="xl">
-          <div className="p-6">
-            <p className="text-sm text-muted-foreground mb-2">Active</p>
-            <p className="text-3xl font-bold text-success">{activeConnectors}</p>
-          </div>
-        </LiquidGlass>
-        <LiquidGlass size="sm" rounded="xl">
-          <div className="p-6">
-            <p className="text-sm text-muted-foreground mb-2">Enabled Configurations</p>
-            <p className="text-3xl font-bold text-success">
-              {enabledShare.toFixed(1)}%
-            </p>
-            <p className="text-xs text-muted-foreground mt-1">
-              Share of configurations enabled; not a run success rate
-            </p>
-          </div>
-        </LiquidGlass>
-        <LiquidGlass size="sm" rounded="xl">
-          <div className="p-6">
-            <p className="text-sm text-muted-foreground mb-2">Errors</p>
-            <p className="text-3xl font-bold text-danger">{errorConnectors}</p>
-          </div>
-        </LiquidGlass>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-4">
+        <MetricCard
+          icon="plugs-connected"
+          tone="accent"
+          label="Total Connectors"
+          value={figure(totalConnectors)}
+          sub={unavailable}
+          loading={loading}
+        />
+        <MetricCard
+          icon="check-circle"
+          tone="success"
+          label="Active"
+          value={figure(activeConnectors)}
+          sub={unavailable}
+          loading={loading}
+        />
+        <MetricCard
+          icon="toggle-right"
+          tone="success"
+          label="Enabled Configurations"
+          value={enabledShare === undefined ? UNKNOWN_VALUE : enabledShare.toFixed(1)}
+          unit={enabledShare === undefined ? undefined : '%'}
+          sub={unavailable ?? 'Share of configurations enabled; not a run success rate'}
+          loading={loading}
+        />
+        <MetricCard
+          icon="warning-circle"
+          tone="danger"
+          label="Errors"
+          value={figure(errorConnectors)}
+          sub={unavailable}
+          loading={loading}
+        />
       </div>
 
       {/* Deployed Connectors */}
       <div>
-        <h3 className="text-lg font-semibold mb-4">Deployed Connectors</h3>
-        {connectors.length === 0 ? (
-          <LiquidGlass size="sm" rounded="xl">
-            <div className="p-8 text-center">
-              <p className="text-muted-foreground">
-                No connectors deployed yet. Deploy your first connector to get started.
-              </p>
-              <button
-                onClick={() => navigate('/connectors?tab=definitions')}
-                className="mt-4 px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
-              >
-                Deploy Connector
-              </button>
-            </div>
-          </LiquidGlass>
+        <SectionHeading level={3}>Deployed Connectors</SectionHeading>
+        {loading ? (
+          <div aria-busy="true" className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+            {[0, 1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-32" />
+            ))}
+          </div>
+        ) : connectorsQuery.isError ? (
+          <Card>
+            <QueryState what="connectors" error={connectorsQuery.error} onRetry={() => void refetch()} />
+          </Card>
+        ) : connectors && connectors.length === 0 ? (
+          <Card>
+            <EmptyState
+              icon="plugs"
+              title="No connectors deployed yet"
+              description="Deploy your first connector to get started."
+              action={
+                <Button size="sm" onClick={() => navigate('/connectors?tab=definitions')}>
+                  Deploy Connector
+                </Button>
+              }
+            />
+          </Card>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {connectors.map((connector) => {
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+            {(connectors ?? []).map((connector) => {
               const icon = connector.type === 'servicenow' ? '🔷' : connector.type === 'jira' ? '📘' :
                           connector.type === 'datadog' ? '🐕' : connector.type === 'splunk' ? '🔍' :
                           connector.type === 'bmc_remedy' ? '🔶' : '⚙️';
-              const statusColor = connector.status === 'active' ? 'text-success' :
-                                connector.status === 'error' ? 'text-danger' : 'text-ink-soft';
+              const open = () => navigate('/connectors?tab=definitions');
               return (
-                <LiquidGlass
+                <Card
                   key={connector.id}
-                  size="sm"
-                  rounded="xl"
-                  className="cursor-pointer hover:shadow-lg transition-shadow"
-                  onClick={() => navigate('/connectors?tab=definitions')}
+                  role="link"
+                  tabIndex={0}
+                  className="cursor-pointer"
+                  onClick={open}
+                  onKeyDown={(e) => {
+                    if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                      e.preventDefault();
+                      open();
+                    }
+                  }}
                 >
-                  <div className="p-4">
-                    <div className="flex items-start justify-between mb-3">
-                      <span className="text-3xl">{icon}</span>
-                      <Badge variant={connector.status === 'active' ? 'default' : connector.status === 'error' ? 'destructive' : 'secondary'}>
-                        {connector.status}
-                      </Badge>
-                    </div>
-                    <div>
-                      <h4 className="font-semibold text-foreground mb-1">{connector.name}</h4>
-                      <p className="text-xs text-muted-foreground capitalize mb-2">
-                        {connector.type.replace('_', ' ')}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        Updated: {new Date(connector.updated_at).toLocaleDateString()}
-                      </p>
-                    </div>
+                  <div className="mb-3 flex items-start justify-between">
+                    <span aria-hidden="true" className="text-3xl">{icon}</span>
+                    <Badge variant={CONNECTOR_STATUS_TONE[connector.status as keyof typeof CONNECTOR_STATUS_TONE] ?? 'neutral'} dot>
+                      {connector.status}
+                    </Badge>
                   </div>
-                </LiquidGlass>
+                  <div>
+                    <h4 className="mb-1 font-semibold">{connector.name}</h4>
+                    <p className="mb-2 text-xs capitalize text-[var(--hh-text-muted)]">
+                      {connector.type.replace('_', ' ')}
+                    </p>
+                    <p className="text-xs text-[var(--hh-text-muted)]">
+                      Updated: {new Date(connector.updated_at).toLocaleDateString()}
+                    </p>
+                  </div>
+                </Card>
               );
             })}
           </div>
@@ -138,83 +182,41 @@ export const ConnectorDashboard: React.FC = () => {
 
       {/* Recent Connector Runs: real rows from GET /connector-configs/runs/all */}
       <div>
-        <div className="flex items-center justify-between gap-3 mb-4">
-          <h3 className="text-lg font-semibold">Recent Connector Runs</h3>
-          {!runsQuery.isError && totalRuns > recentRuns.length && (
-            <div className="flex items-center gap-3">
-              <p role="status" className="text-sm text-muted-foreground">
-                Showing newest {recentRuns.length} of {totalRuns} runs
-              </p>
-              <button
-                onClick={() => navigate('/connectors?tab=jobs')}
-                className="text-sm text-primary hover:underline"
-              >
-                View all runs
-              </button>
-            </div>
-          )}
-        </div>
-        <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Run ID</TableHead>
-                <TableHead>Connector</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Records Loaded</TableHead>
-                <TableHead>Started</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {runsQuery.isPending ? (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-center">
-                    <p className="text-sm text-muted-foreground py-4">Loading connector runs…</p>
-                  </TableCell>
-                </TableRow>
-              ) : runsQuery.isError ? (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-center">
-                    <p className="text-sm text-danger py-4">Failed to load connector runs</p>
-                  </TableCell>
-                </TableRow>
-              ) : runs.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={6} className="text-center">
-                    <p className="text-sm text-muted-foreground py-4">No connector runs recorded</p>
-                  </TableCell>
-                </TableRow>
-              ) : (
-                recentRuns.map((run) => {
-                  const status = runStatusDisplay(run.status);
-                  return (
-                    <TableRow
-                      key={run.id}
-                      className="cursor-pointer hover:bg-muted/50"
-                      onClick={() => navigate('/connectors?tab=jobs&jobId=' + encodeURIComponent(run.id))}
-                    >
-                      <TableCell>
-                        <span className="font-mono text-sm break-all">{run.id}</span>
-                      </TableCell>
-                      <TableCell>
-                        <span className="font-medium">{run.configName}</span>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{run.connectorType.toUpperCase()}</Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={status.variant}>{status.label}</Badge>
-                      </TableCell>
-                      <TableCell className="text-right">{formatRunCount(run.recordsLoaded)}</TableCell>
-                      <TableCell>{formatRunTimestamp(run.startedAt)}</TableCell>
-                    </TableRow>
-                  );
-                })
-              )}
-            </TableBody>
-          </Table>
-        </LiquidGlass>
+        <SectionHeading
+          level={3}
+          right={
+            !runsQuery.isError && totalRuns > recentRuns.length ? (
+              <div className="flex items-center gap-3">
+                <p role="status" className="text-sm text-[var(--hh-text-muted)]">
+                  Showing newest {recentRuns.length} of {totalRuns} runs
+                </p>
+                <Button size="sm" variant="link" onClick={() => navigate('/connectors?tab=jobs')}>
+                  View all runs
+                </Button>
+              </div>
+            ) : undefined
+          }
+        >
+          Recent Connector Runs
+        </SectionHeading>
+        {runsQuery.isPending ? (
+          <Card>
+            <EmptyState loading label="Loading connector runs…" />
+          </Card>
+        ) : runsQuery.isError ? (
+          <Card>
+            <RunsReadFailure error={runsQuery.error} onRetry={() => void runsQuery.refetch()} />
+          </Card>
+        ) : (
+          <DataTable
+            caption="Recent connector runs"
+            rows={recentRuns}
+            columns={runColumns}
+            rowKey={(run) => run.id}
+            emptyLabel="No connector runs recorded"
+            onRowClick={(run) => navigate('/connectors?tab=jobs&jobId=' + encodeURIComponent(run.id))}
+          />
+        )}
       </div>
     </div>
   );

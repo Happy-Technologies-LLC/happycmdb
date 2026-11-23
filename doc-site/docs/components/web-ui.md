@@ -207,15 +207,49 @@ Dashboard now opens on the estate hub, `web-ui/src/components/estate/EstateHub.t
 | Stage: Orbit | `OrbitMap` (SVG) | `GET /api/v1/cis` (first 150 by name) plus the endpoints of `GET /api/v1/relationships` |
 | Stage: Graph | `GraphMap` (Cytoscape) | the same sample |
 | Stage: List | DS `DataTable` | the same CI records, filtered by category |
-| KPI stack | `EstateKpis` | `total_cis` and `by_status.active` of `GET /api/v1/analytics/dashboard` |
+| KPI stack | `EstateKpis` | `total_cis`, `by_status.active` and `health_score` of `GET /api/v1/analytics/dashboard` |
 
 The view is the `?view=orbit|graph|list` search parameter. The Stage draws a capped sample and labels it
 ("Showing N of M CIs"); the category counts on the chips are the full-estate `by_type` counts.
 
-Health, config drift, coverage, live changes and top services render a "Not available yet" state that names the missing
-backend capability instead of a number: the server has no CI health state, drift count, coverage metric, KPI history,
-tenant-wide change feed or per-service availability on `main`, and the dashboard's `health_score` is a hardcoded `0`.
-Do not wire a number to those cards until the endpoint exists.
+Config drift, coverage, live changes and top services render a "Not available yet" state instead of a number, and so
+does Health while its `health_score` is `null`. Of the figures the server returns for the Health, drift, coverage,
+change and service cards (below), the hub reads only `health_score` of the dashboard response (the KPI stack also
+reads `total_cis` and `by_status.active`, the chips `by_type`): it does not read `ci_health`, `open_drift_count`,
+`configuration_coverage`,
+`kpi_history` / `kpi_delta`, the tenant-wide change feed or per-service availability yet. The dashboard's `health_score`
+is the percentage of CIs without an open incident (BW1/BW4, definition in `services/ci-health.ts`; `ci_health` carries
+the counts) and is `null` (unavailable) when that signal does not exist (the incident tables are absent, more than 5000
+CIs have an open incident, the organization has no CIs, or the incident read failed or timed out);
+the Health card shows "Not available yet" for `null` and a percentage only for a
+number, never `0%` as a placeholder. `GET /analytics/dashboard` now also carries `open_drift_count` (BW5) and
+`configuration_coverage` (BW6, `{with_owner_and_source, total, ratio}`; definitions in the OpenAPI schema), each `null`
+and listed in `unavailable` when it cannot be computed; the drift and coverage cards do not read them yet. Do not wire a
+number to a card until its endpoint exists.
+
+The backends for the incident ribbon figures, live changes and top services now exist (HAP-1926, BW8 to BW10); the UI
+does not read them yet. `GET /itil/metrics/open-incidents` returns the open incidents with the affected service and
+`users_affected` / `revenue_per_hour`, taken from the figures recorded on the affected CI's mapped service
+(`metadata.user_count`, `metadata.revenue_impact.annual_revenue_supported / 8760`), `null` and listed in `unavailable`
+when none is recorded. A new incident stores the rate under `business_impact.revenue_per_hour`; the ribbon reads only that
+key (or derives it live), never `estimated_revenue_impact`, which is a total for the ITIL priority service, GraphQL, the BI
+views and this UI. `GET /analytics/recent-changes?window=1h|24h` is the tenant-wide change feed (poll, no push).
+`GET /business-services/availability` is incident-derived (P1/P2 downtime on the service's mapped CIs over 24 h), not a
+probe: 100 means "no P1/P2 incident recorded", and a service with no mapped CI is `null`. A resolved or closed incident
+with neither `resolved_at` nor `closed_at` ends at its `updated_at`. The rules are in
+`services/incident-business-impact.ts`, `recent-changes.service.ts` and `service-availability.service.ts`.
+
+These incident-derived reads are bounded by a PostgreSQL `statement_timeout`, not by the analytics concurrency limiter (the
+hub requests several feeds at once for one user). The ribbon and availability run in one transaction under
+`ESTATE_FEED_TIMEOUT_MS` (default 5000 ms) and answer `503 {"success": false, "error": "Analytics resource limit exceeded"}`
+when a statement times out, never a partial figure. CI `health` on `GET /cis` and `GET /cis/{id}` runs under
+`CI_HEALTH_TIMEOUT_MS` (default 3000 ms); a timeout answers `health: null` for the CIs and does not fail the CI read.
+Either knob must be a positive integer of at most 2147483647, else the default applies. Where `itil_incidents` has no
+`organization_id` (or does not exist), availability lists every service with three `null` figures and all three names in
+`unavailable`. Known limits: an incident carries no CI incarnation, so an open incident follows the CI id and marks a CI
+deleted and re-created under the same id (same organization) `critical` or `degraded` until it is resolved; a service whose
+only mapped CIs were deleted still reads 100 % in availability (`has_mapped_cis` counts mappings, not live CIs); and the
+ribbon's `affected_service` is the live primary service while its figures may come from the figures stored at creation.
 
 Every surface has loading, error and 403 states (`SurfaceState.tsx`). Reads that must not refuse the page (incidents,
 relationships) are sent with `sideRead: true`, so a 403 shows on that surface only. "Run discovery" is gated with

@@ -111,7 +111,7 @@ NGINX_HSTS_PRELOAD=true
 
 ```bash
 # Connection
-NEO4J_URI=bolt://neo4j:7687  # Use neo4j+s:// for SSL
+NEO4J_URI=bolt://neo4j:7687  # neo4j+s:// selects TLS from the URL (then NEO4J_SSL_ENABLED is not used)
 NEO4J_USERNAME=neo4j
 NEO4J_PASSWORD=<strong-random-password>
 NEO4J_DATABASE=cmdb
@@ -200,7 +200,12 @@ POSTGRES_SSL_ENABLED=on
 POSTGRES_SSL_MODE=verify-full
 # verify-full only: CA bundle to trust (default: the Node.js trust store). Must be readable by the api-server process.
 POSTGRES_SSL_CA_FILE=/ssl/ca.crt
+
+# Startup guard on the API's PostgreSQL login
+# REQUIRE_NON_SUPERUSER_DB=true  # only with a non-superuser POSTGRES_USER, see environment-variables.md
 ```
+
+Only the string `true` (case-insensitive, surrounding whitespace ignored) enforces `REQUIRE_NON_SUPERUSER_DB`: the API then exits non-zero before it listens when its PostgreSQL login is privileged, and also when the probe cannot run; `1`, `yes`, empty and unset only log an `error` line for a privileged login. The shipped compose logs in as the superuser `cmdb_user`, so enforcing there would stop the API; see [Environment Variables](../configuration/environment-variables.md#postgresql-configuration).
 
 The Postgres client reads only `POSTGRES_SSL_MODE`, `POSTGRES_SSL_ENABLED` and `POSTGRES_SSL_CA_FILE` (`resolveSsl` in
 `packages/database/src/postgres/client.ts`). `POSTGRES_SSL_ENABLED` is consulted only when `POSTGRES_SSL_MODE` is unset
@@ -301,8 +306,13 @@ GRANT SELECT (connector_type, config_name, started_at, status, duration_ms, reco
   regardless of this role still apply: `CONNECT` on every database (the role can log in to `grafana`, `metabase` and
   `postgres`), `TEMPORARY`, and `EXECUTE` on functions (after a `--no-acl` restore this includes the SECURITY DEFINER
   `cmdb.fn_business_service_health`, which takes any organization id). Review those PUBLIC grants before use.
-- **Tenant scoping**: no `CREATE POLICY` / `ROW LEVEL SECURITY` exists in the shipped migrations, so tenant scoping is
-  application-side. `cmdb.dim_ci` has `organization_id`; `cmdb.fact_ci_changes` and `cmdb.fact_ci_relationships` have
+- **Tenant scoping**: application-side everywhere (every query carries the organization predicate), plus row level
+  security on exactly one table, `public.estate_kpi_snapshots` (migration 056, HAP-1925). Its policy (ENABLE and FORCE,
+  so the owner is subject too) keys on the transaction-local setting `cmdb.organization_id`, which the API sets from the
+  verified token's organization at the start of each history transaction; an unset or empty setting matches no row and
+  an INSERT without it is refused. That is defence in depth only: any session may `SET` that setting, so it is not a
+  sole control and the Grafana role described here must not be given this table. No other table has a `CREATE POLICY`.
+  `cmdb.dim_ci` has `organization_id`; `cmdb.fact_ci_changes` and `cmdb.fact_ci_relationships` have
   none, and `connector_run_history` gets it only from migration 018 (the compose `init-postgres.sql` does not add it).
   The role above therefore reads **every organization's** rows: safe only for single-organization deployments, or where
   every Grafana user may see all tenants. Multi-tenant Grafana needs a design decision first: a role per tenant plus RLS

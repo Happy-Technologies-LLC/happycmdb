@@ -71,23 +71,111 @@ bytes. A password change or account deletion authorized before an operator rotat
 advances the user's credential generation together with the new hash. Every other access token,
 refresh cookie and WebSocket of the user is refused on its next use (WebSockets within the 2-minute
 re-check), and so is every API key of the user: keys are valid only at the generation they were
-created in, so they stop authenticating (`401`), are listed by `GET /api/v1/auth/api-keys` with
-`_enabled: false`, and must be recreated. The changing device stays signed in: the `200` response
+created in, so they stop authenticating (`401`) and must be recreated. The changing device stays signed in: the `200` response
 (message "Password changed. All other sessions and all your API keys have been revoked; this device
 stays signed in.") carries `data` (`_accessToken`, `_expiresIn`, `_user`, as login) and sets a new
-`__Secure-cmdb_rt` cookie, whose 7-day cap starts at the change.
+`__Secure-cmdb_rt` cookie, whose 7-day cap starts at the change. After the write the change also
+revokes the user's key rows below the new generation (`enabled = false`, `revoked_at` set; HAP-1669),
+so a rollback that resets the generation cannot revive them. Revoked keys are not returned by
+`GET /api/v1/auth/api-keys`: after the change the list holds only keys created since it. This step is
+best-effort: a failure is logged by error class only and does not fail the request, since the generation
+already refuses the keys. A key of an older generation whose revoke failed stays unrevoked, so the list
+still returns it with `_enabled: false` (it never authenticates) until a later change revokes it.
 
 **Password changes are rate-limited and audited** (HAP-1368). `PUT /api/v1/auth/password` shares the
 login limit per client address (`RATE_LIMIT_AUTH_MAX` per `RATE_LIMIT_AUTH_WINDOW_MS`, the same
 bucket as login) and adds a per-user limit across all client addresses at login's per-account budget
 (`RATE_LIMIT_AUTH_ACCOUNT_MAX` per `RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS`, default 5 per 15 minutes).
 Past either limit it answers `429`; while the rate-limit store is unreachable it answers `503` and
-changes nothing. Each successful change and each wrong current password appends one row to the
-hash-chained `audit_log` (entity `USER`, the user id as entity and actor, client address,
-organization, outcome `success` or `wrong_password`; never a password, hash or token). While the
-audit chain is not ready (`AUDIT_CHAIN_KEY` unset) the change is refused with `503` before the
-current password is checked. A user without an organization claim is not audited (an error is
-logged). Requires PostgreSQL migration `049_audit_entity_user.sql`.
+changes nothing. Each attempt that reaches a decision appends one row to the
+hash-chained `audit_log` (entity `USER`, the user id as entity and actor, client address (null when
+unavailable), organization, a fixed `metadata.outcome`; never a password, hash or token): `success`,
+`wrong_password` (400), `policy_failure` (400, the new password is not allowed), `rotation_lost` (401,
+credentials changed since the session was issued), `user_not_found` (404) and `rate_limited` (429).
+Response bodies are the same with or without the audit row. `policy_failure`, `user_not_found` and
+`rotation_lost` rows are recorded before (or without) proof of the current password: the request has a
+valid session but has not shown the current password, so a row records a refused attempt by that
+session, not a verified one (`rotation_lost` is also written when the guarded write loses a race after
+the proof; the row does not say which). The `503` for an audit chain that is not
+ready (`AUDIT_CHAIN_KEY` unset) is refused before the current password is checked and is not audited:
+the chain cannot be written then. Request-validation `400`s (malformed body) are not audited. A change
+by a user without an organization never reaches a decision: it is refused with `403` (below), so no
+row is written and no change is made. For the same user a `429` writes no row either (an error is logged). `rate_limited` is the first `429`
+per user and refusing bucket (the client bucket, the user bucket) per window, and its row's
+`metadata.bucket` names the refusing bucket (`client`, `user`; the login-only `account` and
+`account-global` buckets do not apply here). Each audit write takes the
+global audit-chain lock, so retries past the limit append no further rows until the window passes
+(a Redis `SET rate-limit:auth-user-refused:<userId>[:client] <random token> NX PX <window>` decides; if
+Redis fails the `429` is unchanged and no row is written). The claim is taken before the write so
+concurrent refusals write one row. When the write fails or is skipped (no organization claim) the claim
+is not deleted: its TTL is cut to a **30 second backoff** (`REFUSAL_AUDIT_BACKOFF_MS` in
+`rest/auth.controller.ts`), so an audit-store fault costs at most one write attempt per user and bucket
+per 30 seconds, and the first `429` after the backoff retries and writes the row (it never lengthens the
+window: the TTL only shortens). The cut is owner-checked (a Lua compare of the stored token, then
+`PEXPIRE`): a slow write whose claim has expired and been retaken by a later request leaves the newer
+claim alone. If the backoff itself fails (Redis down) the claim keeps its window TTL and no row is
+written for the rest of that window, the same as when the claim fails. Requires PostgreSQL
+migration `049_audit_entity_user.sql`.
+
+**Revoke other sessions (step-up)** (HAP-1716). `POST /api/v1/auth/sessions/revoke-others` with
+`{"currentPassword": "..."}` ends every other session, refresh token and API key of the user without
+changing the password. It advances the credential generation by exactly one (the password hash is
+never written) and answers like a password change: `200` with a new `_accessToken`, a new refresh
+cookie (its 7-day cap starts now) and no refresh token in the body; this device stays signed in. It
+needs a JWT session (an API key gets `403`), the current password (`400` when wrong), a user with an
+organization (`403 Organization required to revoke sessions`, nothing changed), and a credential
+generation that has not moved since the session was issued (`401 Credentials changed`). API keys are
+also revoked best-effort, as for a password change. It is audited like a password change with
+`metadata.operation = "revoke_other_sessions"` (outcomes `success`, `wrong_password`,
+`rotation_lost`, `user_not_found`, `rate_limited`); without `AUDIT_CHAIN_KEY` it answers `503` before
+any check. Rate limit: login's per-client-address bucket, a per-user-**and**-client-address bucket and a
+per-user-**and**-session bucket (the last two at `RATE_LIMIT_AUTH_ACCOUNT_*`, default 5 per 15 minutes,
+the budget of `PUT /password`). The session is the login: the `_authTime` claim of the access token,
+copied from the refresh token on every refresh, so every token refreshed from one login shares the
+bucket whatever address it comes from, and only a fresh authentication (login, password change, a
+successful step-up, all of which need the password) starts a new one. A session holder therefore gets
+at most that budget of password guesses per window from all addresses together, the same bound as
+`PUT /password`. A wrong guess never returns a token or a new login time; the new session of a successful
+step-up deliberately starts a new login time (its 7-day cap restarts too). The owner's own login is
+another session with its own bucket, so a thief draining the stolen session's bucket cannot hold the
+owner out; there is no per-user bucket across sessions or the account-wide cap login has. An access
+token issued before this claim existed is refused `401 Session must be renewed` before any bucket is
+spent or password checked (the web client then renews from its refresh cookie); it never falls back to
+per-address limits only. A limiter store error answers `503`. Residual risk: an attacker behind the owner's own client
+address shares the address bucket, and one holding the same login's token shares its session bucket, so
+either can hold that device out of the step-up for a window (the owner signing in again starts a
+fresh session bucket only: the client-address and user-and-client-address buckets stay held until their
+window ends); a stolen session can still spend the session budget every window until its 7-day
+cap. A first `429` per user and bucket per window is audited with `metadata.bucket` `client`,
+`user-client` or `session`, claimed at `rate-limit:auth-session-revoke-refused:<userId>:<bucket>`.
+
+**A user with no organization cannot change their password through this endpoint** (HAP-1714).
+`PUT /api/v1/auth/password` answers `403 {"success":false,"error":"Forbidden","message":"Organization
+required to change password"}` and changes nothing: no hash, no generation advance, no API-key
+revocation, no `audit_log` row, no cookie or token. The refusal comes before the current password is
+checked, so a wrong password for such a user is also `403`, not `400`. It applies when the stored
+user has no organization (or a value that is not a UUID), and also when the request's organization
+claim is absent or is not the stored organization (a race with `assign-organization`; the token
+takes its claim from the stored user on every request, so a retry after the assignment works). The
+status is `403`, not `409` or `401`: the caller is authenticated and the request is well formed, but
+their account state forbids the operation by policy, and only an operator action can change that. A
+write that loses the organization between the read and the write lands nothing and answers
+`401 Credentials changed`.
+
+Which path applies to such a user:
+
+- An operator gives the user an organization with
+  `packages/api-server/src/scripts/identity-window.ts assign-organization --user-id <id> --organization-id <uuid> --operator <name>`
+  (see "Assigning a user's organization (FD-5)" in [Authentication](/components/authentication.md)),
+  and the user then changes their password themselves.
+- Otherwise the operator rotation, `packages/api-server/src/scripts/rotate-user-password.ts`, is the
+  supported way to change their password. It does not depend on an organization and records
+  `auth_credential_events`, not `audit_log`.
+
+No supported creation path produces such a user today: the init and `seed-data` accounts are in the
+internal organization and no API route creates users. They remain possible for accounts that predate
+organization scoping, for the `--target` fixture of `scripts/seed-tenant-fixture.ts` (one viewer
+without an organization, on purpose) and for direct database writes; the guard stays for them.
 
 **Platform administrators** are a dedicated flag, set only by the operator command
 `scripts/identity-window.ts grant-platform-admin`. Role `admin` and organization grant nothing. A
@@ -96,6 +184,170 @@ password) never qualifies. API keys never act as platform administrators. The fl
 every request against the stored user record; tokens and verified request identities carry no
 platform-admin claim, so revoking the flag takes effect on the next request. No route accepts platform
 administrators yet: global TBM and connector controls still refuse every caller.
+
+**Portfolio import scope** (`portfolio:import`) is the dedicated scope that `POST /api/v1/portfolio/imports`
+requires. It is an entry of the user's stored `scopes` list, set only by two reviewed operator commands (the same
+identity-window step and `CMDB_ROTATE_*` connections as `grant-platform-admin`; a third only records a change), never through the API:
+
+```bash
+scripts/identity-window.ts grant-portfolio-import-scope  --user-id <id> --operator <name>
+scripts/identity-window.ts revoke-portfolio-import-scope --user-id <id> --operator <name>
+scripts/identity-window.ts record-portfolio-import-scope --grant|--revoke --user-id <id> --operator <name>
+```
+
+The third, `record-portfolio-import-scope`, is the recovery for a change whose audit row was not written (below); it
+changes no scope.
+
+Grant and revoke both require `--user-id` and `--operator` (1-200 printable characters after trimming; control, format (for example
+U+202E, U+200B) and line/paragraph separator characters are refused; anything else invalid exits 1 before
+any store opens). Grant adds only `portfolio:import` (no duplicate, other scopes kept); revoke removes only that
+entry. A change prints one JSON line
+`{"userId": "<id>", "outcome": "granted" | "revoked", "operator": "<name>", "occurredAt": "<UTC, microseconds>", "eventId": "<uuid>"}`;
+a repeat is `unchanged`, prints `{"userId": "<id>", "outcome": "unchanged"}` and writes nothing. Each `granted` or
+`revoked` change appends one row to the append-only `auth_credential_events` table (event
+`portfolio_import_scope_granted` / `portfolio_import_scope_revoked`, actor `window-script:<operator>`). `eventId` is
+that row's `id` (its primary key: look the row up by it); `occurredAt` is that row's `occurred_at` at full microsecond
+precision (`2026-11-18T09:30:00.123456Z`), so `WHERE occurred_at = '<occurredAt>'` matches it too. Every grant
+and revoke leaves a row (a change whose row failed is recovered with the record command below). The node
+properties `portfolioImportScopeGrantedBy/At` and `portfolioImportScopeRevokedBy/At` remain only as the latest-state
+cache; each new change overwrites them. Read the confirmed history (ambiguous rows excluded, see below) with:
+
+```sql
+SELECT id, occurred_at, event, user_id, actor FROM auth_credential_events
+WHERE event LIKE 'portfolio_import_scope_%' AND actor NOT LIKE 'window-script-ambiguous:%' ORDER BY occurred_at;
+```
+
+The scope change in Neo4j is made first and the audit row second; the two stores cannot share a transaction. If the
+row cannot be written, the command exits 3 (`AuditWriteFailed`, fixed message: the change was applied but its audit
+row was not written) and the scope change stays applied, with the node properties as the only record. The same exit 3
+covers a Neo4j write that errors on the client after the server may have committed it (a lost commit acknowledgement):
+the command then re-reads the user's scope under the lock, and if it already holds the requested state the change is
+applied and unrecorded, so it exits 3 as above, not 1. If the scope is unchanged after the error, or cannot be re-read
+(Neo4j still unreachable), the outcome is unknown, because Neo4j may still apply the write after that re-read. The
+command then appends one row for the requested change with actor `window-script-ambiguous:<operator>` (same event
+as a real change, inside the same transaction as the lock) and exits 1 with the error text, redacted. An
+ambiguous row means "requested, outcome not confirmed", not "applied": it is also written when the write was refused
+outright, so it is expected noise, and it never counts as a recovery row. Check the live scope; run the record
+command only if it changed. If the ambiguous row itself cannot be written, the original error stands and the exit
+is still 1; this path never exits 0. Exit 1 prints the error text with credential-like content replaced by `***`:
+URL userinfo (`scheme://user:pw@host`), `Bearer <token>`, and the value after `=` or `:` of any key containing
+`password`, `passwd`, `token` or `secret`. A value flag directly followed by another value flag
+(`--operator --user-id p`) is a usage error (exit 1, before any store opens), not an operator named `--user-id`.
+
+Ambiguous rows are not confirmed changes: exclude them from a history read with
+`AND actor NOT LIKE 'window-script-ambiguous:%'`.
+
+**Recovery after exit 3: `record-portfolio-import-scope`.** The exit-3 message prints the exact command for its own
+action, with the same flag as the failed run:
+
+```bash
+scripts/identity-window.ts record-portfolio-import-scope --grant  --user-id <id> --operator <name>   # after a failed grant
+scripts/identity-window.ts record-portfolio-import-scope --revoke --user-id <id> --operator <name>   # after a failed revoke
+```
+
+It writes the missing `portfolio_import_scope_granted` / `portfolio_import_scope_revoked` row and **makes no Neo4j
+write**: do not grant or revoke again (that would change the scope a second time and leave the first change
+unrecorded). Exactly one of `--grant` or `--revoke` is required (matched only as a flag: the token after
+`--operator`, `--user-id`, `--organization-id` or `--except` is that flag's value, never a direction), and
+`--operator` has the validation above. The row has the same event as a real change but its actor is
+`window-script-record:<operator>`, so a recovery row is told apart from a grant or revoke row; the operator who runs
+the record is the actor, and the row's time is the time of the record, not of the original change. Before it
+writes, it reads the live scope and refuses, with exit 2
+(`GrantRefused`, `scope_state_mismatch`) and no row, unless the state matches the action: `--grant` only while the
+user holds `portfolio:import`, `--revoke` only while the user does not. It applies the identity refusals of grant and
+revoke below, and prints the same JSON line as a change, with `"recordOnly": true` and `"alreadyRecorded"`.
+
+Every grant and revoke writes a fresh operation id (a UUID) on the user node in the same statement as the scope change
+(`portfolioImportScopeGrantedOpId` / `portfolioImportScopeRevokedOpId`). The record reads the id of the change it
+records (`--grant` reads the granted id, `--revoke` the revoked id) and stores it as the last 33 characters of the
+recovery row's actor: `window-script-record:<operator>#<32 hex digits>`. The record is idempotent on that id alone:
+under the lock it appends nothing when a recovery row of the same event already carries the node's current id, and
+prints that row with `"alreadyRecorded": true` (its `operator` is the earlier row's), so a retry after an ambiguous
+commit adds no duplicate. Every later grant or revoke writes a new id, so a recovery row of an earlier operation never
+covers a later change, whether or not that change was recorded in between: a change whose recovery was skipped gets its
+own row on the next record. No clock of either store is compared. A node whose marker predates the id (granted or
+revoked by an older build) has none: its record always appends a row with no suffix, so a retry of such a record can
+append a second row, but a change is never left without a row. The invariant assumes every grant and revoke is made by
+a build that writes the id: an older build's change leaves the previous id on the node, and a record after it could be
+absorbed by that id's row, so do not run an older build's grant or revoke against a user the newer build has changed. If the record's own insert fails it exits 1
+(`the audit row was not written and nothing else was changed`); run the same command again. An error while shaping the
+printed result after the row was written exits 1, never 3. To list only the recovery rows:
+`WHERE event LIKE 'portfolio_import_scope_%' AND actor LIKE 'window-script-record:%'`.
+
+**Per-user lock.** Grant, revoke and record each take a PostgreSQL transaction-scoped advisory lock keyed on the
+target user id, `pg_advisory_xact_lock(2129, hashtext(<user id>))`, as the first statement of the transaction that
+also holds the audit insert. It is held across the Neo4j read, the Neo4j change and the audit insert, and released at
+commit or rollback, so two runs on one user queue: the second reads the user only after the first has finished, and a
+user's real change rows (actor `window-script:`), ordered by `occurred_at` (the time of the insert, not of the
+transaction's start), are in the order of the Neo4j changes. Recovery and ambiguous rows are not: a recovery row is
+dated when it is recorded, an ambiguous row may stand for a write that was refused or lands later. Different users do not wait for each other. The two-integer form with class 2129 is a different
+key space from every other advisory lock in the application (one-bigint keys, and the two-integer class 8271), so no
+existing lock is taken or blocked by a user id; a hash collision of two ids only makes their runs wait for each other.
+The lock wait is **unbounded**: there is no `lock_timeout`, and the Neo4j reads made while the lock is held have no
+timeout (each Neo4j write transaction is bounded at 30 seconds), so a stalled run holds up every other run on the
+same user until it ends or its PostgreSQL session is terminated. This is acceptable for an interactive operator command;
+stop the stalled process. A holder stalled in a Neo4j read is idle in its transaction, so `pg_cancel_backend` does
+nothing to it; if the lock must be freed from the database side, run `pg_terminate_backend` on the `pid` this query returns. A node
+that stores both `_id` and `id` answers to either, and a run that came in by one spelling and resolved to the other
+holds both locks (the argument's first, the resolved id's second), so the filter must cover both. The operator supplies
+two values: the stalled run's `--user-id` as `<user id>`, and the id the run resolved to as `<resolved id>` (the node's
+other spelling: read the node's `_id` and `id` in Neo4j; write the same value twice when the node has one id).
+
+```sql
+SELECT DISTINCT l.pid
+FROM pg_locks l
+WHERE l.locktype = 'advisory' AND l.classid = 2129 AND l.objsubid = 2 AND l.granted
+  AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+  AND l.objid IN ((hashtext('<user id>')::bigint & 4294967295)::oid, (hashtext('<resolved id>')::bigint & 4294967295)::oid)
+  AND EXISTS (SELECT 1 FROM pg_locks w WHERE w.locktype = 'advisory' AND w.classid = 2129 AND w.objsubid = 2
+    AND w.database = l.database AND w.objid = l.objid AND NOT w.granted)
+  AND NOT EXISTS (SELECT 1 FROM pg_locks x WHERE x.pid = l.pid AND x.locktype = 'advisory' AND x.classid = 2129
+    AND x.objsubid = 2 AND NOT x.granted);
+```
+
+The `objid` terms are the key `pg_advisory_xact_lock(2129, hashtext(...))` takes; without them the filter also selects
+the lock of every other user's concurrent run, and terminating that `pid` stops the wrong run. The `EXISTS` term keeps
+only a lock some other session is waiting for, and the `NOT EXISTS` term drops a session that is itself waiting: a
+run that came in by one spelling, holds that spelling's lock and waits on the other can have a third run queued behind
+it, and it is a waiter, not the stalled run. The result is the `pid` of the session at the head of the queue, one row
+for one stalled run. It is empty when no run waits on either id, or when the ids supplied are not the stalled run's (a
+different user's id, or a waiting run's spelling that the holder does not hold): check both values before concluding
+that no run is stalled. The lock is then released and a waiting run
+proceeds, but the terminated process is still alive and can reach its Neo4j write. That write is guarded by
+`coalesce(u.scopes, []) = $observed`, so it changes nothing when the waiting run changed the scopes first: the stalled
+run exits 2 (`refused: not_applied`). If the write still applies (the scopes were unchanged), its audit insert fails on
+the lost session and the run exits 3: recover it with the record command. A run terminated while it is still waiting
+for the lock exits 1 with "PostgreSQL is unavailable" and nothing changed.
+
+**PostgreSQL outage.** The lock is a precondition: when PostgreSQL cannot be connected to, grant, revoke and record
+now refuse up front, with exit 1 and a fixed message (`... refused: PostgreSQL is unavailable, so the per-user lock
+could not be taken; nothing was changed`), before any Neo4j read or write. Before HAP-2129 a PostgreSQL outage let the
+Neo4j change happen and ended in exit 3. Now exit 3 means only that the Neo4j change was made and has no audit row:
+PostgreSQL failed after it (the insert or the commit failed) or the Neo4j write errored after committing: recover it
+with the record command above. After an exit 1 refusal, re-run the
+same grant or revoke once PostgreSQL is back.
+
+Grant and revoke both refuse (exit 2, `GrantRefused`) an unknown or ambiguous identity, an identity held by another node
+(`identity_collision`), a seeded account, a default-password account, a `scopes` value that is not a list of
+strings, and a write that lost the compare-and-set race (`not_applied`: the user's scopes or eligibility changed
+between the read and the write; re-run). Role `admin`, organization and platform administration grant
+nothing; the scope is re-read on every request, so a revoke takes effect on the next request.
+
+**Revoking from an account flagged as having a default password: reset first, then revoke.** A flagged account
+never holds the scope (the request-time check refuses it), but its stored `scopes` list is untouched, and the
+operator password reset clears the flag, so the stored grant is live again from that moment. Revoke is refused
+(`seeded_account`) while the flag is set, so the order is:
+
+1. Rotate the account's password with `scripts/rotate-user-password.ts` (the only path that clears the flag). If the
+   rotation reports `PENDING` (the run could not see its outcome because Neo4j was unreachable), run
+   `rotate-user-password.ts --reconcile` and wait for `APPLIED` before step 2: a `PENDING` rotation may or may not
+   have cleared the flag, and the revoke is refused (`seeded_account`) while it is still set.
+2. Run `revoke-portfolio-import-scope --user-id <id> --operator <name>` straight after; expect `"outcome": "revoked"`.
+
+Do not leave a flagged account that holds the grant waiting after step 1: until step 2 it holds the scope.
+
+**Running either command on staging or production requires founder approval, named in the change record.**
+Until a user holds the scope the portfolio import is unusable: every caller gets `403`.
 
 ---
 
@@ -178,31 +430,27 @@ Get information about the currently authenticated user.
 Authorization: Bearer YOUR_ACCESS_TOKEN
 ```
 
-**Response** (200 OK):
+**Response** (200 OK), the caller's own record only (also the `data` of `PUT /api/v1/auth/profile`):
 ```json
 {
   "success": true,
   "data": {
-    "_id": "user-admin-001",
-    "_username": "admin",
-    "_email": "admin@happycmdb.local",
-    "_role": "admin",
-    "_enabled": true,
-    "_createdAt": "2025-01-01T00:00:00Z",
-    "_updatedAt": "2025-11-15T09:00:00Z",
-    "_lastLoginAt": "2025-11-15T10:00:00Z",
-    "permissions": [
-      "ci:read",
-      "ci:write",
-      "ci:delete",
-      "discovery:manage",
-      "credentials:manage",
-      "users:manage",
-      "admin:*"
-    ]
+    "userId": "user-1",
+    "username": "alice",
+    "email": "alice@example.com",
+    "name": "Alice",
+    "avatar": "data:image/png;base64,...",
+    "role": "operator",
+    "permissions": ["read", "write", "discover"],
+    "createdAt": "2025-01-01T00:00:00Z",
+    "lastLoginAt": "2025-11-15T10:00:00Z",
+    "platformAdmin": false,
+    "organizationId": "org-acme"
   }
 }
 ```
+
+`permissions` is the server role table's grant for `role` (empty for a stored role the table does not know); it is for display, the server still checks every request. `platformAdmin` is the effective platform-administrator status the server enforces (the stored flag, never true for a seeded account). `organizationId` is the caller's organization, `null` for a user without one. Both come from the stored user, not from the request or token claims; the UI displays them and never decides access from them.
 
 **Error Responses**:
 - `401 Unauthorized` - Missing or invalid access token
@@ -213,7 +461,7 @@ Authorization: Bearer YOUR_ACCESS_TOKEN
 
 ### Generate API Key
 
-Create a new API key for programmatic access.
+Create a new API key for programmatic access. Requires a JWT user session: an API key cannot create keys.
 
 **Endpoint**: `POST /api/v1/auth/api-key`
 
@@ -226,49 +474,49 @@ Authorization: Bearer YOUR_ACCESS_TOKEN
 ```json
 {
   "name": "Production Automation Script",
-  "expiresInDays": 365,
-  "role": "operator"
+  "expiresInDays": 365
 }
 ```
 
-**Supported Roles**:
-- `viewer` - Read-only access
-- `operator` - Read + discovery operations
-- `admin` - Full access (use sparingly)
+| Field | Type | Required | Rule |
+|-------|------|----------|------|
+| `name` | string | yes | 3-100 characters |
+| `expiresInDays` | integer | no | 1-365; omitted means the key does not expire |
 
-**Response** (201 Created):
+There is no `role` field. The key stores the role of the user who creates it. At use the effective role is the intersection of that stored role and the user's current role, so a user whose role was lowered cannot use a key for the old role's permissions.
+
+**Response** (200 OK, not 201):
 ```json
 {
   "success": true,
   "data": {
-    "_id": "apikey-123-abc",
+    "_apiKey": "<64 lowercase hex characters, shown once>",
+    "_id": "7d0c8c5e-3a52-4c5b-9a6e-1f2e3d4c5b6a",
     "_name": "Production Automation Script",
-    "_key": "cmdb_live_sk1_1a2b3c4d5e6f7g8h9i0j",
-    "_role": "operator",
-    "_enabled": true,
-    "_expiresAt": "2026-11-15T10:00:00Z",
-    "_createdAt": "2025-11-15T10:00:00Z",
-    "warning": "This API key will only be displayed once. Store it securely."
-  }
+    "expiresAt": "2026-11-20T10:00:00.000Z"
+  },
+  "message": "API key generated. Save it securely - it will not be shown again."
 }
 ```
 
-**IMPORTANT**: The API key (`_key`) is only shown once. Store it securely immediately.
+`expiresAt` is `null` when `expiresInDays` was not sent.
 
-**API Key Format**: `cmdb_{env}_{prefix}_{random_string}`
-- `env`: Environment (`test`, `live`)
-- `prefix`: Key type (`sk1` = secret key v1)
-- `random_string`: Cryptographically secure random string
+**IMPORTANT**: The API key (`data._apiKey`) is only shown once. Store it securely immediately. Only its SHA-256 hash is stored.
+
+**API Key Format**: 64 lowercase hexadecimal characters (32 random bytes). There is no prefix and no embedded environment or type marker.
 
 **Error Responses**:
-- `400 Bad Request` - Invalid expiration or role
-- `401 Unauthorized` - Missing or invalid access token
+- `400 Bad Request` - `name` or `expiresInDays` fails the rules above
+- `401 Unauthorized` - Missing or invalid access token, or `Credentials changed` (the authorizing credential carries no credential generation)
+- `403 Forbidden` - `code: JWT_SESSION_REQUIRED`, message `JWT user session required`: an API key called the endpoint (body: [The 403 body](#the-403-body))
+- `403 Forbidden` - `{ "success": false, "error": "Forbidden", "message": "API keys are disabled" }`: the [API key kill switch](#api-key-kill-switch) is off. This body has no `code`.
+- `500` - Internal error
 
 ---
 
 ### List API Keys
 
-Get all API keys for the current user.
+Get the API keys of the current user that are not revoked, newest first. Requires a JWT user session. Still works while the [API key kill switch](#api-key-kill-switch) is off.
 
 **Endpoint**: `GET /api/v1/auth/api-keys`
 
@@ -277,47 +525,47 @@ Get all API keys for the current user.
 Authorization: Bearer YOUR_ACCESS_TOKEN
 ```
 
-**Response** (200 OK):
+**Response** (200 OK): `data` is a bare array (no `apiKeys` wrapper, no `total`):
 ```json
 {
   "success": true,
-  "data": {
-    "apiKeys": [
-      {
-        "_id": "apikey-123-abc",
-        "_name": "Production Automation Script",
-        "_role": "operator",
-        "_enabled": true,
-        "_createdAt": "2025-11-15T10:00:00Z",
-        "_expiresAt": "2026-11-15T10:00:00Z",
-        "_lastUsedAt": "2025-11-15T14:30:00Z",
-        "keyPreview": "cmdb_live_sk1_1a2b...i0j",
-        "daysUntilExpiration": 365
-      },
-      {
-        "_id": "apikey-456-def",
-        "_name": "CI Import Script",
-        "_role": "operator",
-        "_enabled": true,
-        "_createdAt": "2025-10-01T10:00:00Z",
-        "_expiresAt": null,
-        "_lastUsedAt": null,
-        "keyPreview": "cmdb_live_sk1_9z8y...a1b",
-        "status": "never_used"
-      }
-    ],
-    "total": 2
-  }
+  "data": [
+    {
+      "_id": "7d0c8c5e-3a52-4c5b-9a6e-1f2e3d4c5b6a",
+      "_userId": "user-123",
+      "_name": "Production Automation Script",
+      "_role": "operator",
+      "_enabled": true,
+      "_createdAt": "2026-11-20T10:00:00.000Z",
+      "expiresAt": "2027-11-20T10:00:00.000Z",
+      "lastUsedAt": "2026-11-20T14:30:00.000Z"
+    },
+    {
+      "_id": "0b9f2a4c-6d1e-4f3a-8b7c-5e4d3c2b1a09",
+      "_userId": "user-123",
+      "_name": "CI Import Script",
+      "_role": "operator",
+      "_enabled": true,
+      "_createdAt": "2026-10-01T10:00:00.000Z",
+      "expiresAt": null,
+      "lastUsedAt": null
+    }
+  ]
 }
 ```
 
-**Note**: Full API keys are never returned in list operations for security.
+Each entry carries `_id`, `_userId`, `_name`, `_role`, `_enabled`, `_createdAt`, `expiresAt` and `lastUsedAt`. The key value and its hash are never returned, and there is no key preview or days-until-expiration field. A key that belongs to an older credential generation and was not revoked is listed with `_enabled: false`; it does not authenticate. A password change revokes the user's earlier keys, which are then not listed.
+
+**Error Responses**:
+- `401 Unauthorized` - Missing or invalid access token
+- `403 Forbidden` - `code: JWT_SESSION_REQUIRED`: an API key called the endpoint (body: [The 403 body](#the-403-body))
+- `500` - Internal error
 
 ---
 
 ### Revoke API Key
 
-Revoke (delete) an API key permanently.
+Revoke one of your own API keys. The row is kept with `revoked_at` set and the key stops authenticating. Requires a JWT user session. Still works while the [API key kill switch](#api-key-kill-switch) is off.
 
 **Endpoint**: `DELETE /api/v1/auth/api-key/:keyId`
 
@@ -328,11 +576,11 @@ Authorization: Bearer YOUR_ACCESS_TOKEN
 
 **Example Request**:
 ```bash
-curl -X DELETE "http://localhost:3000/api/v1/auth/api-key/apikey-123-abc" \
+curl -X DELETE "http://localhost:3000/api/v1/auth/api-key/7d0c8c5e-3a52-4c5b-9a6e-1f2e3d4c5b6a" \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN"
 ```
 
-**Response** (200 OK):
+**Response** (200 OK, not 204):
 ```json
 {
   "success": true,
@@ -341,8 +589,54 @@ curl -X DELETE "http://localhost:3000/api/v1/auth/api-key/apikey-123-abc" \
 ```
 
 **Error Responses**:
-- `404 Not Found` - API key does not exist
-- `403 Forbidden` - Cannot revoke another user's API key (unless admin)
+- `401 Unauthorized` - Missing or invalid access token
+- `403 Forbidden` - `code: JWT_SESSION_REQUIRED`: an API key called the endpoint (body: [The 403 body](#the-403-body))
+- `404 Not Found` - `{ "success": false, "error": "Not Found", "message": "API key not found" }`: the key does not exist, is not yours or is already revoked. There is no administrator override, so a key can only be revoked by its owner through this endpoint.
+- `500` - Internal error
+
+---
+
+### API key kill switch
+
+`auth.apiKeys.enabled` (environment variable `API_KEYS_ENABLED`, default `true`) turns API-key authentication off for the whole deployment. It is read when the API server starts, so a change takes effect after a restart.
+
+**Accepted values**
+
+- Environment: `true` or `false`, case-insensitive, surrounding spaces ignored. An empty or unset variable falls through to the config-file value and then to `true`.
+- Config file (`auth.apiKeys.enabled`): a boolean, or the string `"true"` or `"false"`. The environment value wins when it is set.
+- Anything else makes startup fail with `Invalid configuration: API_KEYS_ENABLED must be "true" or "false" (case-insensitive)` (environment) or `Invalid configuration: auth.apiKeys.enabled must be a boolean, "true" or "false" (case-insensitive)` (file). Both values are validated even when the other one wins. The message never echoes the value.
+
+The header the key is read from is `API_KEY_HEADER_NAME`, then the config-file value `auth.apiKeys.headerName`, then `X-API-Key`.
+
+**What changes while the switch is off**
+
+- A request that carries only an API key gets the standard `401`: the API-key header is ignored, so the key is never checked, valid or not. This includes the three key-management routes, where a key-only caller gets `401` instead of the `403` above.
+- A request that carries a valid bearer token is authenticated by the token, whatever else it sends. A bearer token that is invalid is `401`; the server does not fall back to the key.
+- `POST /api/v1/auth/api-key` is refused with `403` and `API keys are disabled`.
+- `GET /api/v1/auth/api-keys` and `DELETE /api/v1/auth/api-key/:keyId` keep working for a JWT session.
+
+**Turning the switch off does not revoke keys.** Nothing is deleted or marked: every key that existed stays in the `api_keys` table unrevoked, and it authenticates again as soon as the switch is turned back on (subject to its own expiry, and to the credential generation check that a password change applies). Because creation is refused while the switch is off, a row whose `created_at` falls inside the off period was not written through the API.
+
+**Re-enable check.** Before turning the switch back on, review the keys that will start working, as the database owner:
+
+```sql
+-- Keys created since the switch was turned off (none expected: creation is refused while off)
+SELECT id, user_id, name, created_at
+FROM api_keys
+WHERE created_at >= '<time the switch was turned off>' AND revoked_at IS NULL;
+
+-- Every key that will authenticate again
+SELECT id, user_id, name, role, created_at, expires_at, last_used_at
+FROM api_keys
+WHERE enabled = TRUE AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())
+ORDER BY created_at;
+```
+
+Review the rows and revoke any you do not recognize. The owner can revoke through `DELETE /api/v1/auth/api-key/:keyId`; otherwise revoke by SQL, the same statement the endpoint runs without its owner filter:
+
+```sql
+UPDATE api_keys SET enabled = FALSE, revoked_at = NOW() WHERE id = '<key id>' AND revoked_at IS NULL;
+```
 
 ---
 
@@ -383,18 +677,18 @@ response = requests.get('http://localhost:3000/api/v1/cis', headers=headers)
 
 ### API Key Authentication
 
-Include the API key in the `X-API-Key` header:
+Include the API key in the `X-API-Key` header (the default name; the server reads the header named by `API_KEY_HEADER_NAME`). A request that carries a bearer token is authenticated by the token alone and the header is not consulted. `YOUR_API_KEY` below stands for the 64-hex value returned once by [Generate API Key](#generate-api-key):
 
 ```bash
 curl "http://localhost:3000/api/v1/cis" \
-  -H "X-API-Key: cmdb_live_sk1_1a2b3c4d5e6f7g8h9i0j"
+  -H "X-API-Key: YOUR_API_KEY"
 ```
 
 **Example (JavaScript)**:
 ```javascript
 const response = await fetch('http://localhost:3000/api/v1/cis', {
   headers: {
-    'X-API-Key': 'cmdb_live_sk1_1a2b3c4d5e6f7g8h9i0j',
+    'X-API-Key': 'YOUR_API_KEY',
     'Content-Type': 'application/json'
   }
 });
@@ -405,7 +699,7 @@ const response = await fetch('http://localhost:3000/api/v1/cis', {
 import requests
 
 headers = {
-    'X-API-Key': 'cmdb_live_sk1_1a2b3c4d5e6f7g8h9i0j',
+    'X-API-Key': 'YOUR_API_KEY',
     'Content-Type': 'application/json'
 }
 
@@ -416,41 +710,52 @@ response = requests.get('http://localhost:3000/api/v1/cis', headers=headers)
 
 ## Role-Based Access Control (RBAC)
 
-HappyCMDB uses role-based access control to manage permissions.
+The server has four roles and four permissions (`packages/api-server/src/auth/types.ts`). Every route is checked on the server against the user's current stored role; a viewer who is shown a write control is still refused.
 
-### Roles
+### Roles and permissions
 
 | Role | Permissions | Use Case |
 |------|-------------|----------|
-| **viewer** | Read-only access to CIs, dashboards, and reports | Auditors, business stakeholders |
-| **operator** | Read + discovery operations + CI updates | DevOps engineers, operators |
-| **admin** | Full access including user management | IT administrators |
-| **service** | Service-to-service communication | Internal microservices |
+| **admin** | `read`, `write`, `discover`, `admin` | IT administrators |
+| **operator** | `read`, `write`, `discover` | DevOps engineers, operators |
+| **viewer** | `read` | Auditors, business stakeholders |
+| **agent** | `discover`, `write` | Discovery agents (API key) |
 
-### Permissions
+`GET /api/v1/auth/me` returns the caller's `role` and the `permissions` the table above grants it.
 
-Permissions follow the format: `resource:action`
+### The 403 body
 
-**Example Permissions**:
-- `ci:read` - View CIs
-- `ci:write` - Create/update CIs
-- `ci:delete` - Delete CIs
-- `discovery:manage` - Manage discovery definitions
-- `credentials:manage` - Manage credentials
-- `users:manage` - Manage users (admin only)
-- `admin:*` - Wildcard admin access
+Every refusal by a permission, role, organization, JWT-session, platform-administrator or scope guard has one shape. It keeps both key families the server has always sent (`_error`/`_message` and `success`/`error`/`message`) and adds a stable `code`:
 
-### Permission Inheritance
+```json
+{
+  "success": false,
+  "error": "Forbidden",
+  "message": "Permission 'write' required",
+  "_error": "Forbidden",
+  "_message": "Permission 'write' required",
+  "code": "PERMISSION_REQUIRED",
+  "required": { "permission": "write" },
+  "role": "viewer"
+}
+```
 
-- **viewer**: `ci:read`, `dashboard:read`, `report:read`
-- **operator**: All viewer permissions + `ci:write`, `discovery:manage`, `credentials:read`
-- **admin**: All permissions (`*:*`)
+| `code` | Refused because | Extra keys |
+|--------|-----------------|------------|
+| `PERMISSION_REQUIRED` | the role lacks the route's permission | `required.permission`, `role` |
+| `ROLE_REQUIRED` | the route is limited to named roles | `required.roles`, `role` |
+| `ORGANIZATION_REQUIRED` | the user or token has no organization claim | none |
+| `JWT_SESSION_REQUIRED` | an API key called an account operation | none |
+| `PLATFORM_ADMIN_REQUIRED` | the user is not the dedicated platform administrator | none |
+| `SCOPE_REQUIRED` | the user lacks a dedicated scope | `required.scope` |
+
+`role` is the caller's own role and `required` the route's fixed requirement. Other 403s (an unavailable global operation, a queue the server will not mutate, the refresh-cookie header check) keep their own bodies. A missing or invalid credential is `401`, never this body.
 
 ---
 
 ## Rate Limiting
 
-Only three authentication endpoints carry a rate limiter: `POST /api/v1/auth/login`, `PUT /api/v1/auth/password` and `POST /api/v1/auth/refresh`. The other `/api/v1/auth/*` routes (`logout`, `me`, `profile`, `account`, and the API key routes `POST /api/v1/auth/api-key`, `GET /api/v1/auth/api-keys`, `DELETE /api/v1/auth/api-key/:keyId`) have no dedicated limiter. The API key routes are session-only: they need a JWT session (`authenticate` then `requireJwtSession`), and an API key cannot call them. No generic REST limiter is mounted on the other `/api/v1/*` routes.
+Only four authentication endpoints carry a rate limiter: `POST /api/v1/auth/login`, `PUT /api/v1/auth/password`, `POST /api/v1/auth/sessions/revoke-others` and `POST /api/v1/auth/refresh`. The other `/api/v1/auth/*` routes (`logout`, `me`, `profile`, `account`, and the API key routes `POST /api/v1/auth/api-key`, `GET /api/v1/auth/api-keys`, `DELETE /api/v1/auth/api-key/:keyId`) have no dedicated limiter. The API key routes are session-only: they need a JWT session (`authenticate` then `requireJwtSession`), and an API key cannot call them. No generic REST limiter is mounted on the other `/api/v1/*` routes; the one non-auth limiter is `POST /api/v1/agents/heartbeat` (600 per hour per verified user by default, `rateLimit.endpoints.agentHeartbeat`, see [Discovery Agents](/components/discovery-agents#heartbeat-rate-limit)).
 
 ### Rate Limits
 
@@ -458,6 +763,7 @@ Only three authentication endpoints carry a rate limiter: `POST /api/v1/auth/log
 |----------|-------|--------|
 | `POST /api/v1/auth/login` | 20 per IP (`RATE_LIMIT_AUTH_*`), 5 per account + IP (`RATE_LIMIT_AUTH_ACCOUNT_*`) and 20 per account across all IPs (`RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_*`); the account is the trimmed, lowercased username | 1 hour per IP; 15 minutes per account + IP and per account |
 | `PUT /api/v1/auth/password` | Login's 20 per IP (shared bucket) and 5 per user across all IPs (`RATE_LIMIT_AUTH_ACCOUNT_*`) | 1 hour per IP; 15 minutes per user |
+| `POST /api/v1/auth/sessions/revoke-others` | Login's 20 per IP (shared bucket), 5 per user **and IP**, and 5 per user **and session** across all IPs (`RATE_LIMIT_AUTH_ACCOUNT_*`); the session is the login (`_authTime`, kept across refresh), so another login of the same user has its own bucket (HAP-1716) | 1 hour per IP; 15 minutes per user + IP and per user + session |
 | `POST /api/v1/auth/refresh` | The REST budget (`RATE_LIMIT_REST_MAX`, default 1000; `0` = unlimited) under its own key, so renewals never use up the login limit (HAP-1211 H2) | `RATE_LIMIT_REST_WINDOW_MS` (default 1 hour) per IP |
 | Other `/api/v1/auth/*` endpoints, including `POST /api/v1/auth/api-key` | No dedicated limiter | n/a |
 
@@ -496,7 +802,8 @@ X-RateLimit-Reset: 1699642800000
 On login and password change, the headers and every `429` report only the per-IP bucket (HAP-1795). The
 per-account, per-account + IP and per-user buckets still refuse with `429`, but their counts, limits and
 windows never appear: a refusal by one of them carries the same headers (`X-RateLimit-Remaining: 0`) and body
-as a per-IP refusal, and `_retryAfter` is the per-IP window.
+as a per-IP refusal, and `_retryAfter` is the per-IP window. The same holds for the per-user-and-client and
+per-user-and-session buckets of `POST /auth/sessions/revoke-others`.
 
 ---
 
@@ -513,10 +820,10 @@ as a per-IP refusal, and `_retryAfter` is the per-IP window.
 ### For API Keys
 
 1. **Secure Storage**: Store API keys in environment variables or secret managers (never in code).
-2. **Least Privilege**: Use the minimum required role (prefer `viewer` or `operator` over `admin`).
+2. **Least Privilege**: A key carries the role of the user who created it (there is no role choice at creation), and at use it gets only what both that role and the user's current role allow. Create keys from a user whose role is the minimum the integration needs.
 3. **Key Rotation**: Rotate API keys regularly (every 90-180 days).
-4. **Expiration**: Set expiration dates for API keys (avoid permanent keys).
-5. **Monitoring**: Monitor API key usage via `_lastUsedAt` field.
+4. **Expiration**: Set `expiresInDays` (1-365) for API keys (avoid permanent keys).
+5. **Monitoring**: Monitor API key usage via the `lastUsedAt` field of `GET /api/v1/auth/api-keys`.
 6. **Revocation**: Immediately revoke compromised keys.
 
 ### Password Requirements
@@ -601,9 +908,9 @@ curl -X POST "http://localhost:3000/api/v1/auth/refresh" -H "X-CMDB-Auth: 1" -b 
 
 ### "API key not found"
 
-**Cause**: API key has been revoked or never existed
+**Cause**: The API key has been revoked, has expired, never existed, belongs to a credential generation that a password change ended, or API keys are switched off (`API_KEYS_ENABLED=false`): with the switch off every API key gets `401`, valid or not (see [API key kill switch](#api-key-kill-switch))
 
-**Solution**: Generate a new API key via `POST /api/v1/auth/api-key`
+**Solution**: Check the switch first. Otherwise generate a new API key via `POST /api/v1/auth/api-key` (a JWT session is required). `DELETE /api/v1/auth/api-key/:keyId` answers `404` with `API key not found` when the key is not yours or is already revoked.
 
 ---
 
@@ -631,17 +938,17 @@ curl "http://localhost:3000/api/v1/cis" \
 ### Test API Key with cURL
 
 ```bash
-# Generate API key (requires logged-in access token first)
+# Generate API key (requires logged-in access token first; the key takes your user's role)
 curl -X POST "http://localhost:3000/api/v1/auth/api-key" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Test API Key",
-    "role": "operator"
+    "expiresInDays": 30
   }'
 
-# Save API key from response
-export API_KEY="cmdb_live_sk1_1a2b3c4d5e6f7g8h9i0j"
+# Save the 64-hex key from data._apiKey in the response
+export API_KEY="YOUR_API_KEY"
 
 # Test API key request
 curl "http://localhost:3000/api/v1/cis" \
@@ -659,8 +966,9 @@ Configure authentication behavior via environment variables:
 JWT_SECRET=your-super-secret-jwt-key-change-this-in-production-minimum-32-chars
 JWT_ACCESS_TOKEN_EXPIRES_IN=15m   # default; refresh token: JWT_REFRESH_TOKEN_EXPIRES_IN (default 7d)
 
-# API Key Configuration
-API_KEY=your-api-key-for-service-to-service-authentication
+# API Key Configuration (see "API key kill switch" above)
+API_KEYS_ENABLED=true                 # "true" or "false" (case-insensitive); default true
+API_KEY_HEADER_NAME=X-API-Key        # Header the API key is read from; default X-API-Key
 
 # Rate Limiting
 RATE_LIMIT_ENABLED=true

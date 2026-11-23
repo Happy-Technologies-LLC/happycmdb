@@ -27,7 +27,8 @@ SELECT
     SUM(COALESCE((i.business_impact->>'estimated_cost_of_downtime')::DECIMAL, 0)) AS total_downtime_cost,
     -- Date range
     MIN(i.reported_at) AS first_incident_date,
-    MAX(i.reported_at) AS last_incident_date
+    MAX(i.reported_at) AS last_incident_date,
+    i.organization_id
 FROM itil_incidents i
 WHERE i.reported_at >= NOW() - INTERVAL '90 days'
 GROUP BY
@@ -35,7 +36,8 @@ GROUP BY
     i.status,
     i.impact,
     i.urgency,
-    i.category
+    i.category,
+    i.organization_id
 ORDER BY i.priority, incident_count DESC;
 
 COMMENT ON VIEW v_incident_summary IS 'Incident summary by priority and status with business impact (90 days)';
@@ -53,14 +55,16 @@ SELECT
     COUNT(*) AS incident_count,
     COUNT(DISTINCT i.affected_business_service_id) AS affected_services_count,
     AVG(i.time_to_resolve_minutes) AS avg_resolution_minutes,
-    SUM(COALESCE((i.business_impact->>'estimated_revenue_impact')::DECIMAL, 0)) AS total_revenue_impact
+    SUM(COALESCE((i.business_impact->>'estimated_revenue_impact')::DECIMAL, 0)) AS total_revenue_impact,
+    i.organization_id
 FROM itil_incidents i
 WHERE i.reported_at >= NOW() - INTERVAL '12 months'
 GROUP BY
     DATE_TRUNC('month', i.reported_at),
     i.priority,
     i.status,
-    i.category
+    i.category,
+    i.organization_id
 ORDER BY month DESC, incident_count DESC;
 
 COMMENT ON VIEW v_incident_trends IS 'Monthly incident trends by priority and category (12 months)';
@@ -89,14 +93,16 @@ SELECT
     AVG(COALESCE((c.risk_assessment->>'overall_risk_score')::DECIMAL, 0)) AS avg_risk_score,
     -- Business impact
     SUM(COALESCE((c.business_impact->>'estimated_downtime_minutes')::INTEGER, 0)) AS total_downtime_minutes,
-    SUM(COALESCE((c.financial_impact->>'total_cost')::DECIMAL, 0)) AS total_financial_impact
+    SUM(COALESCE((c.financial_impact->>'total_cost')::DECIMAL, 0)) AS total_financial_impact,
+    c.organization_id
 FROM itil_changes c
 WHERE c.scheduled_start >= NOW() - INTERVAL '12 months'
   AND c.status = 'closed'
 GROUP BY
     DATE_TRUNC('month', c.scheduled_start),
     c.change_type,
-    c.category
+    c.category,
+    c.organization_id
 ORDER BY month DESC, total_changes DESC;
 
 COMMENT ON VIEW v_change_success_rates IS 'Change success rates by type with risk and business impact (12 months)';
@@ -128,7 +134,8 @@ SELECT
     c.assigned_to,
     c.assigned_group,
     c.requested_by,
-    c.created_at
+    c.created_at,
+    c.organization_id
 FROM itil_changes c
 WHERE c.scheduled_start >= CURRENT_DATE
   AND c.status IN ('approved', 'scheduled')
@@ -160,7 +167,8 @@ SELECT
     -- Last audit information
     MAX((ci.itil_attributes->>'last_audited')::TIMESTAMPTZ) AS last_audit_date,
     -- Average CI age
-    AVG(EXTRACT(EPOCH FROM (NOW() - ci.created_at)) / 86400) AS avg_age_days
+    AVG(EXTRACT(EPOCH FROM (NOW() - ci.created_at)) / 86400) AS avg_age_days,
+    ci.organization_id
 FROM cmdb.dim_ci ci
 WHERE ci.is_current = TRUE
   AND ci.ci_status = 'active'
@@ -169,7 +177,8 @@ GROUP BY
     ci.itil_attributes->>'ci_class',
     ci.itil_attributes->>'lifecycle_stage',
     ci.itil_attributes->>'audit_status',
-    ci.environment
+    ci.environment,
+    ci.organization_id
 ORDER BY ci_count DESC;
 
 COMMENT ON VIEW v_configuration_accuracy IS 'Configuration item accuracy and audit compliance by type and lifecycle';
@@ -213,7 +222,8 @@ SELECT
         WHERE i.affected_business_service_id = bs.id
           AND i.reported_at >= NOW() - INTERVAL '30 days'
           AND i.resolved_at IS NOT NULL
-    ) AS avg_resolution_minutes_30d
+    ) AS avg_resolution_minutes_30d,
+    NULL::uuid AS organization_id
 FROM business_services bs
 WHERE bs.operational_status IN ('operational', 'degraded')
 ORDER BY sla_met ASC, actual_availability_30d ASC;
@@ -254,7 +264,8 @@ SELECT
     -- Support details
     bs.technical_owner,
     bs.itil_attributes->>'service_owner' AS service_owner,
-    bs.updated_at
+    bs.updated_at,
+    NULL::uuid AS organization_id
 FROM business_services bs
 WHERE bs.operational_status IN ('operational', 'degraded')
 ORDER BY health_score ASC, business_criticality;
@@ -289,7 +300,8 @@ SELECT
     ROUND(100.0 * (90 - COUNT(DISTINCT DATE(i.reported_at))) / 90.0, 2) AS availability_pct,
     -- Impact metrics
     SUM(COALESCE((i.business_impact->>'estimated_user_impact')::INTEGER, 0)) AS total_users_impacted,
-    SUM(COALESCE((i.business_impact->>'estimated_revenue_impact')::DECIMAL, 0)) AS total_revenue_impact
+    SUM(COALESCE((i.business_impact->>'estimated_revenue_impact')::DECIMAL, 0)) AS total_revenue_impact,
+    NULL::uuid AS organization_id
 FROM business_services bs
 LEFT JOIN itil_incidents i ON i.affected_business_service_id = bs.id
     AND i.reported_at >= NOW() - INTERVAL '90 days'
@@ -312,15 +324,16 @@ SELECT
     bl.status AS baseline_status,
     bl.approved_at,
     -- Scope metrics
-    COALESCE(ARRAY_LENGTH((bl.scope->'ci_ids')::TEXT[], 1), 0) AS scoped_ci_count,
+    COALESCE(ARRAY_LENGTH(sc.ci_ids, 1), 0) AS scoped_ci_count,
     -- CIs matching scope
     (
         SELECT COUNT(*)
         FROM cmdb.dim_ci ci
         WHERE ci.is_current = TRUE
+          AND ci.organization_id = bl.organization_id
           AND (
-              ci.ci_id = ANY((bl.scope->'ci_ids')::TEXT[])
-              OR ci.ci_type = ANY((bl.scope->'ci_types')::TEXT[])
+              ci.ci_id = ANY(sc.ci_ids)
+              OR ci.ci_type = ANY(sc.ci_types)
               OR (ci.environment = (bl.scope->>'environment') OR (bl.scope->>'environment') IS NULL)
           )
     ) AS matching_ci_count,
@@ -329,10 +342,11 @@ SELECT
         SELECT COUNT(*)
         FROM cmdb.dim_ci ci
         WHERE ci.is_current = TRUE
+          AND ci.organization_id = bl.organization_id
           AND ci.itil_attributes->>'audit_status' = 'compliant'
           AND (
-              ci.ci_id = ANY((bl.scope->'ci_ids')::TEXT[])
-              OR ci.ci_type = ANY((bl.scope->'ci_types')::TEXT[])
+              ci.ci_id = ANY(sc.ci_ids)
+              OR ci.ci_type = ANY(sc.ci_types)
               OR (ci.environment = (bl.scope->>'environment') OR (bl.scope->>'environment') IS NULL)
           )
     ) AS compliant_ci_count,
@@ -340,8 +354,17 @@ SELECT
     bl.created_by,
     bl.approved_by,
     bl.created_at,
-    bl.updated_at
+    bl.updated_at,
+    bl.organization_id
 FROM itil_baselines bl
+-- jsonb cannot be cast to text[]: lift the scope's id and type lists out as arrays (a missing or non-array key is empty).
+CROSS JOIN LATERAL (
+    SELECT
+        ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(bl.scope->'ci_ids') = 'array'
+            THEN bl.scope->'ci_ids' ELSE '[]'::jsonb END)) AS ci_ids,
+        ARRAY(SELECT jsonb_array_elements_text(CASE WHEN jsonb_typeof(bl.scope->'ci_types') = 'array'
+            THEN bl.scope->'ci_types' ELSE '[]'::jsonb END)) AS ci_types
+) sc
 WHERE bl.status = 'approved'
 ORDER BY bl.approved_at DESC;
 

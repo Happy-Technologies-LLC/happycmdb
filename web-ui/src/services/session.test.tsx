@@ -6,6 +6,7 @@ import type React from 'react';
 import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getToken, removeToken, setToken, subscribeToken } from '../utils/token';
 
@@ -117,8 +118,14 @@ const Probe: React.FC = () => {
   );
 };
 
+const renderSession = () => render(
+  <QueryClientProvider client={new QueryClient()}>
+    <MemoryRouter><AuthProvider><Probe /></AuthProvider></MemoryRouter>
+  </QueryClientProvider>,
+);
+
 it('#193-F1: the token re-issued by a password change reaches AuthContext, where useWebSocket reads it', async () => {
-  render(<MemoryRouter><AuthProvider><Probe /></AuthProvider></MemoryRouter>);
+  renderSession();
   await waitFor(() => expect(screen.getByTestId('session').textContent).toBe(accepted));
   const before = accepted;
 
@@ -129,7 +136,7 @@ it('#193-F1: the token re-issued by a password change reaches AuthContext, where
 });
 
 it('logout while a renewal is in flight: the renewal is answered before the logout is sent, and its token is never published', async () => {
-  render(<MemoryRouter><AuthProvider><Probe /></AuthProvider></MemoryRouter>);
+  renderSession();
   await waitFor(() => expect(screen.getByTestId('session').textContent).toBe(accepted));
   wire = [];
 
@@ -149,7 +156,7 @@ describe('HAP-1688: sign-out races', () => {
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   it('(a) a logout from another tab discards a renewal already in flight: its token is never published', async () => {
-    render(<MemoryRouter><AuthProvider><Probe /></AuthProvider></MemoryRouter>);
+    renderSession();
     await waitFor(() => expect(screen.getByTestId('session').textContent).toBe(accepted));
     const published: Array<string | null> = [];
     const unsubscribe = subscribeToken((token) => published.push(token));

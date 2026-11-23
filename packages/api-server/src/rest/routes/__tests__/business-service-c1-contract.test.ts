@@ -34,6 +34,7 @@ import {
   MAX_CI_TRAVERSAL_NODES, MAX_CI_TRAVERSAL_WORK, CI_TRAVERSAL_QUERY_TIMEOUT_MS,
 } from '../../../../../database/src/neo4j/client';
 
+import { PostgresClient } from '../../../../../database/src/postgres/client';
 // Placeholder config so loadConfig() validates; no Neo4j/Redis/PostgreSQL server is contacted.
 // The signing secret is generated per run in memory; no literal credential.
 Object.assign(process.env, {
@@ -71,32 +72,50 @@ function send(op: 'exec' | 'query', sql: string, params: unknown[] = []): Promis
 // the seam records that setting as the walk saw it, and can fail the walk statement.
 let walkStatementTimeouts: string[] = [];
 let walkFailure: Error | null = null;
-const pgClient = {
-  query: async (sql: string, params: unknown[] = []) => {
-    assertAppStatement(sql);
-    return { rows: await send('query', sql, params) };
+// HAP-2030 evidence seams: every statement that reached PostgreSQL, how each transaction ended, the pooled connections
+// taken and released, and an optional failure the evidence statement throws (PGlite does not enforce statement_timeout,
+// so a stall is the 57014 PostgreSQL would raise, thrown only after recording the statement_timeout the transaction had
+// set for it).
+let pgStatements: string[] = [];
+let transactions = { begun: 0, committed: 0, rolledBack: 0 };
+let connections = { acquired: 0, released: 0 };
+let evidenceFailure: Error | null = null;
+let evidenceStatementTimeouts: string[] = [];
+const EVIDENCE_TABLE = 'relationship_evidence_receipts';
+async function appStatement(sql: string, params: unknown[] = []) {
+  assertAppStatement(sql);
+  if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+    if (sql === 'BEGIN') transactions.begun++;
+    if (sql === 'COMMIT') transactions.committed++;
+    if (sql === 'ROLLBACK') transactions.rolledBack++;
+    await send('exec', sql);
+    return { rows: [] };
+  }
+  pgStatements.push(sql);
+  if (sql.includes('WITH RECURSIVE')) {
+    const [setting] = await send('query', `SELECT current_setting('statement_timeout') AS value`) as Array<{ value: string }>;
+    walkStatementTimeouts.push(setting!.value);
+    if (walkFailure) throw walkFailure;
+  }
+  if (sql.includes(EVIDENCE_TABLE) && evidenceFailure) {
+    const [setting] = await send('query', `SELECT current_setting('statement_timeout') AS value`) as Array<{ value: string }>;
+    evidenceStatementTimeouts.push(setting!.value);
+    throw evidenceFailure;
+  }
+  return { rows: await send('query', sql, params) };
+}
+// The real PostgresClient (its transaction() BEGIN/COMMIT/ROLLBACK/release code runs) over a pool whose connections run
+// every statement in this PGlite session as the app login.
+const pgClient = new PostgresClient({ _host: '127.0.0.1', _port: 1, _database: 'unused', _user: 'unused', _password: 'unused' });
+void pgClient.pool.end();
+pgClient.pool = {
+  query: appStatement,
+  connect: async () => {
+    connections.acquired++;
+    return { query: appStatement, release: () => { connections.released++; } };
   },
-  transaction: async <T>(callback: (client: { query: typeof pgClient.query }) => Promise<T>): Promise<T> => {
-    await send('exec', 'BEGIN');
-    try {
-      const result = await callback({
-        query: async (sql: string, params: unknown[] = []) => {
-          if (sql.includes('WITH RECURSIVE')) {
-            const [setting] = await send('query', `SELECT current_setting('statement_timeout') AS value`) as Array<{ value: string }>;
-            walkStatementTimeouts.push(setting!.value);
-            if (walkFailure) throw walkFailure;
-          }
-          return pgClient.query(sql, params);
-        },
-      });
-      await send('exec', 'COMMIT');
-      return result;
-    } catch (error) {
-      await send('exec', 'ROLLBACK');
-      throw error;
-    }
-  },
-};
+  on: () => undefined,
+} as unknown as typeof pgClient.pool;
 
 // ---------------------------------------------------------------- Neo4j (in-memory graph)
 
@@ -112,8 +131,22 @@ const scoped = (cypher: string, variable: string, params: Props) =>
     ? (props: Props) => props['organization_id'] === params['organizationId']
     : () => true;
 
+// Every batched incarnation statement the evidence loader issued (statement text and parameters).
+let incarnationReads: Array<{ cypher: string; params: Props }> = [];
+// An optional failure only the incarnation read throws (a Neo4j transaction timeout on that statement).
+let incarnationFailure: Error | null = null;
+
 function runCypher(raw: string, params: Props): FakeRecord[] {
   const cypher = raw.replace(/\s+/g, ' ').trim();
+  // HAP-2030's one batched incarnation read of the evidence loader: org-scoped like the real statement, and a node that
+  // exists in the organization without `incarnation_id` is returned with a null incarnation (a legacy CI).
+  if (cypher.includes('RETURN ci.id AS ciId, ci.incarnation_id AS incarnationId')) {
+    incarnationReads.push({ cypher, params });
+    if (incarnationFailure) throw incarnationFailure;
+    const inScope = scoped(cypher, 'ci', params);
+    return (params['ids'] as string[]).filter(id => graph.nodes.has(id) && inScope(graph.nodes.get(id)!))
+      .map(id => record({ ciId: id, incarnationId: graph.nodes.get(id)!['incarnation_id'] ?? null }));
+  }
   if (cypher.startsWith('MATCH (ci:CI) WHERE ci.id IN $ids')) {
     const inScope = scoped(cypher, 'ci', params);
     return (params['ids'] as string[]).filter(id => graph.nodes.has(id) && inScope(graph.nodes.get(id)!))
@@ -195,7 +228,7 @@ import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { businessServiceRoutes } from '../business-service.routes';
 import {
   APP_GRANTS_SQL, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql, ENTER_APP_LOGIN_SQL,
-  journalReadAclSql,
+  journalReadAclSql, lineageReadAclSql, lineageTableSql, receiptTableSql,
 } from './fixtures/app-login';
 
 const MIGRATIONS = join(__dirname, '../../../../../database/src/postgres/migrations');
@@ -259,7 +292,7 @@ const T2_STRINGS = [TENANT_T2, 'bs-b-ledger', 'T2 Secret', 'T2 Finance', 'ci-b-p
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const asUser = (userId: string) => ({
-  Authorization: `Bearer ${jwt.generateAccessToken(userId, USERS[userId]!._username, USERS[userId]!._role, USERS[userId]!._organizationId)}`,
+  Authorization: `Bearer ${jwt.generateAccessToken(userId, USERS[userId]!._username, USERS[userId]!._role, USERS[userId]!._organizationId, 0, Math.floor(Date.now() / 1000))}`,
 });
 const AS_T = asUser('user-t');
 
@@ -285,12 +318,14 @@ beforeAll(async () => {
   }
   await send('exec', tableDdl(migration('028_change_history_reconciliation_org_provenance.sql'),
     ['ci_reconciliation_operations', 'ci_reconciliation_epochs']));
+  await send('exec', lineageTableSql());
+  await send('exec', receiptTableSql());
   await send('exec', `BEGIN;\n${migration('042_co1_access_request_fulfilment_seed.sql')}\nCOMMIT;`);
   await send('exec', TEST_SEED);
   for (const name of ['043_business_service_record_c1.sql', '046_service_offerings.sql']) {
     await send('exec', `BEGIN;\n${migration(name)}\nCOMMIT;`);
   }
-  await send('exec', APP_GRANTS_SQL + journalReadAclSql() + ENTER_APP_LOGIN_SQL);
+  await send('exec', APP_GRANTS_SQL + journalReadAclSql() + lineageReadAclSql() + ENTER_APP_LOGIN_SQL);
   // Every request below runs in this session; refuse to test anything as a superuser or the table owner.
   await assertAppLogin(sql => send('query', sql));
 });
@@ -304,6 +339,13 @@ beforeEach(() => {
   statementTimeouts = [];
   graphFailure = null;
   walkStatementTimeouts = [];
+  pgStatements = [];
+  transactions = { begun: 0, committed: 0, rolledBack: 0 };
+  connections = { acquired: 0, released: 0 };
+  evidenceFailure = null;
+  evidenceStatementTimeouts = [];
+  incarnationReads = [];
+  incarnationFailure = null;
   walkFailure = null;
   logged = [];
   for (const method of LOG_METHODS) {
@@ -386,6 +428,56 @@ describe('C1 S1 happy path: the seeded service in tenant T', () => {
     expect(walkStatementTimeouts).toEqual(['5s']);
     const [after] = await send('query', `SELECT current_setting('statement_timeout') AS value`) as Array<{ value: string }>;
     expect(after!.value).toBe('0');
+  });
+
+  describe('HAP-2028 impact envelope', () => {
+    const lineage = (ciId: string, org: string | null) =>
+      `INSERT INTO ci_source_lineage (ci_id, source_name, source_id, organization_id) VALUES ('${ciId}', 'disc', '${ciId}', ${org ? `'${org}'` : 'NULL'});`;
+    const withLineage = async (rows: string[], run: () => Promise<void>) => {
+      await asTableOwner(statement => send('exec', statement), () => send('exec', rows.join('\n')));
+      try { await run(); } finally {
+        await asTableOwner(statement => send('exec', statement), () => send('exec', 'DELETE FROM ci_source_lineage'));
+      }
+    };
+
+    it('declares declared-graph reachability and lists exactly the in-scope CIs this organization has no lineage for', async () => {
+      // T reports workflow and forms. Directory is reported only by T2 (same ci_id, other organization) and the
+      // portal web tier only by a legacy NULL-organization row: neither is a report to T.
+      await withLineage([
+        lineage('ci-t-workflow', TENANT_T), lineage('ci-t-forms', TENANT_T),
+        lineage('ci-t-directory', TENANT_T2), lineage('ci-t-portal-web', null),
+      ], async () => {
+        const res = await readContext(SEEDED_S);
+
+        expect(res.status).toBe(200);
+        expect(res.body).toMatchObject({
+          success: true,
+          basis: 'declared_graph_reachability',
+          runtime_blast_radius: 'not_established',
+          coverage: {
+            ci_nodes_in_scope: 4,
+            unreported_ci_ids: ['ci-t-directory', 'ci-t-portal-web'],
+            runtime_observed_receipts_in_scope: false,
+          },
+        });
+        expect(res.body.coverage.note).toMatch(/missing edge is not evidence of no dependency/i);
+        for (const foreign of T2_STRINGS) expect(JSON.stringify(res.body.coverage)).not.toContain(foreign);
+        // Additive: the subgraph itself is unchanged.
+        expect(res.body.data.nodes.filter((n: { kind: string }) => n.kind === 'ci')).toHaveLength(4);
+      });
+    });
+
+    it('lists no CI when every in-scope CI has lineage, and the envelope stays on a service with no CIs', async () => {
+      await withLineage(['ci-t-workflow', 'ci-t-forms', 'ci-t-directory', 'ci-t-portal-web'].map(id => lineage(id, TENANT_T)), async () => {
+        expect((await readContext(SEEDED_S)).body.coverage).toMatchObject({ ci_nodes_in_scope: 4, unreported_ci_ids: [] });
+      });
+      const bare = await readContext('bs-t-portal');
+      expect(bare.status).toBe(200);
+      expect(bare.body).toMatchObject({
+        basis: 'declared_graph_reachability', runtime_blast_radius: 'not_established',
+        coverage: { ci_nodes_in_scope: 0, unreported_ci_ids: [], runtime_observed_receipts_in_scope: false },
+      });
+    });
   });
 
   it('reads lifecycle from the stored record, not from operational_status (HAP-1423)', async () => {
@@ -619,5 +711,429 @@ describe('C1 S3 service_id of tenant T2 read with T credentials', () => {
     expect(own.map(r => r.status)).toEqual([200, 200]);
     const seen = [foreign, foreignContext, ...own].map(r => r.text).join('\n') + JSON.stringify(logged);
     for (const t2 of T2_STRINGS) expect(seen).not.toContain(t2);
+  });
+});
+
+// ---------------------------------------------------------------- HAP-2030: per-edge evidence and derived currentness
+//
+// The real routes, the real controller and the real evidence loader over the real 054 table in PGlite, read as the app login
+// cmdb_user. Fixtures (services, CIs, receipts) are written as the table owner, with explicit observed_at offsets from the
+// database clock and random organization and CI ids per test: the append-only table is never truncated.
+
+describe('HAP-2030 /context edge evidence and derived currentness', () => {
+  type EdgeBody = {
+    from: string; to: string; type: string; dependency_type?: string; mapping_type?: string;
+    currentness?: string; evidence?: { last_supported_at: string | null } & Record<string, unknown>;
+  };
+  type EvidenceClass = 'declared' | 'static_observed' | 'runtime_observed' | 'inferred';
+  const DAY_MS = 86_400_000;
+  const LIMIT_AND_TIMEOUT_BODY = { success: false, error: 'CI traversal timed out' };
+  // Strings that must never appear inside an edge object.
+  const BANNED_IN_EDGES = ['organization_id', 'incarnation', 'source_name', 'observer', 'correlation_id'];
+  const SECRET_SOURCE = 'secret-source-name';
+  const SECRET_OBSERVER = 'secret-observer-token';
+
+  const owner = (sql: string, params: unknown[] = []) =>
+    asTableOwner(statement => send('exec', statement), () => send('query', sql, params));
+
+  interface World { org: string; service: string; auth: { Authorization: string } }
+  async function newWorld(): Promise<World> {
+    const org = randomUUID();
+    const user = `user-${org}`;
+    USERS[user] = { _id: user, _username: `viewer-${org.slice(0, 8)}`, _role: 'viewer', _enabled: true, _organizationId: org };
+    const service = `bs-${randomUUID()}`;
+    await addService(service, org);
+    return { org, service, auth: asUser(user) };
+  }
+  const addService = (service: string, org: string) => owner(
+    `INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower, business_criticality,
+       operational_status, owned_by, organization_id) VALUES ($1, 'Evidence service', 'application', 'application', 'medium',
+       'active', 'Internal IT', $2)`, [service, org]);
+  async function mapCi(world: World, ciId: string): Promise<void> {
+    await owner(`INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type) VALUES ($1, $2, 'hosts')`,
+      [ciId, world.service]);
+    await owner(`INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, is_current, organization_id)
+      VALUES ($1, $1, 'application', 'active', TRUE, $2)`, [ciId, world.org]);
+  }
+  /** A CI of the world's organization in the fake graph; `null` incarnation is a legacy CI that never got one. */
+  function addCi(world: World, id: string, incarnation: string | null = randomUUID(), org = world.org): string {
+    graph.nodes.set(id, {
+      id, name: id, type: 'server', status: 'active', organization_id: org,
+      ...(incarnation === null ? {} : { incarnation_id: incarnation }),
+    });
+    return id;
+  }
+  const link = (from: string, to: string, type = 'DEPENDS_ON') => { graph.edges.push({ from, to, type }); };
+  const incarnationOf = (id: string) => graph.nodes.get(id)!['incarnation_id'] as string;
+
+  interface ReceiptInput {
+    org: string; from: string; to: string; cls: EvidenceClass; ageDays: number;
+    polarity?: 'supports' | 'contradicts'; type?: string; fromInc?: string; toInc?: string;
+  }
+  const receipt = (r: ReceiptInput) => owner(
+    `INSERT INTO relationship_evidence_receipts (organization_id, from_ci_id, to_ci_id, from_incarnation_id, to_incarnation_id,
+       relationship_type, evidence_class, polarity, source_name, method, observed_at, observer, observer_type, correlation_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, '${SECRET_SOURCE}', 'api', now() - ($9::float8 * interval '1 day'),
+       '${SECRET_OBSERVER}', 'user', $10)`,
+    [r.org, r.from, r.to, r.fromInc ?? incarnationOf(r.from), r.toInc ?? incarnationOf(r.to), r.type ?? 'DEPENDS_ON',
+      r.cls, r.polarity ?? 'supports', r.ageDays, randomUUID()]);
+
+  const getContext = (world: World) =>
+    request(app).get(`/api/v1/business-services/${world.service}/context`).set(world.auth);
+  const ciEdges = (body: { data: { edges: EdgeBody[] } }, from: string, to: string) =>
+    body.data.edges.filter(e => e.from === from && e.to === to && e.type === 'DEPENDS_ON' && e.dependency_type === undefined);
+  const ciEdge = (body: { data: { edges: EdgeBody[] } }, from: string, to: string): EdgeBody => {
+    const found = ciEdges(body, from, to);
+    expect(found).toHaveLength(1);
+    return found[0]!;
+  };
+  const href = (from: string, to: string) => `/api/v1/relationships/evidence?from_id=${from}&to_id=${to}&type=DEPENDS_ON`;
+  const receiptStatements = () => pgStatements.filter(sql => sql.includes(EVIDENCE_TABLE));
+  const nearAgeDays = (iso: string | null, days: number) => {
+    expect(iso).not.toBeNull();
+    expect(Math.abs(Date.parse(iso!) - (Date.now() - days * DAY_MS))).toBeLessThan(10 * 60_000);
+  };
+
+  /** The five-edge scenario: four edges out of the mapped root, one in; the last has no receipt at all. */
+  async function fiveEdgeScenario() {
+    const world = await newWorld();
+    const tag = randomUUID().slice(0, 8);
+    const ids = {
+      root: `root-${tag}`, declaredFresh: `declared-fresh-${tag}`, staticRecent: `static-recent-${tag}`,
+      staticOld: `static-old-${tag}`, contradicted: `contradicted-${tag}`, noReceipt: `no-receipt-${tag}`,
+    };
+    for (const id of Object.values(ids)) addCi(world, id);
+    await mapCi(world, ids.root);
+    link(ids.root, ids.declaredFresh); link(ids.root, ids.staticRecent); link(ids.root, ids.staticOld);
+    link(ids.root, ids.contradicted); link(ids.noReceipt, ids.root);
+    const org = world.org;
+    await receipt({ org, from: ids.root, to: ids.declaredFresh, cls: 'declared', ageDays: 1 });
+    await receipt({ org, from: ids.root, to: ids.staticRecent, cls: 'static_observed', ageDays: 2 });
+    await receipt({ org, from: ids.root, to: ids.staticOld, cls: 'static_observed', ageDays: 30 });
+    await receipt({ org, from: ids.root, to: ids.contradicted, cls: 'static_observed', ageDays: 3 });
+    await receipt({ org, from: ids.root, to: ids.contradicted, cls: 'static_observed', polarity: 'contradicts', ageDays: 1 });
+    return { world, ids };
+  }
+
+  it('qualifies each CI edge: current, current, stale, contradicted and unsupported, beside the unchanged envelope', async () => {
+    const { world, ids } = await fiveEdgeScenario();
+
+    const res = await getContext(world);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      success: true, basis: 'declared_graph_reachability', runtime_blast_radius: 'not_established',
+      coverage: { runtime_observed_receipts_in_scope: false },
+    });
+    const fresh = ciEdge(res.body, ids.root, ids.declaredFresh);
+    expect(fresh).toMatchObject({
+      currentness: 'current',
+      evidence: {
+        classes: ['declared'], support: { supports: 1, contradicts: 0 }, receipt_count: 1, receipts_truncated: false,
+        receipts_href: href(ids.root, ids.declaredFresh),
+      },
+    });
+    nearAgeDays(fresh.evidence!.last_supported_at, 1);
+    const recent = ciEdge(res.body, ids.root, ids.staticRecent);
+    expect(recent).toMatchObject({
+      currentness: 'current',
+      evidence: { classes: ['static_observed'], support: { supports: 1, contradicts: 0 }, receipt_count: 1 },
+    });
+    nearAgeDays(recent.evidence!.last_supported_at, 2);
+    const old = ciEdge(res.body, ids.root, ids.staticOld);
+    expect(old).toMatchObject({
+      currentness: 'stale',
+      evidence: { classes: ['static_observed'], support: { supports: 1, contradicts: 0 }, receipt_count: 1 },
+    });
+    nearAgeDays(old.evidence!.last_supported_at, 30);
+    const contradicted = ciEdge(res.body, ids.root, ids.contradicted);
+    expect(contradicted).toMatchObject({
+      currentness: 'contradicted',
+      evidence: { classes: ['static_observed'], support: { supports: 1, contradicts: 1 }, receipt_count: 2 },
+    });
+    expect(ciEdge(res.body, ids.noReceipt, ids.root)).toMatchObject({
+      currentness: 'unsupported',
+      evidence: {
+        classes: [], support: { supports: 0, contradicts: 0 }, receipt_count: 0, receipts_truncated: false,
+        last_supported_at: null, receipts_href: href(ids.noReceipt, ids.root),
+      },
+    });
+  });
+
+  it('applies each class its own freshness window: runtime 1 day, static 7 days, declared 180 days, inferred never', async () => {
+    const world = await newWorld();
+    const tag = randomUUID().slice(0, 8);
+    const root = addCi(world, `root-${tag}`);
+    await mapCi(world, root);
+    const cases: Array<[string, EvidenceClass, number, string]> = [
+      ['runtime-fresh', 'runtime_observed', 0.5, 'current'], ['runtime-late', 'runtime_observed', 2, 'stale'],
+      ['static-fresh', 'static_observed', 6, 'current'], ['static-late', 'static_observed', 8, 'stale'],
+      ['declared-old', 'declared', 170, 'current'], ['declared-late', 'declared', 190, 'stale'],
+      ['inferred-only', 'inferred', 0.1, 'stale'],
+    ];
+    for (const [name, cls, ageDays] of cases) {
+      const target = addCi(world, `${name}-${tag}`);
+      link(root, target);
+      await receipt({ org: world.org, from: root, to: target, cls, ageDays });
+    }
+
+    const res = await getContext(world);
+
+    expect(res.status).toBe(200);
+    for (const [name, , , expected] of cases) expect([name, ciEdge(res.body, root, `${name}-${tag}`).currentness]).toEqual([name, expected]);
+    // An inferred support is reported as evidence but never makes an edge current.
+    expect(ciEdge(res.body, root, `inferred-only-${tag}`).evidence).toMatchObject({ classes: ['inferred'], receipt_count: 1 });
+  });
+
+  it('gives a service-to-service DEPENDS_ON edge and a MAPPED_CI edge neither member, beside a CI edge with the same ids', async () => {
+    // The CI ids spell the service ids: the service edge S>Y DEPENDS_ON, the mapping edge S>Y MAPPED_CI and the CI edge S>Y
+    // DEPENDS_ON (with receipts) share every id string, and only the CI edge is a relationship of the graph.
+    const world = await newWorld();
+    const serviceY = `bs-${randomUUID()}`;
+    await addService(serviceY, world.org);
+    await owner(`INSERT INTO business_service_dependencies (service_id, depends_on_service_id, dependency_type)
+      VALUES ($1, $2, 'application')`, [world.service, serviceY]);
+    addCi(world, world.service); addCi(world, serviceY);
+    await mapCi(world, serviceY);
+    link(world.service, serviceY);
+    await receipt({ org: world.org, from: world.service, to: serviceY, cls: 'static_observed', ageDays: 1 });
+
+    const res = await getContext(world);
+
+    expect(res.status).toBe(200);
+    const shared = res.body.data.edges.filter((e: EdgeBody) => e.from === world.service && e.to === serviceY);
+    expect(shared).toHaveLength(3);
+    const serviceEdge = shared.find((e: EdgeBody) => e.dependency_type !== undefined);
+    const mappedEdge = shared.find((e: EdgeBody) => e.type === 'MAPPED_CI');
+    const edge = shared.find((e: EdgeBody) => e.type === 'DEPENDS_ON' && e.dependency_type === undefined);
+    // Keys absent, not null.
+    expect(Object.keys(serviceEdge).sort()).toEqual(['dependency_type', 'from', 'to', 'type']);
+    expect(Object.keys(mappedEdge).sort()).toEqual(['from', 'mapping_type', 'to', 'type']);
+    expect(Object.keys(edge).sort()).toEqual(['currentness', 'evidence', 'from', 'to', 'type']);
+    expect(edge).toMatchObject({ currentness: 'current', evidence: { classes: ['static_observed'], receipt_count: 1 } });
+  });
+
+  describe('organization and incarnation isolation', () => {
+    it("never lets another organization's receipts, carrying this organization's ids and incarnations, change a read", async () => {
+      const world = await newWorld();
+      const tag = randomUUID().slice(0, 8);
+      const [root, withOwn, onlyForeign] = [`root-${tag}`, `own-${tag}`, `foreign-${tag}`].map(id => addCi(world, id));
+      await mapCi(world, root!);
+      link(root!, withOwn!); link(root!, onlyForeign!);
+      await receipt({ org: world.org, from: root!, to: withOwn!, cls: 'static_observed', ageDays: 1 });
+      const otherOrg = randomUUID();
+      // Newer contradiction and a fresh support, written by another organization against the same ids and incarnations.
+      await receipt({ org: otherOrg, from: root!, to: withOwn!, cls: 'static_observed', polarity: 'contradicts', ageDays: 0.1 });
+      await receipt({ org: otherOrg, from: root!, to: onlyForeign!, cls: 'declared', ageDays: 0.1 });
+
+      const res = await getContext(world);
+
+      expect(res.status).toBe(200);
+      expect(ciEdge(res.body, root!, withOwn!)).toMatchObject({
+        currentness: 'current', evidence: { support: { supports: 1, contradicts: 0 }, receipt_count: 1 },
+      });
+      expect(ciEdge(res.body, root!, onlyForeign!)).toMatchObject({
+        currentness: 'unsupported', evidence: { classes: [], support: { supports: 0, contradicts: 0 }, receipt_count: 0 },
+      });
+    });
+
+    it('fences by incarnation: a receipt of a re-created CI, on either end, is inert, and legacy CIs are never assigned one', async () => {
+      const world = await newWorld();
+      const tag = randomUUID().slice(0, 8);
+      const [root, reTo, reFrom, both] = ['root', 'recreated-to', 'recreated-from', 'both']
+        .map(name => addCi(world, `${name}-${tag}`));
+      const legacy = addCi(world, `legacy-${tag}`, null);
+      await mapCi(world, root!);
+      for (const target of [reTo!, reFrom!, both!, legacy!]) link(root!, target);
+      const org = world.org;
+      // The old incarnation's receipts: the CI was deleted and re-created since (the graph holds the new incarnation).
+      await receipt({ org, from: root!, to: reTo!, cls: 'static_observed', ageDays: 1, toInc: randomUUID() });
+      await receipt({ org, from: root!, to: reFrom!, cls: 'static_observed', ageDays: 1, fromInc: randomUUID() });
+      await receipt({ org, from: root!, to: both!, cls: 'static_observed', polarity: 'contradicts', ageDays: 0.1, toInc: randomUUID() });
+      await receipt({ org, from: root!, to: both!, cls: 'static_observed', ageDays: 1 });
+      await receipt({ org, from: root!, to: legacy!, cls: 'static_observed', ageDays: 1, toInc: randomUUID() });
+
+      const res = await getContext(world);
+
+      expect(res.status).toBe(200);
+      expect(ciEdge(res.body, root!, reTo!)).toMatchObject({ currentness: 'unsupported', evidence: { receipt_count: 0 } });
+      expect(ciEdge(res.body, root!, reFrom!)).toMatchObject({ currentness: 'unsupported', evidence: { receipt_count: 0 } });
+      // Only the current incarnation's receipt counts; the old incarnation's newer contradiction is inert.
+      expect(ciEdge(res.body, root!, both!)).toMatchObject({
+        currentness: 'current', evidence: { support: { supports: 1, contradicts: 0 }, receipt_count: 1 },
+      });
+      expect(ciEdge(res.body, root!, legacy!)).toMatchObject({ currentness: 'unsupported', evidence: { receipt_count: 0 } });
+      // A read assigns no incarnation: the legacy CI still has none, and the graph saw no write statement
+      // (the fake refuses any statement it does not know).
+      expect(graph.nodes.get(legacy!)!['incarnation_id']).toBeUndefined();
+    });
+  });
+
+  describe('cost bound', () => {
+    const readWithEdges = async (outgoing: number, incoming: number) => {
+      const world = await newWorld();
+      const tag = randomUUID().slice(0, 8);
+      const root = addCi(world, `root-${tag}`);
+      await mapCi(world, root);
+      for (let i = 0; i < outgoing; i++) { const to = addCi(world, `out-${i}-${tag}`); link(root, to); }
+      for (let i = 0; i < incoming; i++) { const from = addCi(world, `in-${i}-${tag}`); link(from, root); }
+      if (outgoing > 0) await receipt({ org: world.org, from: root, to: `out-0-${tag}`, cls: 'declared', ageDays: 1 });
+      return { world, root, res: await getContext(world) };
+    };
+
+    it('issues exactly one receipts statement and one incarnation statement for 1 CI edge and for 40, both directions in one call', async () => {
+      const small = await readWithEdges(1, 0);
+      expect(small.res.status).toBe(200);
+      expect([receiptStatements().length, incarnationReads.length]).toEqual([1, 1]);
+
+      pgStatements = []; incarnationReads = [];
+      const large = await readWithEdges(20, 20);
+      expect(large.res.status).toBe(200);
+      expect(large.res.body.data.edges.filter((e: EdgeBody) => e.currentness !== undefined)).toHaveLength(40);
+      expect([receiptStatements().length, incarnationReads.length]).toEqual([1, 1]);
+      const [read] = incarnationReads;
+      expect(Object.keys(read!.params).sort()).toEqual(['ids', 'organizationId']);
+      expect(read!.params['organizationId']).toBe(large.world.org);
+      expect((read!.params['ids'] as string[]).length).toBe(41);
+    });
+
+    it('issues neither statement when the traversal has no CI edge', async () => {
+      const none = await readWithEdges(0, 0);
+
+      expect(none.res.status).toBe(200);
+      expect(none.res.body.data.edges.filter((e: EdgeBody) => e.currentness !== undefined)).toHaveLength(0);
+      expect([receiptStatements().length, incarnationReads.length]).toEqual([0, 0]);
+    });
+  });
+
+  describe('an evidence failure fails the whole read, never a partial or optimistic body', () => {
+    const stalledStatement = () => Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    const NO_MEMBERS = ['"edges"', '"nodes"', 'currentness', 'evidence', 'unsupported', 'coverage'];
+
+    it('answers the fixed 504 when the receipts statement stalls past its statement_timeout, rolled back and released', async () => {
+      const { world } = await fiveEdgeScenario();
+      evidenceFailure = stalledStatement();
+
+      const res = await getContext(world);
+
+      expect([res.status, res.body]).toEqual([504, LIMIT_AND_TIMEOUT_BODY]);
+      for (const member of NO_MEMBERS) expect(res.text).not.toContain(member);
+      // The statement ran under its own bounded statement_timeout, set for its transaction only.
+      expect(evidenceStatementTimeouts).toEqual(['3s']);
+      expect(transactions.rolledBack).toBe(1);
+      expect(transactions.begun).toBe(transactions.committed + transactions.rolledBack);
+      expect(connections.released).toBe(connections.acquired);
+      expect(connections.acquired).toBeGreaterThan(0);
+      const [after] = await send('query', `SELECT current_setting('statement_timeout') AS value`) as Array<{ value: string }>;
+      expect(after!.value).toBe('0');
+    });
+
+    it('answers the same fixed 504 when the Neo4j incarnation read times out, before any receipts statement', async () => {
+      const { world } = await fiveEdgeScenario();
+      incarnationFailure = Object.assign(new Error('timed out'), { code: 'Neo.ClientError.Transaction.TransactionTimedOut' });
+
+      const res = await getContext(world);
+
+      expect([res.status, res.body]).toEqual([504, LIMIT_AND_TIMEOUT_BODY]);
+      for (const member of NO_MEMBERS) expect(res.text).not.toContain(member);
+      expect(incarnationReads).toHaveLength(1);
+      expect(receiptStatements()).toHaveLength(0);
+      expect(connections.released).toBe(connections.acquired);
+    });
+
+    it.each([
+      ['a missing receipts table (42P01)', () => Object.assign(new Error('relation "relationship_evidence_receipts" does not exist'), { code: '42P01' })],
+      ['a lost connection', () => Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })],
+      ['an error without a code', () => new Error('boom')],
+    ])('answers the existing 500 with no members, never "unsupported", on %s', async (_name, failure) => {
+      const { world } = await fiveEdgeScenario();
+      evidenceFailure = failure();
+
+      const res = await getContext(world);
+
+      expect([res.status, res.body]).toEqual([500, { success: false, error: 'Failed to get business service context' }]);
+      for (const member of NO_MEMBERS) expect(res.text).not.toContain(member);
+      expect(transactions.rolledBack).toBe(1);
+      expect(connections.released).toBe(connections.acquired);
+    });
+  });
+
+  describe('response hygiene', () => {
+    it('keeps every pre-existing member, adds members only to CI edges and exposes no organization, incarnation, source or observer', async () => {
+      const { world, ids } = await fiveEdgeScenario();
+
+      const res = await getContext(world);
+
+      expect(res.status).toBe(200);
+      // The key sets of the body before HAP-2030: nothing removed or renamed.
+      expect(Object.keys(res.body).sort()).toEqual(['basis', 'coverage', 'data', 'runtime_blast_radius', 'success']);
+      expect(Object.keys(res.body.data).sort())
+        .toEqual(['bounds', 'dependencies', 'edges', 'impact', 'nodes', 'service_id', 'tenant_id']);
+      expect(Object.keys(res.body.coverage).sort())
+        .toEqual(['ci_nodes_in_scope', 'note', 'runtime_observed_receipts_in_scope', 'unreported_ci_ids']);
+      for (const node of res.body.data.nodes) {
+        expect(Object.keys(node).sort()).toEqual(
+          node.kind === 'ci' ? ['id', 'kind', 'name', 'status', 'type'] : ['criticality', 'id', 'kind', 'lifecycle', 'name']);
+      }
+      const mapped = res.body.data.edges.filter((e: EdgeBody) => e.type === 'MAPPED_CI');
+      expect(mapped).toEqual([{ from: world.service, to: ids.root, type: 'MAPPED_CI', mapping_type: 'hosts' }]);
+      const ciOnly = res.body.data.edges.filter((e: EdgeBody) => e.type !== 'MAPPED_CI');
+      expect(ciOnly).toHaveLength(5);
+      for (const edge of ciOnly) {
+        expect(Object.keys(edge).sort()).toEqual(['currentness', 'evidence', 'from', 'to', 'type']);
+        expect(Object.keys(edge.evidence).sort()).toEqual(
+          ['classes', 'last_supported_at', 'receipt_count', 'receipts_href', 'receipts_truncated', 'support']);
+        const text = JSON.stringify(edge);
+        for (const banned of BANNED_IN_EDGES) expect(text).not.toContain(banned);
+      }
+      // Nothing from the receipts rows or the graph's incarnations leaks anywhere in the body.
+      expect(res.text).not.toContain('organization_id');
+      expect(res.text).not.toContain(SECRET_SOURCE);
+      expect(res.text).not.toContain(SECRET_OBSERVER);
+      for (const node of graph.nodes.values()) {
+        if (node['incarnation_id']) expect(res.text).not.toContain(node['incarnation_id'] as string);
+      }
+      // The organization appears only as the documented tenant_id of the body.
+      expect(res.text.replace(`"tenant_id":"${world.org}"`, '')).not.toContain(world.org);
+    });
+
+    it('refuses an unauthenticated read with 401 before any statement, and serves a viewer', async () => {
+      const { world } = await fiveEdgeScenario();
+
+      const anonymous = await request(app).get(`/api/v1/business-services/${world.service}/context`);
+
+      expect(anonymous.status).toBe(401);
+      expect([pgStatements.length, incarnationReads.length]).toEqual([0, 0]);
+      expect(USERS[`user-${world.org}`]!._role).toBe('viewer');
+      expect((await getContext(world)).status).toBe(200);
+    });
+
+    it('derives currentness on every read and writes nothing: SELECT-only statements, receipts and graph unchanged', async () => {
+      const { world, ids } = await fiveEdgeScenario();
+      const count = async () => (await owner(
+        `SELECT count(*)::int AS n FROM relationship_evidence_receipts WHERE organization_id = $1`, [world.org]) as Array<{ n: number }>)[0]!.n;
+      const nodesBefore = JSON.stringify([...graph.nodes]);
+      const before = await count();
+
+      const first = await getContext(world);
+      const firstStatements = pgStatements;
+      pgStatements = [];
+      // The newest declared receipt ages past its 180 day window between two reads (fixture work as the owner, trigger off
+      // in this disposable database only). A stored verdict would still say current; a derived one says stale.
+      await owner(`ALTER TABLE relationship_evidence_receipts DISABLE TRIGGER USER`);
+      try {
+        await owner(`UPDATE relationship_evidence_receipts SET observed_at = observed_at - interval '200 days'
+          WHERE organization_id = $1 AND to_ci_id = $2`, [world.org, ids.declaredFresh]);
+      } finally {
+        await owner(`ALTER TABLE relationship_evidence_receipts ENABLE TRIGGER USER`);
+      }
+      const second = await getContext(world);
+
+      expect(ciEdge(first.body, ids.root, ids.declaredFresh).currentness).toBe('current');
+      expect(ciEdge(second.body, ids.root, ids.declaredFresh).currentness).toBe('stale');
+      for (const sql of [...firstStatements, ...pgStatements]) expect(sql).toMatch(/^\s*(SELECT|WITH)\b/i);
+      expect(await count()).toBe(before);
+      expect(JSON.stringify([...graph.nodes])).toBe(nodesBefore);
+    });
   });
 });

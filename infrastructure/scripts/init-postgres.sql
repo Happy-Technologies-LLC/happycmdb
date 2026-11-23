@@ -352,7 +352,8 @@ CREATE TABLE IF NOT EXISTS auth_credential_events (
   CONSTRAINT auth_credential_events_actor_check CHECK (actor <> ''),
   CONSTRAINT auth_credential_events_event_check CHECK (event IN (
     'default_marker_set_scan', 'default_marker_set_login',
-    'password_rotation_intent', 'password_rotated_operator', 'password_rotation_not_applied')),
+    'password_rotation_intent', 'password_rotated_operator', 'password_rotation_not_applied',
+    'portfolio_import_scope_granted', 'portfolio_import_scope_revoked')),
   CONSTRAINT auth_credential_events_reason_check CHECK (reason IS NULL OR reason IN ('guard_failed', 'fenced')),
   CONSTRAINT auth_credential_events_outcome_ref_check CHECK (
     (event IN ('password_rotated_operator', 'password_rotation_not_applied')) = (ref_event_id IS NOT NULL)),
@@ -363,6 +364,8 @@ CREATE TABLE IF NOT EXISTS auth_credential_events (
   CONSTRAINT auth_credential_events_revoked_keys_check CHECK (
     (event = 'password_rotated_operator') = (revoked_api_keys IS NOT NULL) AND (revoked_api_keys IS NULL OR revoked_api_keys >= 0))
 );
+COMMENT ON TABLE auth_credential_events IS
+  'HP1-S6 append-only credential lifecycle audit. Holds: default-password marker transitions (default_marker_set_scan, default_marker_set_login); operator password rotations (password_rotation_intent, then one outcome, password_rotated_operator or password_rotation_not_applied, derived from the Neo4j decision node); and, from HAP-2039, identity-window grants and revokes of the portfolio:import scope (portfolio_import_scope_granted, portfolio_import_scope_revoked).';
 CREATE UNIQUE INDEX IF NOT EXISTS auth_credential_events_one_outcome
   ON auth_credential_events (ref_event_id) WHERE ref_event_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS auth_credential_events_open_intents

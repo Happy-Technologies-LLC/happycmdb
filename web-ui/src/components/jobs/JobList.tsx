@@ -28,7 +28,7 @@ import { JobCancelButton } from './JobCancelButton';
 
 interface JobListProps {
   jobs: Job[];
-  total: number;
+  hasMore: boolean;
   page: number;
   rowsPerPage: number;
   onPageChange: (page: number) => void;
@@ -41,7 +41,7 @@ interface JobListProps {
 
 export const JobList: React.FC<JobListProps> = ({
   jobs,
-  total,
+  hasMore,
   page,
   rowsPerPage,
   onPageChange,
@@ -102,8 +102,6 @@ export const JobList: React.FC<JobListProps> = ({
       </div>
     );
   }
-
-  const totalPages = Math.ceil(total / rowsPerPage);
 
   return (
     <Card>
@@ -217,7 +215,7 @@ export const JobList: React.FC<JobListProps> = ({
         </div>
         <div className="flex items-center gap-2">
           <span className="text-sm text-muted-foreground">
-            Page {page + 1} of {totalPages} ({total} total)
+            Page {page + 1}
           </span>
           <div className="flex gap-1">
             <Button
@@ -232,7 +230,7 @@ export const JobList: React.FC<JobListProps> = ({
               variant="outline"
               size="sm"
               onClick={() => onPageChange(page + 1)}
-              disabled={page >= totalPages - 1}
+              disabled={!hasMore}
             >
               Next
             </Button>

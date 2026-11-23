@@ -19,7 +19,8 @@ import { appendAuditEntry, auditChainReady, getNeo4jClient, getPostgresClient } 
 import type { AuditLogEntry } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
 import type {
-  AuthRepository, CredentialEventInput, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite, UserProfileUpdate,
+  AuthRepository, CredentialEventInput, GuardedEpochBump, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite,
+  UserProfileUpdate,
 } from './auth.service';
 import { AmbiguousUserIdentityError, UserNotFoundError, type ApiKey, type User } from './types';
 import { LOCK_USER } from './user-lock';
@@ -51,7 +52,7 @@ const MARKED = '(coalesce(u.defaultPasswordSuspect, false) OR coalesce(u._defaul
 
 // The node write lock is taken before every guard below (see user-lock.ts).
 
-/** HP1-S6 changePassword write: lands only on the node read, at the authorizing generation, unmarked, still holding the verified hash; advances the generation by exactly one with the hash, computed here from the guarded value so no caller can set it (HAP-1285, HAP-1669). */
+/** HP1-S6 changePassword write: lands only on the node read, at the authorizing generation, unmarked, still holding the verified hash and still holding the request's organization (HAP-1714: an org-less change cannot be audited; HAP-2061: neither can one whose organization changed since the read); advances the generation by exactly one with the hash, computed here from the guarded value so no caller can set it (HAP-1285, HAP-1669). */
 export const GUARDED_PASSWORD_CYPHER = `
 MATCH (u:User) WHERE elementId(u) = $elementId
 ${LOCK_USER}
@@ -59,8 +60,30 @@ WITH u
 WHERE (u._id = $userId OR u.id = $userId)
   AND coalesce(u.credentialEpoch, 0) = $credentialEpoch
   AND NOT ${MARKED}
+  AND coalesce(u._organizationId, u.organizationId) IS NOT NULL
+  AND coalesce(u._organizationId, u.organizationId) = $organizationId
   AND coalesce(u._passwordHash, u.passwordHash) = $readHash
 SET u._passwordHash = $newHash, u.passwordHash = $newHash, u.credentialEpoch = $credentialEpoch + 1,
+    u._updatedAt = datetime(), u.updatedAt = datetime()
+RETURN count(u) AS n`;
+
+/**
+ * HAP-1716 revoke-other-sessions write: the same guards as GUARDED_PASSWORD_CYPHER (node read, authorizing generation,
+ * unmarked, verified hash still stored, request's organization still stored), but the hash stays as it is: it only advances the
+ * generation by exactly one (computed here from the guarded value), which ends every other session and API key
+ * (HAP-1285). It writes neither a hash nor the marker.
+ */
+export const GUARDED_BUMP_EPOCH_CYPHER = `
+MATCH (u:User) WHERE elementId(u) = $elementId
+${LOCK_USER}
+WITH u
+WHERE (u._id = $userId OR u.id = $userId)
+  AND coalesce(u.credentialEpoch, 0) = $credentialEpoch
+  AND NOT ${MARKED}
+  AND coalesce(u._organizationId, u.organizationId) IS NOT NULL
+  AND coalesce(u._organizationId, u.organizationId) = $organizationId
+  AND coalesce(u._passwordHash, u.passwordHash) = $readHash
+SET u.credentialEpoch = $credentialEpoch + 1,
     u._updatedAt = datetime(), u.updatedAt = datetime()
 RETURN count(u) AS n`;
 
@@ -261,7 +284,14 @@ export class Neo4jAuthRepository implements AuthRepository {
   async updatePasswordHashGuarded(write: GuardedPasswordWrite): Promise<boolean> {
     return this.guardedWrite(GUARDED_PASSWORD_CYPHER, {
       elementId: write.elementId ?? null, userId: write.userId, credentialEpoch: neo4j.int(write.credentialEpoch),
-      readHash: write.readHash, newHash: write.newHash,
+      readHash: write.readHash, newHash: write.newHash, organizationId: write.organizationId,
+    });
+  }
+
+  async bumpCredentialEpochGuarded(write: GuardedEpochBump): Promise<boolean> {
+    return this.guardedWrite(GUARDED_BUMP_EPOCH_CYPHER, {
+      elementId: write.elementId ?? null, userId: write.userId, credentialEpoch: neo4j.int(write.credentialEpoch),
+      readHash: write.readHash, organizationId: write.organizationId,
     });
   }
 
@@ -452,6 +482,21 @@ export class Neo4jAuthRepository implements AuthRepository {
       return result.rowCount ?? 0;
     } catch (error) {
       throw new Error(`Failed to delete API key: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /** Revokes the user's live keys below `nextEpoch`; keys at or above it (issued after the change) are untouched. */
+  async revokeApiKeysBelowEpoch(userId: string, nextEpoch: number): Promise<number> {
+    try {
+      const result = await this.postgresClient.query(
+        `UPDATE api_keys
+         SET enabled = FALSE, revoked_at = NOW()
+         WHERE user_id = $1 AND revoked_at IS NULL AND credential_epoch < $2`,
+        [userId, nextEpoch]
+      );
+      return result.rowCount ?? 0;
+    } catch (error) {
+      throw new Error(`Failed to revoke API keys: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 

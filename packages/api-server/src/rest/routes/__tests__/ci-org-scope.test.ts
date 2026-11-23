@@ -21,15 +21,20 @@ import { randomBytes, randomUUID } from 'crypto';
 import { fork } from 'child_process';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import * as YAML from 'yamljs';
 import express from 'express';
 import request from 'supertest';
 import neo4j from 'neo4j-driver';
 import {
-  Neo4jClient, CITraversalLimitError, createCITraversalWork,
+  Neo4jClient, CITraversalLimitError, createCITraversalWork, MAX_CI_TRAVERSAL_NODES,
 } from '../../../../../database/src/neo4j/client';
 import * as journalModule from '../../../../../database/src/journal/journal';
 import type { JournaledWrite } from '../../../../../database/src/journal/journal';
 import { dec } from '../../../../../database/src/journal/encoding';
+import {
+  APP_GRANTS_SQL, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql, impactBusinessTablesSql, journalReadAclSql,
+  lineageReadAclSql, lineageTableSql, receiptTableSql,
+} from './fixtures/app-login';
 
 // Placeholder config so loadConfig() validates; no Neo4j/Redis/PostgreSQL server is contacted.
 // The signing secret is generated per run in memory; no literal credential.
@@ -188,6 +193,19 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
     return props !== undefined && ciInScope(props) ? [record({ ci: node(props) })] : [];
   }
 
+  if (cypher.startsWith('MATCH (ci:CI {id: $id})') && cypher.endsWith('RETURN properties(ci) AS props')) {
+    const props = graph.nodes.get(params['id'] as string);
+    return props !== undefined && ciInScope(props) ? [record({ props: { ...props } })] : [];
+  }
+
+  // HAP-2030 getCIIncarnations: the current incarnation of each requested CI the scope owns, in one statement.
+  if (cypher.includes('ci.id IN $ids') && cypher.includes('AS incarnationId')) {
+    return (params['ids'] as string[]).flatMap(id => {
+      const props = graph.nodes.get(id);
+      return props && ciInScope(props) ? [record({ ciId: id, incarnationId: props['incarnation_id'] ?? null })] : [];
+    });
+  }
+
   if (cypher.startsWith('MATCH (ci:CI) WHERE') && cypher.includes('AS incarnationId')) {
     return [...graph.nodes.values()].filter(props => ciInScope(props)
       && (params['afterId'] === undefined || (typeof props['organization_id'] === 'string'
@@ -224,12 +242,17 @@ function run(rawCypher: string, params: Props = {}): FakeRecord[] {
 }
 
 let holdIncarnationRead: (() => Promise<void>) | undefined;
+// Every statement the fake session receives, and an error the next statements throw (cm-fu-ci-list-sort-by-whitelist-400).
+const runLog: string[] = [];
+let runFailure: Error | undefined;
 let incarnationRunTimeout: number | undefined;
 const fakeDriver = {
   session: () => ({
     // Plain functions (not jest.fn): the unit config resets mock implementations.
     run: async (cypher: string, params?: Props, config?: { timeout: number }) => {
       queryCount++;
+      runLog.push(cypher.replace(/\s+/g, ' ').trim());
+      if (runFailure) throw runFailure;
       if (cypher.includes('SET ci.incarnation_id = coalesce(')) incarnationRunTimeout = config?.timeout;
       if (cypher.includes('AS incarnationId') && !cypher.includes('ci.id > $afterId')) await holdIncarnationRead?.();
       return { records: run(cypher, params) };
@@ -257,40 +280,82 @@ driverSeam.driver = fakeDriver;
 const host = fork(join(__dirname, 'fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let sqlId = 0;
 const pending = new Map<number, { resolve: (rows: unknown[]) => void; reject: (error: Error) => void }>();
-host.on('message', ({ id, rows, error }: { id: number; rows: unknown[]; error?: string }) => {
+host.on('message', ({ id, rows, error, code }: { id: number; rows: unknown[]; error?: string; code?: string }) => {
   const reply = pending.get(id)!;
   pending.delete(id);
-  if (error) reply.reject(new Error(error));
+  // Keep the SQLSTATE so handlers see the same `code` the pg driver sets.
+  if (error) reply.reject(Object.assign(new Error(error), { code }));
   else reply.resolve(rows);
 });
-function sql(statement: string, params: unknown[] = []): Promise<unknown[]> {
+function send(op: 'exec' | 'query', statement: string, params: unknown[] = []): Promise<unknown[]> {
   const id = sqlId++;
   const { promise, resolve, reject } = Promise.withResolvers<unknown[]>();
   pending.set(id, { resolve, reject });
-  host.send({ id, op: 'query', sql: statement, params });
+  host.send({ id, op, sql: statement, params });
   return promise;
+}
+// HAP-2071: fixture and setup SQL runs as the NOSUPERUSER table owner; every statement a route sends (`pg` below)
+// runs as the app login `cmdb_user`, so a missing column grant (053) or a missing predicate shows as it would in a
+// deployment that does not run as the owner. PGlite's authenticated backend is a superuser: assertAppStatement
+// refuses a route statement that changes the role.
+function sql(statement: string, params: unknown[] = []): Promise<unknown[]> {
+  return asTableOwner(text => send('exec', text), () => send(params.length ? 'query' : 'exec', statement, params));
+}
+
+// PGlite does not enforce statement_timeout, so the harness does what the server does for the one statement a test
+// makes slow: a statement on ci_source_lineage that outlasts the transaction's statement_timeout fails with 57014
+// after that timeout; with no timeout set it runs to completion.
+let lineageStallMs = 0;
+let statementTimeoutMs = 0;
+// The harness runs the PRODUCTION `PostgresClient.transaction` (BEGIN / COMMIT, ROLLBACK on error, release in a
+// finally) over a fake pool whose connect() hands out a recording client; PGlite answers its statements.
+interface Checkout { statements: string[]; timeouts: number[]; releases: number }
+const checkouts: Checkout[] = [];
+const { PostgresClient: ProductionPostgresClient } = jest.requireActual<
+  typeof import('../../../../../database/src/postgres/client')>('../../../../../database/src/postgres/client');
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+async function appSql(statement: string, params: unknown[] = []): Promise<unknown[]> {
+  assertAppStatement(statement);
+  if (statement.startsWith(`SELECT set_config('statement_timeout'`)) statementTimeoutMs = Number(params[0]);
+  if (lineageStallMs > 0 && statement.includes('ci_source_lineage')) {
+    if (statementTimeoutMs > 0 && statementTimeoutMs < lineageStallMs) {
+      await sleep(statementTimeoutMs);
+      throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+    }
+    await sleep(lineageStallMs);
+  }
+  return send('query', statement, params);
 }
 const pg = {
   query: async (statement: string | { text: string; values?: unknown[]; query_timeout?: number },
-    params: unknown[] = []) => ({ rows: await sql(typeof statement === 'string' ? statement : statement.text,
+    params: unknown[] = []) => ({ rows: await appSql(typeof statement === 'string' ? statement : statement.text,
     typeof statement === 'string' ? params : statement.values) }),
   getClient: async () => ({
-    query: (statement: string, params: unknown[] = []) =>
-      statement.startsWith('SELECT set_config(') ? Promise.resolve({ rows: [] }) : pg.query(statement, params),
+    query: (statement: string, params: unknown[] = []) => pg.query(statement, params),
     release: () => undefined,
   }),
-  transaction: async <T>(callback: (client: { query: typeof pg.query }) => Promise<T>): Promise<T> => {
-    await sql('BEGIN');
-    try {
-      const result = await callback(pg);
-      await sql('COMMIT');
-      return result;
-    } catch (error) {
-      await sql('ROLLBACK');
-      throw error;
-    }
+  transaction: async <T>(callback: (client: { query: typeof pg.query }) => Promise<T>): Promise<T> =>
+    (await productionClient.transaction(callback as Parameters<typeof productionClient.transaction>[0])) as T,
+};
+const fakePool = {
+  connect: async () => {
+    const checkout: Checkout = { statements: [], timeouts: [], releases: 0 };
+    checkouts.push(checkout);
+    return {
+      query: (statement: string, params: unknown[] = []) => {
+        checkout.statements.push(statement);
+        if (statement.startsWith(`SELECT set_config('statement_timeout'`)) checkout.timeouts.push(Number(params[0]));
+        return pg.query(statement, params);
+      },
+      release: () => {
+        checkout.releases++;
+        statementTimeoutMs = 0; // SET LOCAL ends with the transaction
+      },
+    };
   },
 };
+const productionClient = Object.assign(Object.create(ProductionPostgresClient.prototype), { pool: fakePool }) as
+  InstanceType<typeof ProductionPostgresClient>;
 jest.mock('../../../../../database/src/postgres/client', () => ({ getPostgresClient: () => pg }));
 jest.mock('@cmdb/database', () => ({
   ...jest.requireActual<object>('@cmdb/database/journal/journal'),
@@ -326,12 +391,15 @@ jest.mock('../../../auth/neo4j-auth.repository', () => ({
 }));
 
 // Imported after mocks are registered (jest hoists jest.mock).
-import { loadConfig } from '@cmdb/common';
+import { loadConfig, logger, VALID_CI_SORT_FIELDS } from '@cmdb/common';
+import { getImpactPredictionEngine } from '@cmdb/ai-ml-engine';
 import { JWTService } from '../../../auth/jwt.service';
 import { getAuthMiddleware } from '../../../auth/auth-bootstrap';
 import { ciRoutes } from '../ci.routes';
+import { CIController } from '../../controllers/ci.controller';
+import { IMPACT_LINEAGE_TIMEOUT_MS, MAX_IMPACT_LINEAGE_TIMEOUT_MS, impactLineageTimeoutMs } from '../../impact-envelope';
 import { itilRoutes } from '../itil.routes';
-import { driftRoutes, impactRoutes } from '../drift-impact.routes';
+import { driftRoutes, impactRoutes, askRoutes } from '../drift-impact.routes';
 import { analyticsRoutes } from '../analytics.routes';
 import { anomalyRoutes } from '../anomaly.routes';
 
@@ -344,8 +412,11 @@ const derivedTables = [
 const provenanceDdl = readFileSync(
   join(__dirname, '../../../../../database/src/postgres/migrations/028_change_history_reconciliation_org_provenance.sql'), 'utf8');
 beforeAll(async () => {
+  const [{ db: database }] = await send('query', 'SELECT current_database() AS db') as Array<{ db: string }>;
+  await send('exec', createLoginRolesSql(database));
+  await sql('CREATE SCHEMA IF NOT EXISTS cmdb');
   const ddl = readFileSync(join(__dirname, '../../../../../database/src/postgres/migrations/001_complete_schema.sql'), 'utf8');
-  for (const table of derivedTables) {
+  for (const table of [...derivedTables, 'dim_business_services']) {
     const definition = ddl.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
     if (!definition) throw new Error(`Missing production table ${table}`);
     await sql(definition[0]);
@@ -365,12 +436,25 @@ beforeAll(async () => {
   for (const statement of readFileSync(
     join(__dirname, '../../../../../database/src/postgres/migrations/026_anomaly_provenance.sql'), 'utf8'
   ).match(/^ALTER TABLE anomalies ADD COLUMN .+;$/gm) ?? []) await sql(statement);
+  // ci_source_lineage as 001 and 028 create it, then the app login's grants: the shared ones and migrations 044
+  // and 053 verbatim (053 is the column grant the impact envelope's lineage read depends on).
+  // The derived tables and journal tables the routes also touch get table grants here; this suite does not
+  // prove their privilege sets.
+  await sql(impactBusinessTablesSql()); // HAP-1927: the business-service tables the impact reads join
+  await sql(`${lineageTableSql()}\n${APP_GRANTS_SQL}\n${journalReadAclSql()}\n${lineageReadAclSql()}\n`
+    + `GRANT SELECT, INSERT, UPDATE, DELETE ON ${[...derivedTables, 'ci_reconciliation_operations', 'ci_reconciliation_epochs'].join(', ')} TO cmdb_user;`);
+  // HAP-2030: 054 verbatim (the edge-evidence read of the impact reads; SELECT, INSERT only for the app login).
+  await sql(receiptTableSql());
+});
+
+beforeEach(async () => {
+  await assertAppLogin(rows => send('query', rows));
 });
 afterAll(() => { host.kill(); });
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (userId: string, organizationId?: string) => ({
-  Authorization: `Bearer ${jwt.generateAccessToken(userId, USERS[userId]!._username, 'operator', organizationId)}`,
+  Authorization: `Bearer ${jwt.generateAccessToken(userId, USERS[userId]!._username, 'operator', organizationId, 0, Math.floor(Date.now() / 1000))}`,
 });
 const AS_A = bearer('user-a', ORG_A);
 const AS_B = bearer('user-b', ORG_B);
@@ -385,6 +469,7 @@ app.use('/api/v1/cis', ciRoutes);
 app.use('/api/v1/itil', itilRoutes);
 app.use('/api/v1/drift', driftRoutes);
 app.use('/api/v1/impact', impactRoutes);
+app.use('/api/v1/ask', askRoutes);
 app.use('/api/v1/analytics', analyticsRoutes);
 app.use('/api/v1/anomalies', anomalyRoutes);
 
@@ -548,6 +633,55 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(res.body.pagination.total).toBe(2);
   });
 
+  it('GET /cis and GET /cis/:id keep stored top-level owner/ip_address/tier/provider, an array included (reconciled node, BW2)', async () => {
+    // The shape identity reconciliation (mergeableOnCreate) and the connectors write onto the node top level.
+    seedCI('ci-a-merged', ORG_A, { owner: 'alice', ip_address: ['10.0.0.5', '10.0.0.6'], tier: 'gold', provider: 'aws',
+      metadata: JSON.stringify({ owner: 'meta-owner', ip: '10.9.9.9', cloud_provider: 'gcp' }) });
+    seedCI('ci-a-partial', ORG_A, { owner: 'bob', metadata: JSON.stringify({ owner: 'meta-owner', ip: '10.9.9.9' }) });
+    const stored = { owner: 'alice', ip_address: ['10.0.0.5', '10.0.0.6'], tier: 'gold', provider: 'aws' };
+
+    const list = await request(app).get('/api/v1/cis').set(AS_A);
+    expect(list.body.data.find((ci: { id: string }) => ci.id === 'ci-a-merged')).toMatchObject(stored);
+    const detail = await request(app).get('/api/v1/cis/ci-a-merged').set(AS_A);
+    expect(detail.status).toBe(200);
+    expect(detail.body.data).toMatchObject(stored);
+
+    // A stored top-level value wins per field; only the fields it does not carry come from metadata.
+    const partial = { owner: 'bob', ip_address: '10.9.9.9', tier: null, provider: null };
+    expect(list.body.data.find((ci: { id: string }) => ci.id === 'ci-a-partial')).toMatchObject(partial);
+    expect((await request(app).get('/api/v1/cis/ci-a-partial').set(AS_A)).body.data).toMatchObject(partial);
+  });
+
+  it('GET /cis and GET /cis/:id add the normalized owner/provider/ip_address/tier and leave every raw key as it was (BW2)', async () => {
+    const rawMetadata = JSON.stringify({ owned_by: 'platform-team', cloud_provider: 'aws', ip: ' 10.0.0.4 ',
+      service_tier: { level: 'gold' }, tier: 3, criticality_tier: 'gold', hostname: 'web01' });
+    seedCI('ci-a-app', ORG_A, { metadata: rawMetadata });
+    const expected = { owner: 'platform-team', provider: 'aws', ip_address: '10.0.0.4', tier: 'gold' };
+
+    const list = await request(app).get('/api/v1/cis').set(AS_A);
+    const listed = list.body.data.find((ci: { id: string }) => ci.id === 'ci-a-app');
+    expect(listed).toMatchObject({ id: 'ci-a-app', name: 'ci-a-app', type: 'server', status: 'active',
+      environment: 'production', metadata: rawMetadata, ...expected }); // raw string metadata unchanged
+    const bare = list.body.data.find((ci: { id: string }) => ci.id === 'ci-a-db');
+    expect(bare).toMatchObject({ owner: null, provider: null, ip_address: null, tier: null });
+
+    const detail = await request(app).get('/api/v1/cis/ci-a-app').set(AS_A);
+    expect(detail.status).toBe(200);
+    expect(detail.body.data).toMatchObject({ id: 'ci-a-app', name: 'ci-a-app', type: 'server', status: 'active',
+      environment: 'production', metadata: JSON.parse(rawMetadata), ...expected });
+  });
+
+  it("the normalized fields never read another organization's CI", async () => {
+    seedCI('ci-b-app', ORG_B, { metadata: JSON.stringify({ owner: 'b-secret-owner', ip_address: '10.99.99.99' }) });
+    const own = await request(app).get('/api/v1/cis').set(AS_A);
+    expect(own.text).not.toContain('b-secret-owner');
+    expect(own.text).not.toContain('10.99.99.99');
+    const foreign = await request(app).get('/api/v1/cis/ci-b-app').set(AS_A);
+    expect([foreign.status, foreign.body]).toEqual([404, NOT_FOUND]);
+    const theirs = await request(app).get('/api/v1/cis/ci-b-app').set(AS_B);
+    expect(theirs.body.data).toMatchObject({ owner: 'b-secret-owner', ip_address: '10.99.99.99' });
+  });
+
   it("GET /cis?external_id= matches exactly in the caller's org; another org gets one empty answer (FD17-S4)", async () => {
     seedCI('ci-a-ext', ORG_A, { external_id: 'ext-1' });
     seedCI('ci-a-ext10', ORG_A, { external_id: 'ext-10' });
@@ -557,6 +691,10 @@ describe('/api/v1/cis tenant scoping', () => {
     expect([own.status, own.body.data.map((ci: { id: string }) => ci.id), own.body.pagination.total])
       .toEqual([200, ['ci-a-ext'], 1]);
     expect((await list(AS_A, ' ext-1 ')).body.data).toEqual([]); // exact value, never trimmed (D17-9)
+    // HAP-797: only control characters (Cc) are refused; a format character (U+200B) stays a valid external_id.
+    seedCI('ci-a-zwsp', ORG_A, { external_id: 'ext\u200B1' });
+    const zwsp = await list(AS_A, 'ext\u200B1');
+    expect([zwsp.status, zwsp.body.data.map((ci: { id: string }) => ci.id)]).toEqual([200, ['ci-a-zwsp']]);
     const used = await list(AS_C, 'ext-1');
     expect([used.status, used.body.data, used.body.pagination.total]).toEqual([200, [], 0]);
     for (const unused of ['ext-unused', 'x'.repeat(200)]) {
@@ -673,7 +811,7 @@ describe('/api/v1/cis tenant scoping', () => {
     try {
       const post = (extra: object) => request(app).post('/api/v1/cis').set(AS_A).send({ name: 'n', type: 'server', ...extra });
       const UNAVAILABLE = { success: false, error: 'Service Unavailable', message: 'CI write temporarily unavailable' };
-      for (const external of [' ext-1 ', 'x'.repeat(200)]) { // F1: stored verbatim, never trimmed (D17-9); F2: 200 is the bound
+      for (const external of [' ext-1 ', 'x'.repeat(200), 'ext\u200B1']) { // F1: stored verbatim, never trimmed (D17-9); F2: 200 is the bound; HAP-797: U+200B (Cf) stays valid
         const created = await post({ external_id: external });
         expect([created.status, created.body.data.external_id]).toEqual([201, external]);
         expect(graph.nodes.get(created.body.data.id)).toMatchObject({ organization_id: ORG_A, external_id: external });
@@ -681,9 +819,9 @@ describe('/api/v1/cis tenant scoping', () => {
       for (const rows of [[], [GLOBAL], [COMPOSITE, GLOBAL], [COMPOSITE, SERVER_GLOBAL], 'throw' as const]) { // probed on every create
         constraints = rows;
         const refused = await post({ external_id: 'ext-1' });
-        expect([rows, refused.status, refused.body, journal.mock.calls.length]).toEqual([rows, 503, UNAVAILABLE, 2]);
+        expect([rows, refused.status, refused.body, journal.mock.calls.length]).toEqual([rows, 503, UNAVAILABLE, 3]);
       }
-      expect([(await post({})).status, probes]).toEqual([201, 7]); // no external_id: no probe
+      expect([(await post({})).status, probes]).toEqual([201, 8]); // no external_id: no probe
       await request(app).put('/api/v1/cis/ci-a-app').set(AS_A).send({ name: 'renamed', external_id: 'ext-2' });
       expect(update.mock.calls).toEqual([['ci-a-app', { name: 'renamed' }, ORG_A, 'user-a']]);
     } finally {
@@ -706,6 +844,535 @@ describe('/api/v1/cis tenant scoping', () => {
     expect(res.body.data.downstream.map((ci: { id: string }) => ci.id)).toEqual(['ci-a-app']);
     expect(res.body.data.upstream).toEqual([]);
     expect(res.body.totalImpacted).toBe(1);
+  });
+
+  // HAP-2028: every impact read states its basis (declared-graph reachability) and what it does not know.
+  describe('impact envelope (HAP-2028)', () => {
+    const lineage = (ciId: string, org: string | null) => sql(
+      `INSERT INTO ci_source_lineage (ci_id, source_name, source_id, organization_id) VALUES ($1, 'disc', $1, $2)`, [ciId, org]);
+    afterEach(async () => { await sql('DELETE FROM ci_source_lineage'); });
+    const LITERALS = { basis: 'declared_graph_reachability', runtime_blast_radius: 'not_established' };
+    const engineGraph = (...ids: string[]) => jest.spyOn(getImpactPredictionEngine(), 'buildDependencyGraph').mockResolvedValue({
+      nodes: ids.map(id => ({ id, ci_id: id, ci_name: id, ci_type: 'server', criticality: 0, dependencies_count: 0, dependents_count: 0 })),
+      edges: [], metadata: { total_nodes: ids.length, total_edges: 0, max_depth: 3, generated_at: new Date() },
+    });
+
+    it('GET /cis/:id/impact lists the in-scope CIs this organization has no lineage for, never a foreign CI', async () => {
+      seedCI('ci-a-far', ORG_A);
+      dependsOn('ci-b-app', 'ci-a-db'); // B depends on A's db: foreign, outside the traversal
+      dependsOn('ci-a-db', 'ci-b-db');
+      dependsOn('ci-b-db', 'ci-a-far');
+      // In scope: ci-a-db (root) and ci-a-app. Only B reports ci-a-db (same ci_id, other organization): no report to A.
+      await lineage('ci-a-app', ORG_A);
+      await lineage('ci-a-db', ORG_B);
+      await lineage('ci-b-app', ORG_B);
+
+      const res = await request(app).get('/api/v1/cis/ci-a-db/impact').set(AS_A);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        ...LITERALS,
+        coverage: { ci_nodes_in_scope: 2, unreported_ci_ids: ['ci-a-db'], runtime_observed_receipts_in_scope: false },
+      });
+      expect(res.body.coverage.note).toMatch(/missing edge is not evidence of no dependency/i);
+      expect(JSON.stringify(res.body.coverage)).not.toMatch(/ci-b-|ci-a-far/);
+      // Additive: the existing fields are unchanged.
+      expect(res.body.data.downstream.map((ci: { id: string }) => ci.id)).toEqual(['ci-a-app']);
+      expect(res.body.totalImpacted).toBe(1);
+    });
+
+    it('GET /cis/:id/impact counts a legacy NULL-organization lineage row as no report, and the root alone is in scope', async () => {
+      seedCI('ci-a-alone', ORG_A);
+      await lineage('ci-a-alone', null);
+      const res = await request(app).get('/api/v1/cis/ci-a-alone/impact').set(AS_A);
+      expect(res.status).toBe(200);
+      expect(res.body.coverage).toMatchObject({ ci_nodes_in_scope: 1, unreported_ci_ids: ['ci-a-alone'] });
+    });
+
+    it('GET /cis/:id/dependencies carries the same envelope over the CIs its paths reach', async () => {
+      seedCI('ci-a-far', ORG_A);
+      dependsOn('ci-a-app', 'ci-b-db'); // a path through B's CI is never walked
+      dependsOn('ci-b-db', 'ci-a-far');
+      await lineage('ci-a-db', ORG_A);
+
+      const res = await request(app).get('/api/v1/cis/ci-a-app/dependencies').set(AS_A);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        ...LITERALS,
+        coverage: { ci_nodes_in_scope: 2, unreported_ci_ids: ['ci-a-app'], runtime_observed_receipts_in_scope: false },
+      });
+      expect(JSON.stringify(res.body.coverage)).not.toMatch(/ci-b-|ci-a-far/);
+      expect(res.body.count).toBe(res.body.data.length);
+    });
+
+    it('GET /impact/graph/:rootCiId carries the same envelope over the graph nodes', async () => {
+      const engine = engineGraph('ci-a-db', 'ci-a-app');
+      try {
+        await lineage('ci-a-db', ORG_A);
+        await lineage('ci-a-app', ORG_B);
+
+        const res = await request(app).get('/api/v1/impact/graph/ci-a-db').set(AS_A);
+
+        expect(res.status).toBe(200);
+        expect(res.body).toMatchObject({
+          ...LITERALS,
+          coverage: { ci_nodes_in_scope: 2, unreported_ci_ids: ['ci-a-app'], runtime_observed_receipts_in_scope: false },
+        });
+        expect(res.body.data.nodes.map((n: { ci_id: string }) => n.ci_id)).toEqual(['ci-a-db', 'ci-a-app']);
+      } finally {
+        engine.mockRestore();
+      }
+    });
+
+    it('keeps the fixed 503 and adds no envelope when the traversal budget is exhausted', async () => {
+      for (let i = 0; i <= MAX_CI_TRAVERSAL_NODES; i++) {
+        seedCI(`ci-a-dep-${i}`, ORG_A);
+        dependsOn(`ci-a-dep-${i}`, 'ci-a-db');
+      }
+      const res = await request(app).get('/api/v1/cis/ci-a-db/impact').set(AS_A);
+      expect([res.status, res.body]).toEqual([503, { success: false, error: 'CI traversal resource limit exceeded' }]);
+    });
+
+    // HAP-2071: the lineage read runs under its own statement_timeout; a timeout is the 504 path, never an envelope.
+    describe('lineage statement timeout (HAP-2071)', () => {
+      const TIMEOUT_ENV = 'IMPACT_LINEAGE_TIMEOUT_MS';
+      const priorTimeout = process.env[TIMEOUT_ENV];
+      afterEach(() => {
+        lineageStallMs = 0;
+        if (priorTimeout === undefined) delete process.env[TIMEOUT_ENV];
+        else process.env[TIMEOUT_ENV] = priorTimeout;
+      });
+      const slowLineage = (timeoutMs: number, stallMs: number) => {
+        process.env[TIMEOUT_ENV] = String(timeoutMs);
+        lineageStallMs = stallMs;
+      };
+      const NO_ENVELOPE = ['basis', 'runtime_blast_radius', 'coverage'];
+      beforeEach(() => { checkouts.length = 0; });
+      const lineageCheckouts = () => checkouts.filter(({ statements }) => statements.some(s => s.includes('ci_source_lineage')));
+      const settled = ({ statements, releases }: Checkout) => ({
+        statements: statements.map(s => (s.startsWith('SELECT set_config') ? 'set_config' : s.includes('ci_source_lineage') ? 'lineage' : s)),
+        releases,
+      });
+
+      it.each([
+        ['GET /cis/:id/impact', '/api/v1/cis/ci-a-db/impact'],
+        ['GET /cis/:id/dependencies', '/api/v1/cis/ci-a-app/dependencies'],
+        ['GET /impact/graph/:rootCiId', '/api/v1/impact/graph/ci-a-db'],
+      ])('%s answers 504 with no coverage envelope when the lineage read outlasts its timeout, and frees the connection', async (_name, path) => {
+        const engine = engineGraph('ci-a-db', 'ci-a-app');
+        try {
+          await lineage('ci-a-app', ORG_A);
+          slowLineage(50, 2000);
+
+          const started = Date.now();
+          const res = await request(app).get(path).set(AS_A);
+
+          expect(res.status).toBe(504);
+          expect(res.body.success).toBe(false);
+          for (const key of NO_ENVELOPE) expect(res.body).not.toHaveProperty(key);
+          expect(JSON.stringify(res.body)).not.toMatch(/ci-a-/);
+          expect(Date.now() - started).toBeLessThan(1500); // bounded by the timeout, not by the slow query
+          // The production transaction helper rolled back (never committed) and released the connection exactly once.
+          expect(lineageCheckouts().map(settled)).toEqual([{ statements: ['BEGIN', 'set_config', 'lineage', 'ROLLBACK'], releases: 1 }]);
+        } finally {
+          engine.mockRestore();
+        }
+      });
+
+      it('keeps a slow lineage read under its timeout unchanged: the envelope, with the exact unreported ids', async () => {
+        await lineage('ci-a-app', ORG_A);
+        slowLineage(2000, 100);
+
+        const res = await request(app).get('/api/v1/cis/ci-a-db/impact').set(AS_A);
+
+        expect(res.status).toBe(200);
+        expect(res.body.coverage).toMatchObject({ ci_nodes_in_scope: 2, unreported_ci_ids: ['ci-a-db'] });
+        expect(lineageCheckouts().map(settled)).toEqual([{ statements: ['BEGIN', 'set_config', 'lineage', 'COMMIT'], releases: 1 }]);
+      });
+
+      it('reads its timeout from IMPACT_LINEAGE_TIMEOUT_MS and falls back to the 3 s default for anything but a positive integer up to the PostgreSQL maximum', () => {
+        expect(impactLineageTimeoutMs({ IMPACT_LINEAGE_TIMEOUT_MS: '750' })).toBe(750);
+        expect(impactLineageTimeoutMs({ IMPACT_LINEAGE_TIMEOUT_MS: '2147483647' })).toBe(MAX_IMPACT_LINEAGE_TIMEOUT_MS);
+        for (const bad of [undefined, '', '0', '-5', '1.5', 'abc', '1e3x', 'Infinity', '2147483648', '99999999999']) {
+          expect(impactLineageTimeoutMs({ IMPACT_LINEAGE_TIMEOUT_MS: bad })).toBe(IMPACT_LINEAGE_TIMEOUT_MS);
+        }
+        expect(IMPACT_LINEAGE_TIMEOUT_MS).toBe(3000);
+      });
+
+      it('answers an impact read with the default timeout, not a 500, when IMPACT_LINEAGE_TIMEOUT_MS is above the PostgreSQL maximum', async () => {
+        await lineage('ci-a-app', ORG_A);
+        process.env[TIMEOUT_ENV] = '99999999999';
+
+        const res = await request(app).get('/api/v1/cis/ci-a-db/impact').set(AS_A);
+
+        expect(res.status).toBe(200);
+        expect(lineageCheckouts().map(({ timeouts }) => timeouts)).toEqual([[IMPACT_LINEAGE_TIMEOUT_MS]]);
+      });
+    });
+  });
+
+  // HAP-1927 (BW11, BW12): affected business services, cost per hour and recommendations, organization-scoped.
+  describe('impact business context (HAP-1927)', () => {
+    const service = (id: string, org: string, criticality: string, metadata: Record<string, unknown>, lifecycle = 'live') => sql(
+      `INSERT INTO dim_business_services (service_id, name, service_classification, tbm_tower, business_criticality,
+         operational_status, lifecycle, organization_id, metadata)
+       VALUES ($1, $2, 'application', 'application', $3, 'active', $4, $5, $6::jsonb)`,
+      [id, `${id} name`, criticality, lifecycle, org, JSON.stringify(metadata)]);
+    const ciRow = (id: string, org: string) => sql(
+      `INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, is_current, organization_id)
+       VALUES ($1, $1, 'server', 'active', TRUE, $2)`, [id, org]);
+    const map = (ciId: string, serviceId: string) => sql(
+      `INSERT INTO ci_business_service_mappings (ci_id, service_id, mapping_type) VALUES ($1, $2, 'supports')`, [ciId, serviceId]);
+    afterEach(async () => {
+      await sql('DELETE FROM ci_business_service_mappings; DELETE FROM dim_business_services; DELETE FROM cmdb.dim_ci; '
+        + 'DELETE FROM ci_reconciliation_operations');
+    });
+    const impact = () => request(app).get('/api/v1/cis/ci-a-db/impact').set(AS_A);
+
+    it('lists the services mapped to the CI or anything downstream, sums cost per hour as revenue / 8760 rounded to cents, and keeps the pre-change members', async () => {
+      await ciRow('ci-a-db', ORG_A);
+      await ciRow('ci-a-app', ORG_A);
+      await service('svc-a', ORG_A, 'critical', { annual_revenue_supported: 8_760_000, user_count: 250 });
+      await service('svc-a-low', ORG_A, 'low', { annual_revenue_supported: '1000000' });
+      await map('ci-a-db', 'svc-a');
+      await map('ci-a-app', 'svc-a');
+      await map('ci-a-app', 'svc-a-low');
+
+      const res = await impact();
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.affected_business_services).toEqual([
+        { service_id: 'svc-a', name: 'svc-a name', business_criticality: 'critical', lifecycle: 'live', users: 250,
+          annual_revenue: 8_760_000, cost_per_hour: 1000, affected_ci_ids: ['ci-a-app', 'ci-a-db'] },
+        { service_id: 'svc-a-low', name: 'svc-a-low name', business_criticality: 'low', lifecycle: 'live', users: null,
+          annual_revenue: 1_000_000, cost_per_hour: 114.16, affected_ci_ids: ['ci-a-app'] },
+      ]);
+      expect(res.body.data.cost_per_hour).toBe(1114.16);
+      expect(res.body.data.cost_per_hour_services_priced).toBe(2);
+      expect(res.body.data.unavailable).toEqual(['affected_business_services[].users']);
+      // Backward compatible: every pre-change member keeps its value.
+      expect(res.body.data.downstream.map((ci: { id: string }) => ci.id)).toEqual(['ci-a-app']);
+      expect(res.body.data.upstream).toEqual([]);
+      expect(res.body.data.impact_score).toBe(0.1);
+      expect(res.body.totalImpacted).toBe(1);
+    });
+
+    it("never counts or returns another organization's service, even one mapped to this organization's CI", async () => {
+      await ciRow('ci-a-db', ORG_A);
+      await service('svc-a', ORG_A, 'high', { annual_revenue_supported: 8_760_000 });
+      await service('svc-b', ORG_B, 'critical', { annual_revenue_supported: 87_600_000, user_count: 9999 });
+      await map('ci-a-db', 'svc-a');
+      await map('ci-a-db', 'svc-b');
+
+      const res = await impact();
+
+      expect(res.body.data.affected_business_services.map((s: { service_id: string }) => s.service_id)).toEqual(['svc-a']);
+      expect(res.body.data.cost_per_hour).toBe(1000);
+      expect(JSON.stringify(res.body)).not.toContain('svc-b');
+    });
+
+    it("skips a mapping whose CI row belongs to another organization, so a stale cross-organization mapping is not counted", async () => {
+      await ciRow('ci-a-db', ORG_A);
+      await ciRow('ci-a-app', ORG_B); // the reporting row of this CI id is another organization's
+      await service('svc-a', ORG_A, 'high', { annual_revenue_supported: 8_760_000 });
+      await map('ci-a-app', 'svc-a');
+
+      const res = await impact();
+
+      expect(res.body.data.affected_business_services).toEqual([]);
+      expect(res.body.data.cost_per_hour).toBeNull();
+    });
+
+    it('hides cost per hour (null, listed as unavailable), never 0, when no revenue is recorded or it is not a positive number', async () => {
+      await ciRow('ci-a-db', ORG_A);
+      for (const [id, metadata] of [['svc-none', {}], ['svc-zero', { annual_revenue_supported: 0 }],
+        ['svc-text', { annual_revenue_supported: 'lots', user_count: 'many' }],
+        ['svc-negative', { annual_revenue_supported: -5 }]] as const) {
+        await service(id, ORG_A, 'medium', metadata);
+        await map('ci-a-db', id);
+      }
+
+      const res = await impact();
+
+      expect(res.body.data.cost_per_hour).toBeNull();
+      expect(res.body.data.cost_per_hour_services_priced).toBe(0);
+      expect(res.body.data.affected_business_services).toHaveLength(4);
+      for (const affected of res.body.data.affected_business_services) {
+        expect([affected.annual_revenue, affected.cost_per_hour, affected.users]).toEqual([null, null, null]);
+      }
+      expect(res.body.data.unavailable).toEqual(
+        ['cost_per_hour', 'affected_business_services[].cost_per_hour', 'affected_business_services[].users']);
+    });
+
+    it('with no mapped service the lists are empty and only the total is unavailable', async () => {
+      await ciRow('ci-a-db', ORG_A);
+
+      const res = await impact();
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.affected_business_services).toEqual([]);
+      expect(res.body.data.cost_per_hour).toBeNull();
+      expect(res.body.data.cost_per_hour_services_priced).toBe(0);
+      expect(res.body.data.unavailable).toEqual(['cost_per_hour']);
+    });
+
+    it('skips a retired service and a CI with a pending or failed reconciliation operation', async () => {
+      await ciRow('ci-a-db', ORG_A);
+      await ciRow('ci-a-app', ORG_A);
+      await service('svc-live', ORG_A, 'high', { annual_revenue_supported: 8_760_000 });
+      await service('svc-retired', ORG_A, 'critical', { annual_revenue_supported: 87_600_000 }, 'retired');
+      await service('svc-pending', ORG_A, 'critical', { annual_revenue_supported: 87_600_000 });
+      await map('ci-a-db', 'svc-live');
+      await map('ci-a-db', 'svc-retired');
+      await map('ci-a-app', 'svc-pending');
+      await sql(`INSERT INTO ci_reconciliation_operations (id, group_id, organization_id, ci_id, origin, operation, graph_effect,
+          state, actor, epoch, lease_expires_at)
+        VALUES ($1, $2, $3, 'ci-a-app', 'api', 'update', TRUE, 'pending', 'tess', 1, now() + interval '1 hour')`,
+        [randomUUID(), randomUUID(), ORG_A]);
+
+      const res = await impact();
+
+      expect(res.body.data.affected_business_services.map((s: { service_id: string }) => s.service_id)).toEqual(['svc-live']);
+      expect(res.body.data.cost_per_hour).toBe(1000);
+    });
+
+    describe('POST /impact/predict', () => {
+      const predicted = (overrides: Record<string, unknown> = {}) => ({
+        id: 'impact-1', source_ci_id: 'ci-a-db', source_ci_name: 'a-database', change_type: 'failover', impact_score: 50,
+        affected_cis: [{ ci_id: 'ci-a-app', ci_name: 'ci-a-app', ci_type: 'server', impact_type: 'direct',
+          dependency_path: ['ci-a-db', 'ci-a-app'], hop_count: 1, impact_probability: 90, estimated_impact: 'direct',
+          direction: 'downstream' }],
+        blast_radius: 1, critical_path: ['ci-a-db', 'ci-a-app'], risk_level: 'high', analyzed_at: '2026-01-01T00:00:00.000Z',
+        estimated_downtime_minutes: 18, ...overrides,
+      });
+      const predict = (changeType = 'failover') => request(app).post('/api/v1/impact/predict').set(AS_A)
+        .send({ ci_id: 'ci-a-db', change_type: changeType });
+
+      it('accepts failover and adds services, cost per hour and deterministic recommendations without touching the engine result', async () => {
+        jest.spyOn(getImpactPredictionEngine(), 'predictChangeImpact').mockResolvedValue(predicted() as never);
+        await ciRow('ci-a-db', ORG_A);
+        await ciRow('ci-a-app', ORG_A);
+        await service('svc-a', ORG_A, 'critical', { annual_revenue_supported: 8_760_000, user_count: 10 });
+        await map('ci-a-app', 'svc-a');
+
+        const res = await predict('FAILOVER');
+
+        expect(res.status).toBe(201);
+        expect(res.body.data).toMatchObject(predicted());
+        expect(res.body.data.affected_business_services.map((s: { service_id: string }) => s.service_id)).toEqual(['svc-a']);
+        expect(res.body.data.cost_per_hour).toBe(1000);
+        expect(res.body.data.unavailable).toEqual([]);
+        expect(res.body.data.recommendations.map((r: { id: string }) => r.id)).toEqual(
+          ['maintenance_window', 'notify_dependents', 'notify_service_owners', 'verify_standby']);
+      });
+
+      it("does not count another organization's service mapped to the affected CI", async () => {
+        jest.spyOn(getImpactPredictionEngine(), 'predictChangeImpact').mockResolvedValue(predicted() as never);
+        await ciRow('ci-a-db', ORG_A);
+        await ciRow('ci-a-app', ORG_A);
+        await service('svc-b', ORG_B, 'critical', { annual_revenue_supported: 87_600_000 });
+        await map('ci-a-app', 'svc-b');
+
+        const res = await predict();
+
+        expect(res.status).toBe(201);
+        expect(res.body.data.affected_business_services).toEqual([]);
+        expect(res.body.data.cost_per_hour).toBeNull();
+        expect(res.body.data.unavailable).toEqual(['cost_per_hour']);
+        expect(res.body.data.recommendations.map((r: { id: string }) => r.id)).not.toContain('notify_service_owners');
+      });
+    });
+
+    // HAP-1928 (BW13): POST /ask, the deterministic happy-ui/v1 impact answer. Read-only and organization-scoped.
+    describe('POST /ask', () => {
+      const predicted = (overrides: Record<string, unknown> = {}) => ({
+        id: 'unstored', source_ci_id: 'ci-a-db', source_ci_name: 'a-database', change_type: 'failover', impact_score: 50,
+        affected_cis: [{ ci_id: 'ci-a-app', ci_name: 'a-app', ci_type: 'server', impact_type: 'direct',
+          dependency_path: ['ci-a-db', 'ci-a-app'], hop_count: 1, impact_probability: 90, estimated_impact: 'direct',
+          direction: 'downstream' }],
+        blast_radius: 1, critical_path: ['ci-a-db', 'ci-a-app'], risk_level: 'high', analyzed_at: '2026-01-01T00:00:00.000Z',
+        estimated_downtime_minutes: 18, ...overrides,
+      });
+      // The impact rate limit is per user: a fresh user per call keeps these tests independent of the other impact tests here.
+      let askers = 0;
+      const asker = (organizationId: string): Record<string, string> => {
+        const userId = `asker-${askers += 1}`;
+        USERS[userId] = { _id: userId, _username: userId, _role: 'operator', _enabled: true, _organizationId: organizationId };
+        return bearer(userId, organizationId);
+      };
+      const ask = (body: Record<string, unknown>, as: Record<string, string> = asker(ORG_A)) => request(app).post('/api/v1/ask')
+        .set(as).send(body).buffer(true).parse((res, done) => {
+          let data = '';
+          res.setEncoding('utf8');
+          res.on('data', chunk => { data += chunk; });
+          res.on('end', () => done(null, data));
+        });
+      const lines = (res: { body: string }) => res.body.trim().split('\n').map(line => JSON.parse(line));
+      const kpis = (res: { body: string }) => lines(res).find(line => line.id === 'kpis').props.items as Array<Record<string, any>>;
+      const preview = (value: unknown = predicted()) => jest.spyOn(getImpactPredictionEngine(), 'previewChangeImpact')
+        .mockResolvedValue(value as never);
+
+      it('streams the impact answer for a CI of the caller as happy-ui/v1 JSON Lines, failover by default, via the preview method and without storing a prediction', async () => {
+        const previewed = preview();
+        const stored = jest.spyOn(getImpactPredictionEngine(), 'predictChangeImpact');
+        await ciRow('ci-a-db', ORG_A);
+        await ciRow('ci-a-app', ORG_A);
+        await service('svc-a', ORG_A, 'critical', { annual_revenue_supported: 8_760_000, user_count: 10 });
+        await map('ci-a-app', 'svc-a');
+
+        const res = await ask({ ci_id: 'ci-a-db' });
+
+        expect(res.status).toBe(200);
+        expect(res.headers['content-type']).toMatch(/^application\/x-ndjson/);
+        expect(previewed).toHaveBeenCalledWith('ci-a-db', 'failover', ORG_A);
+        expect(stored).not.toHaveBeenCalled();
+        const stream = lines(res);
+        expect(stream[0]).toEqual({ op: 'begin', $schema: 'happy-ui/v1', catalog: 'happy.core@1' });
+        expect(stream[stream.length - 1]).toEqual({ op: 'end' });
+        expect(stream.filter(line => line.op === 'effect').map(line => line.effect)).toEqual([
+          { emit: 'select', detail: { id: 'ci-a-db' } }, { emit: 'focus', detail: { id: 'ci-a-db' } },
+          { emit: 'highlight', detail: { ids: ['ci-a-app'], tone: 'warn' } },
+        ]);
+        expect(kpis(res).map(stat => [stat.label, stat.value])).toEqual(
+          [['Risk', 'High'], ['Dependent CIs', 1], ['Cost per hour', 1000], ['Estimated downtime', 18]]);
+        expect(stream.find(line => line.id === 'services').props.items.map((item: { id: string }) => item.id)).toEqual(['svc-a']);
+        expect(stream.filter(line => line.type === 'Callout').map(line => line.id)).toEqual(
+          ['rec-maintenance_window', 'rec-notify_dependents', 'rec-notify_service_owners', 'rec-verify_standby']);
+      });
+
+      it('passes the requested change type to the prediction', async () => {
+        const previewed = preview(predicted({ change_type: 'restart' }));
+        await ciRow('ci-a-db', ORG_A);
+
+        expect((await ask({ ci_id: 'ci-a-db', question: 'impact', change_type: 'RESTART' })).status).toBe(200);
+        expect(previewed).toHaveBeenCalledWith('ci-a-db', 'restart', ORG_A);
+      });
+
+      it("never counts or returns another organization's service, even one mapped to this organization's CI", async () => {
+        preview();
+        await ciRow('ci-a-db', ORG_A);
+        await ciRow('ci-a-app', ORG_A);
+        await service('svc-a', ORG_A, 'high', { annual_revenue_supported: 8_760_000 });
+        await service('svc-b', ORG_B, 'critical', { annual_revenue_supported: 87_600_000, user_count: 9999 });
+        await map('ci-a-app', 'svc-a');
+        await map('ci-a-app', 'svc-b');
+
+        const res = await ask({ ci_id: 'ci-a-db' });
+
+        expect(lines(res).find(line => line.id === 'services').props.items.map((item: { id: string }) => item.id)).toEqual(['svc-a']);
+        expect(kpis(res).find(stat => stat.label === 'Cost per hour')!.value).toBe(1000);
+        expect(res.body).not.toContain('svc-b');
+        expect(res.body).not.toContain('9999');
+      });
+
+      it("does not answer for another organization's CI: 404 before any prediction", async () => {
+        const previewed = preview();
+        await ciRow('ci-b-db', ORG_B);
+
+        const res = await ask({ ci_id: 'ci-b-db' });
+
+        expect(res.status).toBe(404);
+        expect(JSON.parse(res.body)).toEqual({ success: false, error: 'Not Found', message: "CI with ID 'ci-b-db' not found" });
+        expect(previewed).not.toHaveBeenCalled();
+        expect((await ask({ ci_id: 'ci-a-db' }, AS_B)).status).toBe(404);
+      });
+
+      it('hides cost per hour and downtime, never showing 0, and lists them as not available', async () => {
+        preview(predicted({ change_type: 'performance_tuning', estimated_downtime_minutes: undefined }));
+        await ciRow('ci-a-db', ORG_A);
+        await ciRow('ci-a-app', ORG_A);
+        await service('svc-none', ORG_A, 'medium', {});
+        await map('ci-a-app', 'svc-none');
+
+        const res = await ask({ ci_id: 'ci-a-db', change_type: 'performance_tuning' });
+
+        expect(res.status).toBe(200);
+        expect(kpis(res).map(stat => stat.label)).toEqual(['Risk', 'Dependent CIs']);
+        const unavailable = lines(res).find(line => line.id === 'unavailable');
+        expect(unavailable.props.text).toMatch(/cost per hour/);
+        expect(unavailable.props.text).toMatch(/estimated downtime/);
+        expect(lines(res).find(line => line.id === 'services').props.items).toEqual(
+          [{ id: 'svc-none', name: 'svc-none name', tag: 'medium', tagTone: 'sky' }]);
+      });
+
+      it('answers a CI with no recorded dependents without services, chain or highlight', async () => {
+        preview(predicted({ affected_cis: [], blast_radius: 0, critical_path: ['ci-a-db'], risk_level: 'minimal' }));
+        await ciRow('ci-a-db', ORG_A);
+
+        const stream = lines(await ask({ ci_id: 'ci-a-db' }));
+
+        expect(stream.map(line => line.id).filter(Boolean)).not.toEqual(expect.arrayContaining(['services']));
+        expect(stream.some(line => line.id === 'chain')).toBe(false);
+        expect(stream.some(line => line.effect?.emit === 'highlight')).toBe(false);
+        expect(stream.some(line => line.id === 'rec-no_recorded_dependents')).toBe(true);
+      });
+
+      it('refuses a question other than impact, a missing or oversized CI id and an unknown change type before any lookup', async () => {
+        const previewed = preview();
+        const bad = [{}, { ci_id: 'ci-a-db', question: 'who owns this?' }, { ci_id: 'x'.repeat(65) },
+          { ci_id: 'ci-a-db', change_type: 'teleport' }];
+        for (const body of bad) expect((await ask(body)).status).toBe(400);
+        expect(previewed).not.toHaveBeenCalled();
+      });
+
+      it('refuses a token with no organization claim', async () => {
+        const previewed = preview();
+        expect((await ask({ ci_id: 'ci-a-db' }, NO_ORG)).status).toBe(403);
+        expect(previewed).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  // HAP-2033: impact_score is min(totalImpacted / 10, 1) on a 0-1 scale, and openapi.yaml
+  // must declare that same range for the response the controller sends.
+  describe('GET /cis/:id/impact impact_score contract (HAP-2033)', () => {
+    const spec = YAML.load(join(__dirname, '../../../openapi/openapi.yaml'));
+    const score = spec.paths['/cis/{id}/impact'].get.responses['200'].content['application/json']
+      .schema.properties.data.properties.impact_score;
+    const impactScore = async (id: string) => {
+      const res = await request(app).get(`/api/v1/cis/${id}/impact`).set(AS_A);
+      expect(res.status).toBe(200);
+      return { score: res.body.data.impact_score as number, totalImpacted: res.body.totalImpacted as number };
+    };
+    const addDependents = (target: string, count: number) => {
+      for (let i = 0; i < count; i++) {
+        seedCI(`ci-a-dep-${i}`, ORG_A);
+        dependsOn(`ci-a-dep-${i}`, target);
+      }
+    };
+
+    it('is 0 with no impacted CIs', async () => {
+      seedCI('ci-a-alone', ORG_A);
+      expect(await impactScore('ci-a-alone')).toEqual({ score: 0, totalImpacted: 0 });
+    });
+
+    it('is the impacted count over 10 for a few impacted CIs, upstream and downstream both counted', async () => {
+      // ci-a-db: upstream none, downstream ci-a-app + 3 more.
+      addDependents('ci-a-db', 3);
+      expect(await impactScore('ci-a-db')).toEqual({ score: 0.4, totalImpacted: 4 });
+      // ci-a-app: upstream ci-a-db only.
+      expect(await impactScore('ci-a-app')).toEqual({ score: 0.1, totalImpacted: 1 });
+    });
+
+    it('reaches exactly 1 at 10 impacted CIs and stays at 1 beyond', async () => {
+      addDependents('ci-a-db', 9); // + ci-a-app = 10
+      expect(await impactScore('ci-a-db')).toEqual({ score: 1, totalImpacted: 10 });
+      addDependents('ci-a-db', 12); // 13 impacted
+      expect(await impactScore('ci-a-db')).toEqual({ score: 1, totalImpacted: 13 });
+    });
+
+    it('openapi.yaml declares the range the controller emits', async () => {
+      expect(score).toMatchObject({ type: 'number', minimum: 0, maximum: 1 });
+      seedCI('ci-a-alone', ORG_A);
+      addDependents('ci-a-db', 12);
+      for (const id of ['ci-a-alone', 'ci-a-app', 'ci-a-db']) {
+        const { score: value } = await impactScore(id);
+        expect(typeof value).toBe('number');
+        expect(value).toBeGreaterThanOrEqual(score.minimum);
+        expect(value).toBeLessThanOrEqual(score.maximum);
+      }
+    });
   });
 
   it('GET /cis/:id/dependencies and /relationships never hop through another org', async () => {
@@ -771,12 +1438,180 @@ describe('/api/v1/cis tenant scoping', () => {
       const req = request(app)[method as 'get'](path).set(NO_ORG);
       const res = await (body === null ? req : req.send(body));
       expect([method, path, res.status, res.body]).toEqual([
-        method, path, 403, { _error: 'Forbidden', _message: 'Organization claim required' },
+        method, path, 403, expect.objectContaining({ _error: 'Forbidden', _message: 'Organization claim required', code: 'ORGANIZATION_REQUIRED' }),
       ]);
     }
     expect(queryCount).toBe(0);
     expect(auditHistoryReads).toBe(0);
     expect(graph.nodes.has('ci-legacy')).toBe(true);
+  });
+});
+
+describe('GET /cis sort_by whitelist (cm-fu-ci-list-sort-by-whitelist-400)', () => {
+  const listPage = () => runLog.filter(statement => statement.includes(' RETURN ci ORDER BY '));
+  const orderBy = (statement: string) => statement.match(/ORDER BY (ci\.\w+) (ASC|DESC), ci\.id/)?.slice(1, 3);
+  beforeEach(() => { runLog.length = 0; });
+  afterEach(() => { runFailure = undefined; jest.restoreAllMocks(); });
+
+  it.each(['hostname', 'created', 'name;DROP', 'name DESC', 'NAME', 'ci.name'])(
+    'sort_by=%s is a 400 from the route and never reaches the graph', async value => {
+      const error = jest.spyOn(logger, 'error');
+      const res = await request(app).get('/api/v1/cis').query({ sort_by: value }).set(AS_A);
+      expect(res.status).toBe(400);
+      // validateOptional's body, unchanged: its keys carry a leading underscore.
+      expect(res.body).toMatchObject({ _success: false, _error: 'Validation Error', _details: [{ _field: 'sort_by', _type: 'any.only' }] });
+      expect(listPage()).toEqual([]);
+      expect(error).not.toHaveBeenCalled();
+    });
+
+  it('an empty sort_by is a 400 (Joi rejects the empty string)', async () => {
+    const res = await request(app).get('/api/v1/cis?sort_by=').set(AS_A);
+    expect(res.status).toBe(400);
+    expect(listPage()).toEqual([]);
+  });
+
+  it('a repeated sort_by is a 400', async () => {
+    const res = await request(app).get('/api/v1/cis?sort_by=name&sort_by=type').set(AS_A);
+    expect(res.status).toBe(400);
+  });
+
+  it.each([...VALID_CI_SORT_FIELDS])('sort_by=%s is a 200 and orders by that field', async field => {
+    const res = await request(app).get('/api/v1/cis').query({ sort_by: field }).set(AS_A);
+    expect(res.status).toBe(200);
+    expect(listPage().map(orderBy)).toEqual([[`ci.${field}`, 'ASC']]);
+  });
+
+  it('without sort_by the list orders by name ascending', async () => {
+    const res = await request(app).get('/api/v1/cis').set(AS_A);
+    expect(res.status).toBe(200);
+    expect(listPage().map(orderBy)).toEqual([['ci.name', 'ASC']]);
+  });
+
+  it('sort_order=desc is honoured and sort_order=up is a 400', async () => {
+    const desc = await request(app).get('/api/v1/cis?sort_by=type&sort_order=desc').set(AS_A);
+    expect(desc.status).toBe(200);
+    expect(listPage().map(orderBy)).toEqual([['ci.type', 'DESC']]);
+    runLog.length = 0;
+    const up = await request(app).get('/api/v1/cis?sort_order=up').set(AS_A);
+    expect(up.status).toBe(400);
+    expect(listPage()).toEqual([]);
+  });
+
+  it('the handler alone answers a non-whitelisted sort_by with a 400, no error log and no graph session', async () => {
+    const error = jest.spyOn(logger, 'error');
+    const session = jest.spyOn(neo4jClient, 'getSession');
+    const before = queryCount;
+    const json = jest.fn();
+    const res = { status: jest.fn(() => ({ json })), json };
+    const req = { query: { sort_by: 'hostname' }, user: { _organizationId: ORG_A } };
+    await new CIController().getAllCIs(req as never, res as never);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(json).toHaveBeenCalledWith({
+      success: false, error: 'Bad Request', message: expect.stringContaining('Invalid sort field: hostname'),
+    });
+    expect(error).not.toHaveBeenCalled();
+    expect(session).not.toHaveBeenCalled();
+    expect(queryCount).toBe(before);
+  });
+
+  it('an unrelated failure of the list read is still a logged 500', async () => {
+    const error = jest.spyOn(logger, 'error').mockImplementation(() => undefined);
+    runFailure = new Error('neo4j unavailable');
+    const res = await request(app).get('/api/v1/cis?sort_by=name').set(AS_A);
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ success: false, error: 'Failed to retrieve CIs', message: 'Internal error' });
+    expect(error).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('CI health on GET /cis and GET /cis/:id (HAP-1923 BW1)', () => {
+  const healthOf = (body: { data: Array<{ id: string; health: unknown }> }) =>
+    Object.fromEntries(body.data.map(ci => [ci.id, ci.health]));
+  const incident = (n: number, ci: string, priority: number, status: string, org: string | null) => sql(
+    `INSERT INTO itil_incidents (id, incident_number, title, impact, urgency, priority, affected_ci_id, status,
+       reported_by, organization_id) VALUES (gen_random_uuid(), $1, 't', 'high', 'high', $2, $3, $4, 'x', $5)`,
+    [`INC-H${n}`, priority, ci, status, org]);
+  const seedHealthCIs = () => {
+    for (const id of ['ci-h-ok', 'ci-h-p1', 'ci-h-p2', 'ci-h-p3', 'ci-h-mixed', 'ci-h-closed', 'ci-h-legacy']) seedCI(id, ORG_A);
+    seedCI('ci-h-b', ORG_B);
+  };
+
+  it('is null, never healthy, while the ITIL record tables do not exist', async () => {
+    seedHealthCIs();
+    const list = await request(app).get('/api/v1/cis').set(AS_A);
+    expect(list.status).toBe(200);
+    expect(Object.values(healthOf(list.body))).not.toHaveLength(0);
+    expect(new Set(Object.values(healthOf(list.body)))).toEqual(new Set([null]));
+    const detail = await request(app).get('/api/v1/cis/ci-h-ok').set(AS_A);
+    expect(detail.body.data).toMatchObject({ id: 'ci-h-ok', health: null });
+  });
+
+  describe('with the ITIL tables', () => {
+    beforeAll(async () => {
+      const ddl = readFileSync(join(__dirname, '../../../../../database/src/postgres/migrations/001_complete_schema.sql'), 'utf8');
+      await sql(ddl.match(/CREATE TABLE IF NOT EXISTS itil_incidents \([\s\S]*?\n\);/)![0]);
+      await sql('ALTER TABLE itil_incidents ADD COLUMN organization_id uuid');
+      await sql(`GRANT SELECT ON itil_incidents TO cmdb_user`);
+    });
+    afterAll(() => sql('DROP TABLE itil_incidents'));
+    beforeEach(async () => {
+      await sql('DELETE FROM itil_incidents');
+      await incident(1, 'ci-h-p1', 1, 'in_progress', ORG_A);
+      await incident(2, 'ci-h-p2', 2, 'new', ORG_A);
+      await incident(3, 'ci-h-p3', 3, 'new', ORG_A);
+      await incident(4, 'ci-h-mixed', 5, 'new', ORG_A);
+      await incident(5, 'ci-h-mixed', 2, 'new', ORG_A);
+      await incident(6, 'ci-h-closed', 1, 'resolved', ORG_A);
+      await incident(7, 'ci-h-closed', 1, 'closed', ORG_A);
+      await incident(8, 'ci-h-closed', 1, 'cancelled', ORG_A);
+      await incident(9, 'ci-h-legacy', 1, 'new', null); // pre-cutover row with no organization: inert
+    });
+
+    it('derives healthy, degraded and critical from open incidents of the caller organization', async () => {
+      seedHealthCIs();
+      const list = await request(app).get('/api/v1/cis').set(AS_A);
+      expect(healthOf(list.body)).toMatchObject({
+        'ci-h-ok': 'healthy', 'ci-h-p1': 'critical', 'ci-h-p2': 'critical', 'ci-h-p3': 'degraded',
+        'ci-h-mixed': 'critical', 'ci-h-closed': 'healthy', 'ci-h-legacy': 'healthy',
+      });
+      for (const [id, health] of [['ci-h-p1', 'critical'], ['ci-h-p3', 'degraded'], ['ci-h-closed', 'healthy']]) {
+        const detail = await request(app).get(`/api/v1/cis/${id}`).set(AS_A);
+        expect(detail.body.data).toMatchObject({ id, health });
+      }
+    });
+
+    it("never reads another organization's incidents, and A's incidents never mark B's CIs", async () => {
+      seedHealthCIs();
+      await incident(20, 'ci-h-ok', 1, 'new', ORG_B); // B names A's CI id
+      await incident(21, 'ci-h-b', 3, 'new', ORG_A); // A names B's CI id
+      const own = await request(app).get('/api/v1/cis').set(AS_A);
+      expect(healthOf(own.body)['ci-h-ok']).toBe('healthy');
+      expect(own.body.data.map((ci: { id: string }) => ci.id)).not.toContain('ci-h-b');
+      const theirs = await request(app).get('/api/v1/cis').set(AS_B);
+      const seen = healthOf(theirs.body);
+      expect(Object.keys(seen).filter(id => id.startsWith('ci-h-'))).toEqual(['ci-h-b']);
+      expect(seen['ci-h-b']).toBe('healthy'); // A's P3 incident on ci-h-b is not B's
+      expect((await request(app).get('/api/v1/cis/ci-h-b').set(AS_A)).body).toEqual(NOT_FOUND);
+    });
+
+    it('keeps every earlier CI key next to health', async () => {
+      seedCI('ci-h-keys', ORG_A);
+      const detail = await request(app).get('/api/v1/cis/ci-h-keys').set(AS_A);
+      expect(Object.keys(detail.body.data)).toEqual(expect.arrayContaining(
+        ['id', 'name', 'type', 'status', 'environment', 'owner', 'provider', 'ip_address', 'tier', 'health']));
+    });
+
+    it('answers health null, not a failed CI read, when the incident read fails', async () => {
+      seedHealthCIs();
+      await sql('ALTER TABLE itil_incidents RENAME COLUMN priority TO priority_x');
+      try {
+        const list = await request(app).get('/api/v1/cis').set(AS_A);
+        expect(list.status).toBe(200);
+        expect(new Set(Object.values(healthOf(list.body)))).toEqual(new Set([null]));
+      } finally {
+        await sql('ALTER TABLE itil_incidents RENAME COLUMN priority_x TO priority');
+      }
+    });
   });
 });
 

@@ -17,6 +17,7 @@ jest.mock('@cmdb/common', () => ({ ...jest.requireActual('@cmdb/common/types/ci.
   sanitizeCITypeForLabel: (s: string) => s, ciIncarnationId: jest.requireActual('@cmdb/common/utils/ci-incarnation').ciIncarnationId }));
 jest.mock('@cmdb/database', () => ({
   ...jest.requireActual('@cmdb/database/journal/journal'), enc: jest.requireActual('@cmdb/database/journal/encoding').enc,
+  PlanUnrepresentableError: jest.requireActual('@cmdb/database/journal/encoding').PlanUnrepresentableError,
   getNeo4jClient: () => ({
     getSession: () => ({ run, close }),
     // The journaled merge (journal internals run in tests/integration) plans on the owned node, then replays its graph write.
@@ -29,6 +30,16 @@ jest.mock('@cmdb/database', () => ({
       const written = planned.graph && await run(`MATCH (ci:CI {id: $ciId}) WHERE ci.organization_id = $organizationId
         SET ci += $properties RETURN ci.incarnation_id AS incarnation_id`, { ciId, organizationId, properties: planned.graph.params.props });
       return written && !written.records.length ? null : result('group');
+    },
+    // HAP-2016: the journaled create (the journal itself runs in reconcile-create.journal.test.ts): W stamps the organization.
+    journal: {
+      run: async (write: { organizationId: string; plan: () => Promise<{ graph: { params: unknown } }>;
+        result: (groupId: string) => Promise<unknown> }) => {
+        const { dec } = jest.requireActual('@cmdb/database/journal/encoding');
+        const { id, props } = dec((await write.plan()).graph.params) as { id: string; props: Record<string, unknown> };
+        nodes.push({ ...props, id, organization_id: write.organizationId } as Node);
+        return write.result('group');
+      },
     },
   }),
   getPostgresClient: () => ({ query }),
@@ -170,15 +181,9 @@ it('publishes the reconciled organization for both updated and discovered CIs', 
 
   emit.mockClear();
   nodes = [];
-  run.mockImplementation(async (cypher: string, params: Record<string, unknown>) => {
-    if (cypher.includes('CREATE (ci:CI:')) {
-      const properties = params.properties as { id: string; organization_id: string };
-      expect(properties.organization_id).toBe(OTHER);
-      return { records: [{ get: () => properties.id }] };
-    }
-    return { records: [] };
-  });
+  // no match: the create goes through the journal stub, which stamps the caller's organization like the journal's W
   const createdId = await engine.reconcileCI(ci({ serial_number: 'new' }), OTHER);
+  expect(nodes).toEqual([expect.objectContaining({ id: createdId, organization_id: OTHER })]);
   expect(emit).toHaveBeenCalledWith('ci.discovered', 'identity-reconciliation-engine',
     expect.objectContaining({ ci_id: createdId, organization_id: OTHER }));
 });
@@ -199,13 +204,7 @@ it('delivers reconciled tenant provenance to the ML baseline and drift consumers
     await engine.reconcileCI(ci({ serial_number: 'same' }), OWN, false);
     expect(detectDrift).toHaveBeenCalledWith('target', OWN);
     nodes = [];
-    run.mockImplementation(async (cypher: string, params: Record<string, unknown>) => {
-      if (cypher.includes('CREATE (ci:CI:')) {
-        const properties = params.properties as { id: string; organization_id: string };
-        return { records: [{ get: () => properties.id }] };
-      }
-      return { records: [] };
-    });
+    // no match: the create below goes through the journal stub
     const id = await engine.reconcileCI(ci({ serial_number: 'new' }), OTHER);
     expect(createBaseline).toHaveBeenCalledWith(id, 'configuration', 'auto-baseline', OTHER);
     await listeners.get('ci.discovered')?.({ ci_id: 'legacy-without-tenant' });
@@ -224,15 +223,11 @@ const smuggled = { note: 'n', type: 'secret-type', ci_type: 'x', updated_at: '19
 const leaked = (props: Record<string, unknown>) => Object.keys(smuggled).filter(key => key !== 'note'
   && props[key] === smuggled[key as keyof typeof smuggled]);
 
-it('HAP-499: the legacy reconcile create writes only mergeable attributes and identifiers', async () => {
-  const created: Record<string, unknown>[] = [];
-  run.mockImplementation(async (cypher: string, params: { properties: Record<string, unknown> }) => {
-    if (cypher.includes('CREATE (ci:CI:')) created.push(params.properties);
-    return { records: cypher.includes('CREATE (ci:CI:') ? [{ get: () => params.properties.id }] : [] };
-  });
+it('HAP-499: the reconcile create writes only mergeable attributes and identifiers', async () => {
   await IdentityReconciliationEngine.getInstance().reconcileCI({ ...ci({ serial_number: 'new', external_id: 'secret-ext' }),
     attributes: smuggled }, OWN);
-  expect([leaked(created[0]!), created[0]!.note, created[0]!.serial_number]).toEqual([[], 'n', 'new']);
+  const created = nodes[0] as Record<string, unknown>;
+  expect([leaked(created), created.note, created.serial_number, created.organization_id]).toEqual([[], 'n', 'new', OWN]);
 });
 
 it('HAP-499: a merge logs one metadata-only line with the ignored-attribute count', async () => {

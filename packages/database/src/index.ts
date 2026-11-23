@@ -7,9 +7,9 @@
 export {
   Neo4jClient, getNeo4jClient, UNSCOPED_CI_ACCESS,
   CITraversalLimitError, createCITraversalWork, runWithinCITraversalBudget, startJournalSweeper,
-  MAX_CI_TRAVERSAL_NODES, MAX_CI_TRAVERSAL_WORK, CI_TRAVERSAL_QUERY_TIMEOUT_MS,
+  MAX_CI_TRAVERSAL_NODES, MAX_CI_TRAVERSAL_WORK, CI_TRAVERSAL_QUERY_TIMEOUT_MS, REOBSERVATION_THROTTLE_HOURS,
 } from './neo4j/client';
-export type { CIOrganizationScope, CITraversalWork } from './neo4j/client';
+export type { CIOrganizationScope, CITraversalWork, CIEdgeRef } from './neo4j/client';
 export { initializeNeo4jSchema } from './neo4j/initializer';
 
 // HP1 reconciliation journal (v16 §3–§4)
@@ -17,8 +17,9 @@ export {
   JournalGapError, JournalAbortedError, JournalTargetMissingError, JournalUnavailableError, PlanUnrepresentableError,
   JournalConflictError, requeueFailedJournalGroup, setJournalSeam, ADMISSION_LOCK_KEY,
 } from './journal/journal';
-export type { JournalSeam, StoredPlan, ConflictPlan, JournalActorType } from './journal/journal';
+export type { JournalSeam, StoredPlan, ConflictPlan, JournalActorType, RelationshipEvidence } from './journal/journal';
 export { enc, dec, isStorableString } from './journal/encoding';
+export type { OversizedValue } from './journal/encoding';
 
 // HAP-1442 AI inventory: the only writer of source-owned AI CIs (its grant token is deliberately not exported)
 export { AISyncWriter, AISyncWriteRefused } from './ai-inventory/ai-sync-writer';

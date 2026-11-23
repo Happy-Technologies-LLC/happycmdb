@@ -137,6 +137,49 @@ $grants$;`;
  */
 export const journalReadAclSql = () => `BEGIN;\n${migrationSql('044_business_service_journal_read_acl.sql')}\nCOMMIT;`;
 
+/**
+ * PGlite: ci_source_lineage as 001 creates it plus 028's organization column, the table the HAP-2028 impact envelope
+ * reads on every traversal. Run it as the owner, before lineageReadAclSql.
+ */
+export const lineageTableSql = () => {
+  const table = migrationSql('001_complete_schema.sql').match(/CREATE TABLE IF NOT EXISTS ci_source_lineage \([\s\S]*?\n\);/);
+  const provenance = migrationSql('028_change_history_reconciliation_org_provenance.sql').match(/ALTER TABLE ci_source_lineage\s+ADD COLUMN[\s\S]*?;/);
+  if (!table || !provenance) throw new Error('ci_source_lineage DDL not found');
+  return `${table[0]}\n${provenance[0]}`;
+};
+
+/** PGlite: 053 verbatim, the column grant that lets the non-owner app login read the lineage the impact envelope filters on. */
+export const lineageReadAclSql = () => `BEGIN;\n${migrationSql('053_business_service_lineage_read_acl.sql')}\nCOMMIT;`;
+
+/**
+ * PGlite: 054 verbatim (relationship_evidence_receipts with its append-only trigger and the SELECT, INSERT grants to the app
+ * logins that exist), the table every journaled relationship write needs (the journal's schema gate refuses without it).
+ * Run it as the owner, after the login roles exist.
+ */
+export const receiptTableSql = () => `BEGIN;\n${migrationSql('054_relationship_evidence_receipts.sql')}\nCOMMIT;`;
+
+/**
+ * PGlite: the tables the HAP-1927 impact business-service read joins (ci_business_service_mappings, dim_business_services,
+ * cmdb.dim_ci), as 001 creates them plus the organization, lifecycle and org_backfilled columns 008, 011 and 043 add. Run it
+ * as the owner, after the journal tables exist and before APP_GRANTS_SQL (which grants the app login on them).
+ */
+export const impactBusinessTablesSql = () => {
+  const ddl = migrationSql('001_complete_schema.sql');
+  const create = (table: string) => {
+    const match = ddl.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table.replace('.', '\\.')} \\([\\s\\S]*?\\n\\);`));
+    if (!match) throw new Error(`Missing production table ${table}`);
+    return match[0];
+  };
+  return `CREATE SCHEMA IF NOT EXISTS cmdb;
+${create('dim_business_services')}
+${create('ci_business_service_mappings')}
+${create('cmdb.dim_ci')}
+ALTER TABLE dim_business_services ADD COLUMN IF NOT EXISTS organization_id UUID,
+  ADD COLUMN IF NOT EXISTS lifecycle VARCHAR(20) NOT NULL DEFAULT 'planned';
+ALTER TABLE cmdb.dim_ci ADD COLUMN IF NOT EXISTS organization_id UUID,
+  ADD COLUMN IF NOT EXISTS org_backfilled BOOLEAN NOT NULL DEFAULT FALSE;`;
+};
+
 /** PGlite: every later statement, from the routes or the test, runs as the app login. */
 export const ENTER_APP_LOGIN_SQL = `RESET ROLE; SET SESSION AUTHORIZATION ${APP_LOGIN};`;
 /** PGlite's bootstrap superuser, its authenticated backend user (RESET SESSION AUTHORIZATION does not return to it). */

@@ -121,10 +121,10 @@ async function observe() {
       user => (user === null ? 'not_found' : labelOf.get(user._elementId!)),
       error => (error instanceof AmbiguousUserIdentityError ? 'ambiguous' : `error:${String(error)}`)
     );
-    const bearer = await service.verifyToken(jwt.generateAccessToken(id, id, 'admin', ORG_A)).then(
+    const bearer = await service.verifyToken(jwt.generateAccessToken(id, id, 'admin', ORG_A, 0, Math.floor(Date.now() / 1000))).then(
       p => ({ allow: true, userId: p._userId, role: p._role, org: p._organizationId ?? null }), e => ({ allow: false, reason: reason(e) })
     );
-    const refresh = await service.refreshToken({ refreshToken: jwt.generateRefreshToken(id, id, 'admin') }).then(
+    const refresh = await service.refreshToken({ refreshToken: jwt.generateRefreshToken(id, id, 'admin', 0, Math.floor(Date.now() / 1000)) }).then(
       r => ({ allow: true, userId: r._user._id, role: r._user._role }), e => ({ allow: false, reason: reason(e) })
     );
     const apiKey = await service.verifyApiKey(keyOf(id)).then(

@@ -112,6 +112,11 @@ export const authSchemas = {
     currentPassword: Joi.string().min(1).required(),
     newPassword: Joi.string().min(8).required(),
   }),
+
+  /** HAP-1716: the step-up of POST /auth/sessions/revoke-others; the current password only. */
+  _revokeOtherSessions: Joi.object({
+    currentPassword: Joi.string().min(1).required(),
+  }),
 };
 
 /**

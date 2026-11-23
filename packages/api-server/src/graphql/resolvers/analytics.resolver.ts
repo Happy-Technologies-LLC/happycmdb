@@ -8,6 +8,7 @@ import { reserveAnalysisSlots } from '../../middleware/analysis-admission';
 import { AnalyticsService, DependencyDepthLimitError } from '../../services/analytics.service';
 import { logger, CIAnalyticsLimitError } from '@cmdb/common';
 import { requireGraphQLOrganization } from '../require-organization';
+import { requirePageArg } from '../pagination';
 import { assertNoCIGap, CIGapError, CIListUnavailableError, readSingleCI } from '../../read-admission';
 import type { TokenPayload } from '../../auth/types';
 
@@ -206,10 +207,10 @@ const AnalyticsQueryResolvers = {
     context: GraphQLContext
   ): Promise<any[]> => {
     const organizationId = requireGraphQLOrganization(context);
+    const limit = requirePageArg('limit', args.limit, { min: 1, max: 365, fallback: 30 });
     try {
       const service = new AnalyticsService();
       const interval = convertTimeInterval(args.interval);
-      const limit = Math.min(args.limit || 30, 365);
 
       const results = await service.getDiscoveryTimeline(organizationId, interval, limit);
 
@@ -235,9 +236,9 @@ const AnalyticsQueryResolvers = {
     context: GraphQLContext
   ): Promise<any[]> => {
     const organizationId = requireGraphQLOrganization(context);
+    const limit = requirePageArg('limit', args.limit, { min: 1, max: 100, fallback: 10 });
     try {
       const service = new AnalyticsService();
-      const limit = Math.min(args.limit || 10, 100);
       const direction = convertRelationshipDirection(args.direction);
 
       const results = await service.getTopConnectedCIs(organizationId, limit, direction);
@@ -297,6 +298,7 @@ const AnalyticsQueryResolvers = {
     context: GraphQLContext
   ): Promise<any[]> => {
     const organizationId = requireGraphQLOrganization(context);
+    const limit = requirePageArg('limit', args.limit, { min: 1, max: 1000, fallback: 50 });
     try {
       if (!args.ciId) {
         throw new GraphQLError('CI ID is required', {
@@ -310,7 +312,6 @@ const AnalyticsQueryResolvers = {
         throw new GraphQLError('CI not found', { extensions: { code: 'NOT_FOUND' } });
       }
       const service = new AnalyticsService();
-      const limit = Math.min(args.limit || 50, 1000);
       const results = await readSingleCI(organizationId, args.ciId,
         () => service.getChangeHistory(args.ciId, organizationId, limit, ci._incarnation_id ?? null));
       return results.map(row => ({

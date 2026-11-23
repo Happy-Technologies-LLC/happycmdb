@@ -351,7 +351,8 @@ export class PortfolioImportController {
           const from = idOf(row.ends?.[0]);
           const to = idOf(row.ends?.[1]);
           const written = await neo4j.writeRelationship('relationship_create', from, to, label, organizationId, actor,
-            { source_system: IMPORT_SOURCE, source_id: row.record.source_id }, undefined, 'user', audit);
+            { source_system: IMPORT_SOURCE, source_id: row.record.source_id }, undefined, 'user', audit,
+            { evidenceClass: 'declared', sourceName: 'portfolio_import', sourceId: importId, method: 'portfolio_import' });
           if (!written) throw new ImportTargetMissingError();
           entry.target_id = relationshipTarget(from, label, to);
           await writeMap(pg, row, entry.target_id);

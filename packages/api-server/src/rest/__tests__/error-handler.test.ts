@@ -85,7 +85,7 @@ server.setupErrorHandling();
 const app = server.getApp();
 
 const AUTH = {
-  Authorization: `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken('user-a', 'alice', 'operator', ORG)}`,
+  Authorization: `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken('user-a', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000))}`,
 };
 
 describe('global error handler', () => {

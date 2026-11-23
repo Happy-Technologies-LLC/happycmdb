@@ -42,7 +42,7 @@ export function buildUpdateQuery(id: string, updates: Record<string, unknown>, s
     if (['connection', 'options', 'resource_configs'].includes(field)) {
       fields.push(`${field} = ${connectorJsonMerge(field, updates[field], values, budget)}`);
     } else {
-      values.push(updates[field]);
+      values.push(field === 'schedule' && updates[field] === '' ? null : updates[field]);
       fields.push(`${field} = $${values.length}`);
     }
   }

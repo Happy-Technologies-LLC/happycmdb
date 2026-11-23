@@ -18,6 +18,9 @@ export const CI_QUERY_KEYS = {
   detail: (id: string) => [...CI_QUERY_KEYS.details(), id] as const,
   relationships: (id: string) => [...CI_QUERY_KEYS.detail(id), 'relationships'] as const,
   impact: (id: string) => [...CI_QUERY_KEYS.detail(id), 'impact'] as const,
+  impactEnvelope: (id: string) => [...CI_QUERY_KEYS.impact(id), 'envelope'] as const,
+  relationshipEvidence: (fromId: string, toId: string, type: string) =>
+    [...CI_QUERY_KEYS.all, 'relationship-evidence', fromId, toId, type] as const,
   audit: (id: string) => [...CI_QUERY_KEYS.detail(id), 'audit'] as const,
   search: (query: string) => [...CI_QUERY_KEYS.all, 'search', query] as const,
 };

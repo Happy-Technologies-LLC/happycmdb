@@ -163,6 +163,17 @@ export function defineA1RouteSuite({ app, router, offeringRouter, tokenForT, row
         expect(searched.body.items).toEqual([]);
       },
     },
+    // HAP-1926 BW10: only live or retiring services are listed and the seed holds none (all `planned`), so T sees an
+    // empty list and no T2 byte; the per-tenant availability rules are proven in hap1926.estate-feeds.test.ts.
+    'GET /availability': {
+      check: async () => {
+        const res = await get('/availability');
+        expect(res.status).toBe(200);
+        expect(res.body.data.services).toEqual([]);
+        expect(res.text).not.toContain('bs-t2');
+        expect(res.text).not.toContain(T2_SECRET);
+      },
+    },
     'POST /': {
       check: async () => {
         const before = await snapshot();
@@ -286,7 +297,7 @@ export function defineA1RouteSuite({ app, router, offeringRouter, tokenForT, row
 
   describe('A1: every business-service route refuses T2\'s service_id exactly as a missing one, under the app login', () => {
     it('the route table and the negative controls name the same routes', () => {
-      expect(routes).toHaveLength(16);
+      expect(routes).toHaveLength(17);
       expect([...routes].sort()).toEqual(Object.keys(controls).sort());
     });
 

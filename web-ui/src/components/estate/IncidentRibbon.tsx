@@ -5,6 +5,8 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Banner, Button, Skeleton } from '@happy-technologies/design-system';
 import { classifyError, incidentFacts, leadIncident, shortIncidentNumber } from '@/lib/estate';
+import { useOrganizationId } from '@/contexts/OrganizationContext';
+import { orgScopedKey } from '@/lib/queryKeys';
 import { getOpenIncidents } from '@/services/estate.service';
 
 /**
@@ -14,7 +16,11 @@ import { getOpenIncidents } from '@/services/estate.service';
  */
 export function IncidentRibbon() {
   const navigate = useNavigate();
-  const incidents = useQuery({ queryKey: ['estate', 'incidents'], queryFn: getOpenIncidents });
+  const organizationId = useOrganizationId();
+  const incidents = useQuery({
+    queryKey: orgScopedKey('estate', organizationId, 'incidents'),
+    queryFn: getOpenIncidents,
+  });
 
   if (incidents.isLoading)
     return <Skeleton className="h-12 w-full" role="status" aria-label="Loading incidents" />;

@@ -106,7 +106,7 @@ import { itilRoutes } from '../itil.routes';
 const jwt = new JWTService(loadConfig().auth.jwt);
 function authorization(id: string) {
   const user = USERS[id]!;
-  return { Authorization: `Bearer ${jwt.generateAccessToken(id, user._username, user._role, user._organizationId)}` };
+  return { Authorization: `Bearer ${jwt.generateAccessToken(id, user._username, user._role, user._organizationId, 0, Math.floor(Date.now() / 1000))}` };
 }
 const app = express();
 app.use(express.json());
@@ -188,6 +188,22 @@ it('lists only own rows and gives identical detail not-found for foreign, missin
   expect((await detail(ID_NULL, 'admin')).status).toBe(404);
   expect((await detail(ID_A, 'noorg')).status).toBe(403);
   expect(await remaining()).toEqual([ID_A, ID_B, ID_NULL]);
+});
+
+it('list rows carry exactly the 11 summary columns for each org; detail still returns baseline_data and scope', async () => {
+  const summary = ['approved_at', 'approved_by', 'baseline_type', 'created_at', 'created_by', 'description',
+    'id', 'name', 'organization_id', 'status', 'updated_at'];
+  for (const [user, id, org] of [['a', ID_A, A], ['b', ID_B, B]] as const) {
+    const rows = (await request(app).get('/api/v1/itil/baselines').set(authorization(user))).body.data;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id, organization_id: org });
+    expect(Object.keys(rows[0]).sort()).toEqual(summary);
+    expect(rows[0]).not.toHaveProperty('baseline_data');
+    expect(rows[0]).not.toHaveProperty('scope');
+    const detail = (await request(app).get(endpoint(id)).set(authorization(user))).body.data;
+    expect(detail).toHaveProperty('baseline_data');
+    expect(detail).toHaveProperty('scope');
+  }
 });
 
 it('conceals foreign and NULL baselines and restores only an owned CI from an owned baseline', async () => {

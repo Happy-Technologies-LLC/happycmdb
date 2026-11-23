@@ -22,11 +22,12 @@ import { validateRequest, validateOptional } from '../middleware/validation.midd
 import { schemas, strictDiscoveryDefinitionConfig } from '@cmdb/common';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { optionalRequestOrganizationId } from '../../middleware/auth.middleware';
+import { sendForbidden } from '../../middleware/forbidden-response';
 import type { Request, Response, NextFunction } from 'express';
 
 function requireDefinitionOrganization(req: Request, res: Response, next: NextFunction): void {
   if (!optionalRequestOrganizationId(req)) {
-    res.status(403).json({ success: false, error: 'Organization claim required' });
+    sendForbidden(res, 'ORGANIZATION_REQUIRED', 'Organization claim required');
     return;
   }
   next();

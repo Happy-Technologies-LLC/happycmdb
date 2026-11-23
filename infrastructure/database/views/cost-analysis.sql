@@ -8,7 +8,7 @@
 -- v_executive_cost_summary
 -- High-level cost summary by business capability and service
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_executive_cost_summary AS
+CREATE OR REPLACE VIEW v_executive_cost_summary WITH (security_barrier) AS
 SELECT
     bc.name AS business_capability,
     bs.name AS business_service,
@@ -35,7 +35,8 @@ SELECT
     bs.bsm_attributes->>'business_criticality' AS business_criticality,
     bs.operational_status,
     bs.technical_owner,
-    bs.updated_at
+    bs.updated_at,
+    NULL::uuid AS organization_id
 FROM business_services bs
 LEFT JOIN service_dependencies sd ON sd.source_id = bs.id AND sd.source_type = 'business_service' AND sd.dependency_type = 'ENABLED_BY'
 LEFT JOIN business_capabilities bc ON bc.id = sd.target_id AND sd.target_type = 'business_capability'
@@ -48,7 +49,7 @@ COMMENT ON VIEW v_executive_cost_summary IS 'Executive cost summary by business 
 -- v_cost_by_tower
 -- TBM cost breakdown by resource tower and cost pool
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_cost_by_tower AS
+CREATE OR REPLACE VIEW v_cost_by_tower WITH (security_barrier) AS
 SELECT
     ci.tbm_attributes->>'resource_tower' AS tbm_resource_tower,
     ci.tbm_attributes->>'cost_pool' AS tbm_cost_pool,
@@ -62,9 +63,11 @@ SELECT
     -- Calculate percentage of total cost
     ROUND(
         100.0 * SUM(COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0)) /
-        NULLIF((SELECT SUM(COALESCE((tbm_attributes->>'monthly_cost')::DECIMAL, 0)) FROM cmdb.dim_ci WHERE is_current = TRUE AND ci_status = 'active'), 0),
+        NULLIF((SELECT SUM(COALESCE((t.tbm_attributes->>'monthly_cost')::DECIMAL, 0)) FROM cmdb.dim_ci t
+                WHERE t.is_current = TRUE AND t.ci_status = 'active' AND t.organization_id = ci.organization_id), 0),
         2
-    ) AS pct_of_total_cost
+    ) AS pct_of_total_cost,
+    ci.organization_id
 FROM cmdb.dim_ci ci
 WHERE ci.is_current = TRUE
   AND ci.ci_status = 'active'
@@ -73,7 +76,8 @@ GROUP BY
     ci.tbm_attributes->>'resource_tower',
     ci.tbm_attributes->>'cost_pool',
     ci.ci_type,
-    ci.environment
+    ci.environment,
+    ci.organization_id
 ORDER BY total_monthly_cost DESC;
 
 COMMENT ON VIEW v_cost_by_tower IS 'TBM cost breakdown by resource tower and cost pool';
@@ -82,14 +86,15 @@ COMMENT ON VIEW v_cost_by_tower IS 'TBM cost breakdown by resource tower and cos
 -- v_cost_trends
 -- Monthly cost trends over time from fact table
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_cost_trends AS
+CREATE OR REPLACE VIEW v_cost_trends WITH (security_barrier) AS
 SELECT
     DATE_TRUNC('month', fc.changed_at) AS month,
     ci.tbm_attributes->>'resource_tower' AS tbm_resource_tower,
     ci.ci_type,
     ci.environment,
     SUM(COALESCE((fc.new_value)::DECIMAL, 0)) AS monthly_cost,
-    COUNT(DISTINCT ci.ci_id) AS ci_count
+    COUNT(DISTINCT ci.ci_id) AS ci_count,
+    ci.organization_id
 FROM cmdb.fact_ci_changes fc
 JOIN cmdb.dim_ci ci ON fc.ci_key = ci.ci_key
 WHERE fc.field_name = 'monthly_cost'
@@ -99,7 +104,8 @@ GROUP BY
     DATE_TRUNC('month', fc.changed_at),
     ci.tbm_attributes->>'resource_tower',
     ci.ci_type,
-    ci.environment
+    ci.environment,
+    ci.organization_id
 ORDER BY month DESC, monthly_cost DESC;
 
 COMMENT ON VIEW v_cost_trends IS 'Monthly cost trends over time by tower and CI type';
@@ -108,7 +114,7 @@ COMMENT ON VIEW v_cost_trends IS 'Monthly cost trends over time by tower and CI 
 -- v_unit_economics
 -- Unit economics by business service
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_unit_economics AS
+CREATE OR REPLACE VIEW v_unit_economics WITH (security_barrier) AS
 SELECT
     bs.name AS business_service,
     bs.id AS business_service_id,
@@ -143,7 +149,8 @@ SELECT
     -- Business context
     bs.bsm_attributes->>'business_criticality' AS business_criticality,
     bs.technical_owner,
-    bs.updated_at
+    bs.updated_at,
+    NULL::uuid AS organization_id
 FROM business_services bs
 WHERE bs.operational_status IN ('operational', 'degraded')
 ORDER BY revenue_ratio DESC;
@@ -154,7 +161,7 @@ COMMENT ON VIEW v_unit_economics IS 'Unit economics by business service with cos
 -- v_cloud_vs_onprem_costs
 -- Cloud vs on-premises cost comparison
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_cloud_vs_onprem_costs AS
+CREATE OR REPLACE VIEW v_cloud_vs_onprem_costs WITH (security_barrier) AS
 SELECT
     ci.tbm_attributes->>'cost_pool' AS deployment_model,
     ci.environment,
@@ -166,9 +173,11 @@ SELECT
     -- Calculate percentage of total
     ROUND(
         100.0 * SUM(COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0)) /
-        NULLIF((SELECT SUM(COALESCE((tbm_attributes->>'monthly_cost')::DECIMAL, 0)) FROM cmdb.dim_ci WHERE is_current = TRUE), 0),
+        NULLIF((SELECT SUM(COALESCE((t.tbm_attributes->>'monthly_cost')::DECIMAL, 0)) FROM cmdb.dim_ci t
+                WHERE t.is_current = TRUE AND t.organization_id = ci.organization_id), 0),
         2
-    ) AS pct_of_total
+    ) AS pct_of_total,
+    ci.organization_id
 FROM cmdb.dim_ci ci
 WHERE ci.is_current = TRUE
   AND ci.ci_status = 'active'
@@ -176,7 +185,8 @@ WHERE ci.is_current = TRUE
 GROUP BY
     ci.tbm_attributes->>'cost_pool',
     ci.environment,
-    ci.ci_type
+    ci.ci_type,
+    ci.organization_id
 ORDER BY monthly_cost DESC;
 
 COMMENT ON VIEW v_cloud_vs_onprem_costs IS 'Cloud vs on-premises cost comparison';
@@ -185,7 +195,7 @@ COMMENT ON VIEW v_cloud_vs_onprem_costs IS 'Cloud vs on-premises cost comparison
 -- v_cost_allocation_summary
 -- Cost allocation summary by cost center and business unit
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_cost_allocation_summary AS
+CREATE OR REPLACE VIEW v_cost_allocation_summary WITH (security_barrier) AS
 SELECT
     cp.cost_center,
     cp.business_unit,
@@ -205,7 +215,8 @@ SELECT
         ELSE 0
     END AS variance_pct,
     cp.owner AS cost_pool_owner,
-    cp.is_active
+    cp.is_active,
+    NULL::uuid AS organization_id
 FROM tbm_cost_pools cp
 LEFT JOIN cmdb.dim_ci ci ON
     ci.tbm_attributes->>'cost_pool' = cp.name AND
@@ -230,7 +241,7 @@ COMMENT ON VIEW v_cost_allocation_summary IS 'Cost allocation summary with budge
 -- v_depreciation_summary
 -- Asset depreciation summary
 -- ----------------------------------------
-CREATE OR REPLACE VIEW v_depreciation_summary AS
+CREATE OR REPLACE VIEW v_depreciation_summary WITH (security_barrier) AS
 SELECT
     ds.ci_id,
     ds.ci_name,
@@ -249,7 +260,8 @@ SELECT
     ROUND(100.0 * ds.accumulated_depreciation / NULLIF(ds.purchase_cost, 0), 2) AS depreciation_pct,
     ds.fully_depreciated,
     ds.fully_depreciated_at,
-    ds.is_active
+    ds.is_active,
+    NULL::uuid AS organization_id
 FROM tbm_depreciation_schedules ds
 LEFT JOIN cmdb.dim_ci ci ON ds.ci_id = ci.ci_id AND ci.is_current = TRUE
 WHERE ds.is_active = TRUE
@@ -260,6 +272,8 @@ COMMENT ON VIEW v_depreciation_summary IS 'Asset depreciation summary with remai
 -- ----------------------------------------
 -- v_top_cost_drivers
 -- Top 20 cost drivers across all CIs
+-- Carries ci.metadata (unbounded, secret-capable JSONB): NEVER granted to metabase_readonly and never on a BI
+-- allowlist. BI reads v_top_cost_drivers_bi below. HAP-659.
 -- ----------------------------------------
 CREATE OR REPLACE VIEW v_top_cost_drivers AS
 SELECT
@@ -281,7 +295,91 @@ WHERE ci.is_current = TRUE
 ORDER BY monthly_cost DESC
 LIMIT 20;
 
-COMMENT ON VIEW v_top_cost_drivers IS 'Top 20 configuration items by monthly cost';
+COMMENT ON VIEW v_top_cost_drivers IS 'Top 20 configuration items by monthly cost (includes ci.metadata; not for BI)';
+
+-- ----------------------------------------
+-- v_top_cost_drivers_bi
+-- HAP-659: the BI-readable top cost drivers: v_top_cost_drivers without ci.metadata. A new name, so no database
+-- that ever held the metadata shape of v_top_cost_drivers has this view in that shape.
+-- ----------------------------------------
+CREATE OR REPLACE VIEW v_top_cost_drivers_bi WITH (security_barrier) AS
+SELECT
+    r.ci_id,
+    r.ci_name,
+    r.ci_type,
+    r.environment,
+    r.tbm_resource_tower,
+    r.tbm_cost_pool,
+    r.monthly_cost,
+    r.annual_cost,
+    r.business_criticality,
+    r.updated_at,
+    r.organization_id
+FROM (
+    SELECT
+        ci.ci_id,
+        ci.ci_name,
+        ci.ci_type,
+        ci.environment,
+        ci.tbm_attributes->>'resource_tower' AS tbm_resource_tower,
+        ci.tbm_attributes->>'cost_pool' AS tbm_cost_pool,
+        COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) AS monthly_cost,
+        COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) * 12 AS annual_cost,
+        ci.bsm_attributes->>'business_criticality' AS business_criticality,
+        ci.updated_at,
+        ci.organization_id,
+        -- Top 20 per organization: filtering on organization_id must still leave up to 20 rows per tenant.
+        row_number() OVER (
+            PARTITION BY ci.organization_id
+            ORDER BY COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) DESC
+        ) AS cost_rank
+    FROM cmdb.dim_ci ci
+    WHERE ci.is_current = TRUE
+      AND ci.ci_status = 'active'
+      AND COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) > 0
+) r
+WHERE r.cost_rank <= 20
+ORDER BY r.monthly_cost DESC;
+
+COMMENT ON VIEW v_top_cost_drivers_bi IS 'Top 20 configuration items per organization by monthly cost, without ci.metadata (BI-readable)';
+
+-- ----------------------------------------
+-- v_underutilized_resources
+-- HAP-659: rightsizing candidates (<50% utilization). Only the numeric
+-- utilization_pct scalar is lifted out of ci.metadata; the JSONB itself is never
+-- selected, and a non-numeric value yields NULL (row excluded) instead of a cast error.
+-- The seven unbounded cost views above and this one are WITH (security_barrier): BI-supplied predicates cannot be
+-- pushed below the view's WHERE. (CREATE OR REPLACE VIEW without the option would reset it.) Migration 051.
+-- ----------------------------------------
+CREATE OR REPLACE VIEW v_underutilized_resources WITH (security_barrier) AS
+SELECT
+    u.ci_id,
+    u.ci_name,
+    u.ci_type,
+    u.environment,
+    u.monthly_cost,
+    u.utilization_pct,
+    u.monthly_cost * (1 - u.utilization_pct / 100) AS potential_savings,
+    u.organization_id
+FROM (
+    SELECT
+        ci.ci_id,
+        ci.ci_name,
+        ci.ci_type,
+        ci.environment,
+        COALESCE((ci.tbm_attributes->>'monthly_cost')::DECIMAL, 0) AS monthly_cost,
+        CASE WHEN ci.metadata->>'utilization_pct' ~ '^[0-9]+(\.[0-9]+)?$'
+            THEN (ci.metadata->>'utilization_pct')::DECIMAL
+        END AS utilization_pct,
+        ci.organization_id
+    FROM cmdb.dim_ci ci
+    WHERE ci.is_current = TRUE
+      AND ci.ci_status = 'active'
+) u
+WHERE u.utilization_pct < 50
+  AND u.monthly_cost > 0;
+
+COMMENT ON VIEW v_underutilized_resources IS 'Active CIs under 50% utilization with monthly cost and potential savings';
 
 -- Grant SELECT permissions to metabase_readonly
 GRANT SELECT ON v_executive_cost_summary TO metabase_readonly;
@@ -292,3 +390,52 @@ GRANT SELECT ON v_cloud_vs_onprem_costs TO metabase_readonly;
 GRANT SELECT ON v_cost_allocation_summary TO metabase_readonly;
 GRANT SELECT ON v_depreciation_summary TO metabase_readonly;
 -- v_top_cost_drivers exposes unbounded ci.metadata; do not allow BI to read it.
+
+-- HAP-659: the per-CI views BI may read are granted by SHAPE, not only by name. This file runs without
+-- ON_ERROR_STOP (setup-metabase.sh, documented psql commands), so a failed CREATE can leave a view of this name in
+-- an older shape. A view gets no grant, and loses one, when it is not a view, is not owned by the migration role
+-- (the owner of cmdb.dim_ci), has a column named metadata, or carries json/jsonb in any column, including through a
+-- domain, array or composite type. Migration 051 applies the same rule after a restore.
+DO $bi$
+DECLARE
+    name text;
+    rel regclass;
+    expected_owner oid := (SELECT c.relowner FROM pg_class c WHERE c.oid = to_regclass('cmdb.dim_ci'));
+    unsafe boolean;
+BEGIN
+    FOREACH name IN ARRAY ARRAY['v_top_cost_drivers_bi', 'v_underutilized_resources'] LOOP
+        rel := to_regclass(name);
+        CONTINUE WHEN rel IS NULL;
+        SELECT NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = rel AND c.relkind = 'v'
+                           AND c.relowner IS NOT DISTINCT FROM expected_owner)
+            OR EXISTS (SELECT 1 FROM pg_attribute a
+                       WHERE a.attrelid = rel AND a.attnum > 0 AND NOT a.attisdropped
+                         AND lower(a.attname) = 'metadata')
+            OR EXISTS (
+              WITH RECURSIVE ty(oid) AS (
+                SELECT a.atttypid FROM pg_attribute a
+                WHERE a.attrelid = rel AND a.attnum > 0 AND NOT a.attisdropped
+                UNION
+                SELECT n.oid
+                FROM ty
+                  JOIN pg_type t ON t.oid = ty.oid
+                  CROSS JOIN LATERAL (
+                    SELECT t.typbasetype WHERE t.typtype = 'd'
+                    UNION ALL
+                    SELECT t.typelem WHERE t.typcategory = 'A'
+                    UNION ALL
+                    SELECT f.atttypid FROM pg_attribute f
+                    WHERE t.typtype = 'c' AND f.attrelid = t.typrelid AND f.attnum > 0 AND NOT f.attisdropped
+                  ) n(oid)
+              )
+              SELECT 1 FROM ty WHERE ty.oid IN ('json'::regtype, 'jsonb'::regtype))
+          INTO unsafe;
+        IF unsafe THEN
+            RAISE WARNING 'HAP-659: % is not a view owned by the owner of cmdb.dim_ci, or carries json/jsonb or a metadata column; not granting it to metabase_readonly', rel;
+            EXECUTE format('REVOKE ALL ON %s FROM metabase_readonly', rel);
+        ELSE
+            EXECUTE format('GRANT SELECT ON %s TO metabase_readonly', rel);
+        END IF;
+    END LOOP;
+END
+$bi$;

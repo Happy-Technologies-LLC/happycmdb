@@ -85,7 +85,8 @@ Implemented complete controller with:
 - ✅ Audit scheduling and completion
 - ✅ Incident priority calculation (basic implementation)
 - ✅ Change risk assessment (basic implementation)
-- ✅ Baseline comparison and restoration
+- ❌ Baseline comparison: **not implemented**. `GET /itil/baselines/:id/comparison` answers `501` (`404` for an unknown or foreign baseline)
+- ✅ Baseline restoration: `POST /itil/baselines/:id/restore` (single-CI, journaled)
 - ✅ ITIL metrics calculation
 - ✅ Proper error handling and logging
 - ✅ Database transaction support

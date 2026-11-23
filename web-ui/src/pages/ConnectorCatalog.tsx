@@ -13,35 +13,37 @@
 
 import React, { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Icon } from '@happy-technologies/design-system';
-import { LiquidGlass } from '@/components/ui/liquid-glass';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { Eyebrow } from '@/components/ui/eyebrow';
 import {
+  Badge,
+  Button,
+  Card,
+  Checkbox,
+  Chip,
+  EmptyState,
+  Eyebrow,
+  Input,
+  MetricCard,
+  PageHeader,
+  Popover,
+  SegmentedControl,
   Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuCheckboxItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
+} from '@happy-technologies/design-system';
 import { ConnectorCard } from '@/components/connectors/ConnectorCard';
 import { ConnectorDetailModal } from '@/components/connectors/ConnectorDetailModal';
+import { QueryState } from '@/components/estate/SurfaceState';
 import connectorService, { ConnectorRegistry, InstalledConnector } from '@/services/connector.service';
-import LoadingSpinner from '@/components/common/LoadingSpinner';
 import { getCategoryLabel } from '@/lib/connector-icons';
+import { UNKNOWN_VALUE } from '@/api/connectors';
 
 type ViewMode = 'grid' | 'list';
 type SortOption = 'name' | 'downloads' | 'rating' | 'latest';
+
+const SORT_OPTIONS: Array<{ value: SortOption; label: string }> = [
+  { value: 'downloads', label: 'Most Downloads' },
+  { value: 'rating', label: 'Highest Rated' },
+  { value: 'name', label: 'Name (A-Z)' },
+  { value: 'latest', label: 'Latest Release' },
+];
 
 const CATEGORIES = [
   'cloud',
@@ -67,22 +69,23 @@ export const ConnectorCatalog: React.FC = () => {
   const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [verifiedOnly, setVerifiedOnly] = useState(false);
   const [selectedConnector, setSelectedConnector] = useState<ConnectorRegistry | null>(null);
-  const [showFilters, setShowFilters] = useState(false);
 
   // Fetch connector registry
-  const { data: registryConnectors, isLoading: isLoadingRegistry } = useQuery({
+  const registryQuery = useQuery({
     queryKey: ['connectorRegistry', selectedCategories, verifiedOnly],
     queryFn: () => connectorService.getConnectorRegistry({
       tags: selectedCategories.length > 0 ? selectedCategories : undefined,
       verifiedOnly: verifiedOnly || undefined,
     }),
   });
+  const registryConnectors = registryQuery.isError ? undefined : registryQuery.data;
 
   // Fetch installed connectors
-  const { data: installedConnectors } = useQuery({
+  const installedQuery = useQuery({
     queryKey: ['installedConnectors'],
     queryFn: () => connectorService.getInstalledConnectors(),
   });
+  const installedConnectors = installedQuery.isError ? undefined : installedQuery.data;
 
   // Create a map of installed versions for quick lookup
   const installedMap = useMemo(() => {
@@ -134,192 +137,143 @@ export const ConnectorCatalog: React.FC = () => {
     );
   };
 
-  const stats = useMemo(() => ({
-    total: registryConnectors?.length || 0,
-    installed: installedConnectors?.length || 0,
-    updates: installedConnectors?.filter(ic => {
-      const registry = registryConnectors?.find(rc => rc.connectorType === ic.connectorType);
-      return registry && ic.installedVersion !== registry.latestVersion;
-    }).length || 0,
-  }), [registryConnectors, installedConnectors]);
-
-  if (isLoadingRegistry) {
-    return <LoadingSpinner />;
-  }
+  // A figure whose source has not loaded (or failed) is unavailable, never a zero.
+  const stats = useMemo(() => {
+    const available = registryConnectors?.length;
+    return {
+      total: available,
+      installed: installedConnectors?.length,
+      verified: registryConnectors?.filter(c => c.verified).length,
+      updates:
+        registryConnectors && installedConnectors
+          ? installedConnectors.filter(ic => {
+              const registry = registryConnectors.find(rc => rc.connectorType === ic.connectorType);
+              return registry && ic.installedVersion !== registry.latestVersion;
+            }).length
+          : undefined,
+    };
+  }, [registryConnectors, installedConnectors]);
+  const figure = (value: number | undefined) => (value === undefined ? UNKNOWN_VALUE : value);
+  const filterCount = selectedCategories.length + (verifiedOnly ? 1 : 0);
 
   return (
     <div className="space-y-6">
       {/* Page Header */}
-      <div>
-        <Eyebrow>Registry · Connectors</Eyebrow>
-        <h1 className="mt-3 text-[1.9rem]">Connector Catalog</h1>
-        <p className="mt-1.5 text-ink-soft">
-          Browse connector templates. Installation and updates are managed through deployment packaging.
-        </p>
-      </div>
+      <PageHeader
+        eyebrow="Registry · Connectors"
+        title="Connector Catalog"
+        lede="Browse connector templates. Installation and updates are managed through deployment packaging."
+      />
 
       {/* Stats Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <LiquidGlass variant="default" rounded="lg" className="p-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-sky-soft rounded-lg">
-              <Icon name="package" size={20} className="text-sky-text" />
-            </div>
-            <div>
-              <div className="text-2xl font-bold">{stats.total}</div>
-              <div className="text-sm text-muted-foreground">Available</div>
-            </div>
-          </div>
-        </LiquidGlass>
-
-        <LiquidGlass variant="default" rounded="lg" className="p-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-success-soft rounded-lg">
-              <Icon name="check-circle" size={20} className="text-success" />
-            </div>
-            <div>
-              <div className="text-2xl font-bold">{stats.installed}</div>
-              <div className="text-sm text-muted-foreground">Installed</div>
-            </div>
-          </div>
-        </LiquidGlass>
-
-        <LiquidGlass variant="default" rounded="lg" className="p-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-warning-soft rounded-lg">
-              <Icon name="clock" size={20} className="text-warning-text" />
-            </div>
-            <div>
-              <div className="text-2xl font-bold">{stats.updates}</div>
-              <div className="text-sm text-muted-foreground">Updates Available</div>
-            </div>
-          </div>
-        </LiquidGlass>
-
-        <LiquidGlass variant="default" rounded="lg" className="p-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-sky-soft rounded-lg">
-              <Icon name="trend-up" size={20} className="text-navy" />
-            </div>
-            <div>
-              <div className="text-2xl font-bold">
-                {registryConnectors?.filter(c => c.verified).length || 0}
-              </div>
-              <div className="text-sm text-muted-foreground">Verified</div>
-            </div>
-          </div>
-        </LiquidGlass>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+        <MetricCard
+          icon="package"
+          tone="accent"
+          label="Available"
+          value={figure(stats.total)}
+          loading={registryQuery.isPending}
+        />
+        <MetricCard
+          icon="check-circle"
+          tone="success"
+          label="Installed"
+          value={figure(stats.installed)}
+          loading={installedQuery.isPending}
+        />
+        <MetricCard
+          icon="clock"
+          tone="warning"
+          label="Updates Available"
+          value={figure(stats.updates)}
+          loading={registryQuery.isPending || installedQuery.isPending}
+        />
+        <MetricCard
+          icon="trend-up"
+          tone="ai"
+          label="Verified"
+          value={figure(stats.verified)}
+          loading={registryQuery.isPending}
+        />
       </div>
 
       {/* Search and Controls */}
-      <LiquidGlass variant="default" rounded="xl" className="p-4">
-        <div className="flex flex-col md:flex-row gap-4">
+      <Card>
+        <div className="flex flex-col gap-4 md:flex-row md:items-center">
           {/* Search */}
-          <div className="flex-1 relative">
-            <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder="Search connectors by name, description, or tags..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10"
-            />
-          </div>
+          <Input
+            icon="magnifying-glass"
+            aria-label="Search connectors"
+            placeholder="Search connectors by name, description, or tags..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            containerClassName="flex-1"
+          />
 
           {/* Sort */}
-          <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortOption)}>
-            <SelectTrigger className="w-full md:w-[180px]">
-              <Icon name="arrows-down-up" size={16} className="mr-2" />
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="downloads">Most Downloads</SelectItem>
-              <SelectItem value="rating">Highest Rated</SelectItem>
-              <SelectItem value="name">Name (A-Z)</SelectItem>
-              <SelectItem value="latest">Latest Release</SelectItem>
-            </SelectContent>
-          </Select>
+          <Select
+            aria-label="Sort connectors"
+            value={sortBy}
+            onChange={(v) => setSortBy(v as SortOption)}
+            options={SORT_OPTIONS}
+            containerClassName="md:w-[200px]"
+          />
 
           {/* Filters */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" className="w-full md:w-auto">
-                <Icon name="sliders-horizontal" size={16} className="mr-2" />
+          <Popover
+            aria-label="Connector filters"
+            align="end"
+            trigger={
+              <Button variant="outline" icon="sliders-horizontal">
                 Filters
-                {(selectedCategories.length > 0 || verifiedOnly) && (
-                  <Badge variant="secondary" className="ml-2">
-                    {selectedCategories.length + (verifiedOnly ? 1 : 0)}
-                  </Badge>
-                )}
+                {filterCount > 0 && <Badge variant="info">{filterCount}</Badge>}
               </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-64">
-              <DropdownMenuLabel>Filter by Category</DropdownMenuLabel>
-              <DropdownMenuSeparator />
+            }
+          >
+            <div className="max-h-96 w-64 space-y-2 overflow-y-auto p-3">
+              <Eyebrow>Filter by Category</Eyebrow>
               {CATEGORIES.map(category => (
-                <DropdownMenuCheckboxItem
+                <Checkbox
                   key={category}
                   checked={selectedCategories.includes(category)}
-                  onCheckedChange={() => handleCategoryToggle(category)}
-                >
-                  {getCategoryLabel(category)}
-                </DropdownMenuCheckboxItem>
+                  onChange={() => handleCategoryToggle(category)}
+                  label={getCategoryLabel(category)}
+                />
               ))}
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel>Other Filters</DropdownMenuLabel>
-              <DropdownMenuCheckboxItem
-                checked={verifiedOnly}
-                onCheckedChange={setVerifiedOnly}
-              >
-                <Icon name="check-circle" size={16} className="mr-2 text-success" />
-                Verified Only
-              </DropdownMenuCheckboxItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              <Eyebrow>Other Filters</Eyebrow>
+              <Checkbox checked={verifiedOnly} onChange={setVerifiedOnly} label="Verified Only" />
+            </div>
+          </Popover>
 
           {/* View Mode Toggle */}
-          <div className="flex gap-1 border rounded-lg p-1">
-            <Button
-              variant={viewMode === 'grid' ? 'default' : 'ghost'}
-              size="sm"
-              onClick={() => setViewMode('grid')}
-              className="px-3"
-            >
-              <Icon name="grid-four" size={16} />
-            </Button>
-            <Button
-              variant={viewMode === 'list' ? 'default' : 'ghost'}
-              size="sm"
-              onClick={() => setViewMode('list')}
-              className="px-3"
-            >
-              <Icon name="list" size={16} />
-            </Button>
-          </div>
+          <SegmentedControl
+            aria-label="View mode"
+            value={viewMode}
+            onChange={setViewMode}
+            options={[
+              { value: 'grid', icon: 'grid-four', label: <span className="sr-only">Grid view</span> },
+              { value: 'list', icon: 'list', label: <span className="sr-only">List view</span> },
+            ]}
+          />
         </div>
 
         {/* Active Filters Display */}
-        {(selectedCategories.length > 0 || verifiedOnly) && (
-          <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t">
+        {filterCount > 0 && (
+          <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--hh-border)] pt-4">
             {selectedCategories.map(category => (
-              <Badge
+              <Chip
                 key={category}
-                variant="secondary"
-                className="cursor-pointer"
+                icon="x"
+                aria-label={`Remove ${getCategoryLabel(category)} filter`}
                 onClick={() => handleCategoryToggle(category)}
               >
                 {getCategoryLabel(category)}
-                <span className="ml-2">×</span>
-              </Badge>
+              </Chip>
             ))}
             {verifiedOnly && (
-              <Badge
-                variant="secondary"
-                className="cursor-pointer"
-                onClick={() => setVerifiedOnly(false)}
-              >
+              <Chip icon="x" aria-label="Remove Verified Only filter" onClick={() => setVerifiedOnly(false)}>
                 Verified Only
-                <span className="ml-2">×</span>
-              </Badge>
+              </Chip>
             )}
             <Button
               variant="ghost"
@@ -328,55 +282,60 @@ export const ConnectorCatalog: React.FC = () => {
                 setSelectedCategories([]);
                 setVerifiedOnly(false);
               }}
-              className="h-6 px-2 text-xs"
             >
               Clear All
             </Button>
           </div>
         )}
-      </LiquidGlass>
-
-      {/* Results Count */}
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          Showing {filteredConnectors.length} {filteredConnectors.length === 1 ? 'connector' : 'connectors'}
-        </p>
-      </div>
+      </Card>
 
       {/* Connector Grid/List */}
-      {filteredConnectors.length === 0 ? (
-        <LiquidGlass variant="default" rounded="xl" className="p-12 text-center">
-          <Icon name="package" size={48} className="mx-auto mb-4 text-muted-foreground" />
-          <h3 className="text-lg font-semibold mb-2">No connectors found</h3>
-          <p className="text-sm text-muted-foreground">
-            Try adjusting your search or filters
-          </p>
-        </LiquidGlass>
+      {registryQuery.isPending ? (
+        <Card>
+          <EmptyState loading label="Loading connector catalog…" />
+        </Card>
+      ) : registryQuery.isError ? (
+        <Card>
+          <QueryState what="connector catalog" error={registryQuery.error} onRetry={() => void registryQuery.refetch()} />
+        </Card>
       ) : (
-        <div
-          className={
-            viewMode === 'grid'
-              ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4'
-              : 'space-y-4'
-          }
-        >
-          {filteredConnectors.map(connector => {
-            const installed = installedMap.get(connector.connectorType);
-            return (
-              <div
-                key={connector.connectorType}
-                onClick={() => setSelectedConnector(connector)}
-                className="cursor-pointer"
-              >
-                <ConnectorCard
-                  connector={connector}
-                  isInstalled={!!installed}
-                  installedVersion={installed?.installedVersion}
-                />
-              </div>
-            );
-          })}
-        </div>
+        <>
+          {/* Results Count */}
+          <p className="text-sm text-[var(--hh-text-muted)]">
+            Showing {filteredConnectors.length} {filteredConnectors.length === 1 ? 'connector' : 'connectors'}
+          </p>
+
+          {filteredConnectors.length === 0 ? (
+            <Card>
+              <EmptyState
+                icon="package"
+                title="No connectors found"
+                description="Try adjusting your search or filters"
+              />
+            </Card>
+          ) : (
+            <div
+              className={
+                viewMode === 'grid'
+                  ? 'grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3'
+                  : 'space-y-4'
+              }
+            >
+              {filteredConnectors.map(connector => {
+                const installed = installedMap.get(connector.connectorType);
+                return (
+                  <ConnectorCard
+                    key={connector.connectorType}
+                    connector={connector}
+                    isInstalled={!!installed}
+                    installedVersion={installed?.installedVersion}
+                    onSelect={() => setSelectedConnector(connector)}
+                  />
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
 
       {/* Detail Modal */}

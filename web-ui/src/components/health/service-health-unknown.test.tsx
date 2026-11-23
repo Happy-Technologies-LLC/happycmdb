@@ -10,7 +10,23 @@ const { get } = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock('axios', () => ({ default: { create: () => ({
   get, interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } },
 }) } }));
-vi.mock('@happy-technologies/design-system', () => ({ Icon: ({ name }: { name: string }) => <span data-icon={name} /> }));
+// Only Icon is stubbed (the assertions read its name); the rest of the design system is the real one. CI also runs
+// this file with vitest.connector-wizard.config.ts, which aliases the module to an Icon-only stub so no design-system
+// checkout is needed: the plain stand-ins below fill what that stub lacks and are overridden by the real components.
+vi.mock('@happy-technologies/design-system', async (importOriginal) => {
+  const plain = ({ children, title, label, description, action }: Record<string, ReactNode>) => (
+    <div>{title}{label}{description}{children}{action}</div>
+  );
+  const plainButton = ({ children, onClick }: { children?: ReactNode; onClick?: () => void }) => (
+    <button type="button" onClick={onClick}>{children}</button>
+  );
+  return {
+    Badge: plain, Banner: plain, Card: plain, EmptyState: plain, PageHeader: plain, SectionHeading: plain, Skeleton: plain,
+    Button: plainButton,
+    ...(await importOriginal<typeof import('@happy-technologies/design-system')>()),
+    Icon: ({ name }: { name: string }) => <span data-icon={name} />,
+  };
+});
 import { HealthDashboard } from './HealthDashboard';
 import { ServiceHealthDots } from '../layout/ServiceHealthDots';
 

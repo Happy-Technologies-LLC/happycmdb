@@ -94,8 +94,10 @@ export interface TokenPayload {
   /** Credential generation the token was minted in (absent on pre-HP1 tokens = 0). */
   _cep?: number;
   /**
-   * Refresh tokens only (HAP-1285): the login time, NumericDate seconds. Copied
-   * unchanged on every refresh; refresh is refused 7 days after it.
+   * The login time, NumericDate seconds: the session-family id (HAP-1285, HAP-1716). Refresh tokens carry it (copied
+   * unchanged on every refresh; refresh is refused 7 days after it). Access tokens carry it since HAP-1716, always copied
+   * from the refresh token's value, never from now, so it stays constant across refresh; only a fresh authentication
+   * (login, password change, revoke-other-sessions success) mints a new one. Access tokens minted before that lack it.
    */
   _authTime?: number;
   iat?: number;

@@ -78,10 +78,22 @@ describe('buildSample', () => {
     expect(sample.edges).toEqual([{ source: 'a', target: 'b', type: 'DEPENDS_ON' }]);
   });
 
-  it('keeps an edge between two list CIs that were only added by the fill', () => {
-    const sample = buildSample([ci('a'), ci('b')], [rel('a', 'b')], 1);
-    expect(sample.edges).toEqual([]);
-    expect(buildSample([ci('a'), ci('b')], [rel('a', 'b')], 2).edges).toHaveLength(1);
+  it('fills the room the relationships left with list CIs, and draws no edge to one the fill did not reach', () => {
+    // Cap 3: x-y fits (2 nodes), a-b would need 2 more and is skipped, so only the fill can add a CI. It adds `a`
+    // (1 slot left) and never `b`; the a-b edge therefore has a missing endpoint and is dropped.
+    const sample = buildSample(
+      [ci('a'), ci('b')],
+      [rel('x', 'y'), rel('a', 'b')],
+      3
+    );
+    expect(sample.nodes.map((n) => n.id)).toEqual(['x', 'y', 'a']);
+    expect(sample.edges).toEqual([{ source: 'x', target: 'y', type: 'DEPENDS_ON' }]);
+  });
+
+  it('keeps the same a-b edge once the cap has room for both of its endpoints', () => {
+    const sample = buildSample([ci('a'), ci('b')], [rel('x', 'y'), rel('a', 'b')], 4);
+    expect(sample.nodes.map((n) => n.id)).toEqual(['x', 'y', 'a', 'b']);
+    expect(sample.edges.map((e) => `${e.source}>${e.target}`)).toEqual(['x>y', 'a>b']);
   });
 
   it('counts a CI that appears in both sources once and a repeated relationship once', () => {

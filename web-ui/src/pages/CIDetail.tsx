@@ -2,9 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React from 'react';
-import { Icon } from '@happy-technologies/design-system';
+import { ErrorBanner } from '@happy-technologies/design-system';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import CIDetail from '../components/ci/CIDetail';
 
 /**
@@ -32,10 +31,7 @@ export const CIDetailPage: React.FC = () => {
   if (!ciId) {
     return (
       <div>
-        <Alert variant="destructive">
-          <Icon name="warning-circle" size={16} />
-          <AlertDescription>Invalid CI ID</AlertDescription>
-        </Alert>
+        <ErrorBanner message="Invalid CI ID" />
       </div>
     );
   }

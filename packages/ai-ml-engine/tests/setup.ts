@@ -23,6 +23,8 @@ jest.mock('@cmdb/event-processor', () => ({
 
 // Mock logger
 jest.mock('@cmdb/common', () => ({
+  // The real validator: a mocked-out one would make every incarnation check vacuous or throw.
+  ciIncarnationId: jest.requireActual('@cmdb/common/utils/ci-incarnation').ciIncarnationId,
   logger: {
     info: jest.fn(),
     debug: jest.fn(),

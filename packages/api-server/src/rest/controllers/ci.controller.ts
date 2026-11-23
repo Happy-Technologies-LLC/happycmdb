@@ -5,7 +5,7 @@ import { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
 import { requestActor, sendJournalError } from '../../journal-http';
 import {
-  createCITraversalWork, getNeo4jClient, getPostgresClient, getAuditService,
+  CI_TRAVERSAL_QUERY_TIMEOUT_MS, createCITraversalWork, enc, getNeo4jClient, getPostgresClient, getAuditService,
 } from '@cmdb/database';
 import { logger, validateCISortField, validateSortDirection } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
@@ -15,7 +15,12 @@ import {
   assertNoCIGap, CIGapError, CI_GAP_RESPONSE, CIListUnavailableError, readCIList,
   readSingleCI, CI_LIST_UNAVAILABLE_RESPONSE,
 } from '../../read-admission';
+import { withNormalizedCIFields } from '../../services/ci-normalized-fields';
+import { withCIHealth } from '../../services/ci-health';
 import { sendTraversalFailure } from './traversal-failure';
+import { impactEnvelope, impactLineageTimeoutMs } from '../impact-envelope';
+import { loadImpactBusinessContext } from '../../services/impact-business-context';
+import { loadEdgeEvidence, qualifyEdges } from '../edge-evidence';
 
 /**
  * The one 404 for a CI that is missing or belongs to another organization:
@@ -28,6 +33,11 @@ function sendCINotFound(res: Response): void {
     error: 'Not Found',
     message: 'CI not found'
   });
+}
+
+/** BW1: a failed health read leaves `health` null; it never fails the CI read. */
+function healthReadFailed(error: unknown): void {
+  logger.warn('CI health unavailable', error);
 }
 
 // Helper function to convert Neo4j types to JavaScript types and transform field names
@@ -144,7 +154,17 @@ export class CIController {
 
         // Count and page share the same journal snapshot inside readCIList;
         // never collect the complete graph inventory just to return one page.
-        const sortField = validateCISortField((sort_by as string) || 'name');
+        let sortField: string;
+        try {
+          sortField = validateCISortField((sort_by as string) || 'name');
+        } catch (error) {
+          // The route's Joi schema normally rejects this first; this keeps a caller that bypasses it a 400, not a 500.
+          if (!(error instanceof Error) || !error.message.startsWith('Invalid sort field:')) {
+            throw error;
+          }
+          res.status(400).json({ success: false, error: 'Bad Request', message: error.message });
+          return;
+        }
         const sortDirection = validateSortDirection((sort_order as string) || 'asc');
         query += ' AND NOT ci.id IN $pending';
         const { total, cis } = await readCIList(organizationId, async (pending, timeout) => {
@@ -166,7 +186,7 @@ export class CIController {
             return {
               total: countResult.records[0]!.get('total').toNumber() as number,
               cis: pageResult.records.map(row =>
-                convertNeo4jTypes((row.get('ci') as { properties: Record<string, unknown> }).properties)),
+                withNormalizedCIFields(convertNeo4jTypes((row.get('ci') as { properties: Record<string, unknown> }).properties))),
             };
           } finally {
             await session.close();
@@ -174,7 +194,7 @@ export class CIController {
         });
         res.json({
           success: true,
-          data: cis,
+          data: await withCIHealth(getPostgresClient(), organizationId, cis, healthReadFailed),
           pagination: {
             total, count: cis.length, offset: finalOffset, limit: finalLimit,
             page: finalPage, pageSize: finalLimit, totalPages: Math.ceil(total / finalLimit),
@@ -214,13 +234,18 @@ export class CIController {
         sendCINotFound(res);
         return;
       }
-      const ci = await readSingleCI(organizationId, id,
-        () => this.neo4jClient.getCI(id, organizationId));
-      if (!ci) {
+      // recordToCI narrows the node to a fixed set of keys; the normalized fields project from the raw owned node.
+      const read = await readSingleCI(organizationId, id, async () => {
+        const ci = await this.neo4jClient.getCI(id, organizationId);
+        return ci && { ci, stored: await this.neo4jClient.getCIProperties(id, organizationId) };
+      });
+      if (!read || !read.stored) {
         sendCINotFound(res);
         return;
       }
-      res.json({ success: true, data: convertNeo4jTypes(ci) });
+      const [detail] = await withCIHealth(getPostgresClient(), organizationId,
+        [withNormalizedCIFields(convertNeo4jTypes(read.ci), convertNeo4jTypes(read.stored))], healthReadFailed);
+      res.json({ success: true, data: detail });
     } catch (error) {
       if (error instanceof CIGapError) {
         res.status(409).json(CI_GAP_RESPONSE);
@@ -293,6 +318,47 @@ export class CIController {
     } catch (error) {
       if (sendJournalError(res, error)) return;
       logger.error('Error deleting CI', error);
+      res.status(500).json({ success: false, error: 'Failed to delete CI' });
+    }
+  }
+
+  /**
+   * HAP-797: the admin, read-only evidence read for the oversized recovery delete: every stored property of an owned CI, HP1-encoded
+   * (`enc`, the form the recovery's `bytes` and `sha256` describe), so nothing is narrowed, parsed or truncated. 404 missing/foreign,
+   * 409 while the CI has an unresolved journal write.
+   */
+  async getCIStoredProperties(req: Request, res: Response): Promise<void> {
+    try {
+      const id = req.params['id']!;
+      const organizationId = requestOrganizationId(req);
+      const stored = await readSingleCI(organizationId, id, () => this.neo4jClient.getCIProperties(id, organizationId));
+      if (!stored) {
+        sendCINotFound(res);
+        return;
+      }
+      res.json({ success: true, data: { id, properties: enc(stored) } });
+    } catch (error) {
+      if (error instanceof CIGapError) {
+        res.status(409).json(CI_GAP_RESPONSE);
+        return;
+      }
+      logger.error('Error reading stored CI properties', error);
+      res.status(500).json({ success: false, error: 'Failed to retrieve CI' });
+    }
+  }
+
+  /** HAP-797: the admin recovery delete (route-gated) of a CI whose stored value the ordinary delete cannot plan. 204; 404 missing/foreign; 409 not oversized. */
+  async deleteOversizedCI(req: Request, res: Response): Promise<void> {
+    try {
+      if (!(await this.neo4jClient.deleteOversizedCI(req.params['id']!, requestOrganizationId(req), requestActor(req),
+        req.body.evidence_ref as string))) {
+        sendCINotFound(res);
+        return;
+      }
+      res.status(204).send();
+    } catch (error) {
+      if (sendJournalError(res, error)) return;
+      logger.error('Error deleting oversized CI', error);
       res.status(500).json({ success: false, error: 'Failed to delete CI' });
     }
   }
@@ -415,13 +481,20 @@ export class CIController {
         return;
       }
 
-      const dependencies = await this.neo4jClient.getDependencies(id, organizationId, depthNum);
+      const { paths: dependencies, edges: followed } = await this.neo4jClient.getDependenciesWithEdges(id, organizationId, depthNum);
+      // Every node of every returned path is the root or the end of a segment.
+      const envelope = await impactEnvelope(organizationId, [
+        id, ...dependencies.flatMap((path: any) => (path.segments || []).map((segment: any) => segment.end?.properties?.id)),
+      ].filter((ciId): ciId is string => typeof ciId === 'string'));
+      const qualified = await loadEdgeEvidence(organizationId, followed, { timeoutMs: CI_TRAVERSAL_QUERY_TIMEOUT_MS });
 
       res.json({
         success: true,
         data: dependencies,
         count: dependencies.length,
-        depth: depthNum
+        depth: depthNum,
+        ...envelope,
+        edges: qualifyEdges(followed, qualified)
       });
     } catch (error) {
       if (sendTraversalFailure(res, error)) return;
@@ -469,8 +542,10 @@ export class CIController {
 
       // Both owned traversals share one request work/node budget.
       const work = createCITraversalWork();
-      const downstream = await this.neo4jClient.impactAnalysis(id, organizationId, depthNum, work);
-      const upstream = await this.neo4jClient.getDependencies(id, organizationId, depthNum, work);
+      const downstreamTraversal = await this.neo4jClient.impactAnalysisWithEdges(id, organizationId, depthNum, work);
+      const upstreamTraversal = await this.neo4jClient.getDependenciesWithEdges(id, organizationId, depthNum, work);
+      const downstream = downstreamTraversal.nodes;
+      const upstream = upstreamTraversal.paths;
 
       // Extract unique CIs from downstream
       const downstreamCIs = downstream.map((item: any) => convertNeo4jTypes(item._ci));
@@ -504,20 +579,34 @@ export class CIController {
         new Set(allCIs.map((ci: any) => ci.environment).filter(Boolean))
       );
 
+      // HAP-1927 BW11: the services this CI or anything downstream of it is mapped to (upstream CIs are not affected).
+      const businessContext = await loadImpactBusinessContext(
+        organizationId, [id, ...downstreamCIs.map((downstreamCI: any) => downstreamCI.id)],
+        { timeoutMs: impactLineageTimeoutMs() });
+
       // Construct the impact analysis response
       const impactAnalysis = {
         ci: convertNeo4jTypes(ci),
         upstream: upstreamCIs,
         downstream: downstreamCIs,
         impact_score,
-        affected_environments
+        affected_environments,
+        ...businessContext
       };
+
+      const envelope = await impactEnvelope(organizationId, [
+        id, ...downstreamCIs.map((ci: any) => ci.id), ...upstreamCIs.map((ci: any) => ci.id),
+      ]);
+      const followed = [...downstreamTraversal.edges, ...upstreamTraversal.edges];
+      const qualified = await loadEdgeEvidence(organizationId, followed, { timeoutMs: CI_TRAVERSAL_QUERY_TIMEOUT_MS });
 
       res.json({
         success: true,
         data: impactAnalysis,
         totalImpacted: totalImpacted,
-        depth: depthNum
+        depth: depthNum,
+        ...envelope,
+        edges: qualifyEdges(followed, qualified)
       });
     } catch (error) {
       if (sendTraversalFailure(res, error)) return;

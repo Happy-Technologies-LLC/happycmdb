@@ -103,6 +103,7 @@ jest.mock('../../controllers/itil.controller', () => ({
     restoreFromBaseline: mockRouteHandler,
     getConfigurationAccuracy: mockRouteHandler,
     getIncidentSummary: mockRouteHandler,
+    getOpenIncidentRibbon: mockRouteHandler,
     getChangeSuccessRate: mockRouteHandler,
     getMeanTimeToResolve: mockRouteHandler,
     getMeanTimeBetweenFailures: mockRouteHandler,
@@ -266,6 +267,13 @@ describe('itil routes', () => {
     const response = await invoke(testApp(), method, path, body, 'Bearer operator-token');
     expect(response.status).toBe(200);
     expect(mockRouteHandler).toHaveBeenCalled();
+  });
+
+  it.each([[255, 200], [256, 400]])('close accepts a closedBy of 255 characters and refuses longer: %i chars answers %i', async (length, status) => {
+    const response = await invoke(testApp(), 'POST', `/itil/changes/${RECORD_ID}/close`,
+      { result: 'SUCCESS', closedBy: 'x'.repeat(length) }, 'Bearer operator-token');
+    expect(response.status).toBe(status);
+    expect(mockRouteHandler).toHaveBeenCalledTimes(status === 200 ? 1 : 0);
   });
 
   it('rejects an invalid/unrecognized bearer token with 401', async () => {

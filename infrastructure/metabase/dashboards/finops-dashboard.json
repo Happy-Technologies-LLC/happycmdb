@@ -148,7 +148,7 @@
       "dataset_query": {
         "type": "native",
         "native": {
-          "query": "SELECT ci_name, ci_type, COALESCE((tbm_attributes->>'monthly_cost')::DECIMAL, 0) AS monthly_cost, COALESCE((metadata->>'utilization_pct')::DECIMAL, 0) AS utilization_pct, COALESCE((tbm_attributes->>'monthly_cost')::DECIMAL, 0) * (1 - COALESCE((metadata->>'utilization_pct')::DECIMAL, 0) / 100) AS potential_savings FROM cmdb.dim_ci WHERE is_current = TRUE AND ci_status = 'active' AND (metadata->>'utilization_pct')::DECIMAL < 50 ORDER BY potential_savings DESC LIMIT 10",
+          "query": "SELECT ci_name, ci_type, monthly_cost, utilization_pct, potential_savings FROM v_underutilized_resources ORDER BY potential_savings DESC LIMIT 10",
           "template-tags": {}
         },
         "database": "HappyCMDB"

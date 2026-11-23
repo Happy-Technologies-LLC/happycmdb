@@ -19,6 +19,8 @@ import {
 } from 'recharts';
 import { PageHeader, Card, Button, Icon, StatusBadge } from '@happy-technologies/design-system';
 import { brand } from '@/lib/brandColors';
+import { useOrganizationId } from '@/contexts/OrganizationContext';
+import { orgScopedKey } from '@/lib/queryKeys';
 import ciService from '../services/ci.service';
 import CITypeBadge from '../components/ci/CITypeBadge';
 import CIStatusBadge from '../components/ci/CIStatusBadge';
@@ -53,13 +55,15 @@ const typeGlyph = (type: string): string =>
 const DashboardBreakdown: React.FC = () => {
   const navigate = useNavigate();
 
+  const organizationId = useOrganizationId();
+
   const {
     data: stats,
     isLoading,
     error,
     refetch,
   } = useQuery({
-    queryKey: ['dashboard-stats'],
+    queryKey: orgScopedKey('dashboard-stats', organizationId),
     queryFn: () => ciService.getDashboardStats(),
     staleTime: 60000,
     refetchInterval: 300000,

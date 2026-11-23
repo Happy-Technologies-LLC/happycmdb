@@ -25,6 +25,7 @@ export class MetricsAggregator {
   private producer = getEventProducer();
   private postgresClient = getPostgresClient();
   private redisClient = getRedisClient();
+  private timers: ReturnType<typeof setInterval>[] = [];
 
   // Time windows for aggregation
   private readonly WINDOWS = {
@@ -64,6 +65,7 @@ export class MetricsAggregator {
   }
 
   async stop(): Promise<void> {
+    this.clearPeriodicAggregation();
     await this.consumer.disconnect();
     await this.producer.disconnect();
     logger.info('MetricsAggregator stopped');
@@ -102,6 +104,15 @@ export class MetricsAggregator {
   private async handleConnectorCompleted(event: CMDBEvent): Promise<void> {
     const runEvent = event as ConnectorRunCompletedEvent;
 
+    if (
+      !this.isValidConnectorName(runEvent.connector_name) ||
+      !Number.isFinite(runEvent.duration_ms) ||
+      !Number.isFinite(runEvent.records_extracted)
+    ) {
+      logger.warn('Ignoring malformed connector completed event');
+      return;
+    }
+
     try {
       // Update connector metrics
       await this.incrementCounter('connector_runs_total');
@@ -139,11 +150,20 @@ export class MetricsAggregator {
     }
   }
 
+  private isValidConnectorName(name: unknown): name is string {
+    return typeof name === 'string' && name !== '';
+  }
+
   /**
    * Handle connector run failed event
    */
   private async handleConnectorFailed(event: CMDBEvent): Promise<void> {
     const failEvent = event as ConnectorRunFailedEvent;
+
+    if (!this.isValidConnectorName(failEvent.connector_name)) {
+      logger.warn('Ignoring connector failed event without a valid connector_name');
+      return;
+    }
 
     try {
       // Update failure metrics
@@ -260,14 +280,24 @@ export class MetricsAggregator {
    * Start periodic aggregation tasks
    */
   private startPeriodicAggregation(): void {
+    // Idempotent: a second start() must not double the timers.
+    this.clearPeriodicAggregation();
+
     // Aggregate every minute
-    setInterval(() => this.aggregateMetrics('minute'), 60 * 1000);
+    this.timers.push(setInterval(() => this.aggregateMetrics('minute'), 60 * 1000));
 
     // Aggregate every hour
-    setInterval(() => this.aggregateMetrics('hour'), 60 * 60 * 1000);
+    this.timers.push(setInterval(() => this.aggregateMetrics('hour'), 60 * 60 * 1000));
 
     // Aggregate daily
-    setInterval(() => this.aggregateMetrics('day'), 24 * 60 * 60 * 1000);
+    this.timers.push(setInterval(() => this.aggregateMetrics('day'), 24 * 60 * 60 * 1000));
+  }
+
+  private clearPeriodicAggregation(): void {
+    for (const timer of this.timers) {
+      clearInterval(timer);
+    }
+    this.timers = [];
   }
 
   /**
@@ -314,16 +344,10 @@ export class MetricsAggregator {
         );
       }
 
-      // Publish aggregated metrics event
-      await this.producer.emit(
-        EventType.CONNECTOR_RUN_COMPLETED as any,
-        'metrics-aggregator',
-        {
-          window,
-          window_start: windowStart,
-          metrics_count: ciMetrics.rows.length,
-        } as any
-      );
+      // The "aggregation done" notice is only logged. It must NOT be emitted as
+      // CONNECTOR_RUN_COMPLETED: EventProducer routes connector.* to
+      // CONNECTOR_METRICS, which this class consumes, so it would count itself
+      // as a connector run.
 
       logger.info('Metrics aggregated', {
         window,

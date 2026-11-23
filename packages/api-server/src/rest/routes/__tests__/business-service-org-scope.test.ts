@@ -180,7 +180,8 @@ import { businessServiceRoutes } from '../business-service.routes';
 import { architectureRoutes } from '../architecture.routes';
 import { discoveryAgentRoutes } from '../discovery-agent.routes';
 import {
-  APP_GRANTS_SQL, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql, journalReadAclSql,
+  APP_GRANTS_SQL, assertAppLogin, assertAppStatement, asTableOwner, createLoginRolesSql, journalReadAclSql, lineageReadAclSql,
+  lineageTableSql,
 } from './fixtures/app-login';
 
 const MIGRATIONS = join(__dirname, '../../../../../database/src/postgres/migrations');
@@ -251,7 +252,7 @@ INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, tbm_attributes, is_
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (userId: string, organizationId?: string) => ({
-  Authorization: `Bearer ${jwt.generateAccessToken(userId, USERS[userId]!._username, 'operator', organizationId)}`,
+  Authorization: `Bearer ${jwt.generateAccessToken(userId, USERS[userId]!._username, 'operator', organizationId, 0, Math.floor(Date.now() / 1000))}`,
 });
 const AS_A = bearer('user-a', INTERNAL_ORG);
 const AS_B = bearer('user-b', ORG_B);
@@ -311,6 +312,7 @@ beforeAll(async () => {
     await db.exec(definition[0]);
   }
   await db.exec(readFileSync(join(MIGRATIONS, '019_discovery_agents_organization_scope.sql'), 'utf8'));
+  await db.exec(readFileSync(join(MIGRATIONS, '057_discovery_agents_owner.sql'), 'utf8'));
   ciBackfilled = await db.rows('SELECT ci_name, organization_id, org_backfilled FROM cmdb.dim_ci ORDER BY ci_key');
   // HAP-1423: the stored C1 record (043) and the hash-chained audit_log its writes append to (001, 003, 028's column).
   await db.exec([...schema.match(/CREATE TYPE audit_\w+ AS ENUM \([^;]*\);/g)!,
@@ -320,7 +322,7 @@ beforeAll(async () => {
   for (const name of ['043_business_service_record_c1.sql', '046_service_offerings.sql']) {
     await db.exec(`BEGIN;\n${readFileSync(join(MIGRATIONS, name), 'utf8')}\nCOMMIT;`);
   }
-  await db.exec(APP_GRANTS_SQL + journalReadAclSql());
+  await db.exec(lineageTableSql() + APP_GRANTS_SQL + journalReadAclSql() + lineageReadAclSql());
 });
 
 afterAll(() => {
@@ -491,7 +493,7 @@ describe('fail closed without an organization claim', () => {
       const req = request(app)[method as 'get'](path).set(headers);
       const res = await (body === null ? req : req.send(body));
       expect(res.status).toBe(403);
-      expect(res.body).toEqual({ _error: 'Forbidden', _message: 'Organization claim required' });
+      expect(res.body).toMatchObject({ _error: 'Forbidden', _message: 'Organization claim required', code: 'ORGANIZATION_REQUIRED' });
     }
     expect(queryCount).toBe(0);
     expect(await count('dim_business_services')).toBe(5);
@@ -882,7 +884,7 @@ describe('the tenant is re-read from the user record on every request', () => {
   });
 
   it('rejects a refresh token presented as a bearer token', async () => {
-    const refresh = jwt.generateRefreshToken('user-a', 'alice', 'operator');
+    const refresh = jwt.generateRefreshToken('user-a', 'alice', 'operator', 0, Math.floor(Date.now() / 1000));
     const res = await request(app).get('/api/v1/business-services/bs-a-app').set({ Authorization: `Bearer ${refresh}` });
     expect(res.status).toBe(401);
     expect(queryCount).toBe(0);

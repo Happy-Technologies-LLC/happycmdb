@@ -36,7 +36,7 @@ const [graph, sql, jwt] = [getNeo4jClient(), getPostgresClient(), new JWTService
 const app = express().use(express.json()).use('/api/v1', getAuthMiddleware().authenticate()).use('/api/v1/cis', ciRoutes)
   .use('/api/v1/itil', itilRoutes);
 const auth = (user: User) => ({ authorization: `Bearer ${jwt.generateAccessToken(users[user]._id,
-  users[user]._username, users[user]._role, users[user]._organizationId)}` });
+  users[user]._username, users[user]._role, users[user]._organizationId, 0, Math.floor(Date.now() / 1000))}` });
 const list = (user: User) => request(app).get('/api/v1/cis').set(auth(user));
 const put = (user: User, ci: string) => request(app).put(`/api/v1/cis/${ci}`).set(auth(user)).send({ name: `${ci}-x` }).then();
 const create = (user: User, ci: string) => graph.createCI({ _id: ci, name: ci, _type: 'server' }, users[user]._organizationId, users[user]._id);

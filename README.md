@@ -183,6 +183,7 @@ REST `POST /api/v1/connector-configs/:id/run` retains its existing queued-histor
 - **AI Discovery Module** — Standalone AI-powered infrastructure discovery with pattern learning
 - **Terraform Provider** — Manage HappyCMDB resources as infrastructure-as-code
 - **Helm Chart** — Production Kubernetes deployment with auto-scaling
+- **Evidence-qualified impact views** *(Proposed, HAP-171; not decided, pending founder review)* — Per-relationship evidence, staleness and unknown-coverage markers; declared-graph reachability is never presented as complete runtime blast radius. HAP-2029 added server-assigned, append-only relationship evidence receipts and `GET /api/v1/relationships/evidence`. HAP-2030 (Story 3) now uses them: the four impact reads (`/cis/:id/impact`, `/cis/:id/dependencies`, `/impact/graph/:rootCiId`, `/business-services/:id/context`) qualify each edge with derived `currentness` (`current`, `stale`, `contradicted`, `unsupported`) and an `evidence` summary. The web UI evidence drawer (Story 4) is not built. See [design](doc-site/docs/architecture/system-overview.md#evidence-qualified-relationships-and-impact-proposed)
 
 ## Development
 
@@ -191,7 +192,7 @@ npm run dev               # Start all services in dev mode
 npm run build             # Build all packages
 npm run test:unit         # Unit tests
 npm run test:integration  # Integration tests (requires Docker services)
-npm run lint              # ESLint
+npm run lint              # ESLint (backend packages, against .eslint-baseline.json; CI job backend-lint is report-only for now)
 npm run format            # Prettier
 ```
 

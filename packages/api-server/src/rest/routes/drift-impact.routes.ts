@@ -34,7 +34,8 @@ impactRoutes.use(authMiddleware.requireOrganization());
 
 /** Architecture and impact use the same verified-principal admission/deadline runner. */
 function executeImpact(
-  req: Request, res: Response, operation: () => Promise<{ status: number; body: unknown }>
+  req: Request, res: Response, operation: () => Promise<{ status: number; body: unknown }>,
+  render?: (res: Response, result: { status: number; body: unknown }) => void
 ): Promise<void> {
   return executeBoundedAnalysis(req, res, operation, {
     scope: 'impact',
@@ -54,6 +55,7 @@ function executeImpact(
       return error instanceof JournalUnavailableError ? { status: 503, message: 'CI write temporarily unavailable' } : null;
     },
     internalError: 'Failed to analyze impact',
+    ...(render !== undefined ? { render } : {}),
   });
 }
 
@@ -175,4 +177,40 @@ impactRoutes.get(
   validateOptional(impactHistoryQuerySchema, 'query'),
   (req: Request, res: Response) =>
     executeImpact(req, res, () => controller.getImpactHistoryResult(req as AuthenticatedRequest))
+);
+
+// ============================================================================
+// Ask (HAP-1928, UX-4b BW13)
+// ============================================================================
+
+/** The ask endpoint: a happy-ui/v1 JSON Lines answer, composed by rule from read-only impact data. */
+export const askRoutes = Router();
+askRoutes.use(authMiddleware.requireOrganization());
+
+const askSchema = Joi.object({
+  ci_id: Joi.string().required().min(1).max(64),
+  // Phase 1 (decision N4 (a)) answers the impact question only; no free text, no LLM.
+  question: Joi.string().valid('impact').default('impact'),
+  change_type: Joi.string().min(1).max(64),
+});
+
+function sendJsonLines(res: Response, result: { status: number; body: unknown }): void {
+  if (result.status === 200 && typeof result.body === 'string') {
+    res.status(200).set({ 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' }).send(result.body);
+    return;
+  }
+  res.status(result.status).json(result.body);
+}
+
+// Read-only: the prediction is previewed, never stored, so this needs the read access every impact GET needs.
+askRoutes.post(
+  '/',
+  validateRequest(askSchema, 'body'),
+  orgReadGate(429, { success: false, error: 'Impact analysis rate limit exceeded' },
+    async (req: Request, res: Response) => {
+      let work: Promise<unknown> = Promise.resolve();
+      await executeImpact(req, res,
+        () => (work = controller.askImpactResult(req as AuthenticatedRequest)), sendJsonLines);
+      await work.catch(() => undefined);
+    })
 );

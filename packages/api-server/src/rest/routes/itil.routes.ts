@@ -8,6 +8,7 @@ import { validateRequest, validateOptional } from '../middleware/validation.midd
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
 import { getPostgresClient } from '@cmdb/database';
+import { itilRecordTablesAvailable, type ItilRecordTable } from '../../services/itil-record-schema';
 
 export const itilRoutes = Router();
 const controller = new ITILController();
@@ -17,19 +18,12 @@ itilRoutes.use(authMiddleware.requireOrganization());
 // Apply audit middleware to all routes
 itilRoutes.use(auditMiddleware);
 
-// V2/V3 deliberately have no ITIL record tables. Check catalog metadata,
-// never probe record data or turn undefined-table errors into an existence leak.
-const recordTable = (name: 'itil_incidents' | 'itil_changes' | 'itil_baselines') =>
+// V2/V3 deliberately have no ITIL record tables: answered from catalog metadata
+// (see itilRecordTablesAvailable), never from record data.
+const recordTable = (name: ItilRecordTable) =>
   async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const result = await getPostgresClient().pool.query(
-        `SELECT EXISTS (
-          SELECT 1 FROM pg_attribute
-          WHERE attrelid = to_regclass($1) AND attname = 'organization_id' AND NOT attisdropped
-        ) AS available`,
-        [`public.${name}`]
-      );
-      if (!result.rows[0]?.available) {
+      if (!await itilRecordTablesAvailable((sql, params) => getPostgresClient().pool.query(sql, params), name)) {
         res.status(503).json({ success: false, error: 'ITIL records unavailable' });
         return;
       }
@@ -42,6 +36,7 @@ itilRoutes.use('/incidents', recordTable('itil_incidents'));
 itilRoutes.use('/changes', recordTable('itil_changes'));
 itilRoutes.use('/baselines', recordTable('itil_baselines'));
 itilRoutes.use('/metrics/incident-summary', recordTable('itil_incidents'));
+itilRoutes.use('/metrics/open-incidents', recordTable('itil_incidents'));
 itilRoutes.use('/metrics/change-success-rate', recordTable('itil_changes'));
 itilRoutes.use('/metrics/mttr', recordTable('itil_incidents'));
 itilRoutes.use('/metrics/mtbf', recordTable('itil_incidents'));
@@ -129,7 +124,7 @@ const updateChangeSchema = Joi.object({
 const closeChangeSchema = Joi.object({
   result: Joi.string().valid('SUCCESS', 'PARTIAL_SUCCESS', 'FAILED', 'ROLLED_BACK').required(),
   notes: Joi.string().optional(),
-  closedBy: Joi.string().required(),
+  closedBy: Joi.string().max(255).required(),
 });
 
 const createBaselineSchema = Joi.object({
@@ -387,6 +382,11 @@ itilRoutes.get(
 itilRoutes.get(
   '/metrics/incident-summary',
   controller.getIncidentSummary.bind(controller)
+);
+
+itilRoutes.get(
+  '/metrics/open-incidents',
+  controller.getOpenIncidentRibbon.bind(controller)
 );
 
 itilRoutes.get(

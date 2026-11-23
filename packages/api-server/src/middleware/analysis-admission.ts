@@ -27,6 +27,8 @@ type AnalysisPolicy = {
   deadlineError: () => Error;
   failure: (error: unknown) => { status: number; message: string } | null;
   internalError: string;
+  /** HAP-1928: send a successful result in a non-JSON form (the ask stream); every error still uses the JSON envelope. */
+  render?: (res: Response, result: AnalysisResult) => void;
 };
 
 /** Shared verified-principal/tenant admission, with GraphQL consuming only concurrency slots. */
@@ -165,7 +167,11 @@ export async function executeBoundedAnalysis(
     });
     const result = await Promise.race([work, timeout]);
     if (Date.now() >= deadline) throw policy.deadlineError();
-    res.status(result.status).json(result.body);
+    if (policy.render !== undefined) {
+      policy.render(res, result);
+    } else {
+      res.status(result.status).json(result.body);
+    }
   } catch (error) {
     if (error instanceof CIGapError) {
       res.status(409).json(CI_GAP_RESPONSE);

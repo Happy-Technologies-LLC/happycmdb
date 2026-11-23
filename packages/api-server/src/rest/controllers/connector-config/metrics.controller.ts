@@ -27,8 +27,8 @@ export class ConnectorConfigMetricsController {
       const statsResult = await this.pool.query(
         `SELECT
           COUNT(*) as total_runs,
-          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as successful_runs,
-          SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_runs,
+          COUNT(*) FILTER (WHERE status = 'completed') as successful_runs,
+          COUNT(*) FILTER (WHERE status = 'failed') as failed_runs,
           AVG(duration_ms) as avg_duration_ms,
           SUM(records_extracted) as total_records_extracted,
           SUM(records_loaded) as total_records_loaded
@@ -47,8 +47,8 @@ export class ConnectorConfigMetricsController {
         data: {
           config_id: id,
           total_runs: parseInt(stats.total_runs),
-          successful_runs: parseInt(stats.successful_runs),
-          failed_runs: parseInt(stats.failed_runs),
+          successful_runs: parseInt(stats.successful_runs || 0),
+          failed_runs: parseInt(stats.failed_runs || 0),
           success_rate: Math.round(successRate * 100) / 100,
           avg_duration_ms: stats.avg_duration_ms ? Math.round(parseFloat(stats.avg_duration_ms)) : 0,
           total_records_extracted: parseInt(stats.total_records_extracted || 0),

@@ -52,8 +52,8 @@ test('tenant admins, internal admins and flagged seeds cannot reach global queue
       const response = await request(app)[method](`/api/v1${path}`)
         .set('authorization', `Bearer ${role}`).send({ enabled: true });
       expect(response.status).toBe(403);
-      expect(response.body).toEqual({
-        success: false, error: 'Forbidden', message: 'Platform administrator required',
+      expect(response.body).toMatchObject({
+        success: false, error: 'Forbidden', message: 'Platform administrator required', code: 'PLATFORM_ADMIN_REQUIRED',
       });
     }
   }

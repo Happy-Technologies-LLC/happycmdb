@@ -101,6 +101,7 @@ beforeEach(() => {
     elementId: '4:alice',
     properties: {
       _id: 'user-1', _username: 'alice', _email: 'alice@example.com', _passwordHash: 'hash', _role: 'operator',
+      _organizationId: '5f0c7a52-3d1e-4b8a-9c61-2f4e8d7b1a03',
       _enabled: true, _createdAt: new Date('2024-01-01'), _updatedAt: new Date('2024-01-01'),
     },
   };
@@ -114,7 +115,9 @@ beforeEach(() => {
     close: jest.fn(async () => undefined),
   };
   (getNeo4jClient as AnyMock).mockReturnValue({ getSession: () => session });
-  (getPostgresClient as AnyMock).mockReturnValue({ getClient: jest.fn(), query: jest.fn() });
+  (getPostgresClient as AnyMock).mockReturnValue({
+    getClient: jest.fn(), query: jest.fn(), transaction: jest.fn(async () => undefined),
+  });
   (auditChainReady as AnyMock).mockReturnValue(true);
 
   authService = new AuthService(authConfig as any, new Neo4jAuthRepository());
@@ -124,7 +127,7 @@ beforeEach(() => {
   app = express();
   app.use(express.json());
   app.use('/api/v1/auth', controller.getRouter());
-  token = new JWTService(authConfig.jwt as any).generateAccessToken('user-1', 'alice', 'operator');
+  token = new JWTService(authConfig.jwt as any).generateAccessToken('user-1', 'alice', 'operator', undefined, 0, Math.floor(Date.now() / 1000));
 });
 
 describe('PUT /profile when the user node vanishes mid-update (HAP-1767)', () => {
@@ -244,17 +247,19 @@ describe('PUT /password and DELETE /account when the user is gone (HAP-1825)', (
     onUpdate = async () => { throw new Error('no write may run after a read-miss'); };
   });
 
+  // The password change attempts its (cmdb#321) user_not_found audit, which the stubbed transaction accepts (the
+  // actor has an organization: HAP-1714 refuses an organization-less change first). Neither route logs an error.
   it.each([
-    ['PUT /password', changePassword, NOT_FOUND_PASSWORD],
-    ['DELETE /account', deleteAccount, NOT_FOUND_DELETE],
-  ])('%s answers 404 with the not-found body, writes nothing and logs no error', async (_name, call, body) => {
+    ['PUT /password', changePassword, NOT_FOUND_PASSWORD, []],
+    ['DELETE /account', deleteAccount, NOT_FOUND_DELETE, []],
+  ])('%s answers 404 with the not-found body, writes nothing and logs no internal error', async (_name, call, body, errors) => {
     const logs = spyOnLogs();
     try {
       const res = await call();
 
       expect([res.status, res.body]).toEqual([404, body]);
       expect(session.run.mock.calls.map(([cypher]) => cypher)).toEqual([FIND_USER_BY_ID_CYPHER, FIND_USER_BY_ID_CYPHER]);
-      expect(logs.errorCalls()).toEqual([]);
+      expect(logs.errorCalls()).toEqual(errors);
     } finally {
       logs.restore();
     }

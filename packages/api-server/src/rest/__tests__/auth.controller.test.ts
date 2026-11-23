@@ -15,7 +15,7 @@ import express from 'express';
 import request from 'supertest';
 import { AuthController } from '../auth.controller';
 import { AuthService, AuthRepository, UserProfileUpdate } from '../../auth/auth.service';
-import type { GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite } from '../../auth/auth.service';
+import type { GuardedEpochBump, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite } from '../../auth/auth.service';
 import { ValidationMiddleware } from '../middleware/validation.middleware';
 import { AuthMiddleware } from '../../middleware/auth.middleware';
 import { RateLimitMiddleware } from '../../middleware/rate-limit.middleware';
@@ -48,6 +48,8 @@ class InMemoryAuthRepository implements AuthRepository {
   users = new Map<string, User>();
   apiKeys = new Map<string, { userId: string; revoked: boolean }>();
   issuedKeys = new Map<string, ApiKey>();
+  /** Key hashes revoked by revokeApiKeysBelowEpoch: not listed and not found, like `revoked_at IS NOT NULL`. */
+  revokedKeyHashes = new Set<string>();
   listCalls = 0;
 
   async findUserByUsername(username: string): Promise<User | null> {
@@ -78,7 +80,7 @@ class InMemoryAuthRepository implements AuthRepository {
   /** Like GUARDED_PASSWORD_CYPHER: the hash and the next generation land together. */
   async updatePasswordHashGuarded(write: GuardedPasswordWrite): Promise<boolean> {
     const existing = this.users.get(write.userId);
-    if (!existing || existing._passwordHash !== write.readHash) {
+    if (!existing || existing._passwordHash !== write.readHash || existing._organizationId !== write.organizationId) {
       return false;
     }
     this.users.set(write.userId, { ...existing, _passwordHash: write.newHash, _credentialEpoch: (existing._credentialEpoch ?? 0) + 1 });
@@ -92,6 +94,19 @@ class InMemoryAuthRepository implements AuthRepository {
       return false;
     }
     this.users.set(write.userId, { ...existing, _passwordHash: write.newHash });
+    return true;
+  }
+
+  /** Like GUARDED_BUMP_EPOCH_CYPHER: the generation moves by one, the hash never changes; a marked or organization-less user is refused. */
+  async bumpCredentialEpochGuarded(write: GuardedEpochBump): Promise<boolean> {
+    const existing = this.users.get(write.userId);
+    if (
+      !existing || existing._passwordHash !== write.readHash || (existing._credentialEpoch ?? 0) !== write.credentialEpoch ||
+      existing._defaultPasswordSuspect === true || !existing._organizationId || existing._organizationId !== write.organizationId
+    ) {
+      return false;
+    }
+    this.users.set(write.userId, { ...existing, _credentialEpoch: write.credentialEpoch + 1 });
     return true;
   }
 
@@ -122,7 +137,7 @@ class InMemoryAuthRepository implements AuthRepository {
   }
 
   async findApiKeyByKey(hash: string): Promise<ApiKey | null> {
-    return this.issuedKeys.get(hash) || null;
+    return this.revokedKeyHashes.has(hash) ? null : this.issuedKeys.get(hash) || null;
   }
 
   async createApiKey(apiKey: Omit<ApiKey, 'id' | 'createdAt'>): Promise<ApiKey> {
@@ -141,10 +156,16 @@ class InMemoryAuthRepository implements AuthRepository {
     key.revoked = true;
     return 1;
   }
+  async revokeApiKeysBelowEpoch(userId: string, nextEpoch: number): Promise<number> {
+    const dead = [...this.issuedKeys.values()].filter(key =>
+      key._userId === userId && (key._credentialEpoch ?? 0) < nextEpoch && !this.revokedKeyHashes.has(key._keyHash));
+    dead.forEach(key => this.revokedKeyHashes.add(key._keyHash));
+    return dead.length;
+  }
   async listApiKeys(userId: string): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]> {
     this.listCalls++;
     return [...this.issuedKeys.values()]
-      .filter(key => key._userId === userId)
+      .filter(key => key._userId === userId && !this.revokedKeyHashes.has(key._keyHash))
       .map(({ _key, _keyHash, ...key }) => key);
   }
 }
@@ -171,17 +192,31 @@ function refreshCookieOf(response: request.Response): { value: string; attribute
 const cookieAttributes = (maxAge: number, ...extra: string[]) =>
   [`Max-Age=${maxAge}`, 'Path=/api/v1/auth', 'HttpOnly', 'Secure', 'SameSite=Strict', ...extra].sort();
 
+/** HAP-1714: a self-service password change needs a stored organization, so the seeded users have one. */
+const SEED_ORGANIZATION = '0c2d6d1e-6f3a-4a51-8e0b-9d4c7f1a2b35';
+
+/** Live API-key rows of `userId` at generation 0, with secrets the audit row must never carry. */
+function seedIssuedKeys(repository: InMemoryAuthRepository, userId: string, count: number): void {
+  for (let i = 0; i < count; i++) {
+    repository.issuedKeys.set(`hash-${userId}-${i}`, {
+      _id: `key-id-${i}`, _key: `secret-key-${i}`, _keyHash: `hash-${userId}-${i}`, _name: `key ${i}`, _userId: userId,
+      _role: 'operator', _tier: 'standard', _enabled: true, _createdAt: new Date(), _credentialEpoch: 0,
+    } as ApiKey);
+  }
+}
+
 describe('AuthController profile/password/account routes', () => {
   let app: express.Express;
   let repository: InMemoryAuthRepository;
   let jwtService: JWTService;
+  let authService: AuthService;
   let passwordService: PasswordService;
   let victimToken: string;
   let otherUserToken: string;
 
   beforeEach(async () => {
     repository = new InMemoryAuthRepository();
-    const authService = new AuthService(authConfig as any, repository);
+    authService = new AuthService(authConfig as any, repository);
     const validator = new ValidationMiddleware();
     const authMiddleware = new AuthMiddleware(authService, authConfig as any);
     const controller = new AuthController(authService, validator, authMiddleware, fakeRateLimiter());
@@ -199,6 +234,7 @@ describe('AuthController profile/password/account routes', () => {
       _email: 'alice@example.com',
       _passwordHash: await passwordService.hash('correct-horse-battery-staple'),
       _role: 'operator',
+      _organizationId: SEED_ORGANIZATION,
       _enabled: true,
       _createdAt: new Date('2024-01-01'),
       _updatedAt: new Date('2024-01-01'),
@@ -210,13 +246,14 @@ describe('AuthController profile/password/account routes', () => {
       _email: 'bob@example.com',
       _passwordHash: await passwordService.hash('bobs-password'),
       _role: 'viewer',
+      _organizationId: SEED_ORGANIZATION,
       _enabled: true,
       _createdAt: new Date('2024-01-01'),
       _updatedAt: new Date('2024-01-01'),
     } as User);
 
-    victimToken = jwtService.generateAccessToken('user-1', 'alice', 'operator');
-    otherUserToken = jwtService.generateAccessToken('user-2', 'bob', 'viewer');
+    victimToken = jwtService.generateAccessToken('user-1', 'alice', 'operator', undefined, 0, Math.floor(Date.now() / 1000));
+    otherUserToken = jwtService.generateAccessToken('user-2', 'bob', 'viewer', undefined, 0, Math.floor(Date.now() / 1000));
 
     repository.apiKeys.set('alice-key', { userId: 'user-1', revoked: false });
     repository.apiKeys.set('bob-key', { userId: 'user-2', revoked: false });
@@ -282,8 +319,8 @@ describe('AuthController profile/password/account routes', () => {
           _role: 'admin', _enabled: true, _createdAt: new Date('2024-01-01'), _updatedAt: new Date('2024-01-01'),
         } as User);
         // The seeded admin's credentials, issued before this deploy (as on main: no generation claim, key generation 0).
-        const preAccess = jwtService.generateAccessToken('user-admin-001', 'admin', 'admin');
-        const preRefresh = jwtService.generateRefreshToken('user-admin-001', 'admin', 'admin');
+        const preAccess = jwtService.generateAccessToken('user-admin-001', 'admin', 'admin', undefined, 0, Math.floor(Date.now() / 1000));
+        const preRefresh = jwtService.generateRefreshToken('user-admin-001', 'admin', 'admin', 0, Math.floor(Date.now() / 1000));
         const preKey = 'seeded-admin-pre-issued-key';
         const { createHash } = await import('crypto');
         repository.issuedKeys.set(createHash('sha256').update(preKey).digest('hex'), {
@@ -348,7 +385,7 @@ describe('AuthController profile/password/account routes', () => {
     // The inventory: a new auth route fails here until it is reviewed.
     expect(routes.map(({ method, path }) => `${method.toUpperCase()} ${path}`).sort()).toEqual([
       'DELETE /account', 'DELETE /api-key/:keyId', 'GET /api-keys', 'GET /me', 'POST /api-key', 'POST /login',
-      'POST /logout', 'POST /refresh', 'PUT /password', 'PUT /profile',
+      'POST /logout', 'POST /refresh', 'POST /sessions/revoke-others', 'PUT /password', 'PUT /profile',
     ]);
     const statuses: Record<string, number> = {};
     for (const { method, path } of routes) {
@@ -367,7 +404,7 @@ describe('AuthController profile/password/account routes', () => {
   it('returns one fixed refresh failure for invalid, expired, wrong-type, revoked, disabled, and store failures', async () => {
     const warnings = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
     const failed = { success: false, error: 'Authentication failed' };
-    const valid = jwtService.generateRefreshToken('user-1', 'alice', 'operator');
+    const valid = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 0, Math.floor(Date.now() / 1000));
     const expired = jwt.sign(
       { _userId: 'user-1', _username: 'alice', _role: 'operator', _type: 'refresh' },
       authConfig.jwt.secret, { expiresIn: -1, issuer: authConfig.jwt.issuer, audience: authConfig.jwt.audience }
@@ -377,7 +414,7 @@ describe('AuthController profile/password/account routes', () => {
         ['invalid.token.payload', 'invalid'],
         [expired, 'expired'],
         [victimToken, 'wrong_type'],
-        [jwtService.generateRefreshToken('deleted-user', 'deleted', 'viewer'), 'revoked'],
+        [jwtService.generateRefreshToken('deleted-user', 'deleted', 'viewer', 0, Math.floor(Date.now() / 1000)), 'revoked'],
       ]) {
         const response = await refresh(token);
         expect([response.status, response.body]).toEqual([401, failed]);
@@ -488,7 +525,7 @@ describe('AuthController profile/password/account routes', () => {
     });
 
     it('refresh answers a fixed 403 without exactly X-CMDB-Auth: 1, before any token or store work', async () => {
-      const issued = jwtService.generateRefreshToken('user-1', 'alice', 'operator');
+      const issued = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 0, Math.floor(Date.now() / 1000));
       sensitive.push(issued);
       const lookups = jest.spyOn(repository, 'findUserById');
       const verify = jest.spyOn(JWTService.prototype, 'verifyToken');
@@ -504,7 +541,7 @@ describe('AuthController profile/password/account routes', () => {
       // Pin the clock inside one second: the token below carries _authTime = floor(now), and the renewed cookie's
       // Max-Age is min(TTL, authTime + cap - iat of the renewal), so a wall-clock tick between the two reads yields 604799.
       spies.push(jest.spyOn(Date, 'now').mockReturnValue(Math.floor(Date.now() / 1000) * 1000));
-      const issued = jwtService.generateRefreshToken('user-1', 'alice', 'operator');
+      const issued = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 0, Math.floor(Date.now() / 1000));
       const malformed = `bad-${randomUUID()}`;
       sensitive.push(issued, malformed);
       const lookups = jest.spyOn(repository, 'findUserById');
@@ -556,8 +593,8 @@ describe('AuthController profile/password/account routes', () => {
 
     it('HP1-S6: a cmdb_rt of an older credential generation is 401 (revoked); the current one refreshes', async () => {
       repository.users.get('user-1')!._credentialEpoch = 2;
-      const stale = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 1);
-      const current = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 2);
+      const stale = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 1, Math.floor(Date.now() / 1000));
+      const current = jwtService.generateRefreshToken('user-1', 'alice', 'operator', 2, Math.floor(Date.now() / 1000));
       sensitive.push(stale, current);
       const refused = await refresh(stale);
       expect([refused.status, refused.headers['set-cookie']]).toEqual([401, undefined]);
@@ -611,7 +648,10 @@ describe('AuthController profile/password/account routes', () => {
         expect(records).toContainEqual(['Authentication failed', { credentialType: 'refresh', reason: 'invalid' }]);
       });
 
-      it('a self-service password change ends every session and API key of the user; the changing device gets a new one', async () => {
+      it.each([
+        ['the revoke succeeds: the old key is gone from the listing', false],
+        ['the best-effort revoke fails: the old key stays listed as not enabled', true],
+      ])('a self-service password change ends every session and API key of the user; the changing device gets a new one (%s)', async (_label, revokeFails) => {
         const pass = `pw-${randomUUID()}`;
         const next = `pw-${randomUUID()}`;
         repository.users.get('user-1')!._passwordHash = await passwordService.hash(pass);
@@ -627,6 +667,9 @@ describe('AuthController profile/password/account routes', () => {
         at(0);
         const changing = await signIn();
         const other = await signIn();
+        if (revokeFails) {
+          jest.spyOn(repository, 'revokeApiKeysBelowEpoch').mockRejectedValue(new Error('pg down'));
+        }
         const listKeys = async (token: string) => (await request(app).get('/api/v1/auth/api-keys')
           .set('Authorization', `Bearer ${token}`)).body.data as Array<Record<string, unknown>>;
         const issued = await request(app).post('/api/v1/auth/api-key').set('Authorization', `Bearer ${other.access}`).send({ name: 'pre-change key' });
@@ -654,11 +697,73 @@ describe('AuthController profile/password/account routes', () => {
         expect((await me(other.access)).status).toBe(401);
         expect((await me(changing.access)).status).toBe(401);
         expect((await me(access)).status).toBe(200);
-        // R2: the key minted before the change no longer authenticates and is listed as not enabled (read side only).
+        // R2: the key minted before the change no longer authenticates (generation check, even if the revoke failed).
         expect((await request(app).get('/api/v1/auth/me').set('X-API-Key', key)).status).toBe(401);
-        expect((await listKeys(access)).map(k => [k._enabled, '_credentialEpoch' in k])).toEqual([[false, false]]);
+        // Listing contract (HAP-1669): a revoked pre-change key is not listed; one whose revoke failed is listed as
+        // not enabled, never as usable. No generation field leaks either way.
+        expect((await listKeys(access)).map(k => [k._enabled, '_credentialEpoch' in k]))
+          .toEqual(revokeFails ? [[false, false]] : []);
+        // A key created after the change is at the new generation and is listed as enabled.
+        const fresh = await request(app).post('/api/v1/auth/api-key').set('Authorization', `Bearer ${access}`).send({ name: 'post-change key' });
+        sensitive.push(fresh.body.data._apiKey);
+        expect((await listKeys(access)).map(k => k._enabled)).toEqual(revokeFails ? [false, true] : [true]);
 
         // The change is a fresh authentication: its cap runs from the change, not from the first login.
+        at(7 * DAY + 1);
+        const renewed = await refresh(reissued.value);
+        expect(renewed.status).toBe(200);
+        sensitive.push(refreshCookieOf(renewed).value, renewed.body.data._accessToken);
+      });
+
+      it.each([
+        ['the revoke succeeds: the old key is gone from the listing', false],
+        ['the best-effort revoke fails: the old key stays listed as not enabled', true],
+      ])('HAP-1716: the revoke-others step-up ends every other session, refresh token and API key without changing the password; the calling device gets a new session (%s)', async (_label, revokeFails) => {
+        const pass = `pw-${randomUUID()}`;
+        repository.users.get('user-1')!._passwordHash = await passwordService.hash(pass);
+        const hashBefore = repository.users.get('user-1')!._passwordHash;
+        sensitive.push(pass);
+        const signIn = async () => {
+          const response = await request(app).post('/api/v1/auth/login').set(AUTH_HEADER, AUTH_HEADER_VALUE).send({ username: 'alice', password: pass });
+          expect(response.status).toBe(200);
+          const session = { access: response.body.data._accessToken as string, cookie: refreshCookieOf(response).value };
+          sensitive.push(session.access, session.cookie);
+          return session;
+        };
+        const me = (token: string) => request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${token}`);
+        const listKeys = async (token: string) => (await request(app).get('/api/v1/auth/api-keys')
+          .set('Authorization', `Bearer ${token}`)).body.data as Array<Record<string, unknown>>;
+        at(0);
+        const calling = await signIn();
+        const other = await signIn();
+        if (revokeFails) jest.spyOn(repository, 'revokeApiKeysBelowEpoch').mockRejectedValue(new Error('pg down'));
+        const issued = await request(app).post('/api/v1/auth/api-key').set('Authorization', `Bearer ${other.access}`).send({ name: 'pre-revoke key' });
+        const key = issued.body.data._apiKey as string;
+        sensitive.push(key);
+        expect((await listKeys(other.access)).map(k => k._enabled)).toEqual([true]);
+
+        at(60);
+        const stepUp = await request(app).post('/api/v1/auth/sessions/revoke-others')
+          .set('Authorization', `Bearer ${calling.access}`).send({ currentPassword: pass });
+        expect(stepUp.status).toBe(200);
+        const reissued = refreshCookieOf(stepUp);
+        const access = stepUp.body.data._accessToken as string;
+        sensitive.push(reissued.value, access);
+        expect(repository.users.get('user-1')).toMatchObject({ _passwordHash: hashBefore, _credentialEpoch: 1 });
+
+        for (const old of [other.cookie, calling.cookie]) {
+          const refused = await refresh(old);
+          expect([refused.status, refused.body, refused.headers['set-cookie']]).toEqual([401, failed, undefined]);
+        }
+        expect(records).toContainEqual(['Authentication failed', { credentialType: 'refresh', reason: 'revoked' }]);
+        expect((await me(other.access)).status).toBe(401);
+        expect((await me(calling.access)).status).toBe(401);
+        expect((await me(access)).status).toBe(200);
+        expect((await request(app).get('/api/v1/auth/me').set('X-API-Key', key)).status).toBe(401);
+        expect((await listKeys(access)).map(k => [k._enabled, '_credentialEpoch' in k])).toEqual(revokeFails ? [[false, false]] : []);
+
+        // The password still works (a new sign-in), and the step-up is a fresh authentication: its cap runs from now.
+        expect((await request(app).post('/api/v1/auth/login').set(AUTH_HEADER, AUTH_HEADER_VALUE).send({ username: 'alice', password: pass })).status).toBe(200);
         at(7 * DAY + 1);
         const renewed = await refresh(reissued.value);
         expect(renewed.status).toBe(200);
@@ -754,9 +859,9 @@ describe('AuthController profile/password/account routes', () => {
     repository.users.get('user-1')!._role = 'operator';
     const chained = await request(app).post('/api/v1/auth/api-key')
       .set('X-API-Key', key).send({ name: 'Escalated key', expiresInDays: 365 });
-    expect([chained.status, chained.body]).toEqual([403, {
-      _error: 'Forbidden', _message: 'JWT user session required',
-    }]);
+    expect([chained.status, chained.body]).toEqual([403, expect.objectContaining({
+      _error: 'Forbidden', _message: 'JWT user session required', code: 'JWT_SESSION_REQUIRED',
+    })]);
     expect((await request(app).post('/api/v1/auth/api-key')
       .set('Authorization', 'Bearer malformed').set('X-API-Key', key)
       .send({ name: 'Escalated key' })).status).toBe(401);
@@ -804,11 +909,14 @@ describe('AuthController profile/password/account routes', () => {
       { method: 'put', path: '/api/v1/auth/password', body: {
         currentPassword: 'correct-horse-battery-staple', newPassword: 'new-password-123', userId: 'user-2',
       } },
+      { method: 'post', path: '/api/v1/auth/sessions/revoke-others', body: {
+        currentPassword: 'correct-horse-battery-staple', userId: 'user-2',
+      } },
       { method: 'delete', path: '/api/v1/auth/account', body: undefined },
     ] as const;
 
     async function call(
-      method: 'get' | 'delete' | 'put', path: string, headers: Record<string, string>,
+      method: 'get' | 'delete' | 'put' | 'post', path: string, headers: Record<string, string>,
       body?: object
     ) {
       const req = request(app)[method](path).set(headers);
@@ -830,9 +938,9 @@ describe('AuthController profile/password/account routes', () => {
       for (const role of ['viewer', 'operator', 'admin', 'agent'] as const) {
         repository.users.get('user-1')!._role = role;
         const denied = await call(method, path, apiKey, invalidBody);
-        expect([denied.status, denied.body]).toEqual([403, {
-          _error: 'Forbidden', _message: 'JWT user session required',
-        }]);
+        expect([denied.status, denied.body]).toEqual([403, expect.objectContaining({
+          _error: 'Forbidden', _message: 'JWT user session required', code: 'JWT_SESSION_REQUIRED',
+        })]);
       }
       expect(repository.listCalls).toBe(0);
       expect(repository.apiKeys.get('alice-key')?.revoked).toBe(false);
@@ -854,6 +962,9 @@ describe('AuthController profile/password/account routes', () => {
       } else if (path.endsWith('profile')) {
         expect(repository.users.get('user-1')!._name).toBe('Changed');
         expect(repository.users.get('user-2')!._name).toBeUndefined();
+      } else if (path.endsWith('revoke-others')) {
+        expect(repository.users.get('user-1')).toMatchObject({ _credentialEpoch: 1, _passwordHash: aliceHash });
+        expect(repository.users.get('user-2')!._credentialEpoch).toBeUndefined();
       } else if (path.endsWith('password')) {
         expect(await passwordService.verify('new-password-123', repository.users.get('user-1')!._passwordHash)).toBe(true);
       } else {
@@ -929,6 +1040,117 @@ describe('AuthController profile/password/account routes', () => {
         .send({});
 
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe('HAP-1911 platformAdmin and organizationId from the stored principal', () => {
+    const legacyKeys = ['avatar', 'createdAt', 'email', 'lastLoginAt', 'name', 'role', 'userId', 'username'];
+    // HAP-1930 (BW16): additive, the role's grants from the server's own table.
+    const additiveKeys = ['organizationId', 'permissions', 'platformAdmin'];
+    const me = () => request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${victimToken}`);
+    const store = (patch: Partial<User>) => Object.assign(repository.users.get('user-1')!, patch);
+    // JSON drops undefined keys, so the wire key set is what the client sees.
+    const wireKeys = (res: request.Response) => Object.keys(res.body.data).sort();
+
+    it('a tenant user sees its own organization and platformAdmin false; every existing field keeps its name and type', async () => {
+      store({ _organizationId: 'org-acme', _name: 'Alice', _avatar: 'data:image/png;base64,AAAA', lastLoginAt: new Date('2024-02-02') });
+      const res = await me();
+
+      expect(res.status).toBe(200);
+      expect(wireKeys(res)).toEqual([...legacyKeys, ...additiveKeys].sort());
+      expect(res.body.data).toEqual({
+        userId: 'user-1', username: 'alice', email: 'alice@example.com', name: 'Alice', avatar: 'data:image/png;base64,AAAA',
+        role: 'operator', createdAt: '2024-01-01T00:00:00.000Z', lastLoginAt: '2024-02-02T00:00:00.000Z',
+        platformAdmin: false, organizationId: 'org-acme', permissions: ['read', 'write', 'discover'],
+      });
+    });
+
+    it('a user without an organization gets organizationId null, still present on the wire', async () => {
+      store({ _organizationId: undefined });
+      const res = await me();
+      expect(res.body.data).toHaveProperty('organizationId', null);
+      expect(res.body.data.platformAdmin).toBe(false);
+    });
+
+    it.each([
+      ['admin', ['read', 'write', 'discover', 'admin']],
+      ['operator', ['read', 'write', 'discover']],
+      ['viewer', ['read']],
+      ['agent', ['discover', 'write']],
+    ] as const)('HAP-1930: %s gets its own role and the grants of the server role table, on GET /me and PUT /profile', async (role, permissions) => {
+      store({ _role: role });
+      const read = await me();
+      expect(read.status).toBe(200);
+      expect(read.body.data).toMatchObject({ role, permissions });
+      const updated = await request(app).put('/api/v1/auth/profile').set('Authorization', `Bearer ${victimToken}`).send({ name: 'Same' });
+      expect(updated.body.data).toMatchObject({ role, permissions });
+    });
+
+    it('a platform administrator gets true, on GET /me and PUT /profile', async () => {
+      store({ _platformAdmin: true, _organizationId: 'org-internal' });
+      expect((await me()).body.data).toMatchObject({ platformAdmin: true, organizationId: 'org-internal' });
+      const updated = await request(app).put('/api/v1/auth/profile').set('Authorization', `Bearer ${victimToken}`).send({ name: 'Renamed' });
+      expect(updated.body.data).toMatchObject({ name: 'Renamed', platformAdmin: true, organizationId: 'org-internal' });
+    });
+
+    it('the stored flag alone is not enough: a seeded account with the flag set gets false, on both routes', async () => {
+      const env = process.env['NODE_ENV'];
+      try {
+        // A default-password suspect authenticates only in development, so that case runs there.
+        for (const [seeded, nodeEnv] of [
+          [{ _seedProvenance: 'seed-writer' }, env], [{ _username: 'admin' }, env], [{ _email: 'admin@happycmdb.local' }, env],
+          [{ _defaultPasswordSuspect: true }, 'development'],
+        ] as const) {
+          process.env['NODE_ENV'] = nodeEnv;
+          store({ _platformAdmin: true, _seedProvenance: undefined, _defaultPasswordSuspect: false, _username: 'alice', _email: 'alice@example.com', ...seeded });
+          const read = await me();
+          expect([read.status, read.body.data.platformAdmin]).toEqual([200, false]);
+          const updated = await request(app).put('/api/v1/auth/profile').set('Authorization', `Bearer ${victimToken}`).send({ name: 'Renamed' });
+          expect([updated.status, updated.body.data.platformAdmin]).toEqual([200, false]);
+        }
+      } finally {
+        process.env['NODE_ENV'] = env;
+      }
+    });
+
+    it('headers, query and body cannot change either field, and the stored value still wins', async () => {
+      store({ _organizationId: 'org-acme' });
+      const forged = { 'X-Organization-Id': 'org-other', 'X-Tenant-Id': 'org-other', 'X-Platform-Admin': 'true', 'X-Is-Platform-Admin': '1' };
+      const res = await request(app).get('/api/v1/auth/me?organizationId=org-other&platformAdmin=true&platform_admin=true')
+        .set('Authorization', `Bearer ${victimToken}`).set(forged).send({ organizationId: 'org-other', platformAdmin: true });
+      expect(res.body.data).toMatchObject({ platformAdmin: false, organizationId: 'org-acme' });
+
+      const updated = await request(app).put('/api/v1/auth/profile?platformAdmin=true').set('Authorization', `Bearer ${victimToken}`)
+        .set(forged).send({ name: 'Renamed', platformAdmin: true, organizationId: 'org-other', _platformAdmin: true, _organizationId: 'org-other' });
+      expect(updated.status).toBe(200);
+      expect(updated.body.data).toMatchObject({ platformAdmin: false, organizationId: 'org-acme' });
+      expect(repository.users.get('user-1')).toMatchObject({ _organizationId: 'org-acme' });
+      expect(repository.users.get('user-1')!._platformAdmin).toBeUndefined();
+    });
+
+    it('a token claim of another organization does not change the response (verifyToken replaces it with the stored one)', async () => {
+      store({ _organizationId: 'org-acme' });
+      const claimed = jwtService.generateAccessToken('user-1', 'alice', 'operator', 'org-other', 0, Math.floor(Date.now() / 1000));
+      const res = await request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${claimed}`);
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ platformAdmin: false, organizationId: 'org-acme' });
+    });
+
+    it('discloses nothing beyond the caller\'s own profile: no hash, credential epoch, seed marker, scopes or element id', async () => {
+      store({ _avatar: 'data:image/png;base64,AAAA', lastLoginAt: new Date('2024-02-02'), _credentialEpoch: 7, _seedProvenance: undefined, _elementId: '4:abc:1', _scopes: ['credentials:manage'] } as Partial<User>);
+      const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', undefined, 7, Math.floor(Date.now() / 1000));
+      const auth = { Authorization: `Bearer ${token}` };
+      const bodies = [
+        (await request(app).get('/api/v1/auth/me').set(auth)).body,
+        (await request(app).put('/api/v1/auth/profile').set(auth).send({ name: 'x' })).body,
+      ];
+      for (const body of bodies) {
+        const text = JSON.stringify(body);
+        for (const secret of ['$2', 'correct-horse', 'credentialEpoch', '_cep', 'seedProvenance', 'credentials:manage', '4:abc:1', 'passwordHash']) {
+          expect(text).not.toContain(secret);
+        }
+        expect(Object.keys(body.data).sort()).toEqual([...legacyKeys, ...additiveKeys].sort());
+      }
     });
   });
 
@@ -1055,7 +1277,7 @@ describe('AuthController profile/password/account routes', () => {
         .put('/api/v1/auth/password').set('Authorization', `Bearer ${token}`).send({ currentPassword, newPassword });
 
       it('a wrong current password writes one audit row (user, org, client address, outcome) with no secret', async () => {
-        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000));
         const guess = randomUUID();
         const next = randomUUID();
 
@@ -1073,8 +1295,63 @@ describe('AuthController profile/password/account routes', () => {
         }
       });
 
+      describe('HAP-2061 the success row records what the API-key revoke did', () => {
+        const bearer = () => jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+        const noSecrets = () => {
+          const row = JSON.stringify(repository.audits);
+          for (const secret of ['key-id-', 'secret-key-', 'hash-user-1', bearer()]) expect(row).not.toContain(secret);
+        };
+
+        it.each([[0], [2]])('revoked_api_keys is the number of keys the repository revoked (%i)', async count => {
+          seedIssuedKeys(repository, 'user-1', count);
+          const revoke = jest.spyOn(repository, 'revokeApiKeysBelowEpoch');
+
+          expect((await change(bearer(), 'correct-horse-battery-staple', randomUUID())).status).toBe(200);
+
+          expect(await revoke.mock.results[0]!.value).toBe(count);
+          expect(repository.audits).toHaveLength(1);
+          expect(repository.audits[0]!.entry.metadata).toEqual({ operation: 'password_change', outcome: 'success', revoked_api_keys: count });
+          noSecrets();
+        });
+
+        it('a failed revoke still returns the new session; the row says api_key_revoke_failed and carries no count', async () => {
+          seedIssuedKeys(repository, 'user-1', 2);
+          jest.spyOn(repository, 'revokeApiKeysBelowEpoch').mockRejectedValue(new Error('pg down'));
+          const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+          try {
+            const res = await change(bearer(), 'correct-horse-battery-staple', randomUUID());
+
+            expect(res.status).toBe(200);
+            expect(Object.keys(res.body.data).sort()).toEqual(['_accessToken', '_expiresIn', '_user']);
+            expect(repository.audits).toHaveLength(1);
+            expect(repository.audits[0]!.entry.metadata).toEqual({ operation: 'password_change', outcome: 'success', api_key_revoke_failed: true });
+            noSecrets();
+          } finally {
+            warn.mockRestore();
+          }
+        });
+      });
+
+      it('HAP-2061: an organization change between the service read and the guarded write writes nothing and the caller gets 401 with no row', async () => {
+        const before = repository.users.get('user-1')!;
+        const write = repository.updatePasswordHashGuarded.bind(repository);
+        const revoke = jest.spyOn(repository, 'revokeApiKeysBelowEpoch');
+        jest.spyOn(repository, 'updatePasswordHashGuarded').mockImplementation(async attempt => {
+          repository.users.set('user-1', { ...repository.users.get('user-1')!, _organizationId: '9d1f2c3b-7a40-4e55-8b6d-1c2e3f4a5b6c' });
+          return write(attempt);
+        });
+
+        const res = await change(jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG), 'correct-horse-battery-staple', randomUUID());
+
+        expect([res.status, res.body]).toEqual([401, { success: false, error: 'Unauthorized', message: 'Credentials changed' }]);
+        expect(res.headers['set-cookie']).toBeUndefined();
+        expect(repository.users.get('user-1')).toEqual({ ...before, _organizationId: '9d1f2c3b-7a40-4e55-8b6d-1c2e3f4a5b6c' });
+        expect(revoke).not.toHaveBeenCalled();
+        expect(repository.audits).toEqual([]);
+      });
+
       it('a successful change writes one audit row with outcome success', async () => {
-        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000));
 
         expect((await change(token, 'correct-horse-battery-staple', randomUUID())).status).toBe(200);
 
@@ -1084,7 +1361,7 @@ describe('AuthController profile/password/account routes', () => {
 
       it('with the audit chain not ready, refuses with 503 before any check and leaves the password unchanged', async () => {
         repository.chainReady = false;
-        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000));
 
         expect((await change(token, 'correct-horse-battery-staple', randomUUID())).status).toBe(503);
 
@@ -1095,7 +1372,7 @@ describe('AuthController profile/password/account routes', () => {
 
       it('once the change is committed, a failed audit write still answers 200 with the new password in place', async () => {
         repository.auditStoreDown = true;
-        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG);
+        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000));
         const next = randomUUID();
 
         expect((await change(token, 'correct-horse-battery-staple', next)).status).toBe(200);
@@ -1103,14 +1380,292 @@ describe('AuthController profile/password/account routes', () => {
         expect(await passwordService.verify(next, repository.users.get('user-1')?._passwordHash as string)).toBe(true);
       });
 
-      it('an actor without an organization claim changes the password and writes no audit row', async () => {
-        repository.users.set('user-1', { ...repository.users.get('user-1')!, _organizationId: undefined });
-        const token = jwtService.generateAccessToken('user-1', 'alice', 'operator');
+      describe('HAP-1714 organization required', () => {
+        const OTHER_ORG = '9d1f2c3b-7a40-4e55-8b6d-1c2e3f4a5b6c';
+        const REFUSED = expect.objectContaining({ success: false, error: 'Forbidden', message: 'Organization required to change password', code: 'ORGANIZATION_REQUIRED' });
+        const store = (patch: Partial<User>) => repository.users.set('user-1', { ...repository.users.get('user-1')!, ...patch });
+        /** The request authenticates against the stored user as it is now; the service then reads it as `patch` has it. */
+        const changesAfterAuthentication = (patch: Partial<User>) => {
+          const read = repository.findUserById.bind(repository);
+          let reads = 0;
+          jest.spyOn(repository, 'findUserById').mockImplementation(async id => {
+            const user = await read(id);
+            return reads++ === 0 || !user ? user : { ...user, ...patch };
+          });
+        };
+        const expectRefusedUntouched = async (res: request.Response, before: User) => {
+          expect([res.status, res.body]).toEqual([403, REFUSED]);
+          expect(res.headers['set-cookie']).toBeUndefined();
+          expect(JSON.stringify(res.body)).not.toMatch(/_accessToken|_refreshToken/);
+          expect(repository.audits).toEqual([]);
+          expect(guardedWrite).not.toHaveBeenCalled();
+          expect(hash).not.toHaveBeenCalled();
+          expect(repository.users.get('user-1')).toEqual(before);
+        };
+        let guardedWrite: jest.SpiedFunction<AuthRepository['updatePasswordHashGuarded']>;
+        let hash: jest.SpiedFunction<PasswordService['hash']>;
+        let warn: jest.SpiedFunction<typeof logger.warn>;
+        let changePassword: jest.SpiedFunction<AuthService['changePassword']>;
+        beforeEach(() => {
+          guardedWrite = jest.spyOn(repository, 'updatePasswordHashGuarded');
+          hash = jest.spyOn(PasswordService.prototype, 'hash');
+          warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+          changePassword = jest.spyOn(authService, 'changePassword');
+        });
+        afterEach(() => {
+          hash.mockRestore();
+          warn.mockRestore();
+        });
 
-        expect((await change(token, 'correct-horse-battery-staple', randomUUID())).status).toBe(200);
+        it.each([['the right', 'correct-horse-battery-staple'], ['a wrong', 'totally-wrong']])(
+          'a stored user with no organization is refused with 403 whatever %s current password is sent: nothing written, nothing audited, no cookie',
+          async (_label, current) => {
+            store({ _organizationId: undefined });
+            const before = repository.users.get('user-1')!;
 
-        expect(repository.audits).toEqual([]);
+            const res = await change(jwtService.generateAccessToken('user-1', 'alice', 'operator', undefined, 0, Math.floor(Date.now() / 1000)), current, randomUUID());
+
+            await expectRefusedUntouched(res, before);
+            expect(changePassword).not.toHaveBeenCalled();
+            expect(warn).toHaveBeenCalledWith('Password change refused: the user has no usable organization', { userId: 'user-1' });
+            expect(JSON.stringify(warn.mock.calls)).not.toContain(current);
+          }
+        );
+
+        it('a stored organization that is not a well-formed claim (no claim on the request) is refused before the service is called', async () => {
+          store({ _organizationId: 'org-acme' });
+          const before = repository.users.get('user-1')!;
+
+          await expectRefusedUntouched(await change(jwtService.generateAccessToken('user-1', 'alice', 'operator', undefined, 0, Math.floor(Date.now() / 1000)),
+            'correct-horse-battery-staple', randomUUID()), before);
+          expect(changePassword).not.toHaveBeenCalled();
+        });
+
+        it('a stored user that lost its organization after the request authenticated is refused by the service with the same 403', async () => {
+          const before = repository.users.get('user-1')!;
+          changesAfterAuthentication({ _organizationId: undefined });
+
+          await expectRefusedUntouched(await change(jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000)),
+            'totally-wrong', randomUUID()), before);
+        });
+
+        it('a request claim that is not the stored organization is refused with the same 403, with no row in either tenant', async () => {
+          const before = repository.users.get('user-1')!;
+          changesAfterAuthentication({ _organizationId: OTHER_ORG });
+
+          await expectRefusedUntouched(await change(jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000)),
+            'correct-horse-battery-staple', randomUUID()), before);
+        });
+
+        it('control: a user with an organization still gets 200 and exactly one success audit row', async () => {
+          const token = jwtService.generateAccessToken('user-1', 'alice', 'operator', ORG, 0, Math.floor(Date.now() / 1000));
+
+          const res = await change(token, 'correct-horse-battery-staple', randomUUID());
+
+          expect(res.status).toBe(200);
+          expect(repository.audits.map(({ entry, organizationId }) => [organizationId, entry.metadata?.['outcome']])).toEqual([[ORG, 'success']]);
+        });
       });
+    });
+  });
+
+  describe('POST /sessions/revoke-others (HAP-1716)', () => {
+    const PASSWORD = 'correct-horse-battery-staple';
+    const OTHER_ORG = '9d1f2c3b-7a40-4e55-8b6d-1c2e3f4a5b6c';
+    const token = () => jwtService.generateAccessToken('user-1', 'alice', 'operator', SEED_ORGANIZATION, 0, Math.floor(Date.now() / 1000));
+    const revoke = (bearer: string, body: object = { currentPassword: PASSWORD }) =>
+      request(app).post('/api/v1/auth/sessions/revoke-others').set('Authorization', `Bearer ${bearer}`).send(body);
+    const stored = () => repository.users.get('user-1')!;
+    const auditedOutcomes = () => repository.audits.map(({ entry }) => [entry.metadata?.['operation'], entry.metadata?.['outcome']]);
+    const store = (patch: Partial<User>) => repository.users.set('user-1', { ...stored(), ...patch });
+    /** The request authenticates against the stored user as it is now; the service then reads it as `after` says (null: gone). */
+    const changesAfterAuthentication = (after: Partial<User> | null) => {
+      const read = repository.findUserById.bind(repository);
+      let reads = 0;
+      jest.spyOn(repository, 'findUserById').mockImplementation(async id => {
+        const user = await read(id);
+        if (reads++ === 0 || !user) return user;
+        return after === null ? null : { ...user, ...after };
+      });
+    };
+    afterEach(() => jest.restoreAllMocks());
+
+    it('returns 401 without a bearer token', async () => {
+      const res = await request(app).post('/api/v1/auth/sessions/revoke-others').send({ currentPassword: PASSWORD });
+      expect(res.status).toBe(401);
+    });
+
+    it('200: advances the generation by one, keeps the password, ends the user\'s API keys, sets the cookie, and audits one success row', async () => {
+      const hashBefore = stored()._passwordHash;
+      const revokeKeys = jest.spyOn(repository, 'revokeApiKeysBelowEpoch');
+
+      const res = await revoke(token());
+
+      expect(res.status).toBe(200);
+      expect(Object.keys(res.body).sort()).toEqual(['data', 'message', 'success']);
+      expect(res.body.success).toBe(true);
+      expect(Object.keys(res.body.data).sort()).toEqual(['_accessToken', '_expiresIn', '_user']);
+      expect(res.body.message).toBe('All other sessions and all your API keys have been revoked (both end with the credential generation); this device stays signed in. Your password is unchanged.');
+      expect(refreshCookieOf(res).attributes).toEqual(cookieAttributes(jwtService.getTokenExpiresIn('refresh')));
+      expect(stored()).toMatchObject({ _credentialEpoch: 1, _passwordHash: hashBefore });
+      expect(revokeKeys.mock.calls).toEqual([['user-1', 1]]);
+      expect(repository.audits).toHaveLength(1);
+      expect(repository.audits[0]).toMatchObject({
+        organizationId: SEED_ORGANIZATION,
+        entry: { entity_type: 'USER', entity_id: 'user-1', actor: 'user-1', actor_type: 'user',
+          ip_address: expect.stringMatching(/127\.0\.0\.1$/), metadata: { operation: 'revoke_other_sessions', outcome: 'success' } },
+      });
+    });
+
+    describe('HAP-2061 the success row records what the API-key revoke did', () => {
+      it.each([[0], [2]])('revoked_api_keys is the number of keys the repository revoked (%i)', async count => {
+        seedIssuedKeys(repository, 'user-1', count);
+        const revokeKeys = jest.spyOn(repository, 'revokeApiKeysBelowEpoch');
+
+        expect((await revoke(token())).status).toBe(200);
+
+        expect(await revokeKeys.mock.results[0]!.value).toBe(count);
+        expect(repository.audits).toHaveLength(1);
+        expect(repository.audits[0]!.entry.metadata).toEqual({ operation: 'revoke_other_sessions', outcome: 'success', revoked_api_keys: count });
+        const row = JSON.stringify(repository.audits);
+        for (const secret of ['key-id-', 'secret-key-', 'hash-user-1', token()]) expect(row).not.toContain(secret);
+      });
+
+      it('a failed revoke still returns the new session; the row says api_key_revoke_failed and carries no count', async () => {
+        seedIssuedKeys(repository, 'user-1', 2);
+        jest.spyOn(repository, 'revokeApiKeysBelowEpoch').mockRejectedValue(new Error('pg down'));
+        jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+
+        const res = await revoke(token());
+
+        expect(res.status).toBe(200);
+        expect(Object.keys(res.body.data).sort()).toEqual(['_accessToken', '_expiresIn', '_user']);
+        expect(stored()._credentialEpoch).toBe(1);
+        expect(repository.audits).toHaveLength(1);
+        expect(repository.audits[0]!.entry.metadata).toEqual({ operation: 'revoke_other_sessions', outcome: 'success', api_key_revoke_failed: true });
+      });
+    });
+
+    it('HAP-2061: an organization change between the service read and the guarded write writes nothing and the caller gets 401 with no row', async () => {
+      const before = stored();
+      const bump = repository.bumpCredentialEpochGuarded.bind(repository);
+      const revokeKeys = jest.spyOn(repository, 'revokeApiKeysBelowEpoch');
+      jest.spyOn(repository, 'bumpCredentialEpochGuarded').mockImplementation(async attempt => {
+        store({ _organizationId: OTHER_ORG });
+        return bump(attempt);
+      });
+
+      const res = await revoke(token());
+
+      expect([res.status, res.body]).toEqual([401, { success: false, error: 'Unauthorized', message: 'Credentials changed' }]);
+      expect(res.headers['set-cookie']).toBeUndefined();
+      expect(stored()).toEqual({ ...before, _organizationId: OTHER_ORG });
+      expect(revokeKeys).not.toHaveBeenCalled();
+      expect(repository.audits).toEqual([]);
+    });
+
+    it('400: a wrong current password changes nothing, sets no cookie and audits wrong_password with no secret in the row', async () => {
+      const guess = randomUUID();
+      const before = stored();
+
+      const res = await revoke(token(), { currentPassword: guess });
+
+      expect([res.status, res.body]).toEqual([400, { success: false, error: 'Session Revoke Failed', message: 'Current password is incorrect' }]);
+      expect(res.headers['set-cookie']).toBeUndefined();
+      expect(stored()).toEqual(before);
+      expect(auditedOutcomes()).toEqual([['revoke_other_sessions', 'wrong_password']]);
+      const row = JSON.stringify(repository.audits);
+      for (const secret of [guess, PASSWORD, token(), before._passwordHash]) expect(row).not.toContain(secret);
+    });
+
+    it('400: a body without the current password is refused by validation before anything runs', async () => {
+      const res = await revoke(token(), {});
+
+      expect(res.status).toBe(400);
+      expect(stored()._credentialEpoch).toBeUndefined();
+      expect(repository.audits).toEqual([]);
+    });
+
+    it('401: a request whose guarded write loses to a rotation is refused with Credentials changed, no cookie, audited rotation_lost', async () => {
+      jest.spyOn(repository, 'bumpCredentialEpochGuarded').mockResolvedValue(false);
+
+      const res = await revoke(token());
+
+      expect([res.status, res.body]).toEqual([401, { success: false, error: 'Unauthorized', message: 'Credentials changed' }]);
+      expect(res.headers['set-cookie']).toBeUndefined();
+      expect(auditedOutcomes()).toEqual([['revoke_other_sessions', 'rotation_lost']]);
+    });
+
+    it('401: a session of an older generation never reaches the step-up (authentication refuses it)', async () => {
+      store({ _credentialEpoch: 3 });
+      const stale = jwtService.generateAccessToken('user-1', 'alice', 'operator', SEED_ORGANIZATION, 2, Math.floor(Date.now() / 1000));
+
+      const res = await revoke(stale);
+
+      expect(res.status).toBe(401);
+      expect(stored()._credentialEpoch).toBe(3);
+      expect(repository.audits).toEqual([]);
+    });
+
+    it.each([
+      ['a stored user with no organization and no claim', { _organizationId: undefined }, false],
+      ['a stored user that lost its organization after the request authenticated', { _organizationId: undefined }, true],
+      ['a request claim that is not the stored organization', { _organizationId: OTHER_ORG }, true],
+    ])('403: %s is refused with a fixed body, nothing written, nothing audited, no cookie', async (_label, patch, afterAuthentication) => {
+      const bearer = afterAuthentication ? token() : jwtService.generateAccessToken('user-1', 'alice', 'operator', undefined, 0, Math.floor(Date.now() / 1000));
+      if (afterAuthentication) changesAfterAuthentication(patch); else store(patch);
+      const before = stored();
+      const bump = jest.spyOn(repository, 'bumpCredentialEpochGuarded');
+
+      const res = await revoke(bearer);
+
+      expect([res.status, res.body]).toEqual([403, expect.objectContaining({ success: false, error: 'Forbidden', message: 'Organization required to revoke sessions', code: 'ORGANIZATION_REQUIRED' })]);
+      expect(res.headers['set-cookie']).toBeUndefined();
+      expect(bump).not.toHaveBeenCalled();
+      expect(repository.audits).toEqual([]);
+      expect(stored()).toEqual(before);
+    });
+
+    it('404: a user that is gone after the request authenticated is a fixed 404, audited user_not_found', async () => {
+      changesAfterAuthentication(null);
+
+      const res = await revoke(token());
+
+      expect([res.status, res.body]).toEqual([404, { success: false, error: 'Session Revoke Failed', message: 'User not found' }]);
+      expect(auditedOutcomes()).toEqual([['revoke_other_sessions', 'user_not_found']]);
+    });
+
+    it('503: with the audit chain not ready the step-up is refused before any check, nothing written or audited', async () => {
+      repository.chainReady = false;
+      const bump = jest.spyOn(repository, 'bumpCredentialEpochGuarded');
+
+      const res = await revoke(token());
+
+      expect([res.status, res.body]).toEqual([503, { success: false, error: 'Service Unavailable', message: 'Session revoke temporarily unavailable' }]);
+      expect(bump).not.toHaveBeenCalled();
+      expect(stored()._credentialEpoch).toBeUndefined();
+      expect(repository.audits).toEqual([]);
+    });
+
+    it('500: a store failure is a fixed body; only the error class and user id are logged', async () => {
+      const error = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+      jest.spyOn(repository, 'bumpCredentialEpochGuarded').mockRejectedValue(new Error('neo4j bolt://internal token=private-driver-detail'));
+
+      const res = await revoke(token());
+
+      expect([res.status, res.body]).toEqual([500, { success: false, error: 'Session Revoke Failed', message: 'Internal error' }]);
+      expect(error.mock.calls).toEqual([['Error revoking other sessions', { errorClass: 'Error', userId: 'user-1' }]]);
+      expect(JSON.stringify([res.body, error.mock.calls])).not.toContain('private-driver-detail');
+    });
+
+    it('once the generation has advanced, a failed audit write still answers 200', async () => {
+      repository.auditStoreDown = true;
+      jest.spyOn(logger, 'error').mockImplementation(() => logger);
+
+      const res = await revoke(token());
+
+      expect(res.status).toBe(200);
+      expect(stored()._credentialEpoch).toBe(1);
     });
   });
 
@@ -1164,6 +1719,46 @@ describe('AuthController profile/password/account routes', () => {
       const res = await request(app).delete('/api/v1/auth/api-key/alice-key');
 
       expect(res.status).toBe(401);
+    });
+  });
+
+  describe('API-key kill switch (auth.apiKeys.enabled false)', () => {
+    const bearer = { Authorization: '' };
+    let disabledApp: express.Express;
+
+    beforeEach(() => {
+      const disabledConfig = { ...authConfig, apiKeys: { ...authConfig.apiKeys, enabled: false } };
+      const disabledService = new AuthService(disabledConfig as any, repository);
+      const controller = new AuthController(
+        disabledService, new ValidationMiddleware(), new AuthMiddleware(disabledService, disabledConfig as any), fakeRateLimiter());
+      disabledApp = express();
+      disabledApp.use(express.json());
+      disabledApp.use('/api/v1/auth', controller.getRouter());
+      bearer.Authorization = `Bearer ${victimToken}`;
+    });
+
+    it('refuses to mint a key for a valid JWT session with one fixed 403 and stores nothing', async () => {
+      const read = jest.spyOn(repository, 'findUserById');
+      const res = await request(disabledApp).post('/api/v1/auth/api-key').set(bearer).send({ name: 'secret-key-name', expiresInDays: 30 });
+
+      expect([res.status, res.body]).toEqual([403, { success: false, error: 'Forbidden', message: 'API keys are disabled' }]);
+      expect(JSON.stringify(res.body)).not.toContain('_apiKey');
+      expect(JSON.stringify(res.body)).not.toContain('secret-key-name');
+      expect(repository.issuedKeys.size).toBe(0);
+      expect(read.mock.calls.filter(([id]) => id === 'user-1').length).toBe(1); // the auth middleware's read only
+    });
+
+    it('still lists and revokes keys created while the switch was on', async () => {
+      const issued = await request(app).post('/api/v1/auth/api-key').set(bearer).send({ name: 'created while on' });
+      expect(issued.status).toBe(200);
+
+      const listed = await request(disabledApp).get('/api/v1/auth/api-keys').set(bearer);
+      expect(listed.status).toBe(200);
+      expect(listed.body.data).toEqual([expect.objectContaining({ _name: 'created while on' })]);
+
+      const revoked = await request(disabledApp).delete('/api/v1/auth/api-key/alice-key').set(bearer);
+      expect(revoked.status).toBe(200);
+      expect(repository.apiKeys.get('alice-key')?.revoked).toBe(true);
     });
   });
 });
@@ -1237,5 +1832,113 @@ describe('HAP-1211 H2 ruling A: refresh has its own rate-limit bucket at the RES
   it('refresh 429s at the REST budget, under its own key', async () => {
     const app = appWith(2, 3);
     expect(await refreshes(app, 4)).toEqual([401, 401, 401, 429]);
+  });
+});
+
+describe('HAP-1716 F1: the revoke-others cap is bound to the login, through real tokens, refresh, limiter and service', () => {
+  const PASSWORD = 'correct-horse-battery-staple';
+  const SESSION_BUDGET = 2;
+  let app: express.Express;
+  let repository: InMemoryAuthRepository;
+
+  beforeEach(async () => {
+    repository = new InMemoryAuthRepository();
+    repository.users.set('user-1', {
+      _id: 'user-1', _username: 'alice', _email: 'alice@example.com',
+      _passwordHash: await new PasswordService(authConfig.bcrypt as any).hash(PASSWORD),
+      _role: 'operator', _organizationId: SEED_ORGANIZATION, _enabled: true,
+      _createdAt: new Date('2024-01-01'), _updatedAt: new Date('2024-01-01'),
+    } as User);
+    const window = { windowMs: 60_000 };
+    const rateLimit = {
+      enabled: true,
+      bypassHeader: 'X-RateLimit-Bypass',
+      tierMultipliers: { standard: 1, premium: 1, enterprise: 1 },
+      // Per-address buckets are wide, so only the session bucket (the authAccount budget) can refuse across addresses.
+      endpoints: {
+        auth: { max: 50, ...window }, authAccount: { max: SESSION_BUDGET, ...window },
+        authAccountGlobal: { max: 50, ...window }, rest: { max: 50, ...window },
+      },
+      monitoring: { enabled: false, logRateLimitHits: false },
+    } as unknown as ConfigSchema['rateLimit'];
+    const authService = new AuthService(authConfig as any, repository);
+    app = express();
+    app.set('trust proxy', 1);
+    app.use(express.json());
+    app.use('/api/v1/auth', new AuthController(authService, new ValidationMiddleware(),
+      new AuthMiddleware(authService, authConfig as any), new RateLimitMiddleware(memoryRedis(), rateLimit)).getRouter());
+  });
+
+  /** A login `offsetSeconds` from now: the clock is moved only while the login is minted, so each login has its own `_authTime`. */
+  const loginAt = async (offsetSeconds: number) => {
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + offsetSeconds * 1000);
+    try {
+      const res = await request(app).post('/api/v1/auth/login').set(AUTH_HEADER, AUTH_HEADER_VALUE)
+        .send({ username: 'alice', password: PASSWORD });
+      expect(res.status).toBe(200);
+      return { access: res.body.data._accessToken as string, cookie: refreshCookieOf(res).value };
+    } finally {
+      clock.mockRestore();
+    }
+  };
+  const renew = async (cookie: string) => {
+    const res = await request(app).post('/api/v1/auth/refresh').set(AUTH_HEADER, AUTH_HEADER_VALUE)
+      .set('Cookie', `${REFRESH_COOKIE}=${cookie}`);
+    expect(res.status).toBe(200);
+    return { access: res.body.data._accessToken as string, cookie: refreshCookieOf(res).value };
+  };
+  const revoke = (access: string, address: string, currentPassword: string) =>
+    request(app).post('/api/v1/auth/sessions/revoke-others')
+      .set({ Authorization: `Bearer ${access}`, 'X-Forwarded-For': address }).send({ currentPassword });
+
+  it('a stolen session and its refreshed tokens share one budget across addresses; the owner\'s own login is untouched and the right password gets 200', async () => {
+    const stolen = await loginAt(0);
+    const refreshed = await renew(stolen.cookie);
+    const refreshedAgain = await renew(refreshed.cookie);
+    expect(jwt.decode(refreshedAgain.access)).toMatchObject({ _authTime: (jwt.decode(stolen.access) as { _authTime: number })._authTime });
+    const owner = await loginAt(3600);
+
+    // Fresh address each time; the three tokens are one login, whichever of them the guess comes with.
+    const guesses = [stolen.access, refreshed.access, refreshedAgain.access, stolen.access];
+    const statuses: number[] = [];
+    for (const [i, access] of guesses.entries()) statuses.push((await revoke(access, `198.51.100.${i}`, 'not-the-password')).status);
+    expect(statuses).toEqual([400, 400, 429, 429]);
+
+    // Not even the right password passes on the stolen login's bucket.
+    expect((await revoke(refreshedAgain.access, '198.51.100.99', PASSWORD)).status).toBe(429);
+    expect(repository.users.get('user-1')!._credentialEpoch ?? 0).toBe(0);
+
+    const ownerStepUp = await revoke(owner.access, '203.0.113.7', PASSWORD);
+    expect([ownerStepUp.status, ownerStepUp.body.success]).toEqual([200, true]);
+    expect(repository.users.get('user-1')!._credentialEpoch).toBe(1);
+    // The step-up restarts the family (intended: only the right password gets here): both new tokens carry the
+    // step-up's own login time, from now and never copied from the request's token; the thief's tokens are dead.
+    const issued = jwt.decode(ownerStepUp.body.data._accessToken) as { _authTime: number };
+    expect(Math.abs(issued._authTime - Math.floor(Date.now() / 1000))).toBeLessThanOrEqual(5);
+    expect(jwt.decode(refreshCookieOf(ownerStepUp).value)).toMatchObject({ _authTime: issued._authTime });
+    expect((await revoke(stolen.access, '198.51.100.200', 'x')).status).toBe(401);
+  });
+
+  it('a wrong guess never yields a new login time or any token, and a pre-claim access token is told to renew (401) without spending a bucket', async () => {
+    const session = await loginAt(0);
+    const wrong = await revoke(session.access, '198.51.100.1', 'not-the-password');
+    expect(wrong.status).toBe(400);
+    expect(JSON.stringify(wrong.body)).not.toMatch(/_accessToken|_refreshToken/);
+    expect(wrong.headers['set-cookie']).toBeUndefined();
+
+    const preClaim = jwt.sign(
+      { _userId: 'user-1', _username: 'alice', _role: 'operator', _type: 'access', _organizationId: SEED_ORGANIZATION, _cep: 0 },
+      authConfig.jwt.secret,
+      { expiresIn: '15m', issuer: authConfig.jwt.issuer, audience: authConfig.jwt.audience },
+    );
+    for (let i = 0; i < SESSION_BUDGET + 2; i++) {
+      const res = await revoke(preClaim, `198.51.100.${10 + i}`, PASSWORD);
+      expect([res.status, res.body.message]).toEqual([401, 'Session must be renewed']);
+    }
+    expect(repository.users.get('user-1')!._credentialEpoch ?? 0).toBe(0);
+    // The renewed token (refresh carries the claim) works, with the one budget unit the wrong guess already spent.
+    const renewed = await renew(session.cookie);
+    expect((await revoke(renewed.access, '198.51.100.30', 'not-the-password')).status).toBe(400);
+    expect((await revoke(renewed.access, '198.51.100.31', PASSWORD)).status).toBe(429);
   });
 });

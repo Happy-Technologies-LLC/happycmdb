@@ -42,7 +42,7 @@ import { validateRequest, validateOptional, validateMultiple } from '../../middl
 const [A, MARK] = ['11111111-1111-4111-8111-111111111111', rnd()];
 const stored = { username: 'svc', password: MARK };
 const app = express().use(express.json()).use('/api/v1', getAuthMiddleware().authenticate(), unifiedCredentialRoutes);
-const auth = { Authorization: `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken('a', 'alice', 'operator', A)}` };
+const auth = { Authorization: `Bearer ${new JWTService(loadConfig().auth.jwt).generateAccessToken('a', 'alice', 'operator', A, 0, Math.floor(Date.now() / 1000))}` };
 const crud = new CredentialCRUDService(pool as unknown as Pool);
 const row = async (id: string) => (await sql('SELECT row_to_json(c)::text AS r FROM credentials c WHERE id = $1', [id]))[0];
 const post = (credentials: unknown) => request(app).post('/api/v1/credentials').set(auth).send({ name: rnd(), protocol: DISCOVERY_CREDENTIAL_PROTOCOLS[0], scope: 'ssh', credentials });

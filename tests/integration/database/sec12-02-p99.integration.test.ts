@@ -204,7 +204,7 @@ beforeAll(async () => {
   const jwt = new JWTService(authConfig.jwt as never);
   creds = Array.from({ length: LARGE }, (_, i) => {
     const id = idOf(i);
-    return { id, access: jwt.generateAccessToken(id, id, 'operator', ORG), refresh: jwt.generateRefreshToken(id, id, 'operator'), key: `p99-key-${id}` };
+    return { id, access: jwt.generateAccessToken(id, id, 'operator', ORG, 0, Math.floor(Date.now() / 1000)), refresh: jwt.generateRefreshToken(id, id, 'operator', 0, Math.floor(Date.now() / 1000)), key: `p99-key-${id}` };
   });
   await removeUsers(0);
   await addUsers(0, SMALL);

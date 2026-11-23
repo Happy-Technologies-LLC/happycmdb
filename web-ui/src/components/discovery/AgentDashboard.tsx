@@ -2,11 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { apiClient } from '@/lib/api-client';
 import { AgentList } from './AgentList';
 import { AgentStatusCard } from './AgentStatusCard';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { LiquidGlass } from '@/components/ui/liquid-glass';
-import { Badge } from '@/components/ui/badge';
-import { Eyebrow } from '@/components/ui/eyebrow';
-import { Icon } from '@happy-technologies/design-system';
+import { Badge, Card, Icon, PageHeader, SectionHeading, TabPanel, Tabs } from '@happy-technologies/design-system';
 import { logClientError } from '@/utils/logger';
 
 interface AgentStats {
@@ -24,17 +20,21 @@ interface AgentStats {
 // so `nmap` must not be listed here until that image installs it (pinned, no file caps, with a CI proof like the API image).
 const ADVERTISED_CAPABILITIES = 'ssh';
 
+type DashboardTab = 'agents' | 'setup';
+const TABS_ID = 'agent-dashboard-tabs';
+const TAB_OPTIONS: Array<{ value: DashboardTab; label: string; icon: string }> = [
+  { value: 'agents', label: 'Agents', icon: 'computer-tower' },
+  { value: 'setup', label: 'Setup Guide', icon: 'file-code' },
+];
+
+const CODE_BLOCK = 'hh-mono rounded-[var(--hh-radius-md)] bg-[var(--hh-bg-elevated)] p-4 text-sm text-[var(--hh-text-primary)]';
+const MUTED = 'text-sm text-[var(--hh-text-muted)]';
+
 export const AgentDashboard: React.FC = () => {
-  const [stats, setStats] = useState<AgentStats>({
-    totalAgents: 0,
-    activeAgents: 0,
-    inactiveAgents: 0,
-    offlineAgents: 0,
-    totalJobs: 0,
-    successfulJobs: 0,
-    failedJobs: 0,
-    totalCIsDiscovered: 0,
-  });
+  // null until a read has answered: the cards show a dash, never a zero the server did not send.
+  const [stats, setStats] = useState<AgentStats | null>(null);
+  const [statsFailed, setStatsFailed] = useState(false);
+  const [tab, setTab] = useState<DashboardTab>('agents');
 
   useEffect(() => {
     fetchStats();
@@ -71,62 +71,53 @@ export const AgentDashboard: React.FC = () => {
       );
 
       setStats(calculated);
+      setStatsFailed(false);
     } catch (err) {
+      setStatsFailed(true);
       logClientError('Error fetching agent stats:', err);
     }
   };
 
   const successRate =
-    stats.totalJobs > 0
+    stats && stats.totalJobs > 0
       ? Math.round((stats.successfulJobs / stats.totalJobs) * 100)
-      : 0;
+      : null;
 
   return (
     <div className="space-y-6">
-      <div>
-        <Eyebrow>Discovery · Agents</Eyebrow>
-        <h1 className="mt-3 text-[1.9rem]">Discovery Agents</h1>
-        <p className="mt-1.5 text-ink-soft">
-          Manage and monitor distributed discovery agents across your networks
-        </p>
-      </div>
-
-      <AgentStatusCard
-        totalAgents={stats.totalAgents}
-        activeAgents={stats.activeAgents}
-        offlineAgents={stats.offlineAgents}
-        totalJobs={stats.totalJobs}
-        successRate={successRate}
+      <PageHeader
+        eyebrow="Discovery · Agents"
+        title="Discovery Agents"
+        lede="Manage and monitor distributed discovery agents across your networks"
       />
 
-      <Tabs defaultValue="agents" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="agents">
-            <Icon name="computer-tower" size={16} className="mr-2" />
-            Agents
-          </TabsTrigger>
-          <TabsTrigger value="setup">
-            <Icon name="file-code" size={16} className="mr-2" />
-            Setup Guide
-          </TabsTrigger>
-        </TabsList>
+      <AgentStatusCard
+        totalAgents={stats?.totalAgents ?? null}
+        activeAgents={stats?.activeAgents ?? null}
+        offlineAgents={stats?.offlineAgents ?? null}
+        totalJobs={stats?.totalJobs ?? null}
+        successRate={successRate}
+        loading={stats === null && !statsFailed}
+      />
 
-        <TabsContent value="agents" className="space-y-4">
-          <AgentList />
-        </TabsContent>
+      <div className="space-y-4">
+        <Tabs id={TABS_ID} value={tab} onChange={setTab} options={TAB_OPTIONS} aria-label="Discovery agents" />
 
-        <TabsContent value="setup" className="space-y-4">
-          <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
-            <div className="p-6 border-b border-border/50">
-              <h2 className="text-xl font-semibold">Agent Setup Guide</h2>
-              <p className="text-sm text-muted-foreground mt-1">
-                Deploy discovery agents to enable distributed network scanning
-              </p>
-            </div>
-            <div className="p-6 space-y-6">
+        <TabPanel tabsId={TABS_ID} value="agents" selected={tab === 'agents'} className="space-y-4">
+          {tab === 'agents' && <AgentList />}
+        </TabPanel>
+
+        <TabPanel tabsId={TABS_ID} value="setup" selected={tab === 'setup'} className="space-y-4">
+          {tab === 'setup' && (
+            <Card className="space-y-6">
               <div>
-                <h3 className="text-lg font-semibold mb-2">1. Install Agent</h3>
-                <div className="bg-muted p-4 rounded-md font-mono text-sm">
+                <SectionHeading className="mb-1">Agent Setup Guide</SectionHeading>
+                <p className={MUTED}>Deploy discovery agents to enable distributed network scanning</p>
+              </div>
+
+              <div>
+                <SectionHeading level={3} className="mb-2">1. Install Agent</SectionHeading>
+                <div className={CODE_BLOCK}>
                   <div># Download and install the agent</div>
                   <div>npm install -g @cmdb/agent</div>
                   <div className="mt-2"># Or with Docker</div>
@@ -135,8 +126,8 @@ export const AgentDashboard: React.FC = () => {
               </div>
 
               <div>
-                <h3 className="text-lg font-semibold mb-2">2. Configure Agent</h3>
-                <div className="bg-muted p-4 rounded-md font-mono text-sm">
+                <SectionHeading level={3} className="mb-2">2. Configure Agent</SectionHeading>
+                <div className={CODE_BLOCK}>
                   <div># Set API endpoint</div>
                   <div>export CMDB_API_URL=http://your-cmdb-server:3000</div>
                   <div className="mt-2"># Set agent capabilities</div>
@@ -147,8 +138,8 @@ export const AgentDashboard: React.FC = () => {
               </div>
 
               <div>
-                <h3 className="text-lg font-semibold mb-2">3. Start Agent</h3>
-                <div className="bg-muted p-4 rounded-md font-mono text-sm">
+                <SectionHeading level={3} className="mb-2">3. Start Agent</SectionHeading>
+                <div className={CODE_BLOCK}>
                   <div># Start the agent</div>
                   <div>cmdb-agent start</div>
                   <div className="mt-2"># Or with Docker</div>
@@ -161,29 +152,31 @@ export const AgentDashboard: React.FC = () => {
               </div>
 
               <div>
-                <h3 className="text-lg font-semibold mb-2">4. Verify Registration</h3>
-                <p className="text-sm text-muted-foreground mb-2">
+                <SectionHeading level={3} className="mb-2">4. Verify Registration</SectionHeading>
+                <p className={`${MUTED} mb-2`}>
                   The agent should appear in the agents list above within 60 seconds.
-                  Check the agent status to ensure it's <Badge>ACTIVE</Badge>.
+                  Check the agent status to ensure it's <Badge variant="success">ACTIVE</Badge>.
                 </p>
               </div>
 
-              <div className="bg-sky-soft p-4 rounded-md">
-                <h4 className="font-semibold mb-2 flex items-center gap-2">
-                  <Icon name="graph" size={16} />
-                  Network Requirements
-                </h4>
-                <ul className="list-disc list-inside text-sm space-y-1 text-muted-foreground">
+              <div className="rounded-[var(--hh-radius-md)] bg-[var(--hh-accent-bg)] p-4 text-[var(--hh-accent-text)]">
+                <SectionHeading level={4} className="mb-2">
+                  <span className="inline-flex items-center gap-2">
+                    <Icon name="graph" size={16} />
+                    Network Requirements
+                  </span>
+                </SectionHeading>
+                <ul className="list-inside list-disc space-y-1 text-sm text-[var(--hh-text-body)]">
                   <li>Agent needs network access to CMDB API server (port 3000)</li>
                   <li>nmap is not included in the agent image; TCP connect scans (-sT, -sV) run from the API server and need no added Linux capabilities</li>
                   <li>For SSH: Needs to reach target hosts on port 22</li>
                   <li>Agent sends heartbeat every 60 seconds</li>
                 </ul>
               </div>
-            </div>
-          </LiquidGlass>
-        </TabsContent>
-      </Tabs>
+            </Card>
+          )}
+        </TabPanel>
+      </div>
     </div>
   );
 };

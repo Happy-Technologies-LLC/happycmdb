@@ -167,9 +167,17 @@ this migration's scope.
 
 `metabase-init.sql` revokes historical named blanket grants before allowlisting
 existing reporting views. The three `infrastructure/database/views/*.sql` files
-grant their own views when created later, except `v_top_cost_drivers`: its
-unbounded `ci.metadata` makes it unsuitable for the BI role. Keep the BI scripts
-and `032`/BI allowlists aligned if adding reporting views. Migration `033`
+grant their own views when created later. `v_top_cost_drivers` is on no BI
+allowlist and is never granted to BI: its unbounded `ci.metadata` makes it
+unsuitable for the BI role. BI reads `v_top_cost_drivers_bi` (no `metadata`)
+and `v_underutilized_resources`; both are granted by shape (skipped when the
+view is not owned by the owner of `cmdb.dim_ci`, has a column named `metadata`,
+or carries json/jsonb in any column, including through a domain, array or
+composite type) in `metabase-init.sql`, `cost-analysis.sql` and migration
+`051`, which also sets `security_barrier` on the unbounded cost views of
+`cost-analysis.sql` and revokes `TEMPORARY` on the database from
+`metabase_readonly` (PUBLIC's default grant is untouched). Keep the BI
+scripts, `032`, `050` and `051` allowlists aligned if adding reporting views. Migration `033`
 closes unrelated `cmdb` reporting tables to PUBLIC and BI. The guarded
 `rollback/032_*.down.sql` refuses while `033` or `034` remains recorded;
 it is manual, removes its exact ledger row and restores 001's unsafe PUBLIC
@@ -476,6 +484,8 @@ export NEO4J_USERNAME=neo4j
 export NEO4J_PASSWORD=cmdb_password_dev
 npx ts-node infrastructure/scripts/seed-data.ts
 ```
+
+The script honors the same Neo4j TLS variables as the API: `NEO4J_ENCRYPTED`, `NEO4J_SSL_ENABLED` and `NEO4J_ENCRYPTION` accept only `true` or `false`, `NEO4J_SSL_TRUST_STRATEGY` accepts `TRUST_SYSTEM_CA_SIGNED_CERTIFICATES` or `TRUST_ALL_CERTIFICATES`, and a `bolt+s`, `bolt+ssc`, `neo4j+s` or `neo4j+ssc` URI sets encryption itself.
 
 **Features**:
 - Idempotent (uses MERGE for CI creation)

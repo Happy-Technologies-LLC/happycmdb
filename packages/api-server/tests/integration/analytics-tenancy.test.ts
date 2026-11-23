@@ -34,7 +34,7 @@ app.use('/api/v1', getAuthMiddleware().authenticate());
 app.use('/api/v1/analytics', analyticsRoutes);
 const auth = (key: keyof typeof users) => {
   const user = users[key];
-  return { authorization: `Bearer ${jwt.generateAccessToken(user._id, user._username, user._role, '_organizationId' in user ? user._organizationId : undefined)}` };
+  return { authorization: `Bearer ${jwt.generateAccessToken(user._id, user._username, user._role, '_organizationId' in user ? user._organizationId : undefined, 0, Math.floor(Date.now() / 1000))}` };
 };
 const cypher = async (query: string, params: Record<string, unknown> = {}) => {
   const session = graph.getSession();
@@ -102,6 +102,49 @@ it('keeps every REST aggregate within own dimension and both relationship endpoi
   expect((await rest('a', '/top-connected')).body.data.find((row: { ci_id: string }) => row.ci_id === 'analytics-a').relationship_count).toBe('1');
   expect((await rest('a', '/relationship-counts')).body.data).toEqual([{ relationship_type: 'DEPENDS_ON', count: '1' }]);
   expect((await rest('a', '/dashboard')).body.total_cis).toBe(2);
+});
+
+it('counts critical_relationships once per own relationship with at least one tier_1/tier_2 endpoint (real Neo4j, BW4)', async () => {
+  // Org A: c1 tier_1, c2 tier_2, n1 uncategorized, n2 tier_3 (not critical). Org B: bc tier_1, bn uncategorized.
+  //   c1->n1 critical source only        n1->c2 critical target only        c1->c2 both ends critical (once)
+  //   n1->n2 no critical end             c1->bn, n1->bc cross-org (an end is foreign: never A's)
+  //   bc->bn is B's only own critical relationship. A's pre-seeded a->a2 and a->b stay out of both counts.
+  // At-least-one-endpoint = 3 for A. An AND of the two ends would give 1, source-only 2, target-only 2, and
+  // dropping the organization scope on either end 5: each wrong predicate yields a different number.
+  try {
+    await cypher(`
+      CREATE (c1:CI {id:'analytics-crit-c1', name:'c1', type:'server', organization_id:$a, bsm_business_criticality:'tier_1'})
+      CREATE (c2:CI {id:'analytics-crit-c2', name:'c2', type:'server', organization_id:$a, bsm_business_criticality:'tier_2'})
+      CREATE (n1:CI {id:'analytics-crit-n1', name:'n1', type:'server', organization_id:$a})
+      CREATE (n2:CI {id:'analytics-crit-n2', name:'n2', type:'server', organization_id:$a, bsm_business_criticality:'tier_3'})
+      CREATE (bc:CI {id:'analytics-crit-bc', name:'bc', type:'server', organization_id:$b, bsm_business_criticality:'tier_1'})
+      CREATE (bn:CI {id:'analytics-crit-bn', name:'bn', type:'server', organization_id:$b})
+      CREATE (c1)-[:DEPENDS_ON]->(n1) CREATE (n1)-[:DEPENDS_ON]->(c2) CREATE (c1)-[:HOSTS]->(c2)
+      CREATE (n1)-[:DEPENDS_ON]->(n2) CREATE (c1)-[:DEPENDS_ON]->(bn) CREATE (n1)-[:DEPENDS_ON]->(bc)
+      CREATE (bc)-[:DEPENDS_ON]->(bn)`, { a: A, b: B });
+    const forA = await rest('a', '/dashboard');
+    expect(forA.status).toBe(200);
+    expect(forA.body.critical_relationships).toBe(3);
+    expect((await rest('b', '/dashboard')).body.critical_relationships).toBe(1);
+    // BW1/BW4 on the real stores: no open incident yet, so every own CI is healthy and the score is measured, not null.
+    expect(forA.body.ci_health).toEqual({ healthy: 6, degraded: 0, critical: 0, total: 6 });
+    expect(forA.body.health_score).toBe(100);
+    expect(forA.body.unavailable ?? []).not.toContain('health_score');
+    await sql.query(`INSERT INTO itil_incidents (incident_number, title, impact, urgency, priority, affected_ci_id, status,
+        reported_by, organization_id) VALUES
+      ('INC-AT-1', 't', 'high', 'high', 1, 'analytics-crit-c1', 'in_progress', 'x', $1),
+      ('INC-AT-2', 't', 'high', 'high', 3, 'analytics-crit-n1', 'new', 'x', $1),
+      ('INC-AT-3', 't', 'high', 'high', 1, 'analytics-crit-n2', 'resolved', 'x', $1),
+      ('INC-AT-4', 't', 'high', 'high', 1, 'analytics-crit-n1', 'new', 'x', $2),
+      ('INC-AT-5', 't', 'high', 'high', 2, 'analytics-crit-bc', 'new', 'x', $2)`, [A, B]);
+    const withIncidents = await rest('a', '/dashboard');
+    expect(withIncidents.body.ci_health).toEqual({ healthy: 4, degraded: 1, critical: 1, total: 6 });
+    expect(withIncidents.body.health_score).toBe(66.7);
+    expect((await rest('b', '/dashboard')).body.ci_health).toEqual({ healthy: 2, degraded: 0, critical: 1, total: 3 });
+  } finally {
+    await sql.query("DELETE FROM itil_incidents WHERE incident_number LIKE 'INC-AT-%'");
+    await cypher("MATCH (ci:CI) WHERE ci.id STARTS WITH 'analytics-crit-' DETACH DELETE ci");
+  }
 });
 
 it('omits pending, failed, backfilled and graph-reassigned top-connected CIs and their edges in REST and GraphQL', async () => {

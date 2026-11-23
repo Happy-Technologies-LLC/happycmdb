@@ -12,11 +12,12 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 import { getPostgresClient } from '../postgres/client';
-import { enc } from '../journal/encoding';
+import { assertPlanRepresentable, boundOversizedSnapshot, enc, isStorableString, PlanUnrepresentableError } from '../journal/encoding';
 import type { Encoded } from '../journal/encoding';
 import {
-  assertJournalSchema, JournalGapError, JournalGraphRunner, JournalTargetMissingError, ReconciliationJournal, StoredPlan,
-  JournalUnavailableError, assertExternalIdSchema, type JournalActorType,
+  assertJournalSchema, JournalConflictError, JournalGapError, JournalGraphRunner, JournalPlanThrottledError, JournalTargetMissingError,
+  ReconciliationJournal, StoredPlan, JournalUnavailableError, assertExternalIdSchema, type JournalActorType,
+  type RelationshipEvidence,
 } from '../journal/journal';
 import { auditChainReady } from '../postgres/audit.service';
 import { SOURCE_OWNED_WRITE, type SourceOwnedGrant } from './source-owned-grant';
@@ -26,6 +27,35 @@ function refuseSourceOwnedType(props: Record<string, unknown>, grant: SourceOwne
   if (grant === SOURCE_OWNED_WRITE) return;
   if (Object.entries(props).some(([key, value]) => ['type', 'ci_type'].includes(key.replace(/^_+/, '').toLowerCase())
     && isSourceOwnedCIType(value))) throw new SourceOwnedError();
+}
+
+const EVIDENCE_TOKEN = /^[a-z][a-z0-9_]*$/;
+/**
+ * HAP-2029: the receipt descriptor of a relationship write, validated in process before anything is reserved (a bad one is
+ * a programmer error, not a request error). Default: `declared` by `api`. Mirrors the table's CHECKs so T2 cannot fail on it.
+ */
+function relationshipEvidenceDescriptor(evidence: RelationshipEvidence = { evidenceClass: 'declared', sourceName: 'api', method: 'api' }): {
+  evidenceClass: RelationshipEvidence['evidenceClass']; sourceName: string; sourceId: string | null; sourceVersion: string | null;
+  method: string; rationaleCode: string | null;
+} {
+  const text = (value: unknown, max: number, optional: boolean): string | null => {
+    if (value === undefined && optional) return null;
+    if (typeof value !== 'string' || value.trim() === '' || value.length > max || !isStorableString(value)) {
+      throw new Error('Invalid relationship evidence descriptor');
+    }
+    return value;
+  };
+  const token = (value: unknown, optional: boolean): string | null => {
+    const checked = text(value, 40, optional);
+    if (checked !== null && !EVIDENCE_TOKEN.test(checked)) throw new Error('Invalid relationship evidence descriptor');
+    return checked;
+  };
+  if (evidence.evidenceClass !== 'declared' && evidence.evidenceClass !== 'static_observed') {
+    throw new Error('Invalid relationship evidence descriptor');
+  }
+  return { evidenceClass: evidence.evidenceClass, sourceName: text(evidence.sourceName, 100, false)!,
+    sourceId: text(evidence.sourceId, 255, true), sourceVersion: text(evidence.sourceVersion, 100, true),
+    method: token(evidence.method, false)!, rationaleCode: token(evidence.rationaleCode, true) };
 }
 
 /**
@@ -75,6 +105,11 @@ function auditUpdate(current: Record<string, unknown>, next: Record<string, unkn
 export const MAX_CI_TRAVERSAL_NODES = 100;
 export const MAX_CI_TRAVERSAL_WORK = 400;
 export const CI_TRAVERSAL_QUERY_TIMEOUT_MS = 5000;
+/**
+ * HAP-2030: an AI-sync re-observation of an unchanged edge appends at most one receipt per edge, source and this many hours.
+ * 24 h against the 7-day `static_observed` window: growth is one row per edge per day, and a missed run never flips a state.
+ */
+export const REOBSERVATION_THROTTLE_HOURS = 24;
 
 export class CITraversalLimitError extends Error {
   constructor() {
@@ -123,6 +158,45 @@ type TraversalEdge = {
 
 type TraversalNode = { node: Node; distance: number };
 
+/** HAP-2030: a relationship as stored: `from` is its start CI, `to` its end CI, `type` the Neo4j relationship type. */
+export interface CIEdgeRef { from: string; to: string; type: string }
+const edgeRef = (edge: TraversalEdge): CIEdgeRef => ({ from: edge.startNodeId, to: edge.endNodeId, type: edge.relationship.type });
+
+/** True for the URL schemes that carry encryption and trust themselves; reads the scheme prefix only, never the rest of the URI. */
+const uriSchemeSelectsTls = (uri: string): boolean => /^(?:bolt|neo4j)\+s(?:sc)?:/i.test(uri);
+
+/** True for the `+ssc` schemes, which make the driver trust any certificate. Reads the scheme prefix only. */
+const uriSchemeTrustsAll = (uri: string): boolean => /^(?:bolt|neo4j)\+ssc:/i.test(uri);
+
+/**
+ * Strict TLS toggle: unset or empty is off, exactly `true` is on, exactly `false` is off, anything else throws.
+ * A value such as `TRUE` or `1` must never silently leave the connection in plaintext. The error names the variable
+ * and never echoes the value.
+ */
+const readTlsToggle = (name: string): boolean => {
+  const value = process.env[name];
+  if (value === undefined || value === '') return false;
+  if (value !== 'true' && value !== 'false') throw new Error(`${name} must be true or false when set`);
+  return value === 'true';
+};
+
+const TRUST_STRATEGIES = ['TRUST_SYSTEM_CA_SIGNED_CERTIFICATES', 'TRUST_ALL_CERTIFICATES'] as const;
+type TrustStrategy = (typeof TRUST_STRATEGIES)[number];
+
+/**
+ * Strict trust strategy: undefined or empty is not set, exactly one of the two accepted names passes, anything else
+ * throws (whitespace, case, and `TRUST_CUSTOM_CA_SIGNED_CERTIFICATES`, which this client cannot satisfy because it
+ * never passes `trustedCertificates`). The driver would only reject it at the first connection. The error names the
+ * setting and never echoes the value.
+ */
+const readTrustStrategy = (setting: string, value: unknown): TrustStrategy | undefined => {
+  if (value === undefined || value === '') return undefined;
+  if (!TRUST_STRATEGIES.includes(value as TrustStrategy)) {
+    throw new Error(`${setting} must be ${TRUST_STRATEGIES[0]} or ${TRUST_STRATEGIES[1]} when set`);
+  }
+  return value as TrustStrategy;
+};
+
 export class Neo4jClient {
   private driver: Driver;
   private activeCIAnalyticsReads = 0;
@@ -148,21 +222,32 @@ export class Neo4jClient {
     encrypted?: boolean;
     trust?: 'TRUST_ALL_CERTIFICATES' | 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES';
   }) {
-    // Determine if encryption should be enabled
-    const sslEnabled = process.env['NEO4J_SSL_ENABLED'] === 'true' ||
-                       process.env['NEO4J_ENCRYPTION'] === 'true' ||
-                       config?.encrypted === true;
+    const schemeSelectsTls = uriSchemeSelectsTls(uri);
+    // Every toggle is parsed (no short-circuit) so a malformed one refuses to start whatever the others say.
+    const toggles = ['NEO4J_SSL_ENABLED', 'NEO4J_ENCRYPTION', 'NEO4J_ENCRYPTED'].map(readTlsToggle);
+    const sslEnabled = toggles.some(Boolean) || config?.encrypted === true;
 
     // Determine trust strategy
-    const trustStrategy = config?.trust ||
-                         (process.env['NEO4J_SSL_TRUST_STRATEGY'] as any) ||
-                         'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES';
+    // Both inputs are parsed (no short-circuit), whatever the URI scheme and TLS toggles say, before any driver exists.
+    const configTrust = readTrustStrategy('Neo4j trust', config?.trust);
+    const envTrust = readTrustStrategy('NEO4J_SSL_TRUST_STRATEGY', process.env['NEO4J_SSL_TRUST_STRATEGY']);
+    const explicitTrust = configTrust || envTrust;
+    const trustStrategy: NonNullable<Config['trust']> = explicitTrust || 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES';
 
+    // A `+ssc` scheme trusts any certificate: an explicit stricter trust strategy is a conflict, not an override.
+    const trustsAll = uriSchemeTrustsAll(uri);
+    if (trustsAll && explicitTrust && explicitTrust !== 'TRUST_ALL_CERTIFICATES') {
+      throw new Error('A +ssc Neo4j URI trusts any certificate and conflicts with an explicit certificate trust strategy');
+    }
+
+    // neo4j-driver throws when `encrypted`/`trust` are given next to a scheme that already carries them.
     this.driverConfig = {
       maxConnectionLifetime: 3 * 60 * 60 * 1000, // 3 hours
       maxConnectionPoolSize: 50,
-      encrypted: sslEnabled ? 'ENCRYPTION_ON' : 'ENCRYPTION_OFF',
-      trust: trustStrategy,
+      ...(schemeSelectsTls ? {} : {
+        encrypted: sslEnabled ? 'ENCRYPTION_ON' : 'ENCRYPTION_OFF',
+        trust: trustStrategy,
+      }),
     };
     this.connection = { uri, auth: neo4j.auth.basic(username, password) };
     this.driver = neo4j.driver(uri, this.connection.auth, {
@@ -170,7 +255,16 @@ export class Neo4jClient {
       connectionAcquisitionTimeout: 2 * 60 * 1000, // 2 minutes
     });
 
-    if (sslEnabled) {
+    if (trustsAll) {
+      logger.warn('Neo4j client initialized with encryption set by the URI scheme; certificate verification is disabled by the +ssc scheme');
+    } else if (schemeSelectsTls) {
+      logger.info('Neo4j client initialized with encryption set by the URI scheme');
+    } else if (sslEnabled && trustStrategy === 'TRUST_ALL_CERTIFICATES') {
+      // The constructor option wins over the environment, so name the source that decided.
+      logger.warn(configTrust === 'TRUST_ALL_CERTIFICATES'
+        ? 'Neo4j client initialized with SSL/TLS encryption enabled; certificate verification is disabled by the Neo4jClient trust option TRUST_ALL_CERTIFICATES'
+        : 'Neo4j client initialized with SSL/TLS encryption enabled; certificate verification is disabled by NEO4J_SSL_TRUST_STRATEGY=TRUST_ALL_CERTIFICATES');
+    } else if (sslEnabled) {
       logger.info('Neo4j client initialized with SSL/TLS encryption enabled');
     } else {
       logger.warn('Neo4j client initialized WITHOUT encryption (development mode)');
@@ -291,60 +385,6 @@ export class Neo4jClient {
   }
 
   // CI Operations
-  /** Pre-journal unscoped create kept ONLY for the S5-owned ETL writer (HP1-S5 cutover). */
-  async legacyCreateCIUnjournaled(ci: CIInput, scope: CIOrganizationScope): Promise<CI> {
-    // The organization comes only from the scope, never from the CI input.
-    const organizationId = organizationIdParam(scope);
-    const session = this.getSession();
-    try {
-      // Handle both API format (id, type) and internal format (_id, _type)
-      const ciId = (ci as any).id || ci._id;
-      const ciType = (ci as any).type || ci._type;
-      // HAP-1442: an AI CI is created only by AISyncWriter (journaled), never by this pre-journal path.
-      if (isSourceOwnedCIType(ciType)) throw new SourceOwnedError();
-
-      // Validate and sanitize CI type to prevent Cypher injection
-      const sanitizedType = sanitizeCITypeForLabel(ciType);
-
-      // Safe to use template literal here because sanitizedType is validated against whitelist
-      const result = await session.run(
-        `
-        CREATE (ci:CI:${sanitizedType} {
-          id: $id,
-          external_id: $external_id,
-          name: $name,
-          type: $type,
-          status: $status,
-          environment: $environment,
-          created_at: datetime(),
-          incarnation_id: randomUUID(),
-          updated_at: datetime(),
-          discovered_at: datetime($discovered_at),
-          discovery_provider: $discovery_provider,
-          metadata: $metadata,
-          organization_id: $organizationId
-        })
-        RETURN ci
-        `,
-        {
-          id: ciId,
-          external_id: ci.external_id ?? null,
-          name: ci.name,
-          type: ciType,
-          status: ci.status || 'active',
-          environment: ci.environment || 'development',
-          discovered_at: ci.discovered_at || new Date().toISOString(),
-          discovery_provider: (ci as any).discovery_provider || null,
-          metadata: JSON.stringify(ci.metadata || {}),
-          organizationId,
-        }
-      );
-      return this.recordToCI(result.records[0]!.get('ci'));
-    } finally {
-      await session.close();
-    }
-  }
-
   /** Raw stored properties of an owned CI (metadata stays its stored string); null when missing or foreign. */
   async getCIProperties(id: string, organizationId: string): Promise<Record<string, unknown> | null> {
     const session = this.getSession();
@@ -701,6 +741,30 @@ export class Neo4jClient {
   }
 
   /**
+   * HAP-2030: the CURRENT incarnation of each owned CI in one statement; a read, so it assigns nothing. An id the scope does
+   * not own or that no longer exists is absent from the map; an owned legacy CI with no incarnation maps to null.
+   */
+  async getCIIncarnations(ids: string[], scope: CIOrganizationScope, timeoutMs: number): Promise<Map<string, string | null>> {
+    const organizationId = organizationIdParam(scope);
+    const incarnations = new Map<string, string | null>();
+    if (ids.length === 0) return incarnations;
+    const session = this.getSession();
+    try {
+      const result = await session.run(
+        `MATCH (ci:CI) WHERE ${organizationId === null ? 'ci.organization_id IS NOT NULL' : 'ci.organization_id = $organizationId'}
+           AND ci.id IN $ids
+         RETURN ci.id AS ciId, ci.incarnation_id AS incarnationId`,
+        { organizationId, ids }, { timeout: timeoutMs });
+      for (const record of result.records) {
+        incarnations.set(record.get('ciId') as string, ciIncarnationId(record.get('incarnationId') as string | null));
+      }
+      return incarnations;
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
    * Journaled delete (v16 §6.4). The snapshot is the raw property map read by
    * one statement under the slot; T2 writes exactly one org-stamped `deleted`
    * history row and purges this incarnation's derived drift/impact rows. Prior
@@ -714,12 +778,59 @@ export class Neo4jClient {
         plan: async (): Promise<StoredPlan> => {
           const props = await this.getCIProperties(id, organizationId);
           if (!props) throw new JournalTargetMissingError();
-          return {
-            graph: { kind: 'delete', label: null, params: enc({ id }) },
-            history: { changeType: 'deleted', changedFields: ['*'], source: 'api', previous: enc(props), next: null,
-              incarnationId: ciIncarnationId(props['incarnation_id'] as string | null) },
-            audit: { action: 'DELETE' },
-          };
+          return this.deletePlan(id, props, enc(props), { action: 'DELETE' });
+        },
+        result: async () => true,
+      });
+    } catch (error) {
+      if (error instanceof JournalTargetMissingError) return false;
+      throw error;
+    }
+  }
+
+  /** The journaled delete plan; `deleteCI` and the HAP-797 recovery differ only in the history snapshot and the audit metadata. */
+  private deletePlan(id: string, props: Record<string, unknown>, previous: Encoded, audit: NonNullable<StoredPlan['audit']>): StoredPlan {
+    return {
+      graph: { kind: 'delete', label: null, params: enc({ id }) },
+      history: { changeType: 'deleted', changedFields: ['*'], source: 'api', previous, next: null,
+        incarnationId: ciIncarnationId(props['incarnation_id'] as string | null) },
+      audit,
+    };
+  }
+
+  /** Whether `deleteCI` would pass the journal's plan limits for this CI. `run` stamps `actorType` on the audit entry before that check, so it is set here too. */
+  private ordinaryDeleteIsPlannable(id: string, props: Record<string, unknown>): boolean {
+    try {
+      assertPlanRepresentable(this.deletePlan(id, props, enc(props), { action: 'DELETE', actorType: 'user' }) as unknown as Encoded);
+      return true;
+    } catch (error) {
+      if (error instanceof PlanUnrepresentableError) return false;
+      throw error;
+    }
+  }
+
+  /**
+   * HAP-797: the recovery delete of a legacy CI the ordinary `deleteCI` can never remove, because a stored value breaks a
+   * §3.6 plan limit (a 422 on every attempt). Same journaled delete, but the history row and the audit `changes` hold a bounded
+   * snapshot: each such value is replaced by its byte size and SHA-256 (`boundOversizedSnapshot`), never copied, and the audit
+   * metadata names `evidenceRef`, the caller's reference to wherever the full value was preserved. Authorization is the
+   * caller's (the route requires the admin role). A CI the ordinary delete can plan (whole plan within the §3.6 limits, up to
+   * about 1 MiB) is a 409 (`not_oversized`): that is what `deleteCI` is for. False when missing or foreign.
+   */
+  async deleteOversizedCI(id: string, organizationId: string, actor: string, evidenceRef: string): Promise<boolean> {
+    if (!(await this.admitOwned(organizationId, [id]))) return false;
+    try {
+      return await this.journal.run({
+        organizationId, actor, operation: 'delete', ciIds: [id],
+        plan: async (): Promise<StoredPlan> => {
+          const props = await this.getCIProperties(id, organizationId);
+          if (!props) throw new JournalTargetMissingError();
+          // The ordinary delete's own plan decides: if it is representable, deleteCI works and this path must not replace it.
+          if (this.ordinaryDeleteIsPlannable(id, props)) throw new JournalConflictError('not_oversized');
+          const { snapshot, oversized } = boundOversizedSnapshot(props);
+          if (oversized.length === 0) throw new JournalConflictError('not_oversized');
+          return this.deletePlan(id, props, snapshot, { action: 'DELETE', metadata: { recovery: 'oversized_delete', evidence_ref: evidenceRef,
+            oversized_count: oversized.length, oversized: [...oversized].sort((a, b) => b.bytes - a.bytes).slice(0, 20) } });
         },
         result: async () => true,
       });
@@ -735,26 +846,109 @@ export class Neo4jClient {
    * missing or foreign, or, on delete, when no such relationship exists.
    * HAP-1001: T2 appends one RELATIONSHIP_ADD/RELATIONSHIP_REMOVE audit row per endpoint.
    * HAP-1444: an endpoint of a source-owned AI class needs the sync writer's grant (AISyncWriter.link).
+   * HAP-2029: T2 also appends one evidence receipt (a create `supports`, a delete `contradicts`) bound to both endpoints'
+   * current CI incarnations. `evidence` is the trusted in-process descriptor of the asserting writer, default
+   * `declared`/`api`; it is never derived from `props` or a request, and an invalid one is a programmer error thrown before
+   * anything is reserved.
    */
   async writeRelationship(kind: 'relationship_create' | 'relationship_delete', fromId: string, toId: string,
     type: string, organizationId: string, actor: string, props: Record<string, unknown> = {},
-    grant?: SourceOwnedGrant, actorType: JournalActorType = 'user', auditMetadata?: Record<string, unknown>): Promise<boolean> {
-    const label = validateRelationshipType(type);
-    if (!(await this.admitOwned(organizationId, [fromId, toId], grant))) return false;
+    grant?: SourceOwnedGrant, actorType: JournalActorType = 'user', auditMetadata?: Record<string, unknown>,
+    evidence?: RelationshipEvidence): Promise<boolean> {
+    const admitted = await this.admitRelationshipWrite(type, evidence, organizationId, [fromId, toId], grant);
+    if (!admitted) return false;
+    const { label, descriptor } = admitted;
     const create = kind === 'relationship_create';
     const relationship = { type: label, from_id: fromId, to_id: toId, ...(create ? { properties: props } : {}) };
     try {
       return await this.journal.run({
         organizationId, actor, actorType, auditMetadata, operation: 'relationship_write', ciIds: [fromId, toId],
-        plan: async () => ({ graph: { kind, label, params: enc({ from: fromId, to: toId, props }) },
-          audit: { action: create ? 'RELATIONSHIP_ADD' : 'RELATIONSHIP_REMOVE', changes: enc([{ field: 'relationship',
-            old_value: create ? null : relationship, new_value: create ? relationship : null }]) } }),
+        plan: async () => {
+          // Under the slot, so neither endpoint can be deleted or re-created between this read and W.
+          const fromIncarnationId = await this.endpointIncarnation(fromId, organizationId);
+          const toIncarnationId = await this.endpointIncarnation(toId, organizationId);
+          return { graph: { kind, label, params: enc({ from: fromId, to: toId, props }) },
+            audit: { action: create ? 'RELATIONSHIP_ADD' : 'RELATIONSHIP_REMOVE', changes: enc([{ field: 'relationship',
+              old_value: create ? null : relationship, new_value: create ? relationship : null }]) },
+            receipt: { from: fromId, to: toId, fromIncarnationId, toIncarnationId, type: label, ...descriptor,
+              polarity: create ? 'supports' : 'contradicts' } };
+        },
         result: async () => true,
       });
     } catch (error) {
       if (error instanceof JournalTargetMissingError) return false;
       throw error;
     }
+  }
+
+  /** The endpoint's CI incarnation (assigned on first derived write for a legacy CI); a missing or foreign CI is a 404. */
+  private async endpointIncarnation(id: string, organizationId: string): Promise<string> {
+    const props = await this.getCIProperties(id, organizationId);
+    // A malformed stored id is returned untouched by ensureCIIncarnation: validate the fallback too (HAP-2126).
+    const incarnationId = (props && ciIncarnationId(props)) ?? ciIncarnationId(await this.ensureCIIncarnation(id, organizationId));
+    if (!incarnationId) throw new JournalTargetMissingError();
+    return incarnationId;
+  }
+
+  /**
+   * HAP-2030: whether the edge already has a `supports` receipt of this descriptor's class, source name and source id bound
+   * to exactly these endpoint incarnations, in this organization, newer than the throttle period. The period is measured on
+   * the database clock (T2 stamps `observed_at` with it), never the process clock.
+   */
+  async hasRecentObservation(organizationId: string, fromId: string, toId: string, type: string, fromIncarnationId: string,
+    toIncarnationId: string, evidence: RelationshipEvidence): Promise<boolean> {
+    const label = validateRelationshipType(type);
+    const descriptor = relationshipEvidenceDescriptor(evidence);
+    const result = await getPostgresClient().query(
+      `SELECT EXISTS (SELECT 1 FROM relationship_evidence_receipts
+        WHERE organization_id = $1 AND from_ci_id = $2 AND to_ci_id = $3 AND relationship_type = $4
+          AND from_incarnation_id = $5::uuid AND to_incarnation_id = $6::uuid
+          AND evidence_class = $7 AND polarity = 'supports' AND source_name = $8 AND source_id IS NOT DISTINCT FROM $9
+          AND observed_at > now() - make_interval(hours => $10::int)) AS recent`,
+      [organizationId, fromId, toId, label, fromIncarnationId, toIncarnationId, descriptor.evidenceClass,
+        descriptor.sourceName, descriptor.sourceId, REOBSERVATION_THROTTLE_HOURS]);
+    return result.rows[0]?.recent === true;
+  }
+
+  /**
+   * HAP-2030: re-observation of an UNCHANGED relationship by its source: appends one `supports` receipt (rationale
+   * `reobserved`, observer type `system`) through the same journaled path as `writeRelationship`, and nothing else (no W, no
+   * fence, no audit row, no property). `throttled` when the edge already has a recent receipt of this exact source (decided
+   * again under the slot, so concurrent writers add one row per period); `missing` when an endpoint or the edge is gone.
+   */
+  async reobserveRelationship(fromId: string, toId: string, type: string, organizationId: string, actor: string,
+    grant: SourceOwnedGrant | undefined, evidence: RelationshipEvidence): Promise<'reobserved' | 'throttled' | 'missing'> {
+    const admitted = await this.admitRelationshipWrite(type, { ...evidence, rationaleCode: 'reobserved' }, organizationId,
+      [fromId, toId], grant);
+    if (!admitted) return 'missing';
+    const { label, descriptor } = admitted;
+    try {
+      return await this.journal.run<'reobserved' | 'throttled' | 'missing'>({
+        organizationId, actor, actorType: 'system', operation: 'relationship_write', ciIds: [fromId, toId],
+        plan: async () => {
+          if (!(await this.relationshipExists(organizationId, fromId, label, toId))) throw new JournalTargetMissingError();
+          const fromIncarnationId = await this.endpointIncarnation(fromId, organizationId);
+          const toIncarnationId = await this.endpointIncarnation(toId, organizationId);
+          if (await this.hasRecentObservation(organizationId, fromId, toId, label, fromIncarnationId, toIncarnationId,
+            { ...evidence, rationaleCode: 'reobserved' })) throw new JournalPlanThrottledError();
+          return { graph: null, receipt: { from: fromId, to: toId, fromIncarnationId, toIncarnationId, type: label,
+            ...descriptor, polarity: 'supports' } };
+        },
+        result: async () => 'reobserved',
+      });
+    } catch (error) {
+      if (error instanceof JournalPlanThrottledError) return 'throttled';
+      if (error instanceof JournalTargetMissingError) return 'missing';
+      throw error;
+    }
+  }
+
+  /** The shared prelude of every relationship receipt write: validated type and descriptor, then the owned-endpoint gate. */
+  private async admitRelationshipWrite(type: string, evidence: RelationshipEvidence | undefined, organizationId: string,
+    ids: string[], grant: SourceOwnedGrant | undefined) {
+    const label = validateRelationshipType(type);
+    const descriptor = relationshipEvidenceDescriptor(evidence);
+    return (await this.admitOwned(organizationId, ids, grant)) ? { label, descriptor } : null;
   }
 
   /**
@@ -889,16 +1083,35 @@ export class Neo4jClient {
     ciId: string, scope: CIOrganizationScope, depth: number = 5,
     work: CITraversalWork = createCITraversalWork()
   ): Promise<Path[]> {
-    return (await this.traverseCIs([ciId], scope, depth, 'out', true, work)).paths;
+    return (await this.getDependenciesWithEdges(ciId, scope, depth, work)).paths;
+  }
+
+  /** HAP-2030: getDependencies plus every DEPENDS_ON edge the traversal followed, as stored (start -> end); no second traversal. */
+  async getDependenciesWithEdges(
+    ciId: string, scope: CIOrganizationScope, depth: number = 5,
+    work: CITraversalWork = createCITraversalWork()
+  ): Promise<{ paths: Path[]; edges: CIEdgeRef[] }> {
+    const { paths, edges } = await this.traverseCIs([ciId], scope, depth, 'out', true, work);
+    return { paths, edges: edges.map(edgeRef) };
   }
 
   async impactAnalysis(
     ciId: string, scope: CIOrganizationScope, depth: number = 5,
     work: CITraversalWork = createCITraversalWork()
   ) {
-    return (await this.traverseCIs([ciId], scope, depth, 'in', true, work)).nodes.map(({ node, distance }) => ({
-      _ci: this.recordToCI(node), _distance: distance,
-    }));
+    return (await this.impactAnalysisWithEdges(ciId, scope, depth, work)).nodes;
+  }
+
+  /** HAP-2030: impactAnalysis plus every DEPENDS_ON edge the traversal followed, as stored (start -> end); no second traversal. */
+  async impactAnalysisWithEdges(
+    ciId: string, scope: CIOrganizationScope, depth: number = 5,
+    work: CITraversalWork = createCITraversalWork()
+  ): Promise<{ nodes: Array<{ _ci: CI; _distance: number }>; edges: CIEdgeRef[] }> {
+    const { nodes, edges } = await this.traverseCIs([ciId], scope, depth, 'in', true, work);
+    return {
+      nodes: nodes.map(({ node, distance }) => ({ _ci: this.recordToCI(node), _distance: distance })),
+      edges: edges.map(edgeRef),
+    };
   }
 
   /**

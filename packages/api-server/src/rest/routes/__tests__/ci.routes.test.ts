@@ -66,10 +66,24 @@ const mockRequirePermission = jest.fn(
   }
 );
 
+const mockRequireRole = jest.fn((...roles: string[]) => (req: Request, res: Response, next: () => void) => {
+  const role = (req as ReqWithUser).user?._role;
+  if (!role) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  if (!roles.includes(role)) {
+    res.status(403).json({ error: 'Forbidden' });
+    return;
+  }
+  next();
+});
+
 jest.mock('../../../auth/auth-bootstrap', () => ({
   getAuthMiddleware: jest.fn(() => ({
     authenticate: mockAuthenticate,
     requirePermission: mockRequirePermission,
+    requireRole: mockRequireRole,
     requireOrganization: mockRequireOrganization,
   })),
 }));
@@ -82,6 +96,8 @@ jest.mock('../../controllers/ci.controller', () => ({
     createCI: mockRouteHandler,
     updateCI: mockRouteHandler,
     deleteCI: mockRouteHandler,
+    deleteOversizedCI: mockRouteHandler,
+    getCIStoredProperties: mockRouteHandler,
     getCIRelationships: mockRouteHandler,
     getCIDependencies: mockRouteHandler,
     getImpactAnalysis: mockRouteHandler,
@@ -180,6 +196,36 @@ describe('ci routes', () => {
       expect(mockRouteHandler).not.toHaveBeenCalled();
     }
   );
+
+  // HAP-797: the recovery delete is admin-only; write permission (operator) is not enough.
+  it.each([['viewer', 403], ['operator', 403]])('the oversized-delete recovery route refuses a %s with %i before the handler', async (role, status) => {
+    const response = await invoke(testApp(), 'POST', '/cis/ci-1/oversized-delete', { evidence_ref: 'vault://e/1' }, `Bearer ${role}-token`);
+    expect(response.status).toBe(status);
+    expect(mockRouteHandler).not.toHaveBeenCalled();
+  });
+
+  it('the oversized-delete recovery route reaches the handler for an admin with an organization, and not without one', async () => {
+    const body = { evidence_ref: 'vault://e/1' };
+    expect((await invoke(testApp(), 'POST', '/cis/ci-1/oversized-delete', body, 'Bearer admin-token')).status).toBe(200);
+    expect(mockRouteHandler).toHaveBeenCalledTimes(1);
+    expect((await invoke(testApp(), 'POST', '/cis/ci-1/oversized-delete', body, 'Bearer no-org-admin-token')).status).toBe(403);
+    expect(mockRouteHandler).toHaveBeenCalledTimes(1);
+  });
+
+  // The stored-properties read returns every raw value of the CI (the preservation copy): admin only, though it is a GET.
+  it.each([['viewer', 403], ['operator', 403]])('the stored-properties evidence read refuses a %s with %i before the handler', async (role, status) => {
+    const response = await invoke(testApp(), 'GET', '/cis/ci-1/stored-properties', undefined, `Bearer ${role}-token`);
+    expect(response.status).toBe(status);
+    expect(mockRouteHandler).not.toHaveBeenCalled();
+  });
+
+  it('the stored-properties evidence read is 401 without credentials, 403 for an admin without an organization, and reaches the handler for an admin', async () => {
+    expect((await invoke(testApp(), 'GET', '/cis/ci-1/stored-properties', undefined)).status).toBe(401);
+    expect((await invoke(testApp(), 'GET', '/cis/ci-1/stored-properties', undefined, 'Bearer no-org-admin-token')).status).toBe(403);
+    expect(mockRouteHandler).not.toHaveBeenCalled();
+    expect((await invoke(testApp(), 'GET', '/cis/ci-1/stored-properties', undefined, 'Bearer admin-token')).status).toBe(200);
+    expect(mockRouteHandler).toHaveBeenCalledTimes(1);
+  });
 
   it('rejects an invalid/unrecognized bearer token with 401', async () => {
     const response = await invoke(testApp(), 'GET', '/cis', undefined, 'Bearer garbage-token');

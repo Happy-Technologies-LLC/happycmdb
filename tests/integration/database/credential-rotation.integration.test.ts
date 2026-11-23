@@ -46,16 +46,28 @@ import { readFileSync } from 'fs';
 import neo4j, { Driver, Session } from 'neo4j-driver';
 import { join } from 'path';
 import { Pool } from 'pg';
+import express from 'express';
+import request from 'supertest';
+
+import { AuthService } from '../../../packages/api-server/src/auth/auth.service';
+import { JWTService } from '../../../packages/api-server/src/auth/jwt.service';
+import { AuthMiddleware } from '../../../packages/api-server/src/middleware/auth.middleware';
+import type { RateLimitMiddleware } from '../../../packages/api-server/src/middleware/rate-limit.middleware';
+import { AuthController } from '../../../packages/api-server/src/rest/auth.controller';
+import { ValidationMiddleware } from '../../../packages/api-server/src/rest/middleware/validation.middleware';
 
 import {
   APPLY_CYPHER, DECISION_CONSTRAINT_CYPHER, applyRotation, prepareDecisionConstraint, prepareRotation, reconcileRotations,
   rotateUserPassword, type RotationDeps, type RotationSqlQuery,
 } from '../../../packages/api-server/src/scripts/rotate-user-password';
 import {
-  assignOrganization, grantPlatformAdmin, inventorySeedAccounts, scanDefaultPasswords, stampSeedAccounts,
+  GRANT_IDENTITY_CYPHER, GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER, REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER,
+  assignOrganization, grantPlatformAdmin, grantPortfolioImportScope, inventorySeedAccounts, main as identityWindowCli,
+  SCOPE_MARKERS_CYPHER, revokePortfolioImportScope, scanDefaultPasswords, stampSeedAccounts,
 } from '../../../packages/api-server/src/scripts/identity-window';
+import { PORTFOLIO_IMPORT_SCOPE, holdsScope } from '../../../packages/api-server/src/auth/scopes';
 import { LockBusyError, openOperatorStores, type OperatorStores } from '../../../packages/api-server/src/scripts/operator-stores';
-import { main as rotationCli } from '../../../packages/api-server/src/scripts/rotate-user-password';
+import { main as rotationCli, type RotationGraph } from '../../../packages/api-server/src/scripts/rotate-user-password';
 import { isPlatformAdmin, isSeededAccount } from '../../../packages/api-server/src/auth/platform-admin';
 import {
   GUARDED_DISABLE_CYPHER, GUARDED_PASSWORD_CYPHER, GUARDED_REHASH_CYPHER, MARK_DEFAULT_SUSPECT_CYPHER, Neo4jAuthRepository,
@@ -279,6 +291,11 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
   async function unmark(): Promise<void> {
     await graph.run('MATCH (u:User {_id: $id}) SET u.defaultPasswordSuspect = false', { id: USER });
   }
+  // HAP-1714: GUARDED_PASSWORD_CYPHER only lands on a user that holds an organization, so these users hold one.
+  const SELF_SERVICE_ORGANIZATION = '33333333-3333-4333-8333-333333333333';
+  beforeEach(async () => {
+    await graph.run('MATCH (u:User {_id: $id}) SET u._organizationId = $organization', { id: USER, organization: SELF_SERVICE_ORGANIZATION });
+  });
 
   it('a password write or disable authorized at the old generation lands nowhere after a rotation', async () => {
     await unmark();
@@ -288,7 +305,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     const rotatedHash = (await userProps())['_passwordHash'];
 
     const write = await graph.run(GUARDED_PASSWORD_CYPHER, {
-      elementId: eid, userId: USER, credentialEpoch: neo4j.int(0), readHash, newHash: 'attacker-hash',
+      elementId: eid, userId: USER, credentialEpoch: neo4j.int(0), readHash, newHash: 'attacker-hash', organizationId: SELF_SERVICE_ORGANIZATION,
     });
     const disable = await graph.run(GUARDED_DISABLE_CYPHER, { elementId: eid, userId: USER, credentialEpoch: neo4j.int(0) });
 
@@ -302,7 +319,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     await unmark();
     const repository = new Neo4jAuthRepository();
     const written = await repository.updatePasswordHashGuarded({
-      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash',
+      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash', organizationId: SELF_SERVICE_ORGANIZATION,
     });
 
     expect(written).toBe(true);
@@ -314,12 +331,29 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     expect((await repository.listApiKeys(USER)).map(k => k._credentialEpoch)).toEqual([0]);
   });
 
+  it('HAP-1714: a user without an organization is not written, one holding it under either property spelling is', async () => {
+    await unmark();
+    await graph.run('MATCH (u:User {_id: $id}) REMOVE u._organizationId', { id: USER });
+    const repository = new Neo4jAuthRepository();
+    const write = async () => repository.updatePasswordHashGuarded({
+      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash', organizationId: SELF_SERVICE_ORGANIZATION,
+    });
+
+    expect(await write()).toBe(false);
+    const untouched = await userProps();
+    expect([untouched['_passwordHash'], untouched['credentialEpoch']]).toEqual([defaultHash, undefined]);
+
+    await graph.run('MATCH (u:User {_id: $id}) SET u.organizationId = $organization', { id: USER, organization: SELF_SERVICE_ORGANIZATION });
+    expect(await write()).toBe(true);
+    expect((await userProps())['_passwordHash']).toBe('changed-hash');
+  });
+
   it('HAP-1669: the generation moves by exactly +1 from the guarded value; a stale or replayed write changes nothing', async () => {
     await unmark();
     await graph.run('MATCH (u:User {_id: $id}) SET u.credentialEpoch = 4', { id: USER });
     const repository = new Neo4jAuthRepository();
     const write = async (credentialEpoch: number, newHash: string) =>
-      repository.updatePasswordHashGuarded({ userId: USER, elementId: await elementId(), credentialEpoch, readHash: (await userProps())['_passwordHash'] as string, newHash });
+      repository.updatePasswordHashGuarded({ userId: USER, elementId: await elementId(), credentialEpoch, readHash: (await userProps())['_passwordHash'] as string, newHash, organizationId: SELF_SERVICE_ORGANIZATION });
     const epoch = async () => neo4j.integer.toNumber((await userProps())['credentialEpoch'] as never);
 
     expect(await write(3, 'stale-lower')).toBe(false);
@@ -330,6 +364,186 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
     expect([await epoch(), (await userProps())['_passwordHash']]).toEqual([5, 'first']);
     expect(await write(4, 'replayed')).toBe(false); // the same authorizing generation cannot advance it twice
     expect([await epoch(), (await userProps())['_passwordHash']]).toEqual([5, 'first']);
+  });
+
+  describe('HAP-1716: the session revoke advances the generation by exactly one and never writes the hash', () => {
+    const bump = async (over: { credentialEpoch?: number; readHash?: string } = {}) =>
+      new Neo4jAuthRepository().bumpCredentialEpochGuarded({
+        userId: USER, elementId: await elementId(), credentialEpoch: over.credentialEpoch ?? 0, readHash: over.readHash ?? defaultHash, organizationId: SELF_SERVICE_ORGANIZATION,
+      });
+    const state = async () => {
+      const props = await userProps();
+      return [props['_passwordHash'], props['credentialEpoch'] === undefined ? undefined : neo4j.integer.toNumber(props['credentialEpoch'] as never)];
+    };
+
+    it('lands on a clean user: +1 as an Integer, hash untouched, a replay at the old generation changes nothing', async () => {
+      await unmark();
+
+      expect(await bump()).toBe(true);
+      expect(neo4j.isInt((await userProps())['credentialEpoch'])).toBe(true);
+      expect(await state()).toEqual([defaultHash, 1]);
+      expect(await bump()).toBe(false);
+      expect(await state()).toEqual([defaultHash, 1]);
+    });
+
+    it.each([
+      ['a stale generation', async () => bump({ credentialEpoch: 3 })],
+      ['a hash that is not the stored one', async () => bump({ readHash: 'not-the-stored-hash' })],
+    ])('%s lands nowhere', async (_label, run) => {
+      await unmark();
+      await graph.run('MATCH (u:User {_id: $id}) SET u.credentialEpoch = 4', { id: USER });
+
+      expect(await run()).toBe(false);
+      expect(await state()).toEqual([defaultHash, 4]);
+    });
+
+    it('a user still marked default-password-suspect is not written', async () => {
+      await graph.run('MATCH (u:User {_id: $id}) SET u.defaultPasswordSuspect = true', { id: USER });
+
+      expect(await bump()).toBe(false);
+      expect(await state()).toEqual([defaultHash, undefined]);
+    });
+
+    it('a user without an organization is not written', async () => {
+      await unmark();
+      await graph.run('MATCH (u:User {_id: $id}) REMOVE u._organizationId', { id: USER });
+
+      expect(await bump()).toBe(false);
+      expect(await state()).toEqual([defaultHash, undefined]);
+    });
+
+    it('after an operator rotation the pre-rotation read lands nowhere: the rotated hash and generation stay', async () => {
+      await unmark();
+      const eid = await elementId();
+      await rotateUserPassword({ userId: USER, operator: 'ci', password: NEW_PASSWORD }, operator());
+      const rotated = await state();
+
+      expect(await new Neo4jAuthRepository().bumpCredentialEpochGuarded({ userId: USER, elementId: eid, credentialEpoch: 0, readHash: defaultHash, organizationId: SELF_SERVICE_ORGANIZATION })).toBe(false);
+      expect(await state()).toEqual(rotated);
+    });
+  });
+
+  describe('HAP-2061 (cm#354 F1): the stored organization must still be the request\'s when the guarded write lands', () => {
+    const OTHER_ORGANIZATION = '44444444-4444-4444-8444-444444444444';
+    const CURRENT_PASSWORD = 'hap2061-current-password';
+    const AUTH_CONFIG = {
+      jwt: {
+        secret: 'integration-secret-at-least-32-characters', accessTokenExpiresIn: '15m', refreshTokenExpiresIn: '7d',
+        issuer: 'happycmdb-test', audience: 'happycmdb-test',
+      },
+      bcrypt: { rounds: 4 },
+      apiKeys: { enabled: true, headerName: 'X-API-Key' },
+    };
+    type AuditEntry = Parameters<Neo4jAuthRepository['recordAudit']>[0];
+
+    /**
+     * The real repository over the real stores, except that the audit row is captured instead of chained and, when
+     * `moveOrganization` is set, the user's organization changes right before the guarded write: after the service's
+     * read and before the write, the window the Cypher predicate closes.
+     */
+    class CapturingRepository extends Neo4jAuthRepository {
+      moveOrganization = false;
+      audits: Array<{ metadata: AuditEntry['metadata']; organizationId: string }> = [];
+      override auditChainReady(): boolean { return true; }
+      override async recordAudit(entry: AuditEntry, organizationId: string): Promise<void> {
+        this.audits.push({ metadata: entry.metadata, organizationId });
+      }
+      private async raceOrganization(): Promise<void> {
+        if (this.moveOrganization) {
+          await graph.run('MATCH (u:User {_id: $id}) SET u._organizationId = $organization', { id: USER, organization: OTHER_ORGANIZATION });
+        }
+      }
+      override async updatePasswordHashGuarded(write: Parameters<Neo4jAuthRepository['updatePasswordHashGuarded']>[0]): Promise<boolean> {
+        await this.raceOrganization();
+        return super.updatePasswordHashGuarded(write);
+      }
+      override async bumpCredentialEpochGuarded(write: Parameters<Neo4jAuthRepository['bumpCredentialEpochGuarded']>[0]): Promise<boolean> {
+        await this.raceOrganization();
+        return super.bumpCredentialEpochGuarded(write);
+      }
+    }
+
+    let currentHash: string;
+    beforeEach(async () => {
+      await unmark();
+      currentHash = await bcrypt.hash(CURRENT_PASSWORD, 4);
+      await graph.run(
+        "MATCH (u:User {_id: $id}) SET u._passwordHash = $hash, u._role = 'operator'", { id: USER, hash: currentHash }
+      );
+    });
+
+    const call = (operation: 'password_change' | 'revoke_other_sessions', repository: CapturingRepository) => {
+      const service = new AuthService(AUTH_CONFIG as never, repository);
+      const pass = () => (_req: unknown, _res: unknown, next: () => void) => next();
+      const limiter = { limit: pass, custom: pass, endpointBudget: () => ({ _max: 1, _windowMs: 1 }) } as unknown as RateLimitMiddleware;
+      const controller = new AuthController(service, new ValidationMiddleware(), new AuthMiddleware(service, AUTH_CONFIG as never), limiter);
+      const app = express();
+      app.use(express.json());
+      app.use('/api/v1/auth', controller.getRouter());
+      // HAP-2077: credentialEpoch and authTime are required; the user's stored generation is 0 (absent) and revoke-others needs a login time.
+      const bearer = `Bearer ${new JWTService(AUTH_CONFIG.jwt as never).generateAccessToken(USER, USER, 'operator', SELF_SERVICE_ORGANIZATION, 0, Math.floor(Date.now() / 1000))}`;
+      return operation === 'password_change'
+        ? request(app).put('/api/v1/auth/password').set('Authorization', bearer)
+          .send({ currentPassword: CURRENT_PASSWORD, newPassword: 'hap2061-new-password-1' })
+        : request(app).post('/api/v1/auth/sessions/revoke-others').set('Authorization', bearer)
+          .send({ currentPassword: CURRENT_PASSWORD });
+    };
+    const generation = async () => {
+      const stored = (await userProps())['credentialEpoch'];
+      return stored === undefined ? undefined : neo4j.integer.toNumber(stored as never);
+    };
+
+    it.each(['password_change', 'revoke_other_sessions'] as const)(
+      '%s: an organization change after the service read writes nothing, answers 401 and records no audit row or key revoke',
+      async operation => {
+        const repository = new CapturingRepository();
+        repository.moveOrganization = true;
+
+        const res = await call(operation, repository);
+
+        expect([res.status, res.body]).toEqual([401, { success: false, error: 'Unauthorized', message: 'Credentials changed' }]);
+        expect(res.headers['set-cookie']).toBeUndefined();
+        const props = await userProps();
+        expect([props['_passwordHash'], await generation(), props['_organizationId']]).toEqual([currentHash, undefined, OTHER_ORGANIZATION]);
+        expect(repository.audits).toEqual([]);
+        expect(await keyEnabled('hp1-s6-pre')).toBe(true);
+      }
+    );
+
+    it.each(['password_change', 'revoke_other_sessions'] as const)(
+      'control, %s: without the race the write lands, the generation advances and the success row counts the revoked key',
+      async operation => {
+        const repository = new CapturingRepository();
+
+        const res = await call(operation, repository);
+
+        expect(res.status).toBe(200);
+        expect(await generation()).toBe(1);
+        expect(repository.audits).toEqual([{
+          organizationId: SELF_SERVICE_ORGANIZATION,
+          metadata: { operation, outcome: 'success', revoked_api_keys: 1 },
+        }]);
+        expect(await keyEnabled('hp1-s6-pre')).toBe(false);
+      }
+    );
+
+    const writers = [
+      ['GUARDED_PASSWORD_CYPHER', (eid: string, organizationId: string) => new Neo4jAuthRepository().updatePasswordHashGuarded({
+        userId: USER, elementId: eid, credentialEpoch: 0, readHash: currentHash, newHash: 'changed-hash', organizationId,
+      })],
+      ['GUARDED_BUMP_EPOCH_CYPHER', (eid: string, organizationId: string) => new Neo4jAuthRepository().bumpCredentialEpochGuarded({
+        userId: USER, elementId: eid, credentialEpoch: 0, readHash: currentHash, organizationId,
+      })],
+    ] as const;
+    it.each(writers)('%s: a different organization lands nowhere, the stored one lands', async (_name, write) => {
+      const eid = await elementId();
+
+      expect(await write(eid, OTHER_ORGANIZATION)).toBe(false);
+      expect([(await userProps())['_passwordHash'], await generation()]).toEqual([currentHash, undefined]);
+
+      expect(await write(eid, SELF_SERVICE_ORGANIZATION)).toBe(true);
+      expect(await generation()).toBe(1);
+    });
   });
 
   it('HAP-1285 (MC): the hash and the generation land in ONE guarded statement; a failure after it cannot split them', async () => {
@@ -344,7 +558,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
       return session;
     });
     await new Neo4jAuthRepository().updatePasswordHashGuarded({
-      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash',
+      userId: USER, elementId: await elementId(), credentialEpoch: 0, readHash: defaultHash, newHash: 'changed-hash', organizationId: SELF_SERVICE_ORGANIZATION,
     }).catch(() => false);
     const props = await userProps();
     // runs === 1 also proves the injection engaged (the write went through the spied client).
@@ -434,7 +648,7 @@ describe('guarded self-service writes and the marker setter on Neo4j (SEC16-01, 
       return { landed, rotatedHash: rotation.rotatedHash };
     }
     const passwordParams = async () => ({
-      elementId: await elementId(), userId: USER, credentialEpoch: neo4j.int(0), readHash: defaultHash, newHash: 'attacker-hash',
+      elementId: await elementId(), userId: USER, credentialEpoch: neo4j.int(0), readHash: defaultHash, newHash: 'attacker-hash', organizationId: SELF_SERVICE_ORGANIZATION,
     });
 
     it('contrast: the pre-fix password statement does overwrite the rotation (the race is real)', async () => {
@@ -726,5 +940,236 @@ describe('FD5-S1 LOW-1: assign-organization compare-and-set on Neo4j 5.15', () =
     expect(props).toMatchObject({ _organizationId: ORG, organizationAssignedBy: 'ci' });
     expect(props['organizationId']).toBeUndefined();
     expect(neo4j.isDateTime(props['organizationAssignedAt'])).toBe(true);
+  });
+});
+
+describe('HAP-1632: portfolio:import scope grant and revoke compare-and-set on Neo4j 5.15', () => {
+  const ID = 'hp1-s6-scope-user';
+
+  /** An eligible user (unmarked, unseeded); `props` may add or override stored properties, including `scopes`. */
+  const createScopeUser = (props: Record<string, unknown> = {}, id = ID) =>
+    graph.run('CREATE (u:User) SET u = $props', {
+      props: { _id: id, _username: id, _enabled: true, _passwordHash: defaultHash, defaultPasswordSuspect: false, ...props },
+    });
+  async function stored(id = ID): Promise<Record<string, unknown>> {
+    const result = await graph.run('MATCH (u:User {_id: $id}) RETURN properties(u) AS p', { id });
+    return result.records[0]!.get('p') as Record<string, unknown>;
+  }
+  async function elementId(id = ID): Promise<string> {
+    return (await graph.run('MATCH (u:User {_id: $id}) RETURN elementId(u) AS e', { id })).records[0]!.get('e') as string;
+  }
+  async function loadedHolds(id = ID): Promise<boolean> {
+    return holdsScope((await new Neo4jAuthRepository().findUserById(id))!, PORTFOLIO_IMPORT_SCOPE);
+  }
+  /** The graph, but `interfere` runs once right after the resolution read: a writer landing between read and write. */
+  function racing(inner: RotationGraph, interfere: () => Promise<unknown>): RotationGraph {
+    let done = false;
+    return {
+      write: (cypher, params) => inner.write(cypher, params),
+      read: async (cypher, params) => {
+        const rows = await inner.read(cypher, params);
+        if (cypher === GRANT_IDENTITY_CYPHER && !done) {
+          done = true;
+          await interfere();
+        }
+        return rows;
+      },
+    };
+  }
+
+  it('grants a user with no scopes property: the stored list is [scope], the loaded user holds it, a repeat writes nothing', async () => {
+    await createScopeUser();
+    const window = operator();
+
+    await expect(grantPortfolioImportScope(window.graph, window.sql, ID, 'ci')).resolves.toMatchObject({ userId: ID, outcome: 'granted', operator: 'ci' });
+
+    const props = await stored();
+    expect(props['scopes']).toEqual([PORTFOLIO_IMPORT_SCOPE]);
+    expect(props['portfolioImportScopeGrantedBy']).toBe('ci');
+    expect(neo4j.isDateTime(props['portfolioImportScopeGrantedAt'])).toBe(true);
+    expect(props['portfolioImportScopeGrantedOpId']).toMatch(/^[0-9a-f]{32}$/);
+    // The record reads that id back through the real marker statement.
+    expect(await operator().graph.read(SCOPE_MARKERS_CYPHER, { eid: await elementId(ID) })).toEqual([
+      { grantedOp: props['portfolioImportScopeGrantedOpId'], revokedOp: null },
+    ]);
+    expect(await loadedHolds()).toBe(true);
+
+    await expect(grantPortfolioImportScope(window.graph, window.sql, ID, 'someone-else')).resolves.toEqual({ userId: ID, outcome: 'unchanged' });
+    expect((await stored())['portfolioImportScopeGrantedBy']).toBe('ci');
+  });
+
+  it('grants a user holding another scope without dropping it, and revoke removes only the portfolio entry', async () => {
+    await createScopeUser({ scopes: ['credentials:manage'] });
+    const window = operator();
+
+    await grantPortfolioImportScope(window.graph, window.sql, ID, 'ci');
+    expect((await stored())['scopes']).toEqual(['credentials:manage', PORTFOLIO_IMPORT_SCOPE]);
+
+    await expect(revokePortfolioImportScope(window.graph, window.sql, ID, 'ci')).resolves.toMatchObject({ userId: ID, outcome: 'revoked', operator: 'ci' });
+    const props = await stored();
+    expect(props['scopes']).toEqual(['credentials:manage']);
+    expect(props['portfolioImportScopeRevokedBy']).toBe('ci');
+    expect(neo4j.isDateTime(props['portfolioImportScopeRevokedAt'])).toBe(true);
+    expect(await loadedHolds()).toBe(false);
+  });
+
+  it('revoking the last entry stores [] (not an absent property) and the next grant matches that empty list', async () => {
+    await createScopeUser();
+    const window = operator();
+    await grantPortfolioImportScope(window.graph, window.sql, ID, 'ci');
+
+    await revokePortfolioImportScope(window.graph, window.sql, ID, 'ci');
+    const revoked = await stored();
+    expect(revoked['scopes']).toEqual([]);
+    expect(await loadedHolds()).toBe(false);
+    await expect(revokePortfolioImportScope(window.graph, window.sql, ID, 'ci')).resolves.toEqual({ userId: ID, outcome: 'unchanged' });
+
+    await expect(grantPortfolioImportScope(window.graph, window.sql, ID, 'ci')).resolves.toMatchObject({ userId: ID, outcome: 'granted', operator: 'ci' });
+    expect((await stored())['scopes']).toEqual([PORTFOLIO_IMPORT_SCOPE]);
+    expect(await loadedHolds()).toBe(true);
+  });
+
+  it('a seeded account never holds the scope even with it stored', async () => {
+    await createScopeUser({ scopes: [PORTFOLIO_IMPORT_SCOPE], seedProvenance: 'init-neo4j' });
+
+    expect(await loadedHolds()).toBe(false);
+  });
+
+  const changes: Array<[string, typeof grantPortfolioImportScope]> = [
+    ['grant', grantPortfolioImportScope],
+    ['revoke', revokePortfolioImportScope],
+  ];
+
+  it.each(changes)('%s: a scope list changed between the resolution and the write is not_applied and writes nothing', async (name, change) => {
+    const start = name === 'grant' ? ['a'] : ['a', PORTFOLIO_IMPORT_SCOPE];
+    await createScopeUser({ scopes: start });
+    const graphWindow = operator().graph;
+    const raced = racing(graphWindow, () => graph.run("MATCH (u:User {_id: $id}) SET u.scopes = ['a', 'other', 'b']", { id: ID }));
+
+    await expect(change(raced, operator().sql, ID, 'ci')).rejects.toMatchObject({ name: 'GrantRefused', reason: 'not_applied' });
+
+    const props = await stored();
+    expect(props['scopes']).toEqual(['a', 'other', 'b']);
+    expect(props['portfolioImportScopeGrantedBy']).toBeUndefined();
+    expect(props['portfolioImportScopeRevokedBy']).toBeUndefined();
+  });
+
+  it.each(changes)('%s: a user marked or provenanced between the resolution and the write is not_applied and writes nothing', async (name, change) => {
+    for (const interference of [
+      "SET u.seedProvenance = 'init-neo4j'", 'SET u.defaultPasswordSuspect = true', 'SET u._defaultPasswordSuspect = true',
+    ]) {
+      await graph.run('MATCH (u:User) WHERE u._id = $id DETACH DELETE u', { id: ID });
+      await createScopeUser({ scopes: name === 'grant' ? [] : [PORTFOLIO_IMPORT_SCOPE] });
+      const raced = racing(operator().graph, () => graph.run(`MATCH (u:User {_id: $id}) ${interference}`, { id: ID }));
+
+      await expect(change(raced, operator().sql, ID, 'ci')).rejects.toMatchObject({ name: 'GrantRefused', reason: 'not_applied' });
+
+      const props = await stored();
+      expect(props['scopes']).toEqual(name === 'grant' ? [] : [PORTFOLIO_IMPORT_SCOPE]);
+      expect(props['portfolioImportScopeGrantedBy']).toBeUndefined();
+      expect(props['portfolioImportScopeRevokedBy']).toBeUndefined();
+    }
+  });
+
+  const OPERATION_ID = '0123456789abcdef0123456789abcdef';
+  const statements: Array<[string, string, string[], string[], string]> = [
+    ['grant', GRANT_PORTFOLIO_IMPORT_SCOPE_CYPHER, [], [PORTFOLIO_IMPORT_SCOPE], 'Granted'],
+    ['revoke', REVOKE_PORTFOLIO_IMPORT_SCOPE_CYPHER, [PORTFOLIO_IMPORT_SCOPE], [], 'Revoked'],
+  ];
+
+  describe.each(statements)('the %s statement itself', (_name, cypher, before, after, stamp) => {
+    const run = async (params: Record<string, unknown>, id = ID) => {
+      const rows = await operator().graph.write(cypher, {
+        eid: await elementId(id), id, observed: before, scopes: after, operator: 'ci', operationId: OPERATION_ID, ...params,
+      });
+      return neo4j.integer.toNumber(rows[0]!['n'] as never);
+    };
+
+    it('writes when the observed list equals the stored one, and an absent property equals the observed []', async () => {
+      await createScopeUser(before.length > 0 ? { scopes: before } : {});
+
+      expect(await run({})).toBe(1);
+
+      const props = await stored();
+      expect(props['scopes']).toEqual(after);
+      expect(props[`portfolioImportScope${stamp}By`]).toBe('ci');
+      expect(props[`portfolioImportScope${stamp}OpId`]).toBe(OPERATION_ID);
+    });
+
+    it('refuses a stored list that differs from the observed one, whether it grew or was replaced', async () => {
+      await createScopeUser({ scopes: [...before, 'extra'] });
+
+      expect(await run({})).toBe(0); // observed is a strict prefix of the stored list
+      expect(await run({ observed: ['stale'] })).toBe(0);
+
+      expect((await stored())['scopes']).toEqual([...before, 'extra']);
+    });
+
+    const ineligible: Array<[string, Record<string, unknown>]> = [
+      ['a seeded user', { seedProvenance: 'init-neo4j' }],
+      ['a marked user', { defaultPasswordSuspect: true }],
+      ['a marked user (underscore spelling)', { _defaultPasswordSuspect: true }],
+    ];
+    it.each(ineligible)('refuses %s', async (_label, extra) => {
+      await createScopeUser({ scopes: before, ...extra });
+
+      expect(await run({})).toBe(0);
+
+      const after_ = await stored();
+      expect(after_['scopes']).toEqual(before);
+      expect(after_[`portfolioImportScope${stamp}By`]).toBeUndefined();
+    });
+
+    it('refuses an id that is not the node\'s own', async () => {
+      await createScopeUser({ scopes: before });
+
+      expect(await run({ id: 'hp1-s6-someone-else' })).toBe(0);
+
+      expect((await stored())['scopes']).toEqual(before);
+    });
+  });
+
+  it('the CLI dispatches grant and revoke to their own statements on the real stores, and exits 2 on a refusal', async () => {
+    await createScopeUser();
+    const run = async (command: string, userId: string) => {
+      const out: string[] = [];
+      const err: string[] = [];
+      const code = await identityWindowCli([command, '--user-id', userId, '--operator', 'ci'], operatorEnv(), {
+        stdout: line => out.push(line), stderr: line => err.push(line),
+      });
+      return { code, out, err };
+    };
+
+    const granted = await run('grant-portfolio-import-scope', ID);
+    expect([granted.code, granted.out.length, granted.err]).toEqual([0, 1, []]);
+    expect((await stored())['scopes']).toEqual([PORTFOLIO_IMPORT_SCOPE]);
+    expect(await loadedHolds()).toBe(true);
+
+    const revoked = await run('revoke-portfolio-import-scope', ID);
+    expect([revoked.code, revoked.out.length, revoked.err]).toEqual([0, 1, []]);
+    expect((await stored())['scopes']).toEqual([]);
+    expect(await loadedHolds()).toBe(false);
+
+    // HAP-2039: each change left one append-only row on the real table; the printed line names it.
+    const rows = (await pool.query(
+      `SELECT id, event, actor, to_char(occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS occurred_text
+       FROM auth_credential_events WHERE user_id = $1 AND event LIKE 'portfolio_import_scope_%' ORDER BY occurred_at, id`, [ID])).rows;
+    expect(rows.map(row => [row.event, row.actor])).toEqual([
+      ['portfolio_import_scope_granted', 'window-script:ci'], ['portfolio_import_scope_revoked', 'window-script:ci'],
+    ]);
+    expect([granted, revoked].map(result => JSON.parse(result.out[0]!))).toEqual([
+      { userId: ID, outcome: 'granted', operator: 'ci', occurredAt: rows[0].occurred_text, eventId: rows[0].id },
+      { userId: ID, outcome: 'revoked', operator: 'ci', occurredAt: rows[1].occurred_text, eventId: rows[1].id },
+    ]);
+    // The printed time is the row's full-precision occurred_at: it selects that row.
+    for (const printed of [granted, revoked].map(result => JSON.parse(result.out[0]!))) {
+      expect((await pool.query('SELECT id FROM auth_credential_events WHERE occurred_at = $1', [printed.occurredAt])).rows)
+        .toEqual([{ id: printed.eventId }]);
+    }
+
+    // USER (the suite fixture) carries the default-password marker.
+    expect(await run('grant-portfolio-import-scope', USER)).toEqual({
+      code: 2, out: [], err: ['identity-window: portfolio-import scope grant refused: seeded_account'],
+    });
   });
 });

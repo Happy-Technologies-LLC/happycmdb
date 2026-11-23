@@ -115,6 +115,50 @@ const record = (fields: Record<string, unknown>): FakeRecord => ({ get: (key: st
 const node = (props: Props) => ({ labels: ['CI'], properties: props });
 const byId = (id: string) => CIS.find(c => c['id'] === id);
 
+/**
+ * Evaluates a Cypher WHERE predicate against one :CI node: `ci.prop`, `$param` and literal operands,
+ * `=`, `IN`, NOT, AND, OR and parentheses. Anything else throws, so a statement is never silently
+ * treated as filtered. The tenant boundary of a statement this models is its semantics, not its text.
+ */
+function evalWhere(predicate: string, props: Props, params: Params): boolean {
+  const tokens = predicate.match(/\$\w+|ci\.\w+|'[^']*'|\(|\)|=|\w+/g) ?? [];
+  const keyword = () => tokens[pos]?.toUpperCase();
+  let pos = 0;
+  const operand = (): unknown => {
+    const token = tokens[pos++] ?? '';
+    if (token.startsWith('$')) return params[token.slice(1)];
+    if (token.startsWith('ci.')) return props[token.slice(3)];
+    if (token.startsWith("'")) return token.slice(1, -1);
+    if (/^(true|false)$/i.test(token)) return token.toLowerCase() === 'true';
+    throw new Error(`fake Neo4j: unmodelled WHERE operand '${token}' in: ${predicate}`);
+  };
+  const term = (): unknown => {
+    if (keyword() === '(') {
+      pos++;
+      const inner = disjunction();
+      if (tokens[pos++] !== ')') throw new Error(`fake Neo4j: unbalanced parentheses in: ${predicate}`);
+      return inner;
+    }
+    if (keyword() === 'NOT') { pos++; return !term(); }
+    const left = operand();
+    if (keyword() === '=') { pos++; const right = operand(); return left != null && left === right; }
+    if (keyword() === 'IN') { pos++; return (operand() as unknown[]).includes(left); }
+    return left;
+  };
+  const conjunction = (): unknown => {
+    let value = term();
+    while (keyword() === 'AND') { pos++; const right = term(); value = value === true && right === true; }
+    return value;
+  };
+  const disjunction = (): unknown => {
+    let value = conjunction();
+    while (keyword() === 'OR') { pos++; const right = conjunction(); value = value === true || right === true; }
+    return value;
+  };
+  const result = disjunction();
+  if (pos !== tokens.length) throw new Error(`fake Neo4j: unmodelled WHERE syntax in: ${predicate}`);
+  return result === true;
+}
 
 function run(rawQuery: string, params: Params): FakeRecord[] {
   const query = rawQuery.replace(/\s+/g, ' ').trim();
@@ -149,6 +193,11 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
   }
 
   if (!query.startsWith('MATCH (ci:CI)')) throw new Error(`fake Neo4j: unmodelled statement: ${query}`);
+  const identityLookup = query.match(/^MATCH \(ci:CI\) WHERE (.+) RETURN ci\.id AS id, ci\.name AS name, ci\.type AS type$/);
+  if (identityLookup) {
+    return CIS.filter(props => evalWhere(identityLookup[1]!, props, params))
+      .map(ci => record({ id: ci['id'], name: ci['name'], type: ci['type'] }));
+  }
   const matched = CIS.filter(props =>
     (!query.includes('ci.organization_id = $organizationId') || sameOrg(props)) &&
     (!query.includes("ci.status = 'active'") || props['status'] === 'active') &&
@@ -162,14 +211,18 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
       return record({ status, count: int(group.length), sampleCIs: group.slice(0, 5).map(node) });
     }).slice(0, 101);
   }
-  if (query.includes('RETURN capability, sum(monthlyCost) AS totalCost')) {
-    const groups = new Map<string, number>();
+  if (query.includes('RETURN capability, sum(monthlyCost) AS totalCost, count(monthlyCost) AS costedCIs')) {
+    const groups = new Map<string, { cost: number; costed: number }>();
     for (const ci of matched) {
       const tower = (ci['tbm_capability_tower'] || ci['tbm_resource_tower'] || 'Uncategorized') as string;
-      groups.set(tower, (groups.get(tower) || 0) + ((ci['tbm_monthly_cost'] as number) || 0));
+      const group = groups.get(tower) ?? { cost: 0, costed: 0 };
+      if (typeof ci['tbm_monthly_cost'] === 'number') { group.cost += ci['tbm_monthly_cost']; group.costed++; }
+      groups.set(tower, group);
     }
     return [...groups].sort(([a], [b]) => a.localeCompare(b)).slice(0, 101)
-      .map(([capability, cost]) => record({ capability, totalCost: int(cost) }));
+      .map(([capability, { cost, costed }]) => record({
+        capability, totalCost: int(cost), costedCIs: int(costed),
+      }));
   }
   if (query.includes('RETURN count(ci) AS totalCIs')) {
     return [record({ totalCIs: int(matched.length) })];
@@ -180,12 +233,12 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
     return [record(counts)];
   }
   if (query.includes('AS criticality')) {
-    return matched.filter(ci => ['tier_1', 'tier_2'].includes(ci['bsm_business_criticality'] as string))
+    return matched.filter(ci => (params['criticalTiers'] as string[]).includes(ci['bsm_business_criticality'] as string))
       .sort((a, b) => String(a['id']).localeCompare(String(b['id']))).slice(0, 10).map(ci => record({
         id: ci['id'], name: ci['name'], type: ci['type'], criticality: ci['bsm_business_criticality'],
       }));
   }
-  if (query.includes('AS id, ci.name AS name, ci.tbm_monthly_cost AS monthlyCost')) {
+  if (query.includes('AS id, ci.name AS name, ci.tbm_monthly_cost AS monthlyCost') && query.includes('ci.tbm_monthly_cost > 0')) {
     return matched.filter(ci => (ci['tbm_monthly_cost'] as number) > 0)
       .sort((a, b) => ((b['tbm_monthly_cost'] as number) - (a['tbm_monthly_cost'] as number))
         || String(a['id']).localeCompare(String(b['id']))).slice(0, 10)
@@ -194,21 +247,19 @@ function run(rawQuery: string, params: Params): FakeRecord[] {
   if (query.includes('ci.bsm_customer_facing = true')) {
     return matched.filter(ci => ci['bsm_customer_facing'] === true)
       .sort((a, b) => String(a['id']).localeCompare(String(b['id']))).slice(0, 5)
-      .map(ci => record({ id: ci['id'], name: ci['name'], monthlyCost: int((ci['tbm_monthly_cost'] as number) || 0) }));
+      .map(ci => record({
+        id: ci['id'], name: ci['name'],
+        monthlyCost: typeof ci['tbm_monthly_cost'] === 'number' ? int(ci['tbm_monthly_cost']) : null,
+      }));
   }
-  if (query.includes('AS awsCost,')) {
-    const sum = (rows: Props[]) => rows.reduce((total, ci) => total + ((ci['tbm_monthly_cost'] as number) || 0), 0);
+  if (query.includes('AS cloudCost')) {
+    const costed = matched.filter(ci => typeof ci['tbm_monthly_cost'] === 'number');
+    const sum = (rows: Props[]) => rows.reduce((total, ci) => total + (ci['tbm_monthly_cost'] as number), 0);
     return [record({
-      totalCost: int(sum(matched)),
-      awsCost: int(sum(matched.filter(ci => ci['discovery_provider'] === 'aws'))),
-      azureCost: int(sum(matched.filter(ci => ci['discovery_provider'] === 'azure'))),
-      gcpCost: int(sum(matched.filter(ci => ci['discovery_provider'] === 'gcp'))),
+      totalCost: int(sum(costed)),
+      costedCIs: int(costed.length),
+      cloudCost: int(sum(costed.filter(ci => ['aws', 'azure', 'gcp'].includes(ci['discovery_provider'] as string)))),
     })];
-  }
-  if (query.includes('ci.tbm_monthly_cost > 100')) {
-    return matched.filter(ci => (ci['tbm_monthly_cost'] as number) > 100)
-      .sort((a, b) => String(a['id']).localeCompare(String(b['id']))).slice(0, 5)
-      .map(ci => record({ name: ci['name'], monthlyCost: int(ci['tbm_monthly_cost'] as number) }));
   }
   throw new Error(`fake Neo4j: unmodelled statement: ${query}`);
 }
@@ -271,9 +322,14 @@ const MIGRATIONS = join(__dirname, '../../../../../database/src/postgres/migrati
 
 function baseDdl(): string {
   const sql = readFileSync(join(MIGRATIONS, '001_complete_schema.sql'), 'utf8');
-  const match = sql.match(/CREATE TABLE IF NOT EXISTS dim_business_services \([\s\S]*?\n\);/);
-  if (!match) throw new Error('DDL for dim_business_services not found in 001_complete_schema.sql');
-  return match[0];
+  return ['dim_business_services', 'itil_incidents', 'itil_changes'].map(table => {
+    const match = sql.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`));
+    if (!match) throw new Error(`DDL for ${table} not found in 001_complete_schema.sql`);
+    return match[0];
+  }).join('\n') + `
+-- 035_itil_record_ownership adds the owner column (its DO block also needs itil_baselines).
+ALTER TABLE itil_incidents ADD COLUMN organization_id uuid;
+ALTER TABLE itil_changes ADD COLUMN organization_id uuid;`;
 }
 
 const SEED = `
@@ -282,13 +338,37 @@ INSERT INTO dim_business_services (service_id, name, service_classification, tbm
   ('bs-hijack', 'A Claims B Node', 'application', 'application', 'high', 'active', '${ORG_A}'),
   ('bs-orphan', 'A Claims Orphan Node', 'application', 'application', 'high', 'active', '${ORG_A}'),
   ('bs-a-nodeless', 'A Without Node', 'application', 'application', 'high', 'active', '${ORG_A}'),
-  ('bs-b-app', 'B Secret App', 'application', 'application', 'medium', 'active', '${ORG_B}');`;
+  ('bs-b-app', 'B Secret App', 'application', 'application', 'medium', 'active', '${ORG_B}');
+
+INSERT INTO itil_incidents (incident_number, title, impact, urgency, priority, affected_ci_id, assigned_group, status,
+    reported_at, resolved_at, reported_by, organization_id) VALUES
+  ('INC-A1', 'A p3 open', 'medium', 'medium', 3, 'a-web', NULL, 'in_progress', now() - interval '5 hours', NULL, 'alice', '${ORG_A}'),
+  ('INC-A2', 'A p1 open', 'critical', 'critical', 1, 'bs-a-app', 'DBA', 'new', now() - interval '2 days', NULL, 'alice', '${ORG_A}'),
+  ('INC-A3', 'A resolved', 'low', 'low', 4, 'a-web', NULL, 'resolved', now() - interval '3 days', now() - interval '3 days' + interval '60 minutes', 'alice', '${ORG_A}'),
+  ('INC-A4', 'A resolved', 'low', 'low', 4, 'a-web', NULL, 'closed', now() - interval '4 days', now() - interval '4 days' + interval '120 minutes', 'alice', '${ORG_A}'),
+  ('INC-A5', 'A old', 'low', 'low', 4, 'a-web', NULL, 'closed', now() - interval '200 days', now() - interval '200 days' + interval '999 minutes', 'alice', '${ORG_A}'),
+  ('INC-A6', 'A foreign ci id', 'low', 'low', 5, 'b-secret', NULL, 'resolved', now() - interval '1 day', NULL, 'alice', '${ORG_A}'),
+  ('INC-A7', 'A opened in error', 'low', 'low', 5, 'a-web', NULL, 'cancelled', now() - interval '1 day', NULL, 'alice', '${ORG_A}'),
+  ('INC-B1', 'B secret open', 'critical', 'critical', 1, 'b-secret', 'B Team', 'new', now() - interval '2 hours', NULL, 'bob', '${ORG_B}'),
+  ('INC-B2', 'B secret open', 'critical', 'critical', 1, 'a-web', 'B Team', 'new', now() - interval '1 hour', NULL, 'bob', '${ORG_B}');
+INSERT INTO itil_incidents (incident_number, title, impact, urgency, priority, affected_ci_id, status, reported_by)
+  VALUES ('INC-NULL', 'legacy owner-less open', 'low', 'low', 1, 'a-web', 'new', 'legacy');
+
+INSERT INTO itil_changes (change_number, title, change_type, status, scheduled_start, affected_ci_ids, assigned_to,
+    risk_assessment, requested_by, organization_id) VALUES
+  ('CHG-A1', 'A later', 'normal', 'scheduled', now() + interval '2 days', ARRAY['a-web'], NULL, '{"risk_level":"high"}', 'alice', '${ORG_A}'),
+  ('CHG-A2', 'A running', 'emergency', 'in_progress', now() - interval '1 hour', ARRAY['bs-a-app','a-web'], 'alice', '{"risk_level":"low"}', 'alice', '${ORG_A}'),
+  ('CHG-A3', 'A draft', 'normal', 'draft', NULL, ARRAY[]::text[], NULL, '{"risk_level":"low"}', 'alice', '${ORG_A}'),
+  ('CHG-A4', 'A done', 'normal', 'closed', NULL, ARRAY[]::text[], NULL, '{"risk_level":"low"}', 'alice', '${ORG_A}'),
+  ('CHG-B1', 'B secret', 'normal', 'in_progress', now(), ARRAY['b-secret'], NULL, '{"risk_level":"low"}', 'bob', '${ORG_B}');
+INSERT INTO itil_changes (change_number, title, change_type, status, requested_by)
+  VALUES ('CHG-NULL', 'legacy owner-less', 'normal', 'in_progress', 'legacy');`;
 
 const jwt = new JWTService(loadConfig().auth.jwt);
 const bearer = (userId: string, organizationId?: string) => {
   const user = USERS[userId] ?? USERS['user-a']!;
   return {
-    Authorization: `Bearer ${jwt.generateAccessToken(userId, user._username, user._role as UserRole, organizationId)}`,
+    Authorization: `Bearer ${jwt.generateAccessToken(userId, user._username, user._role as UserRole, organizationId, 0, Math.floor(Date.now() / 1000))}`,
   };
 };
 let AS_A = bearer('user-a', ORG_A);
@@ -385,22 +465,25 @@ describe('GET /api/v1/dashboards/business-service/:serviceId', () => {
     expect(own.body.data.serviceDependencies.edges.map(
       (edge: { from: string; to: string }) => ({ from: edge.from, to: edge.to })
     )).toEqual([{ from: 'bs-a-app', to: 'a-web' }]);
+    // The graph holds no CI health state, so no health score or impact is invented.
+    expect(own.body.data.serviceDependencies.nodes.map((n: { healthScore: unknown }) => n.healthScore)).toEqual([null, null]);
+    expect(own.body.data.serviceDependencies.edges.map((e: { healthImpact: unknown }) => e.healthImpact)).toEqual([null]);
     expect(unscopedCIMatches()).toEqual([]);
   });
-  it('returns unchanged static service health for over 100 owned active CIs without querying Neo4j', async () => {
+  it('returns a null-health payload for over 100 owned active CIs without querying Neo4j', async () => {
     const baseline = CIS.length;
     try {
       const small = await request(app).get('/api/v1/dashboards/business-service').set(AS_A);
       expect(small.status).toBe(200);
-      expect(small.body.data.serviceHealth.flatMap((unit: { businessServices: unknown[] }) => unit.businessServices)).toHaveLength(4);
+      expect(small.body.data.serviceHealth).toEqual([]);
+      expect(small.body.data.unavailable).toContain('serviceHealth');
       expect(cypherRuns).toEqual([]);
       CIS.push(...Array.from({ length: 121 }, (_, index) => ({
         id: `budget-${index}`, name: `Budget ${index}`, status: 'active', organization_id: ORG_A,
       })));
       const large = await request(app).get(`/api/v1/dashboards/business-service?organizationId=${ORG_B}`).set(AS_A);
       expect(large.status).toBe(200);
-      expect(large.body.data.serviceHealth).toEqual(small.body.data.serviceHealth);
-      expect(Object.keys(large.body.data).sort()).toEqual(Object.keys(small.body.data).sort());
+      expect(large.body.data).toEqual(small.body.data);
       expect(cypherRuns).toEqual([]);
     } finally {
       CIS.length = baseline;
@@ -446,6 +529,94 @@ describe('global dashboards', () => {
     expect(statusCIs.sort()).toEqual(FAKE_CIS.filter(c => c.organizationId === ORG_A).map(c => c.id).sort());
     expect(cio.body.data.configurationAccuracy.totalCIs).toBe(A_ACTIVE.length);
   });
+  it('itsm serves the token org\'s own ITIL records, never another org\'s or an owner-less row', async () => {
+    const own = await request(app).get(`/api/v1/dashboards/itsm?${SPOOF}`).set(AS_A);
+    expect(own.status).toBe(200);
+    const data = own.body.data;
+
+    // Open = not resolved/closed/cancelled; most urgent first; INC-B*/INC-NULL are not A's.
+    expect(data.openIncidents.map((i: { id: string }) => i.id)).toEqual(['INC-A2', 'INC-A1']);
+    expect(data.openIncidentCount).toBe(2);
+    expect(data.openIncidents[0]).toMatchObject({
+      id: 'INC-A2', title: 'A p1 open', priority: 'P1', status: 'new',
+      affectedCI: 'bs-a-app', assignedTeam: 'DBA',
+    });
+    expect(data.openIncidents[1]).toMatchObject({ priority: 'P3', affectedCI: 'a-web', assignedTeam: null });
+    expect(data.openIncidents[0].age).toBeGreaterThanOrEqual(48);
+    expect(data.openIncidents[0].age).toBeLessThan(50);
+    expect(data.openIncidents[1].age).toBeGreaterThanOrEqual(5);
+    expect(data.openIncidents[1].age).toBeLessThan(7);
+
+    expect(data.changesInProgress.map((c: { id: string }) => c.id)).toEqual(['CHG-A2', 'CHG-A1']);
+    expect(data.changesInProgressCount).toBe(2);
+    expect(data.changesInProgress[0]).toMatchObject({
+      id: 'CHG-A2', type: 'emergency', status: 'in_progress', riskLevel: 'low',
+      affectedCIs: ['bs-a-app', 'a-web'], assignedTo: 'alice',
+    });
+    expect(data.changesInProgress[1]).toMatchObject({ id: 'CHG-A1', riskLevel: 'high', assignedTo: null });
+
+    // 90-day window (INC-A5 is 200 days old); mean over resolved incidents only; cancelled
+    // INC-A7 (also on a-web) is not a failure; a CI id that is not this org's graph node
+    // (b-secret) is named null, never B's name.
+    expect(data.topFailingCIs).toEqual([
+      { ci_id: 'a-web', name: 'a-web name', type: 'server', incidentCount: 3, mttrMinutes: 90,
+        lastFailure: expect.any(String) },
+      { ci_id: 'b-secret', name: null, type: null, incidentCount: 1, mttrMinutes: null,
+        lastFailure: expect.any(String) },
+      { ci_id: 'bs-a-app', name: 'bs-a-app name', type: 'server', incidentCount: 1, mttrMinutes: null,
+        lastFailure: expect.any(String) },
+    ]);
+
+    // No SLA target or drift evaluation is stored: empty and named, not invented.
+    expect(data.slaCompliance).toEqual([]);
+    expect(data.baselineCompliance).toEqual([]);
+    expect(data.unavailable).toEqual(['slaCompliance', 'baselineCompliance']);
+    expect(JSON.stringify(data)).not.toMatch(/INC-B|CHG-B|INC-NULL|CHG-NULL|B Secret|B Team|b-secret name/);
+  });
+
+  it('itsm MTTR is computed from timestamps for an incident resolved through resolveIncident', async () => {
+    // resolveIncident (itil.controller.ts) sets resolved_at = NOW() and never time_to_resolve_minutes.
+    await send('query', `INSERT INTO itil_incidents (incident_number, title, impact, urgency, priority, affected_ci_id,
+        status, reported_at, reported_by, organization_id)
+      VALUES ('INC-A-RESOLVE', 'A resolved via product', 'low', 'low', 4, 'a-resolve-ci', 'in_progress',
+        now() - interval '3 hours', 'alice', $1)`, [ORG_A]);
+    try {
+      const resolved = await send('query', `UPDATE itil_incidents
+        SET status = 'resolved', resolution = $1, resolved_at = NOW(), updated_at = NOW()
+        WHERE incident_number = $2 AND organization_id = $3 RETURNING id`, ['fixed', 'INC-A-RESOLVE', ORG_A]);
+      expect(resolved).toHaveLength(1);
+
+      const res = await request(app).get(`/api/v1/dashboards/itsm?${SPOOF}`).set(AS_A);
+
+      expect(res.status).toBe(200);
+      const entry = res.body.data.topFailingCIs.find((c: { ci_id: string }) => c.ci_id === 'a-resolve-ci');
+      expect(entry).toMatchObject({ incidentCount: 1, mttrMinutes: 180 });
+    } finally {
+      await send('query', `DELETE FROM itil_incidents WHERE incident_number = 'INC-A-RESOLVE'`);
+    }
+  });
+
+  it('itsm for org B sees only B\'s records, and an org with none gets honest zeros', async () => {
+    const foreign = await request(app).get('/api/v1/dashboards/itsm').set(bearer('user-b', ORG_B));
+    expect(foreign.status).toBe(200);
+    expect(foreign.body.data.openIncidents.map((i: { id: string }) => i.id)).toEqual(['INC-B1', 'INC-B2']);
+    expect(foreign.body.data.changesInProgress.map((c: { id: string }) => c.id)).toEqual(['CHG-B1']);
+    // INC-B2's CI belongs to org A: its name is not disclosed to B.
+    expect(foreign.body.data.topFailingCIs).toContainEqual(
+      expect.objectContaining({ ci_id: 'a-web', name: null, type: null, incidentCount: 1 }));
+
+    const ORG_C = '33333333-3333-4333-8333-333333333333';
+    USERS['user-c'] = { _id: 'user-c', _username: 'carol', _role: 'admin', _enabled: true, _organizationId: ORG_C };
+    const empty = await request(app).get('/api/v1/dashboards/itsm').set(bearer('user-c', ORG_C));
+    expect(empty.status).toBe(200);
+    expect(empty.body.data).toMatchObject({
+      openIncidents: [], openIncidentCount: 0, changesInProgress: [], changesInProgressCount: 0, topFailingCIs: [],
+      ciStatus: [],
+    });
+    // Zero open incidents is a real zero: only SLA and drift are unavailable.
+    expect(empty.body.data.unavailable).toEqual(['slaCompliance', 'baselineCompliance']);
+  });
+
   it('keeps large-tenant executive, CIO, FinOps and ITSM counts complete without materializing all CIs', async () => {
     const baseline = CIS.length;
     try {
@@ -475,7 +646,7 @@ describe('global dashboards', () => {
       expect(owned[0]!.body.data.topCostDrivers).toHaveLength(10);
       expect(owned[1]!.body.data.configurationAccuracy.totalCIs).toBe(A_ACTIVE.length + 130);
       expect(owned[2]!.body.data.onPremVsCloud.totalCost).toBe(A_ACTIVE_COST + 260);
-      expect(owned[2]!.body.data.cloudCosts[0].gcp).toBe(0);
+      expect(owned[2]!.body.data.cloudCosts).toEqual([]);
       expect(owned[3]!.body.data.ciStatus.find((status: { status: string }) =>
         status.status === 'active').count).toBe(A_ACTIVE.length + 130);
       expect(owned[3]!.body.data.ciStatus.find((status: { status: string }) =>
@@ -541,7 +712,7 @@ describe('global dashboards', () => {
     const spy = jest.spyOn(neo4jSession, 'run').mockImplementation(async (query, params = {}, config) => {
       if (params['organizationId'] === ORG_A
         && ((ownRuns === 0 && query.includes('RETURN capability, sum(monthlyCost) AS totalCost'))
-          || (ownRuns === 1 && query.includes('AS awsCost,')))) {
+          || (ownRuns === 1 && query.includes('AS cloudCost')))) {
         if (++ownRuns === 1) entered.resolve();
         else secondEntered.resolve();
         await hold.promise;
@@ -656,7 +827,7 @@ describe('fail closed without an organization claim', () => {
     for (const headers of [bearer('user-none'), bearer('user-bad', 'not-a-uuid')]) {
       const res = await request(app).get(`${path}?organizationId=${ORG_A}`).set(headers);
       expect(res.status).toBe(403);
-      expect(res.body).toEqual({ _error: 'Forbidden', _message: 'Organization claim required' });
+      expect(res.body).toMatchObject({ _error: 'Forbidden', _message: 'Organization claim required', code: 'ORGANIZATION_REQUIRED' });
     }
     expect(pgQueries + cypherRuns.length).toBe(0);
   });

@@ -6,13 +6,70 @@ import { dec, enc, getNeo4jClient, getPostgresClient, isStorableString, PlanUnre
 import { logger, ciIncarnationId } from '@cmdb/common';
 import { v4 as uuidv4 } from 'uuid';
 import neo4j from 'neo4j-driver';
-import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { requestOrganizationId, type AuthenticatedRequest } from '../../middleware/auth.middleware';
 import {
   assertNoCIGap, CIGapError, CI_GAP_RESPONSE, readSingleCI, readCIList, CIListUnavailableError,
   CI_LIST_UNAVAILABLE_RESPONSE, writeReferencedCIs,
 } from '../../read-admission';
 import { assertCIId, isReservedKey, requestActor, sendJournalError } from '../../journal-http';
+import {
+  boundedPgRead, estateFeedTimeoutMs, ESTATE_FEED_LIMIT_RESPONSE, isStatementTimeout,
+} from '../../services/bounded-pg-read';
+import {
+  businessImpactFor, deriveImpact, readMappedServices, readOpenIncidentRibbon,
+  RIBBON_DEFAULT_INCIDENTS, RIBBON_MAX_INCIDENTS,
+} from '../../services/incident-business-impact';
 
+
+/** Statuses a change can be approved from: everything before `approved` in itil_changes_status_check (001). */
+const PRE_APPROVAL_STATUSES: readonly string[] = ['draft', 'pending_approval'];
+const PRE_APPROVAL_STATUS_LIST = PRE_APPROVAL_STATUSES.map(status => `'${status}'`).join(', ');
+
+/**
+ * The verified caller's user id, never a body field. Only `_userId` is stamped: a username fallback would store a
+ * non-UUID value, and every real principal (JWT access token, API key) carries `_userId`. No 'system' fallback: an
+ * approval attributed to no one defeats the record.
+ */
+function changeApprover(req: Request): string | undefined {
+  const userId = (req as AuthenticatedRequest).user?._userId;
+  return typeof userId === 'string' && userId !== '' ? userId : undefined;
+}
+function refuseUnauthenticatedApprover(res: Response): void {
+  res.status(401).json({
+    success: false,
+    error: 'Unauthorized',
+    message: 'An authenticated user is required to approve a change',
+  });
+}
+/** Extra WHERE condition of the change UPDATE; `sql` references params already pushed. */
+interface ChangeWriteGuard { sql: string; conflict: { code: string; message: string } }
+const APPROVABLE_GUARD: ChangeWriteGuard = {
+  sql: `status IN (${PRE_APPROVAL_STATUS_LIST})`,
+  conflict: { code: 'CHANGE_NOT_APPROVABLE', message: 'Only a draft or pending_approval change can be approved' },
+};
+/** SET assignments for an approval; the stamp is overwritten, not COALESCEd: the status guard admits only unapproved changes. */
+function approvalAssignments(approver: string, params: unknown[]): string[] {
+  params.push(approver);
+  return ["status = 'approved'", "approval_status = 'approved'", `approved_by = $${params.length}`, 'approved_at = NOW()'];
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * The cleared approval stamp's approver for the trail event: ids only. approved_by is free text and legacy rows can
+ * hold an email or a name, so only a UUID is logged; anything else is reported as a kind with no value.
+ */
+function previousApproverFields(approvedBy: string | null): Record<string, unknown> {
+  if (approvedBy == null) return { previous_approved_by: null };
+  return UUID_PATTERN.test(approvedBy)
+    ? { previous_approved_by: approvedBy }
+    : { previous_approved_by_kind: 'legacy' };
+}
+
+/** What the caller claimed in closedBy, without the claim: the actor's own id, some other UUID, or anything else. */
+function claimedClosedByKind(claimed: unknown, actorId: string | null): 'matches_actor' | 'uuid' | 'other' {
+  if (actorId !== null && claimed === actorId) return 'matches_actor';
+  return typeof claimed === 'string' && UUID_PATTERN.test(claimed) ? 'uuid' : 'other';
+}
 
 /**
  * ITIL Controller
@@ -263,6 +320,17 @@ export class ITILController {
       // For now, use a simple default priority calculation
       const priority = this.calculateBasicPriority(ci);
 
+      // BW8: the figures come from the services the CI is mapped to, never from the priority heuristic above. An
+      // estimate that cannot be read must not block the incident: it is stored as unknown (null).
+      let impact = deriveImpact([]);
+      try {
+        impact = deriveImpact(await readMappedServices(
+          { query: (text, params) => this.postgresClient.pool.query(text, params) },
+          requestOrganizationId(req), [affectedCIId as string]));
+      } catch (error) {
+        logger.warn('Incident business impact unavailable', error);
+      }
+
       const incidentUuid = uuidv4();
       const incidentNumber = `INC-${incidentUuid}`;
       const title = description.length > 500 ? `${description.slice(0, 497)}...` : description;
@@ -271,9 +339,9 @@ export class ITILController {
         `
         INSERT INTO itil_incidents (
           id, incident_number, title, description, affected_ci_id,
-          reported_by, reported_at, priority, impact, urgency, status, organization_id
+          reported_by, reported_at, priority, impact, urgency, status, organization_id, business_impact
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
         RETURNING *
         `,
         [
@@ -289,6 +357,7 @@ export class ITILController {
           priority.urgency,
           'new',
           requestOrganizationId(req),
+          JSON.stringify(businessImpactFor(impact)),
         ]
       ));
 
@@ -419,8 +488,20 @@ export class ITILController {
       let paramIndex = 1;
 
       if (status) {
+        const next = String(status).toLowerCase();
         updates.push(`status = $${paramIndex++}`);
-        params.push(String(status).toLowerCase());
+        params.push(next);
+        // Stamp once, atomically: COALESCE keeps an existing value, so a repeat or a later PATCH never moves the
+        // downtime end that service availability reads from resolved_at / closed_at. A move back to an open status
+        // (reopen) clears both stamps in the same UPDATE, so the outage counts as live again and a later re-resolve
+        // stamps a fresh value; MTTR then measures to the latest resolution.
+        if (next === 'resolved') {
+          updates.push('resolved_at = COALESCE(resolved_at, NOW())');
+        } else if (next === 'closed') {
+          updates.push('closed_at = COALESCE(closed_at, NOW())');
+        } else if (['new', 'assigned', 'in_progress'].includes(next)) {
+          updates.push('resolved_at = NULL', 'closed_at = NULL');
+        }
       }
       if (assignedTo) {
         updates.push(`assigned_to = $${paramIndex++}`);
@@ -483,13 +564,15 @@ export class ITILController {
       const { id } = req.params;
       const { resolution } = req.body;
 
+      // resolved_at is stamped once, as in updateIncident: a repeat call keeps the downtime end; a reopen through
+      // PATCH clears it, so a later resolve stamps a fresh value.
       const pool = this.postgresClient.pool;
       const result = await pool.query(
         `
         UPDATE itil_incidents
         SET status = 'resolved',
             resolution = $1,
-            resolved_at = NOW(),
+            resolved_at = COALESCE(resolved_at, NOW()),
             updated_at = NOW()
         WHERE id = $2 AND organization_id = $3
         RETURNING *
@@ -761,26 +844,71 @@ export class ITILController {
         return;
       }
 
+      const statusValue = status ? String(status).toLowerCase() : undefined;
+      const approving = statusValue === 'approved';
       const updates: string[] = [];
-      const params: any[] = [];
-      let paramIndex = 1;
+      const params: unknown[] = [];
+      let guard: ChangeWriteGuard | undefined;
+      let clearedStamp: Record<string, unknown> | undefined;
 
-      if (status) {
-        updates.push(`status = $${paramIndex++}`);
-        params.push(String(status).toLowerCase());
+      if (approving) {
+        // The verified caller, never a body approved_by/approved_at; same rules as POST /approve.
+        const approver = changeApprover(req);
+        if (!approver) {
+          refuseUnauthenticatedApprover(res);
+          return;
+        }
+        updates.push(...approvalAssignments(approver, params));
+      } else if (statusValue) {
+        params.push(statusValue);
+        updates.push(`status = $${params.length}`);
+        // Back to a pre-approval status: the earlier approval no longer stands, so a later approve records its own.
+        if (PRE_APPROVAL_STATUSES.includes(statusValue)) {
+          const pool = this.postgresClient.pool;
+          const organizationId = requestOrganizationId(req);
+          const current = await pool.query(
+            `SELECT status, approved_by, approved_at::text AS approved_at_stamp
+               FROM itil_changes WHERE id = $1 AND organization_id = $2`, [id, organizationId]);
+          const before = current.rows[0] as { status: string; approved_by: string | null;
+            approved_at_stamp: string | null } | undefined;
+          if (!before) {
+            res.status(404).json({ success: false, error: 'Not Found', message: 'Change not found' });
+            return;
+          }
+          // approval_status moves with the stamp in the same statement (BI views, datamart and framework read it).
+          updates.push("approval_status = 'pending'", 'approved_by = NULL', 'approved_at = NULL');
+          // Conditional on the state just read, so an approval that committed in between is not undone. The stamp
+          // is compared as the text the server rendered (microsecond precision a JS Date would lose).
+          params.push(before.status, before.approved_by, before.approved_at_stamp);
+          const at = params.length;
+          guard = {
+            sql: `status = $${at - 2} AND approved_by IS NOT DISTINCT FROM $${at - 1}::varchar
+              AND approved_at IS NOT DISTINCT FROM $${at}::timestamptz`,
+            conflict: {
+              code: 'CHANGE_APPROVAL_CHANGED',
+              message: 'The change was modified since it was read; reload it and retry',
+            },
+          };
+          if (before.approved_by != null || before.approved_at_stamp != null) {
+            clearedStamp = {
+              change_id: id, organization_id: organizationId,
+              ...previousApproverFields(before.approved_by),
+              previous_approved_at: before.approved_at_stamp,
+              actor_user_id: (req as AuthenticatedRequest).user?._userId ?? null,
+            };
+          }
+        }
       }
       if (implementedBy != null) {
-        updates.push(`implemented_by = $${paramIndex++}`);
         params.push(implementedBy);
+        updates.push(`implemented_by = $${params.length}`);
       }
       if (actualDuration != null) {
-        updates.push(`actual_duration = $${paramIndex++}`);
         params.push(actualDuration);
+        updates.push(`actual_duration = $${params.length}`);
       }
 
-      updates.push(`updated_at = NOW()`);
-
-      if (updates.length === 1) {
+      if (updates.length === 0) {
         res.status(400).json({
           success: false,
           error: 'Bad Request',
@@ -788,33 +916,13 @@ export class ITILController {
         });
         return;
       }
+      updates.push('updated_at = NOW()');
 
-      params.push(id, requestOrganizationId(req));
-      const pool = this.postgresClient.pool;
-      const result = await pool.query(
-        `
-        UPDATE itil_changes
-        SET ${updates.join(', ')}
-        WHERE id = $${paramIndex} AND organization_id = $${paramIndex + 1}
-        RETURNING *
-        `,
-        params
-      );
-
-      if (result.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: 'Change not found',
-        });
-        return;
+      const written = await this.writeChange(req, res, id!, updates, params, guard ??
+        (approving ? APPROVABLE_GUARD : undefined), 'Change updated successfully');
+      if (written && clearedStamp) {
+        logger.info('Change approval stamp cleared', clearedStamp);
       }
-
-      res.json({
-        success: true,
-        data: result.rows[0],
-        message: 'Change updated successfully',
-      });
     } catch (error) {
       logger.error('Error updating change', error);
       res.status(500).json({
@@ -867,33 +975,15 @@ export class ITILController {
   async approveChange(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
-
-      const pool = this.postgresClient.pool;
-      const result = await pool.query(
-        `
-        UPDATE itil_changes
-        SET status = 'approved',
-            updated_at = NOW()
-        WHERE id = $1 AND organization_id = $2
-        RETURNING *
-        `,
-        [id, requestOrganizationId(req)]
-      );
-
-      if (result.rows.length === 0) {
-        res.status(404).json({
-          success: false,
-          error: 'Not Found',
-          message: 'Change not found',
-        });
+      const approver = changeApprover(req);
+      if (!approver) {
+        refuseUnauthenticatedApprover(res);
         return;
       }
 
-      res.json({
-        success: true,
-        data: result.rows[0],
-        message: 'Change approved successfully',
-      });
+      const params: unknown[] = [];
+      const assignments = [...approvalAssignments(approver, params), 'updated_at = NOW()'];
+      await this.writeChange(req, res, id!, assignments, params, APPROVABLE_GUARD, 'Change approved successfully');
     } catch (error) {
       logger.error('Error approving change', error);
       res.status(500).json({
@@ -902,6 +992,56 @@ export class ITILController {
         message: 'Internal error',
       });
     }
+  }
+
+  /**
+   * The one UPDATE behind approve and PATCH status. A `guard` adds its condition to the same statement
+   * (race-free: a concurrent write serialises on the row lock and the condition is re-evaluated), then a
+   * 0-row result is a 404 (absent or another organization, nothing written) or the guard's 409 (present,
+   * condition not met, nothing written). Returns whether the row was written.
+   */
+  private async writeChange(req: Request, res: Response, id: string, assignments: string[],
+    params: unknown[], guard: ChangeWriteGuard | undefined, message: string): Promise<boolean> {
+    const pool = this.postgresClient.pool;
+    const organizationId = requestOrganizationId(req);
+    params.push(id, organizationId);
+    const result = await pool.query(
+      `
+      UPDATE itil_changes
+      SET ${assignments.join(', ')}
+      WHERE id = $${params.length - 1} AND organization_id = $${params.length}${guard ? `
+        AND ${guard.sql}` : ''}
+      RETURNING *
+      `,
+      params
+    );
+
+    if (result.rows.length === 0) {
+      const exists = guard && (await pool.query(
+        'SELECT 1 FROM itil_changes WHERE id = $1 AND organization_id = $2', [id, organizationId])).rows.length > 0;
+      if (guard && exists) {
+        res.status(409).json({
+          success: false,
+          error: 'Conflict',
+          code: guard.conflict.code,
+          message: guard.conflict.message,
+        });
+        return false;
+      }
+      res.status(404).json({
+        success: false,
+        error: 'Not Found',
+        message: 'Change not found',
+      });
+      return false;
+    }
+
+    res.json({
+      success: true,
+      data: result.rows[0],
+      message,
+    });
+    return true;
   }
 
   async implementChange(req: Request, res: Response): Promise<void> {
@@ -949,7 +1089,12 @@ export class ITILController {
   async closeChange(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
-      const { result: changeResult, notes, closedBy } = req.body;
+      const { result: changeResult, notes, closedBy: claimedClosedBy } = req.body;
+      // GraphQL closeChange calls this controller directly, bypassing REST's Joi schema (closedBy max 255).
+      if (typeof claimedClosedBy === 'string' && claimedClosedBy.length > 255) {
+        res.status(400).json({ success: false, error: 'Bad Request', message: 'Invalid request' });
+        return;
+      }
 
       const outcomeMap: Record<string, string> = {
         SUCCESS: 'successful',
@@ -958,8 +1103,6 @@ export class ITILController {
         ROLLED_BACK: 'backed_out',
       };
       const outcome = outcomeMap[changeResult] ?? null;
-
-      logger.info('Closing change', { id, closedBy });
 
       const pool = this.postgresClient.pool;
       const result = await pool.query(
@@ -984,6 +1127,11 @@ export class ITILController {
         });
         return;
       }
+
+      // closed_by is the verified actor. The body's closedBy is free text (an email, a name) and is never logged:
+      // only its kind is, and only for a change this organization owns.
+      const actorId = (req as AuthenticatedRequest).user?._userId ?? null;
+      logger.info('Change closed', { id, closed_by: actorId, claimed_closed_by_kind: claimedClosedByKind(claimedClosedBy, actorId) });
 
       res.json({
         success: true,
@@ -1088,7 +1236,9 @@ export class ITILController {
     try {
       const pool = this.postgresClient.pool;
       const result = await pool.query(
-        'SELECT * FROM itil_baselines WHERE organization_id = $1 ORDER BY created_at DESC LIMIT 100',
+        `SELECT id, name, description, baseline_type, status, created_by, approved_by, approved_at,
+                created_at, updated_at, organization_id
+           FROM itil_baselines WHERE organization_id = $1 ORDER BY created_at DESC LIMIT 100`,
         [requestOrganizationId(req)]
       );
 
@@ -1305,6 +1455,43 @@ export class ITILController {
     }
   }
 
+  /**
+   * Open-incident ribbon payload for the estate hub (HAP-1926 BW8).
+   * GET /itil/metrics/open-incidents?limit=1..50 (default 5; an invalid value is a 400, never clamped).
+   * Rules for "open", ordering, the derived affected service and the users / revenue-per-hour figures:
+   * services/incident-business-impact.ts.
+   */
+  async getOpenIncidentRibbon(req: Request, res: Response): Promise<void> {
+    const raw = (req.query as Record<string, unknown>)['limit'];
+    const limit = raw === undefined ? RIBBON_DEFAULT_INCIDENTS : Number(raw);
+    if (!Number.isInteger(limit) || limit < 1 || limit > RIBBON_MAX_INCIDENTS) {
+      res.status(400).json({
+        success: false,
+        error: 'Bad Request',
+        message: `limit must be an integer from 1 to ${RIBBON_MAX_INCIDENTS}`,
+      });
+      return;
+    }
+    try {
+      const organizationId = requestOrganizationId(req);
+      const data = await boundedPgRead(this.postgresClient, estateFeedTimeoutMs(),
+        sql => readOpenIncidentRibbon(sql, organizationId, limit));
+      res.json({ success: true, data });
+    } catch (error) {
+      if (isStatementTimeout(error)) {
+        logger.warn('Open incident ribbon exceeded its statement timeout', error);
+        res.status(503).json(ESTATE_FEED_LIMIT_RESPONSE);
+        return;
+      }
+      logger.error('Error getting open incident ribbon', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to retrieve open incidents',
+        message: 'Internal error',
+      });
+    }
+  }
+
   async getChangeSuccessRate(req: Request, res: Response): Promise<void> {
     try {
       const pool = this.postgresClient.pool;
@@ -1341,11 +1528,12 @@ export class ITILController {
   async getMeanTimeToResolve(req: Request, res: Response): Promise<void> {
     try {
       const pool = this.postgresClient.pool;
+      // Closed incidents keep their resolution stamp and stay in the mean; a reopen clears it.
       const result = await pool.query(`
         SELECT
           AVG(EXTRACT(EPOCH FROM (resolved_at - reported_at))/3600) as mttr_hours
         FROM itil_incidents
-        WHERE organization_id = $1 AND status = 'resolved'
+        WHERE organization_id = $1 AND status IN ('resolved', 'closed')
         AND resolved_at IS NOT NULL
       `, [requestOrganizationId(req)]);
 
@@ -1502,20 +1690,9 @@ export class ITILController {
   }
 }
 
-/**
- * `itil_changes.affected_ci_ids` is TEXT[], which node-postgres decodes to a JS array.
- * Tolerate NULL and a legacy JSON-text array; anything else is no affected CIs.
- */
-export function affectedCIIdList(value: unknown): string[] {
-  let list: unknown = value;
-  if (typeof list === 'string') {
-    try {
-      list = JSON.parse(list);
-    } catch {
-      return [];
-    }
-  }
-  return Array.isArray(list) ? list.filter((id): id is string => typeof id === 'string') : [];
+/** `itil_changes.affected_ci_ids` is TEXT[] (node-postgres decodes it to a JS array); NULL is no affected CIs. */
+function affectedCIIdList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [];
 }
 
 const isGraphScalar = (value: unknown): boolean => value === null || ['boolean', 'number', 'string'].includes(typeof value) ||

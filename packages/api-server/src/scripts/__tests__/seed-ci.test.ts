@@ -90,7 +90,8 @@ jest.mock('@cmdb/database/bullmq/queue-manager', () => ({}));
 
 import { BusinessServiceController } from '../../rest/controllers/business-service.controller';
 import {
-  APP_GRANTS_SQL, ENTER_APP_LOGIN_SQL, PGLITE_SUPERUSER, assertAppLogin, createLoginRolesSql, journalReadAclSql, migrationSql,
+  APP_GRANTS_SQL, ENTER_APP_LOGIN_SQL, PGLITE_SUPERUSER, assertAppLogin, createLoginRolesSql, journalReadAclSql, lineageReadAclSql,
+  migrationSql,
 } from '../../rest/routes/__tests__/fixtures/app-login';
 import { Neo4jClient } from '@cmdb/database';
 import { assertTarget, main, parseArgs, SEED_CIS, TargetRefusedError } from '../seed-ci';
@@ -141,7 +142,7 @@ beforeAll(async () => {
   const [{ db }] = (await mockSql('SELECT current_database() AS db')).rows;
   // The app login holds the migration grants (fixture) plus the journal and ETL grants the tool uses: 045 gives the
   // journal tables to the staging app login; 034 gives cmdb_user INSERT on cmdb.fact_discovery.
-  await mockSql(`${createLoginRolesSql(db)} RESET ROLE; ${APP_GRANTS_SQL} ${journalReadAclSql()}
+  await mockSql(`${createLoginRolesSql(db)} RESET ROLE; ${APP_GRANTS_SQL} ${journalReadAclSql()} ${lineageReadAclSql()}
     GRANT SELECT, INSERT, UPDATE ON ci_reconciliation_operations, ci_reconciliation_epochs TO cmdb_user;
     GRANT SELECT, INSERT ON ci_change_history, cmdb.fact_discovery TO cmdb_user;
     GRANT USAGE ON ALL SEQUENCES IN SCHEMA public, cmdb TO cmdb_user; ${ENTER_APP_LOGIN_SQL}`, [], 'exec');
@@ -349,7 +350,7 @@ it('S3: the tool holds no unjournaled :CI write (every statement is a read-only 
   const WRITE_CLAUSE = /\b(CREATE|MERGE|SET|DELETE|DETACH|REMOVE|INSERT|UPDATE|UPSERT|DROP|ALTER|TRUNCATE|FOREACH|LOAD|CALL|COPY|GRANT)\b/i;
   expect(literals.filter(text => WRITE_CLAUSE.test(text))).toEqual([]);
   expect(dynamicStatements).toEqual([]);
-  // Neo4jClient's graph writers (createCI, legacyCreateCIUnjournaled, updateCI, deleteCI, writeRelationship, ...): only createCI.
+  // Neo4jClient's graph writers (createCI, updateCI, deleteCI, writeRelationship, ...): only createCI.
   expect([...graphCalls].sort()).toEqual(['close', 'createCI', 'getCI', 'getSession']);
   expect(imports.filter(name => /neo4j-driver|^pg$/.test(name))).toEqual([]);
 });

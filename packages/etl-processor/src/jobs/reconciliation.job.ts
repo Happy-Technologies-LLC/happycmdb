@@ -13,11 +13,27 @@
  */
 
 import { Job } from 'bullmq';
-import { Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS } from '@cmdb/database';
-import { logger, CI, CIStatus } from '@cmdb/common';
 import {
-  dimCiIds, dimCiOrganizationId, INTERNAL_ORGANIZATION_ID, lockCIDimensions,
+  Neo4jClient, PostgresClient, UNSCOPED_CI_ACCESS, JournalAbortedError, JournalConflictError,
+} from '@cmdb/database';
+import { logger, CI, CIInput, CIStatus, SourceOwnedError } from '@cmdb/common';
+import {
+  dimCiIds, dimCiOrganizationId, lockCIDimensions,
 } from '../transformers/ci-organization';
+
+/** The journal actor of this job's graph writes; audited as a `system` actor. */
+const ETL_RECONCILIATION_ACTOR = 'system:etl-reconciliation';
+
+/**
+ * The class name of a journal refusal this job treats as "left for review" (a source-owned class, a constraint abort,
+ * a conflict), or null for any other error. Class only: never a message or value.
+ */
+function journalRefusal(error: unknown): string | null {
+  if (error instanceof SourceOwnedError) return 'SourceOwnedError';
+  if (error instanceof JournalAbortedError) return 'JournalAbortedError';
+  if (error instanceof JournalConflictError) return 'JournalConflictError';
+  return null;
+}
 
 export interface ReconciliationJobData {
   /** CIs to reconcile (if not specified, reconciles all) */
@@ -180,8 +196,7 @@ export class ReconciliationJob {
         _autoResolved: false
       });
 
-      if (data.autoResolve && data.conflictStrategy === 'postgres-wins') {
-        await this.resolveByCreatingInNeo4j(postgresCI!);
+      if (data.autoResolve && data.conflictStrategy === 'postgres-wins' && await this.resolveByCreatingInNeo4j(postgresCI!)) {
         conflicts[conflicts.length - 1]!._autoResolved = true;
         conflicts[conflicts.length - 1]!.resolution = 'Created CI in Neo4j from PostgreSQL';
       }
@@ -408,28 +423,28 @@ export class ReconciliationJob {
   }
 
   /**
-   * Update the node's status in Neo4j, only when the node is in the given
-   * organization (an org-less node is internal). Neo4jClient.updateCI's scope
-   * cannot match an org-less internal node, so the write re-checks the
-   * organization itself. Returns false when no such node remains.
+   * Update the node's status through the journal (fence, admission, history and audit row), only when the node is in
+   * the given organization: updateCIProperties is strict-org, so a missing node, another organization's node and an
+   * org-less node (which the old raw write took for the internal organization) all return null. Returns false then,
+   * and when the journal refuses the write (a source-owned class): the conflict stays unresolved.
    */
   private async updateNeo4jStatus(ciId: string, organizationId: string, status: CIStatus): Promise<boolean> {
-    const session = this.neo4jClient.getSession();
+    let updated: Record<string, unknown> | null;
     try {
-      const result = await session.run(
-        `MATCH (ci:CI {id: $id})
-         WHERE CASE WHEN ci.organization_id IS NULL OR ci.organization_id = ''
-                    THEN $internalOrganizationId
-                    ELSE toLower(toString(ci.organization_id)) END = $organizationId
-         SET ci.status = $status, ci.updated_at = datetime()
-         RETURN ci.id AS id`,
-        { id: ciId, organizationId, internalOrganizationId: INTERNAL_ORGANIZATION_ID, status }
+      updated = await this.neo4jClient.updateCIProperties(
+        ciId, { status }, organizationId, ETL_RECONCILIATION_ACTOR, undefined, 'system'
       );
-      if (result.records.length === 0) {
-        return false;
+    } catch (error) {
+      const refusal = journalRefusal(error);
+      if (!refusal) {
+        throw error;
       }
-    } finally {
-      await session.close();
+      logger.warn('Skipping status reconciliation - the journal refused the Neo4j update; left for review',
+        { ciId, errorClass: refusal });
+      return false;
+    }
+    if (!updated) {
+      return false;
     }
     logger.info('Updated Neo4j CI status', { ciId, status });
     return true;
@@ -451,14 +466,34 @@ export class ReconciliationJob {
   }
 
   /**
-   * Create CI in Neo4j from PostgreSQL data
+   * Create CI in Neo4j from PostgreSQL data, through the journal. Returns false when the journal refuses the
+   * create (a source-owned class, a same-id or same-external_id constraint abort, a conflict): the conflict stays
+   * unresolved. Any other error propagates.
    */
-  private async resolveByCreatingInNeo4j(ci: PostgresCI): Promise<void> {
-    // Only this Postgres-backed restore can stamp a tenant: the current
-    // cmdb.dim_ci row is trusted; reconciliation merge inputs are not.
-    // HP1-S5 owns this non-API writer's journal cutover (A-12); until then it is the named unjournaled residual.
-    await this.neo4jClient.legacyCreateCIUnjournaled(ci, ci.organization_id);
+  private async resolveByCreatingInNeo4j(ci: PostgresCI): Promise<boolean> {
+    // Only this Postgres-backed restore can stamp a tenant: the organization is the current cmdb.dim_ci row's,
+    // never CI input; reconciliation merge inputs are not trusted.
+    const input = {
+      _id: ci._id,
+      _type: ci._type,
+      name: ci.name,
+      status: ci._status,
+      environment: ci.environment,
+      external_id: ci.external_id,
+    } as CIInput;
+    try {
+      await this.neo4jClient.createCI(input, ci.organization_id, ETL_RECONCILIATION_ACTOR, undefined, 'system');
+    } catch (error) {
+      const refusal = journalRefusal(error);
+      if (!refusal) {
+        throw error;
+      }
+      logger.warn('Skipping reconciliation - the journal refused the Neo4j create; left for review',
+        { ciId: ci._id, errorClass: refusal });
+      return false;
+    }
     logger.info('Created CI in Neo4j from PostgreSQL', { ciId: ci._id });
+    return true;
   }
 
   /**

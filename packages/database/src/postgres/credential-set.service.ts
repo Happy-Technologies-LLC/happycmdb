@@ -25,8 +25,9 @@ import {
   UnifiedCredential,
   UnifiedCredentialSummary,
 } from '@cmdb/common';
-import { logger, errorClassFields } from '@cmdb/common';
+import { logger, errorClassFields, assertMatchContextBounds } from '@cmdb/common';
 import { getEncryptionService } from '@cmdb/common';
+import { ipToInt, isIpIntInCidr, matchGlob } from './credential-services/utils';
 
 export class CredentialSetService {
   private encryptionService = getEncryptionService();
@@ -171,7 +172,8 @@ export class CredentialSetService {
 
   /**
    * Get credential set with expanded credential details
-   * Uses the credential_set_summaries view which includes full credential info
+   * Uses the credential_set_summaries view for full credential info. usage_count is recomputed here, not read from the
+   * view: the view counts every referencing definition with no organization filter (same rule as CRUD list).
    */
   async getWithCredentials(id: string, createdBy: string, organizationId: string): Promise<CredentialSetSummary | null> {
     const client = await this.pool.connect();
@@ -189,9 +191,10 @@ export class CredentialSetService {
           created_at,
           updated_at,
           credential_ids,
-          usage_count,
+          (SELECT COUNT(*) FROM discovery_definitions dd
+            WHERE dd.credential_set_id = s.id AND dd.organization_id = s.organization_id) AS usage_count,
           credentials
-        FROM credential_set_summaries
+        FROM credential_set_summaries s
         WHERE id = $1 AND created_by = $2 AND organization_id = $3
         `,
         [id, createdBy, organizationId]
@@ -242,9 +245,10 @@ export class CredentialSetService {
           created_at,
           updated_at,
           credential_ids,
-          usage_count,
+          (SELECT COUNT(*) FROM discovery_definitions dd
+            WHERE dd.credential_set_id = s.id AND dd.organization_id = s.organization_id) AS usage_count,
           credentials
-        FROM credential_set_summaries
+        FROM credential_set_summaries s
         WHERE created_by = $1 AND organization_id = $2
         ORDER BY created_at DESC
         `,
@@ -411,13 +415,16 @@ export class CredentialSetService {
         [id, createdBy, organizationId]
       );
       if (owned.rows.length === 0) throw new CredentialSetNotFoundError(id);
-      // Check if credential set is in use
+      // Check if credential set is in use. Same-organization references only, identical to the usage_count in
+      // getWithCredentials/list: a foreign or org-less reference is not counted here and is refused by the
+      // fk_discovery_definitions_credential_set RESTRICT (23503) with a count-free message.
       const usageResult = await client.query(
         `
         SELECT COUNT(*) as count
         FROM discovery_definitions dd
         JOIN credential_sets cs ON cs.id = dd.credential_set_id
         WHERE cs.id = $1 AND cs.created_by = $2 AND cs.organization_id = $3
+          AND dd.organization_id = cs.organization_id
         `,
         [id, createdBy, organizationId]
       );
@@ -468,6 +475,7 @@ export class CredentialSetService {
     createdBy: string,
     organizationId: string
   ): Promise<UnifiedCredential[]> {
+    assertMatchContextBounds(context);
     const client = await this.pool.connect();
     try {
       // Fetch credential set
@@ -562,10 +570,12 @@ export class CredentialSetService {
     credentialIds: string[],
     context: CredentialMatchContext
   ): UnifiedCredential[] {
+    // Parsed once per request, not once per network of every credential scored
+    const ipInt = context.ip ? ipToInt(context.ip) : null;
     // Calculate affinity scores for each credential
     const scoredCredentials = credentials.map((credential) => ({
       credential,
-      affinityScore: this.calculateAffinityScore(credential, context),
+      affinityScore: this.calculateAffinityScore(credential, context, ipInt),
       setOrder: credentialIds.indexOf(credential.id),
     }));
 
@@ -599,7 +609,8 @@ export class CredentialSetService {
    */
   private calculateAffinityScore(
     credential: UnifiedCredential,
-    context: CredentialMatchContext
+    context: CredentialMatchContext,
+    ipInt: number | null
   ): number {
     let score = 0;
     const affinity = credential.affinity;
@@ -607,17 +618,18 @@ export class CredentialSetService {
     // Network match (CIDR notation)
     if (context.ip && affinity.networks && affinity.networks.length > 0) {
       const isInNetwork = affinity.networks.some((cidr) =>
-        this.isIpInCidr(context.ip!, cidr)
+        // A bare IP (no prefix) is an exact-address network
+        cidr.includes('/') ? isIpIntInCidr(ipInt, cidr) : context.ip === cidr
       );
       if (isInNetwork) {
         score += 30;
       }
     }
 
-    // Hostname pattern match (glob or regex)
+    // Hostname pattern match (glob)
     if (context.hostname && affinity.hostname_patterns && affinity.hostname_patterns.length > 0) {
       const matchesPattern = affinity.hostname_patterns.some((pattern) =>
-        this.matchesHostnamePattern(context.hostname!, pattern)
+        matchGlob(context.hostname!, pattern)
       );
       if (matchesPattern) {
         score += 25;
@@ -661,73 +673,6 @@ export class CredentialSetService {
     score += priority * 2;
 
     return Math.max(0, score); // Ensure non-negative
-  }
-
-  /**
-   * Check if IP address is within CIDR range
-   * Simple implementation - for production, use a proper CIDR library like 'ip-cidr'
-   */
-  private isIpInCidr(ip: string, cidr: string): boolean {
-    try {
-      // Very basic CIDR matching - in production, use a proper library
-      const [network, bits] = cidr.split('/');
-      if (!network) {
-        return false;
-      }
-      if (!bits) {
-        // Exact IP match
-        return ip === network;
-      }
-
-      const ipParts = ip.split('.').map(Number);
-      const networkParts = network.split('.').map(Number);
-      const maskBits = parseInt(bits, 10);
-
-      if (ipParts.length !== 4 || networkParts.length !== 4) {
-        return false;
-      }
-
-      // Check for undefined parts
-      if (
-        ipParts[0] === undefined || ipParts[1] === undefined || ipParts[2] === undefined || ipParts[3] === undefined ||
-        networkParts[0] === undefined || networkParts[1] === undefined || networkParts[2] === undefined || networkParts[3] === undefined
-      ) {
-        return false;
-      }
-
-      // Convert IP and network to 32-bit integers
-      const ipInt = (ipParts[0] << 24) | (ipParts[1] << 16) | (ipParts[2] << 8) | ipParts[3];
-      const networkInt = (networkParts[0] << 24) | (networkParts[1] << 16) | (networkParts[2] << 8) | networkParts[3];
-
-      // Create mask
-      const mask = ~((1 << (32 - maskBits)) - 1);
-
-      // Check if IP is in network
-      return (ipInt & mask) === (networkInt & mask);
-    } catch (error) {
-      logger.warn('Failed to parse CIDR', { ip, cidr, error: errorClassFields(error) });
-      return false;
-    }
-  }
-
-  /**
-   * Check if hostname matches pattern (glob-style)
-   * Supports: *, ?, and exact matches
-   */
-  private matchesHostnamePattern(hostname: string, pattern: string): boolean {
-    try {
-      // Convert glob pattern to regex
-      const regexPattern = pattern
-        .replace(/\./g, '\\.') // Escape dots
-        .replace(/\*/g, '.*')  // * matches any characters
-        .replace(/\?/g, '.');  // ? matches single character
-
-      const regex = new RegExp(`^${regexPattern}$`, 'i'); // Case-insensitive
-      return regex.test(hostname);
-    } catch (error) {
-      logger.warn('Failed to match hostname pattern', { hostname, pattern, error: errorClassFields(error) });
-      return false;
-    }
   }
 }
 

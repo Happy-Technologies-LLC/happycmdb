@@ -9,6 +9,7 @@ import { join } from 'path';
 import express from 'express';
 import request from 'supertest';
 import { CIAnalyticsLimitError, MAX_CI_ANALYTICS_NODES } from '@cmdb/common';
+import { impactBusinessTablesSql } from './fixtures/app-login';
 
 Object.assign(process.env, {
   JWT_SECRET: randomBytes(32).toString('hex'),
@@ -197,6 +198,9 @@ const pg = {
         : pg.query(sql, params),
     release: () => undefined,
   }),
+  // The impact envelope's lineage read runs in a short transaction; BEGIN/COMMIT and set_config are no-ops here.
+  transaction: async <T>(callback: (client: Awaited<ReturnType<typeof pg.getClient>>) => Promise<T>): Promise<T> =>
+    callback(await pg.getClient()),
   get connect() { return pg.getClient; },
 };
 jest.mock('@cmdb/database', () => ({
@@ -245,7 +249,7 @@ app.use('/api/v1/impact', impactRoutes);
 app.use('/api/v1/analytics', analyticsRoutes);
 const auth = (id: string) => {
   const user = USERS[id]!;
-  return { Authorization: `Bearer ${jwt.generateAccessToken(id, user._username, user._role, user._organizationId)}` };
+  return { Authorization: `Bearer ${jwt.generateAccessToken(id, user._username, user._role, user._organizationId, 0, Math.floor(Date.now() / 1000))}` };
 };
 const migrations = join(__dirname, '../../../../../database/src/postgres/migrations');
 const ddl = readFileSync(join(migrations, '001_complete_schema.sql'), 'utf8');
@@ -264,6 +268,7 @@ beforeAll(async () => {
     ${table('baseline_snapshots')} ${table('drift_detection_results')}
     ${table('impact_analyses')} ${table('ci_criticality_scores')}`);
   await db.exec(readFileSync(join(migrations, '011_ci_organization_scope.sql'), 'utf8'));
+  await db.exec(impactBusinessTablesSql()); // HAP-1927: the business-service tables the impact reads join
   await db.exec(readFileSync(join(migrations, '025_ci_derived_incarnation.sql'), 'utf8'));
   // 030's org columns and keys with 036's primary-key swap: the criticality upsert's conflict target.
   await db.exec(`ALTER TABLE ci_criticality_scores DROP CONSTRAINT ci_criticality_scores_pkey;
@@ -274,6 +279,9 @@ beforeAll(async () => {
   const historyColumns = provenance.match(/ALTER TABLE ci_change_history\s+ADD COLUMN[\s\S]*?;/);
   if (!historyColumns) throw new Error('Missing S1 history org columns');
   await db.exec(historyColumns[0]);
+  const lineageColumns = provenance.match(/ALTER TABLE ci_source_lineage\s+ADD COLUMN[\s\S]*?;/);
+  if (!lineageColumns) throw new Error('Missing S1 lineage org columns');
+  await db.exec(`${table('ci_source_lineage')} ${lineageColumns[0]}`);
   for (const name of ['ci_reconciliation_operations', 'ci_reconciliation_epochs']) {
     const definition = provenance.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${name} \\([\\s\\S]*?\\n\\);`));
     if (!definition) throw new Error(`Missing S1 journal table ${name}`);

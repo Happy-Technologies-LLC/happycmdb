@@ -7,10 +7,13 @@
  */
 
 import { randomBytes, createHash } from 'crypto';
+import { isIP } from 'net';
 import { errorClassFields, logger, type AuditLogEntry, type ConfigSchema } from '@cmdb/common';
 import { JWTService, TokenVerificationError } from './jwt.service';
 import { BCRYPT_HASH, PasswordService } from './password.service';
 import { containsNul, defaultCredentialsRefused, isDefaultEquivalent, newPasswordAllowed } from './default-credentials';
+import { isPlatformAdmin } from './platform-admin';
+import type { RefusalBucket } from '../middleware/rate-limit.middleware';
 import {
   User,
   ApiKey,
@@ -24,6 +27,24 @@ import {
   AmbiguousUserIdentityError,
   UserNotFoundError,
 } from './types';
+
+/**
+ * What the authenticated user may read about their own record. Disclosure
+ * is exactly these fields (HAP-1911): see AuthService.toProfile.
+ */
+export interface UserProfile {
+  _id: string;
+  _username: string;
+  _email: string;
+  _role: User['_role'];
+  _createdAt: Date;
+  lastLoginAt?: Date;
+  _name?: string;
+  _avatar?: string;
+  _organizationId?: string;
+  /** Effective platform-administrator status (isPlatformAdmin), not the stored flag. */
+  platformAdmin: boolean;
+}
 
 export interface UserProfileUpdate {
   name?: string;
@@ -43,6 +64,8 @@ export interface GuardedPasswordWrite extends GuardedUserWrite {
   /** Hash the current password was verified against; the write lands only while it is still stored. */
   readHash: string;
   newHash: string;
+  /** The organization the request is bound to; the write lands only while the node still stores it (HAP-2061). */
+  organizationId: string;
 }
 
 /** Cost-convergence write of a successful login: the same password at the configured cost, same generation (HAP-1090). */
@@ -50,6 +73,14 @@ export interface GuardedPasswordRehash extends GuardedUserWrite {
   /** Hash the password was verified against; the write lands only while it is still stored. */
   readHash: string;
   newHash: string;
+}
+
+/** Revoke-other-sessions write (HAP-1716): the generation advances, the hash is untouched. */
+export interface GuardedEpochBump extends GuardedUserWrite {
+  /** Hash the current password was verified against; the write lands only while it is still stored. */
+  readHash: string;
+  /** The organization the request is bound to; the write lands only while the node still stores it (HAP-2061). */
+  organizationId: string;
 }
 
 export interface CredentialEventInput {
@@ -66,7 +97,7 @@ export interface AuthRepository {
   updateUser(id: string, updates: UserProfileUpdate): Promise<User>;
   /**
    * Sets the password hash only while the node still has the authorizing
-   * generation, is unmarked and stores `readHash`. False when nothing was written.
+   * generation, is unmarked, stores `readHash` and still stores `organizationId`. False when nothing was written.
    */
   updatePasswordHashGuarded(write: GuardedPasswordWrite): Promise<boolean>;
   /**
@@ -74,6 +105,12 @@ export interface AuthRepository {
    * generation, is unmarked and stores `readHash`. Never changes the generation. False when nothing was written.
    */
   rehashPasswordGuarded(write: GuardedPasswordRehash): Promise<boolean>;
+  /**
+   * Advances the credential generation by exactly one, leaving the hash as it is, only while the node still has the
+   * authorizing generation, is unmarked, stores `organizationId` and stores `readHash` (HAP-1716). False when nothing
+   * was written.
+   */
+  bumpCredentialEpochGuarded(write: GuardedEpochBump): Promise<boolean>;
   /** Disables the account only while the authorizing generation is current and it is unmarked. */
   disableUserGuarded(write: GuardedUserWrite): Promise<boolean>;
   /**
@@ -94,6 +131,8 @@ export interface AuthRepository {
   createApiKey(apiKey: Omit<ApiKey, 'id' | 'createdAt'>): Promise<ApiKey>;
   updateApiKeyLastUsed(keyId: string): Promise<void>;
   deleteApiKey(userId: string, keyId: string): Promise<number>;
+  /** Revokes the user's live keys issued below `nextEpoch` (generation-dead after a password change); returns the count. */
+  revokeApiKeysBelowEpoch(userId: string, nextEpoch: number): Promise<number>;
   listApiKeys(userId: string): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]>;
 }
 
@@ -105,11 +144,31 @@ export class PasswordNotAllowedError extends Error {
   }
 }
 
+/** API key creation while `auth.apiKeys.enabled` is false (→ 403). */
+export class ApiKeysDisabledError extends Error {
+  constructor() {
+    super('API keys are disabled');
+    this.name = 'ApiKeysDisabledError';
+  }
+}
+
 /** The authorizing credential's generation is no longer current (→ 401). */
 export class CredentialsChangedError extends Error {
   constructor() {
     super('Credentials changed');
     this.name = 'CredentialsChangedError';
+  }
+}
+
+/**
+ * A guarded self-service write was lost because the stored organization is no longer the request's claim (HAP-2061).
+ * A CredentialsChangedError for the client (→ 401), but the attempt is not audited: the only organization it could be
+ * bound to is the one the user has left.
+ */
+export class OrganizationChangedError extends CredentialsChangedError {
+  constructor() {
+    super();
+    this.name = 'OrganizationChangedError';
   }
 }
 
@@ -121,8 +180,49 @@ export class CurrentPasswordIncorrectError extends Error {
   }
 }
 
-/** Audited outcome of a self-service password change attempt (HAP-1368). */
-export type PasswordChangeOutcome = 'success' | 'wrong_password';
+/** The user has no organization, or the request's organization claim is not the stored one: a self-service password change cannot be audited, so it is refused (HAP-1714; → 403). */
+export class OrganizationRequiredError extends Error {
+  constructor() {
+    super('Organization required');
+    this.name = 'OrganizationRequiredError';
+  }
+}
+
+/**
+ * Audited outcomes of a self-service password change attempt (HAP-1368; refusals: cmdb#321). Fixed codes, never
+ * free text. Not listed: the audit-chain-not-ready 503, which is refused before anything runs because the chain
+ * cannot be written then.
+ */
+export const PASSWORD_CHANGE_OUTCOMES = [
+  'success', 'wrong_password', 'policy_failure', 'rotation_lost', 'user_not_found', 'rate_limited',
+] as const;
+export type PasswordChangeOutcome = (typeof PASSWORD_CHANGE_OUTCOMES)[number];
+
+/** The self-service credential operations that write an audit row per attempt (`metadata.operation`). */
+export type CredentialAuditOperation = 'password_change' | 'revoke_other_sessions';
+const CREDENTIAL_AUDIT_LABELS: Record<CredentialAuditOperation, string> = {
+  password_change: 'Password change',
+  revoke_other_sessions: 'Session revoke',
+};
+
+/**
+ * What the best-effort API-key revoke of a self-service credential change did (HAP-2061): the number of key rows it
+ * revoked, or that it failed. Never a key id, hash or token.
+ */
+export type ApiKeyRevocation = { revoked: number } | { failed: true };
+
+/** A self-service credential change's new session for the caller's device, and what its API-key revoke did. */
+export type CredentialChangeResult = LoginResponse & { apiKeyRevocation: ApiKeyRevocation };
+
+/**
+ * HAP-1711: the client address for an audit row, only when it is a bare IPv4/IPv6 literal that Postgres `inet` stores
+ * as a host address; anything else is undefined (a null ip_address). req.ip can be a zone-id IPv6 (net.isIP accepts
+ * `fe80::1%eth0`, inet rejects it), a non-IP leftmost X-Forwarded-For under an over-broad TRUST_PROXY, or text with a
+ * /prefix (inet would store a network mask); one such value would otherwise fail the audit insert and lose the row.
+ */
+export function auditClientAddress(ip: string | undefined): string | undefined {
+  return ip !== undefined && isIP(ip) !== 0 && !ip.includes('%') ? ip : undefined;
+}
 
 /** The user's credential generation (absent = 0; NaN when malformed). */
 function credentialEpochOf(user: Pick<User, '_credentialEpoch'>): number {
@@ -145,12 +245,15 @@ export class ApiKeyNotFoundError extends Error {
  * Logged reason of an authentication failure; never part of a response.
  * `default_credential_refused` (v16 §15 N-21) is a default-equivalent login
  * password refused outside development; `ambiguous_identity` is an
- * identifier matching more than one :User node. Callers send both the same
- * response as any other failure.
+ * identifier matching more than one :User node. `api_keys_disabled` is an API
+ * key header with no Bearer token while `auth.apiKeys.enabled` is false (logged
+ * with credentialType `api-key`, never the key; also the reason the
+ * `verifyApiKey` guard throws). Callers send all of these the same response as any other
+ * failure.
  */
 export type AuthFailureReason =
   | 'invalid' | 'expired' | 'wrong_type' | 'disabled' | 'revoked' | 'store_error' | 'default_credential_refused'
-  | 'ambiguous_identity';
+  | 'ambiguous_identity' | 'api_keys_disabled';
 
 export class AuthFailureError extends Error {
   override readonly cause: unknown;
@@ -187,6 +290,8 @@ export class AuthService {
   private passwordService: PasswordService;
   private repository: AuthRepository;
   private dummyHash: Promise<string> | undefined;
+  /** Same semantics as the middleware: only an explicit `false` disables API keys. */
+  private readonly apiKeysEnabled: boolean;
 
   constructor(
     _config: ConfigSchema['auth'],
@@ -195,6 +300,7 @@ export class AuthService {
     this.jwtService = new JWTService(_config.jwt);
     this.passwordService = new PasswordService(_config.bcrypt);
     this.repository = _repository;
+    this.apiKeysEnabled = _config.apiKeys?.enabled !== false;
   }
 
   /**
@@ -258,11 +364,14 @@ export class AuthService {
 
       await this.repository.updateUserLastLogin(user._id);
       await this.rehashStoredPassword(user, password, credentialEpoch);
-      // Tenant claim comes from the user record, never the request.
+      // Tenant claim comes from the user record, never the request. One login time for both tokens (HAP-1716).
+      const authTime = Math.floor(Date.now() / 1000);
       const accessToken = this.jwtService.generateAccessToken(
-        user._id, user._username, user._role, user._organizationId, credentialEpoch
+        user._id, user._username, user._role, user._organizationId, credentialEpoch, authTime
       );
-      const refreshToken = this.jwtService.generateRefreshToken(user._id, user._username, user._role, credentialEpoch);
+      const refreshToken = this.jwtService.generateRefreshToken(
+        user._id, user._username, user._role, credentialEpoch, authTime
+      );
       return {
         _accessToken: accessToken,
         _refreshToken: refreshToken,
@@ -311,12 +420,13 @@ export class AuthService {
         throw new AuthFailureError('revoked');
       }
 
-      // New tokens from the current user record (org re-read, not copied from the old token); the login time is kept.
+      // New tokens from the current user record (org re-read, not copied from the old token); the login time is kept,
+      // in the access token too (HAP-1716: it is the session-family id, so it must never restart on refresh).
       const accessToken = this.jwtService.generateAccessToken(
-        user._id, user._username, user._role, user._organizationId, credentialEpoch
+        user._id, user._username, user._role, user._organizationId, credentialEpoch, authTime!
       );
       const newRefreshToken = this.jwtService.generateRefreshToken(
-        user._id, user._username, user._role, credentialEpoch, authTime
+        user._id, user._username, user._role, credentialEpoch, authTime!
       );
       return {
         _accessToken: accessToken,
@@ -368,6 +478,7 @@ export class AuthService {
         _tier: payload._tier,
         _organizationId: user._organizationId,
         _cep: credentialEpoch,
+        _authTime: payload._authTime,
         iat: payload.iat,
         exp: payload.exp,
         iss: payload.iss,
@@ -395,6 +506,9 @@ export class AuthService {
    * in flight by a pre-rotation credential is born dead.
    */
   async generateApiKey(userId: string, request: ApiKeyRequest, authorizingEpoch: number): Promise<ApiKeyResponse> {
+    if (!this.apiKeysEnabled) {
+      throw new ApiKeysDisabledError();
+    }
     const { name: _name, expiresInDays } = request;
     if (!Number.isSafeInteger(authorizingEpoch)) {
       throw new CredentialsChangedError();
@@ -437,9 +551,13 @@ export class AuthService {
   }
 
   /**
-   * Verify API key and return associated user info
+   * Verify API key and return associated user info. Refused with AuthFailureError('api_keys_disabled') before any hash or
+   * repository read while auth.apiKeys.enabled is false, so the kill switch holds for every caller, not only the middleware.
    */
   async verifyApiKey(apiKey: string): Promise<TokenPayload> {
+    if (!this.apiKeysEnabled) {
+      throw new AuthFailureError('api_keys_disabled');
+    }
     try {
       const keyHash = this.hashKey(apiKey);
       const apiKeyRecord = await this.repository.findApiKeyByKey(keyHash);
@@ -501,7 +619,9 @@ export class AuthService {
   }
 
   /**
-   * List all API keys for a user. A key of another credential generation no longer authenticates
+   * List the user's API keys that are not revoked. A password change revokes every key below the new
+   * generation (HAP-1669), so those rows are not listed. A row of another credential generation that is
+   * still unrevoked (the best-effort revoke failed, or it predates HAP-1669) no longer authenticates
    * (verifyApiKey), so it is listed with `_enabled: false` (HAP-1285; read side only).
    */
   async listApiKeys(userId: string): Promise<Omit<ApiKey, '_key' | '_keyHash'>[]> {
@@ -513,15 +633,33 @@ export class AuthService {
   }
 
   /**
-   * Get the authenticated user's sanitized profile (no password hash)
+   * The authenticated user's own profile: an explicit projection of the
+   * stored user, never a spread of it. No password hash, credential
+   * generation, seed marker, element id or scopes. `platformAdmin` is the
+   * effective status (isPlatformAdmin: the stored flag, and never for a
+   * seeded account), the same decision the ACL layer makes.
    */
-  async getUserProfile(userId: string): Promise<Omit<User, '_passwordHash'> | null> {
+  private toProfile(user: User): UserProfile {
+    return {
+      _id: user._id,
+      _username: user._username,
+      _email: user._email,
+      _role: user._role,
+      _createdAt: user._createdAt,
+      lastLoginAt: user.lastLoginAt,
+      _name: user._name,
+      _avatar: user._avatar,
+      _organizationId: user._organizationId,
+      platformAdmin: isPlatformAdmin(user),
+    };
+  }
+
+  /**
+   * Get the authenticated user's profile (see toProfile for what it holds)
+   */
+  async getUserProfile(userId: string): Promise<UserProfile | null> {
     const user = await this.repository.findUserById(userId);
-    if (!user) {
-      return null;
-    }
-    const { _passwordHash, ...profile } = user;
-    return profile;
+    return user ? this.toProfile(user) : null;
   }
 
   /**
@@ -530,22 +668,24 @@ export class AuthService {
   async updateProfile(
     userId: string,
     updates: { name?: string; avatar?: string }
-  ): Promise<Omit<User, '_passwordHash'>> {
+  ): Promise<UserProfile> {
     const user = await this.repository.findUserById(userId);
     if (!user) {
       throw new UserNotFoundError();
     }
 
-    const updated = await this.repository.updateUser(userId, updates);
-    const { _passwordHash, ...profile } = updated;
-    return profile;
+    return this.toProfile(await this.repository.updateUser(userId, updates));
   }
 
   /**
    * Change the authenticated user's password, verifying the current
    * password against the stored hash before replacing it. The new password
    * must not be default-equivalent, contain U+0000 or exceed 72 bytes (every
-   * environment). The write is a compare-and-set against the authorizing
+   * environment). A STORED user without an organization, or whose stored
+   * organization is not the request's claim, is refused with
+   * OrganizationRequiredError before the generation or the password is
+   * checked and before any hash is computed: the change could not be audited
+   * (HAP-1714). The write is a compare-and-set against the authorizing
    * credential generation, the hash just verified and an unmarked account,
    * so a request authorized before an operator rotation cannot overwrite it.
    * It advances the generation with the hash, ending every session and API
@@ -557,8 +697,9 @@ export class AuthService {
     userId: string,
     currentPassword: string,
     newPassword: string,
-    authorizingEpoch: number
-  ): Promise<LoginResponse> {
+    authorizingEpoch: number,
+    organizationClaim: string
+  ): Promise<CredentialChangeResult> {
     if (!newPasswordAllowed(newPassword)) {
       throw new PasswordNotAllowedError();
     }
@@ -566,6 +707,10 @@ export class AuthService {
     const user = await this.repository.findUserById(userId);
     if (!user) {
       throw new UserNotFoundError();
+    }
+    const storedOrganization = user._organizationId;
+    if (typeof storedOrganization !== 'string' || storedOrganization === '' || storedOrganization !== organizationClaim) {
+      throw new OrganizationRequiredError();
     }
     const credentialEpoch = credentialEpochOf(user);
     if (!sameGeneration(authorizingEpoch, credentialEpoch)) {
@@ -578,22 +723,112 @@ export class AuthService {
 
     const newHash = await this.passwordService.hash(newPassword);
     const written = await this.repository.updatePasswordHashGuarded({
-      userId, elementId: user._elementId, credentialEpoch, readHash: user._passwordHash, newHash,
+      userId, elementId: user._elementId, credentialEpoch, organizationId: organizationClaim, readHash: user._passwordHash, newHash,
     });
     if (!written) {
-      throw new CredentialsChangedError();
+      throw await this.lostWriteError(userId, organizationClaim);
     }
     // The writer advanced the generation by exactly one (in Cypher, guarded by `credentialEpoch`).
     const nextEpoch = credentialEpoch + 1;
+    // The generation already refuses every older key; revoking the rows keeps them dead across a rollback that
+    // resets the generation. Best-effort: the change has committed, so a failure logs the error class only.
+    const apiKeyRevocation = await this.revokeApiKeyRows(user._id, nextEpoch, 'Password change API key revocation failed');
     // A new session for this device at the new generation; a fresh authentication, so its login time is now.
+    const authTime = Math.floor(Date.now() / 1000);
     return {
       _accessToken: this.jwtService.generateAccessToken(
-        user._id, user._username, user._role, user._organizationId, nextEpoch
+        user._id, user._username, user._role, user._organizationId, nextEpoch, authTime
       ),
-      _refreshToken: this.jwtService.generateRefreshToken(user._id, user._username, user._role, nextEpoch),
+      _refreshToken: this.jwtService.generateRefreshToken(user._id, user._username, user._role, nextEpoch, authTime),
       _expiresIn: this.jwtService.getTokenExpiresIn('access'),
       _user: { _id: user._id, _username: user._username, _role: user._role },
+      apiKeyRevocation,
     };
+  }
+
+  /**
+   * HAP-1716: ends every other session and API key of the user without changing the password, behind a step-up: the
+   * current password is re-entered and verified. Same order as changePassword: unknown user, then a stored user
+   * without an organization (or whose stored organization is not the request's claim; the attempt could not be
+   * audited) is refused with OrganizationRequiredError, then the authorizing generation, then the password. The write
+   * is a compare-and-set that advances the generation by exactly one and leaves the hash and the marker alone, so a
+   * request authorized before an operator rotation or a concurrent change lands nowhere. The generation bump is the
+   * existing mechanism that ends sessions and API keys together (HAP-1285); the API-key rows are then revoked as in
+   * changePassword. Returns a new session for the caller's device at the new generation: the password was just
+   * re-entered, so its login time is now.
+   */
+  async revokeOtherSessions(
+    userId: string,
+    currentPassword: string,
+    authorizingEpoch: number,
+    organizationClaim: string
+  ): Promise<CredentialChangeResult> {
+    const user = await this.repository.findUserById(userId);
+    if (!user) {
+      throw new UserNotFoundError();
+    }
+    const storedOrganization = user._organizationId;
+    if (typeof storedOrganization !== 'string' || storedOrganization === '' || storedOrganization !== organizationClaim) {
+      throw new OrganizationRequiredError();
+    }
+    const credentialEpoch = credentialEpochOf(user);
+    if (!sameGeneration(authorizingEpoch, credentialEpoch)) {
+      throw new CredentialsChangedError();
+    }
+
+    if (!(await this.verifyPassword(currentPassword, user._passwordHash))) {
+      throw new CurrentPasswordIncorrectError();
+    }
+
+    const written = await this.repository.bumpCredentialEpochGuarded({
+      userId, elementId: user._elementId, credentialEpoch, organizationId: organizationClaim, readHash: user._passwordHash,
+    });
+    if (!written) {
+      throw await this.lostWriteError(userId, organizationClaim);
+    }
+    // The writer advanced the generation by exactly one (in Cypher, guarded by `credentialEpoch`).
+    const nextEpoch = credentialEpoch + 1;
+    // Best-effort, as in changePassword: the generation already refuses every older key and the bump has committed.
+    const apiKeyRevocation = await this.revokeApiKeyRows(user._id, nextEpoch, 'Session revoke API key revocation failed');
+    // Only a correct password reaches here, so this restart of the session family (a new login time, a fresh
+    // revoke-other-sessions budget) is intended: a wrong guess returns above and never yields a new login time.
+    const authTime = Math.floor(Date.now() / 1000);
+    return {
+      _accessToken: this.jwtService.generateAccessToken(
+        user._id, user._username, user._role, user._organizationId, nextEpoch, authTime
+      ),
+      _refreshToken: this.jwtService.generateRefreshToken(user._id, user._username, user._role, nextEpoch, authTime),
+      _expiresIn: this.jwtService.getTokenExpiresIn('access'),
+      _user: { _id: user._id, _username: user._username, _role: user._role },
+      apiKeyRevocation,
+    };
+  }
+
+  /**
+   * The error for a lost guarded write: OrganizationChangedError when the stored organization is no longer the
+   * request's claim (the write's organization predicate refused it), otherwise CredentialsChangedError. A failed
+   * re-read keeps the plain refusal.
+   */
+  private async lostWriteError(userId: string, organizationClaim: string): Promise<CredentialsChangedError> {
+    try {
+      const current = await this.repository.findUserById(userId);
+      if (current !== null && current._organizationId !== organizationClaim) {
+        return new OrganizationChangedError();
+      }
+    } catch {
+      // The re-read only classifies the refusal; the write already landed nowhere.
+    }
+    return new CredentialsChangedError();
+  }
+
+  /** Revokes the user's API-key rows below `nextEpoch`; a failure logs `warning` with the error class only. Never throws. */
+  private async revokeApiKeyRows(userId: string, nextEpoch: number, warning: string): Promise<ApiKeyRevocation> {
+    try {
+      return { revoked: await this.repository.revokeApiKeysBelowEpoch(userId, nextEpoch) };
+    } catch (error) {
+      logger.warn(warning, errorClassFields(error));
+      return { failed: true };
+    }
   }
 
   /**
@@ -620,25 +855,38 @@ export class AuthService {
   }
 
   /**
-   * HAP-1368: one audit_log row for a self-service password change attempt: the verified user, the client address,
-   * the outcome and the actor's organization claim; never a password, hash or token. Best-effort: the outcome is
-   * already decided (a changed password stays changed), so a failed write or a missing organization (tenancy is
-   * never inferred) logs fixed text and returns.
+   * HAP-1368: one audit_log row for a self-service credential attempt (`operation`: the password change, or HAP-1716's
+   * revoke of other sessions): the verified user, the client address, the outcome and the actor's organization claim;
+   * never a password, hash or token. A rate_limited row also names the refusing bucket (`metadata.bucket`, a fixed
+   * code). A success row carries what the API-key revoke did (HAP-2061): `revoked_api_keys` (the count) or
+   * `api_key_revoke_failed: true`, never a key id or hash. Best-effort: the outcome is already decided (a changed
+   * password stays changed), so a failed write or a missing organization (tenancy is never inferred) logs fixed text
+   * and returns false; true means the row was written.
    */
   async auditPasswordChange(
-    userId: string, organizationId: string | null, ipAddress: string | undefined, outcome: PasswordChangeOutcome
-  ): Promise<void> {
+    userId: string, organizationId: string | null, ipAddress: string | undefined, outcome: PasswordChangeOutcome,
+    refusedBy?: RefusalBucket, operation: CredentialAuditOperation = 'password_change', apiKeyRevocation?: ApiKeyRevocation
+  ): Promise<boolean> {
+    const label = CREDENTIAL_AUDIT_LABELS[operation];
     if (organizationId === null) {
-      logger.error('Password change not audited: the actor has no organization claim');
-      return;
+      logger.error(`${label} not audited: the actor has no organization claim`);
+      return false;
     }
     try {
       await this.repository.recordAudit({
         entity_type: 'USER', entity_id: userId, action: 'UPDATE', actor: userId, actor_type: 'user', changes: [],
-        metadata: { operation: 'password_change', outcome }, ip_address: ipAddress,
+        metadata: {
+          operation, outcome,
+          ...(refusedBy === undefined ? {} : { bucket: refusedBy }),
+          ...(apiKeyRevocation === undefined ? {} : 'revoked' in apiKeyRevocation
+            ? { revoked_api_keys: apiKeyRevocation.revoked } : { api_key_revoke_failed: true }),
+        },
+        ip_address: auditClientAddress(ipAddress),
       }, organizationId);
+      return true;
     } catch {
-      logger.error('Password change audit write failed');
+      logger.error(`${label} audit write failed`);
+      return false;
     }
   }
 

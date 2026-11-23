@@ -40,7 +40,7 @@ Metabase provides advanced business intelligence and ad-hoc reporting capabiliti
 │                            │                      │         │
 │                            │                      ▼         │
 │                       ┌────────────┐       ┌──────────────┐│
-│                       │ 24 BI Views│       │  Dashboards  ││
+│                       │ 26 BI Views│       │  Dashboards  ││
 │                       │  (Cost,    │       │  Reports     ││
 │                       │   ITIL,    │       │  Questions   ││
 │                       │   BSM)     │       └──────────────┘│
@@ -160,9 +160,9 @@ kubectl logs -f metabase-0
 
 ## Database Views
 
-HappyCMDB v3.0 provides 24 optimized PostgreSQL views organized into three categories: **Cost Analysis**, **ITIL Service Management**, and **Business Service Mapping (BSM)**.
+HappyCMDB v3.0 provides 26 optimized PostgreSQL views organized into three categories: **Cost Analysis**, **ITIL Service Management**, and **Business Service Mapping (BSM)**.
 
-### Cost Analysis Views (8 views)
+### Cost Analysis Views (9 views)
 
 These views power TBM (Technology Business Management) cost allocation and FinOps analysis.
 
@@ -366,7 +366,7 @@ ORDER BY current_book_value DESC;
 
 ---
 
-#### v_top_cost_drivers
+#### v_top_cost_drivers_bi
 
 **Purpose**: Top 20 configuration items by monthly cost
 
@@ -378,6 +378,8 @@ ORDER BY current_book_value DESC;
 - `monthly_cost` - Monthly cost
 - `annual_cost` - Annualized cost
 - `business_criticality` - Criticality tier
+The view deliberately has no `ci.metadata` column (unbounded JSONB). It is granted to `metabase_readonly` by shape: the grant is skipped when the view is not owned by the owner of `cmdb.dim_ci`, has a column named `metadata`, or carries json/jsonb in any column (including through a domain, array or composite type). `v_top_cost_drivers` (which carries `ci.metadata`) is never granted to BI; use `v_top_cost_drivers_bi`.
+The view deliberately has no `ci.metadata` column (unbounded JSONB); it is granted to `metabase_readonly` on that basis.
 
 **Use Cases**:
 - Cost driver identification
@@ -387,8 +389,26 @@ ORDER BY current_book_value DESC;
 **Sample Query**:
 ```sql
 SELECT ci_name, ci_type, monthly_cost, annual_cost
-FROM v_top_cost_drivers
+FROM v_top_cost_drivers_bi
 LIMIT 10;
+```
+
+#### v_underutilized_resources
+
+**Purpose**: Active CIs under 50% utilization (rightsizing candidates)
+
+**Key Columns**:
+- `ci_name`, `ci_type`, `environment` - CI identity
+- `monthly_cost` - Monthly cost
+- `utilization_pct` - Utilization (numeric `utilization_pct` lifted from CI metadata; non-numeric values are skipped)
+- `potential_savings` - `monthly_cost * (1 - utilization_pct / 100)`
+
+**Sample Query**:
+```sql
+SELECT ci_name, ci_type, monthly_cost, utilization_pct, potential_savings
+FROM v_underutilized_resources
+ORDER BY potential_savings DESC
+LIMIT 20;
 ```
 
 ---
@@ -1098,16 +1118,18 @@ Example: Find services with high cost and low availability
 
 ```sql
 SELECT
-    bs.name AS business_service,
-    bs.operational_status,
-    COALESCE((bs.tbm_attributes->>'total_monthly_cost')::DECIMAL, 0) AS monthly_cost,
-    COALESCE((bs.itil_attributes->>'availability_target')::DECIMAL, 0) AS sla_target,
-    100.0 - COALESCE((bs.itil_attributes->>'availability_current')::DECIMAL, 0) AS availability_gap
-FROM business_services bs
-WHERE COALESCE((bs.tbm_attributes->>'total_monthly_cost')::DECIMAL, 0) > 10000
-  AND 100.0 - COALESCE((bs.itil_attributes->>'availability_current')::DECIMAL, 0) > 5
+    business_service_name AS business_service,
+    operational_status,
+    monthly_cost,
+    availability_30d,
+    100.0 - availability_30d AS availability_gap
+FROM v_service_health_scorecard
+WHERE monthly_cost > 10000
+  AND 100.0 - availability_30d > 5
 ORDER BY monthly_cost DESC, availability_gap DESC;
 ```
+
+> **BI role access**: `metabase_readonly` reads only the allowlisted reporting views, never raw tables such as `business_services`, `itil_incidents`, `itil_changes` or `cmdb.dim_ci`. Query the views in this guide; a query against a raw table fails with `permission denied`.
 
 #### Step 3: Add Parameters (Optional)
 
@@ -1279,6 +1301,35 @@ HappyCMDB Metabase
    - **View** - Read-only access
    - **Curate** - View + edit content
 5. Click **Save Changes**
+
+---
+
+## Tenancy
+
+**Metabase is an internal staff and operator tool. Tenant-facing BI is NOT supported.**
+
+**The BI views contain ALL organizations' rows.** Every view on the `metabase_readonly` allowlist reads `cmdb.dim_ci` and the ITIL, audit and service tables across every organization. The `metabase_readonly` role has no row-level security, the views run with their owner's rights, and Metabase does not restrict a user to one tenant. Anyone who can log in to Metabase and run a question sees every tenant's rows. Give Metabase accounts to platform staff and operators only.
+
+Access is internal by design:
+
+- **Kubernetes:** the manifest defines a `ClusterIP` Service and no Ingress. Reach Metabase with `kubectl port-forward -n happycmdb-cmdb svc/metabase 3000:3000` (then `http://localhost:3000`) or from the internal network. Do not add an Ingress, a public DNS name or a load balancer for it.
+- **Docker Compose:** the `metabase` service publishes its port on `127.0.0.1` only (`http://localhost:3002`). Use an SSH tunnel for remote staff access.
+
+Each allowlisted view carries `organization_id uuid` as its last column (migration `052_bi_views_organization_id.sql`). The column attributes each row to its tenant so staff can slice by organization; it is **not an access control**:
+
+- **16 views carry the owning tenant:** `recent_audit_activity`, `cmdb.v_ci_discovery_summary`, `v_itil_incident_summary`, `v_itil_change_summary`, `v_criticality_distribution`, `v_cost_by_tower`, `v_cost_trends`, `v_cloud_vs_onprem_costs`, `v_top_cost_drivers_bi`, `v_underutilized_resources`, `v_incident_summary`, `v_incident_trends`, `v_change_success_rates`, `v_change_calendar`, `v_configuration_accuracy`, `v_baseline_drift_detection`.
+- **21 views always return `NULL`.** They read the v3.0 service, capability, dependency and TBM tables, which have no tenant column. A filter `organization_id = <tenant>` matches none of their rows.
+
+Rows in `audit_log` and the ITIL tables written before tenant scoping also have a `NULL` organization.
+
+Aggregates are split per tenant: the attributed views return one row per organization and category, `pct_of_total_cost` / `pct_of_total` are shares of that organization's own total (they add up to 100 per organization, not across the view), and `v_top_cost_drivers_bi` keeps the top 20 per organization. A pre-built card that neither filters nor re-aggregates by `organization_id` therefore shows one row per organization.
+
+### Tenant-facing BI (future)
+
+Not supported today, and nothing in this repository makes it safe to expose Metabase to tenants. A future story would need one of:
+
+1. **Postgres-enforced per-tenant access:** per-tenant views (row-level security with `security_invoker` views over the base tables, or views filtered on a session setting) plus a per-tenant database login, so the database refuses other tenants' rows regardless of what Metabase does. A shared `metabase_readonly` login with a filter chosen in the Metabase UI does not qualify.
+2. **A paid Metabase edition with data sandboxing** (a Pro/Enterprise feature, not in the open-source `metabase/metabase` image this repository ships), with a licence. This is a founder decision and conflicts with the project's all-open-source stance.
 
 ---
 
@@ -1643,7 +1694,7 @@ docker logs cmdb-metabase > metabase_logs_$(date +%Y%m%d).log
 
 Metabase provides HappyCMDB v3.0 with enterprise-grade business intelligence capabilities:
 
-- **24 optimized database views** for Cost Analysis, ITIL, and BSM
+- **26 optimized database views** for Cost Analysis, ITIL, and BSM
 - **3 pre-built dashboards** for Executive, FinOps, and ITIL stakeholders
 - **15 pre-configured questions** for common analysis scenarios
 - **Self-service analytics** with visual query builder and SQL editor

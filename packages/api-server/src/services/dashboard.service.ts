@@ -13,9 +13,13 @@ import {
 } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { ownsBusinessService } from './business-service-ownership';
+import { criticalTiersParam } from './critical-ci';
+import { DASHBOARD_QUERY_TIMEOUT_MS, MAX_DASHBOARD_GROUPS } from './dashboard-query';
+import { itilRecordTablesAvailable } from './itil-record-schema';
 
-const DASHBOARD_QUERY_TIMEOUT_MS = 5000;
-const MAX_DASHBOARD_GROUPS = 100;
+const MAX_ITSM_ROWS = 25;
+const MAX_TOP_FAILING_CIS = 5;
+const TOP_FAILING_WINDOW_DAYS = 90;
 
 export class DashboardAggregateLimitError extends Error {
   constructor() {
@@ -26,6 +30,21 @@ export class DashboardAggregateLimitError extends Error {
 const graphNumber = (value: number | Integer | null | undefined): number =>
   value == null ? 0 : neo4j.isInt(value) ? value.toNumber() : value;
 
+const nullableGraphNumber = (value: number | Integer | null | undefined): number | null =>
+  value == null ? null : graphNumber(value);
+
+/** Sum of the known values; null when none is known (no data is not a zero). */
+const sumKnown = (values: Array<number | null>): number | null => {
+  const known = values.filter((value): value is number => value !== null);
+  return known.length === 0 ? null : known.reduce((sum, value) => sum + value, 0);
+};
+
+/**
+ * Dashboard payloads never carry an invented number: a field with no backing
+ * data in the caller's organization is null (or an empty list) and is named in
+ * the payload's `unavailable` list as `<section>.<field>` (or `<section>`).
+ */
+
 export interface TimeRange {
   days: number;
   startDate: string;
@@ -33,10 +52,10 @@ export interface TimeRange {
 }
 
 export interface ExecutiveSummaryData {
-  totalITSpend: number;
+  totalITSpend: number | null;
   costByCapability: Array<{
     capability: string;
-    totalCost: number;
+    totalCost: number | null;
     businessServices: Array<{
       serviceId: string;
       serviceName: string;
@@ -62,9 +81,9 @@ export interface ExecutiveSummaryData {
   }>;
   serviceHealthByTier: Array<{
     tier: string;
-    averageHealthScore: number;
+    averageHealthScore: number | null;
     serviceCount: number;
-    trend: string;
+    trend: string | null;
   }>;
   riskMatrix: {
     services: Array<{
@@ -80,32 +99,34 @@ export interface ExecutiveSummaryData {
     serviceId: string;
     serviceName: string;
     monthlyCost: number;
-    trend: string;
-    changePercent: number;
+    trend: string | null;
+    changePercent: number | null;
   }>;
   valueScorecard: Array<{
     serviceId: string;
     serviceName: string;
-    annualRevenue: number;
-    monthlyCost: number;
-    roi: number;
-    customers: number;
+    annualRevenue: number | null;
+    monthlyCost: number | null;
+    roi: number | null;
+    customers: number | null;
   }>;
+  /** Fields with no backing data; null or empty in this payload. */
+  unavailable: string[];
 }
 
 export interface CIOMetricsData {
   serviceAvailability: Array<{
     tier: string;
-    averageAvailability: number;
-    slaTarget: number;
-    complianceStatus: string;
+    averageAvailability: number | null;
+    slaTarget: number | null;
+    complianceStatus: string | null;
   }>;
   changeSuccessRates: {
-    successful: number;
-    failed: number;
-    rollbacks: number;
-    total: number;
-    successRate: number;
+    successful: number | null;
+    failed: number | null;
+    rollbacks: number | null;
+    total: number | null;
+    successRate: number | null;
   };
   incidentResponseTimes: Array<{
     priority: string;
@@ -115,16 +136,16 @@ export interface CIOMetricsData {
   }>;
   configurationAccuracy: {
     totalCIs: number;
-    accurateCIs: number;
-    accuracyPercentage: number;
-    driftDetected: number;
-    lastAuditDate: string;
+    accurateCIs: number | null;
+    accuracyPercentage: number | null;
+    driftDetected: number | null;
+    lastAuditDate: string | null;
   };
   costByCapability: Array<{
     capability: string;
-    cost: number;
-    budgetAllocated: number;
-    variance: number;
+    cost: number | null;
+    budgetAllocated: number | null;
+    variance: number | null;
   }>;
   capacityPlanning: Array<{
     month: string;
@@ -133,31 +154,40 @@ export interface CIOMetricsData {
     networkUtilization: number;
     forecast: number;
   }>;
+  /** Fields with no backing data; null or empty in this payload. */
+  unavailable: string[];
 }
 
 export interface ITSMDashboardData {
+  /** Incidents not yet resolved, closed or cancelled; most urgent first, at most MAX_ITSM_ROWS. */
   openIncidents: Array<{
     id: string;
     title: string;
     priority: string;
     status: string;
-    affectedCI: string;
-    assignedTeam: string;
+    affectedCI: string | null;
+    assignedTeam: string | null;
     createdAt: string;
     updatedAt: string;
+    /** Whole hours since the incident was reported. */
     age: number;
   }>;
+  /** Total open incidents (not capped by the list); null when the ITIL records are unavailable. */
+  openIncidentCount: number | null;
+  /** Scheduled or in-progress changes; at most MAX_ITSM_ROWS. */
   changesInProgress: Array<{
     id: string;
     title: string;
     status: string;
     type: string;
-    riskLevel: string;
-    scheduledDate: string;
+    riskLevel: string | null;
+    scheduledDate: string | null;
     affectedCIs: string[];
-    assignedTo: string;
+    assignedTo: string | null;
     createdAt: string;
   }>;
+  /** Total scheduled or in-progress changes; null when the ITIL records are unavailable. */
+  changesInProgressCount: number | null;
   ciStatus: Array<{
     status: string;
     count: number;
@@ -170,15 +200,18 @@ export interface ITSMDashboardData {
       lastSeen: string;
     }>;
   }>;
+  /** CIs with the most incidents reported in the last TOP_FAILING_WINDOW_DAYS days. */
   topFailingCIs: Array<{
     ci_id: string;
-    name: string;
-    type: string;
+    /** Null when the incident's CI id is not a CI of this organization's graph. */
+    name: string | null;
+    type: string | null;
     incidentCount: number;
-    mttr: number;
+    /** Mean minutes from reported_at to resolved_at (as GET /itil/metrics/mttr); null when no incident of the CI has a resolved_at. */
+    mttrMinutes: number | null;
     lastFailure: string;
-    recommendation: string;
   }>;
+  /** No SLA targets are stored, so compliance cannot be computed: always empty. */
   slaCompliance: Array<{
     priority: string;
     withinSLA: number;
@@ -186,6 +219,7 @@ export interface ITSMDashboardData {
     compliancePercentage: number;
     target: number;
   }>;
+  /** No drift evaluation is stored: always empty. */
   baselineCompliance: Array<{
     ci_id: string;
     name: string;
@@ -195,6 +229,8 @@ export interface ITSMDashboardData {
     remediationStatus: string;
     lastChecked: string;
   }>;
+  /** Fields with no backing data; null or empty in this payload. */
+  unavailable: string[];
 }
 
 export interface FinOpsDashboardData {
@@ -207,9 +243,9 @@ export interface FinOpsDashboardData {
     forecast: number;
   }>;
   onPremVsCloud: {
-    onPremCost: number;
-    cloudCost: number;
-    totalCost: number;
+    onPremCost: number | null;
+    cloudCost: number | null;
+    totalCost: number | null;
     tcoComparison: Array<{
       category: string;
       onPrem: number;
@@ -218,7 +254,7 @@ export interface FinOpsDashboardData {
   };
   costByTower: Array<{
     tower: string;
-    cost: number;
+    cost: number | null;
     subTowers: Array<{
       name: string;
       cost: number;
@@ -226,10 +262,10 @@ export interface FinOpsDashboardData {
   }>;
   budgetVariance: Array<{
     capability: string;
-    budgetAllocated: number;
-    actualSpend: number;
-    variance: number;
-    variancePercent: number;
+    budgetAllocated: number | null;
+    actualSpend: number | null;
+    variance: number | null;
+    variancePercent: number | null;
   }>;
   unitEconomics: Array<{
     metric: string;
@@ -248,8 +284,10 @@ export interface FinOpsDashboardData {
       description: string;
       priority: string;
     }>;
-    totalPotentialSavings: number;
+    totalPotentialSavings: number | null;
   };
+  /** Fields with no backing data; null or empty in this payload. */
+  unavailable: string[];
 }
 
 export interface BusinessServiceDashboardData {
@@ -258,14 +296,14 @@ export interface BusinessServiceDashboardData {
     businessServices: Array<{
       serviceId: string;
       serviceName: string;
-      healthScore: number;
+      healthScore: number | null;
       status: string;
     }>;
   }>;
   revenueAtRisk: {
-    totalAnnualRevenue: number;
-    revenueAtRisk: number;
-    percentageAtRisk: number;
+    totalAnnualRevenue: number | null;
+    revenueAtRisk: number | null;
+    percentageAtRisk: number | null;
     affectedIncidents: Array<{
       id: string;
       priority: string;
@@ -273,9 +311,9 @@ export interface BusinessServiceDashboardData {
     }>;
   };
   customerImpact: {
-    totalCustomers: number;
-    customersImpacted: number;
-    estimatedUserImpact: number;
+    totalCustomers: number | null;
+    customersImpacted: number | null;
+    estimatedUserImpact: number | null;
     incidents: Array<{
       id: string;
       priority: string;
@@ -283,11 +321,11 @@ export interface BusinessServiceDashboardData {
     }>;
   };
   complianceStatus: {
-    pciCompliant: boolean;
-    hipaaCompliant: boolean;
-    soxCompliant: boolean;
-    gdprCompliant: boolean;
-    lastAuditDate: string;
+    pciCompliant: boolean | null;
+    hipaaCompliant: boolean | null;
+    soxCompliant: boolean | null;
+    gdprCompliant: boolean | null;
+    lastAuditDate: string | null;
     nonCompliantItems: Array<{
       requirement: string;
       status: string;
@@ -301,15 +339,15 @@ export interface BusinessServiceDashboardData {
       throughput: number;
       bottleneck: boolean;
     }>;
-    flowRate: number;
-    cycleTime: number;
+    flowRate: number | null;
+    cycleTime: number | null;
   };
   serviceDependencies: {
     nodes: Array<{
       id: string;
       label: string;
       type: string;
-      healthScore: number;
+      healthScore: number | null;
       status: string;
       layer: number;
     }>;
@@ -318,9 +356,11 @@ export interface BusinessServiceDashboardData {
       from: string;
       to: string;
       type: string;
-      healthImpact: number;
+      healthImpact: number | null;
     }>;
   };
+  /** Fields with no backing data; null or empty in this payload. */
+  unavailable: string[];
 }
 
 export class DashboardService {
@@ -373,11 +413,11 @@ export class DashboardService {
         const riskResult = await session.run(`
           MATCH (ci:CI)
           WHERE ci.status = 'active' AND ci.organization_id = $organizationId
-            AND ci.bsm_business_criticality IN ['tier_1', 'tier_2']
+            AND ci.bsm_business_criticality IN $criticalTiers
           WITH ci ORDER BY ci.id LIMIT 10
           RETURN ci.id AS id, ci.name AS name, ci.type AS type,
             ci.bsm_business_criticality AS criticality
-        `, { organizationId }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
+        `, { organizationId, ...criticalTiersParam() }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
         riskMatrix = { services: riskResult.records.map(row => {
           const criticality = row.get('criticality') as string;
           const type = row.get('type') as string;
@@ -399,8 +439,9 @@ export class DashboardService {
           serviceId: row.get('id'),
           serviceName: row.get('name'),
           monthlyCost: graphNumber(row.get('monthlyCost')),
-          trend: Math.random() > 0.5 ? 'up' : 'down',
-          changePercent: -5 + Math.random() * 15,
+          // The graph keeps no previous-period cost (only tbm_monthly_cost), so no change is computable.
+          trend: null,
+          changePercent: null,
         }));
 
         const valueResult = await session.run(`
@@ -413,27 +454,37 @@ export class DashboardService {
         valueScorecard = valueResult.records.map(row => ({
           serviceId: row.get('id'),
           serviceName: row.get('name'),
-          annualRevenue: 1000000 + Math.random() * 5000000,
-          monthlyCost: graphNumber(row.get('monthlyCost')),
-          roi: 200 + Math.random() * 300,
-          customers: Math.floor(100 + Math.random() * 1000),
+          // No CI property carries revenue, ROI or customer counts.
+          annualRevenue: null,
+          monthlyCost: nullableGraphNumber(row.get('monthlyCost')),
+          roi: null,
+          customers: null,
         }));
       } finally {
         await session.close();
       }
 
-      const totalITSpend = costByCapability.reduce((sum, cap) => sum + cap.totalCost, 0);
-      // Time-series data has not yet been integrated.
-      const costTrends = this.generateCostTrends(timeRange, totalITSpend);
+      const totalITSpend = sumKnown(costByCapability.map(cap => cap.totalCost));
+      const unavailable = [
+        'costTrends',
+        'serviceHealthByTier.averageHealthScore', 'serviceHealthByTier.trend',
+        'topCostDrivers.trend', 'topCostDrivers.changePercent',
+        'valueScorecard.annualRevenue', 'valueScorecard.roi', 'valueScorecard.customers',
+        ...(totalITSpend === null ? ['totalITSpend'] : []),
+        ...(costByCapability.some(cap => cap.totalCost === null) ? ['costByCapability.totalCost'] : []),
+        ...(valueScorecard.some(row => row.monthlyCost === null) ? ['valueScorecard.monthlyCost'] : []),
+      ];
 
       return {
         totalITSpend,
         costByCapability,
-        costTrends,
+        // No cost time series is stored; the graph holds only the current tbm_monthly_cost.
+        costTrends: [],
         serviceHealthByTier,
         riskMatrix,
         topCostDrivers,
         valueScorecard,
+        unavailable,
       };
     } catch (error) {
       logger.error('Error fetching executive summary', { error });
@@ -463,53 +514,32 @@ export class DashboardService {
         await session.close();
       }
 
-      // Service availability remains a mock until ITIL records are integrated.
+      // No availability, change, incident, drift, budget or utilization record feeds this service.
       const serviceAvailability = this.calculateServiceAvailability();
-
-      // Change success rates (mock for now - would come from ITIL change records)
       const changeSuccessRates = {
-        successful: 145,
-        failed: 12,
-        rollbacks: 8,
-        total: 165,
-        successRate: 87.9,
+        successful: null, failed: null, rollbacks: null, total: null, successRate: null,
       };
-
-      // Incident response times (mock for now)
-      const incidentResponseTimes = [
-        { priority: 'P1', mttr: 45, target: 60, count: 12 },
-        { priority: 'P2', mttr: 120, target: 240, count: 34 },
-        { priority: 'P3', mttr: 480, target: 720, count: 78 },
-        { priority: 'P4', mttr: 1440, target: 2880, count: 145 },
-      ];
-
-      // Configuration accuracy
       const configurationAccuracy = {
-        totalCIs,
-        accurateCIs: Math.floor(totalCIs * 0.94),
-        accuracyPercentage: 94.2,
-        driftDetected: Math.floor(totalCIs * 0.06),
-        lastAuditDate: new Date().toISOString(),
+        totalCIs, accurateCIs: null, accuracyPercentage: null, driftDetected: null, lastAuditDate: null,
       };
-
-      // Cost by capability
       const costByCapability = capabilities.map(cap => ({
-        capability: cap.capability,
-        cost: cap.totalCost,
-        budgetAllocated: cap.totalCost * 1.1, // Mock: 10% over budget
-        variance: cap.totalCost * 0.1,
+        capability: cap.capability, cost: cap.totalCost, budgetAllocated: null, variance: null,
       }));
-
-      // Capacity planning (mock data)
-      const capacityPlanning = this.generateCapacityPlan(timeRange);
 
       return {
         serviceAvailability,
         changeSuccessRates,
-        incidentResponseTimes,
+        incidentResponseTimes: [],
         configurationAccuracy,
         costByCapability,
-        capacityPlanning,
+        capacityPlanning: [],
+        unavailable: [
+          'serviceAvailability', 'changeSuccessRates', 'incidentResponseTimes',
+          'configurationAccuracy.accurateCIs', 'configurationAccuracy.accuracyPercentage',
+          'configurationAccuracy.driftDetected', 'configurationAccuracy.lastAuditDate',
+          'costByCapability.budgetAllocated', 'costByCapability.variance', 'capacityPlanning',
+          ...(costByCapability.some(cap => cap.cost === null) ? ['costByCapability.cost'] : []),
+        ],
       };
     } catch (error) {
       logger.error('Error fetching CIO metrics', { error });
@@ -518,14 +548,23 @@ export class DashboardService {
   }
 
   /**
-   * Get ITSM Dashboard data
+   * Get ITSM Dashboard data.
+   *
+   * Incidents and changes come from the organization's itil_* rows; CI status
+   * and CI names from its graph. Nothing is invented: SLA compliance (no stored
+   * targets) and baseline drift (no stored evaluation) are empty and named in
+   * `unavailable`, and every ITIL-derived field is too when the ITIL tables are
+   * absent from the deployed schema.
    */
   async getITSMDashboard(organizationId: string): Promise<ITSMDashboardData> {
     logger.info('Fetching ITSM dashboard data');
 
     try {
+      const itil = await this.queryITILRecords(organizationId);
+
       const session = this.neo4j.getSession();
       let ciStatus: ITSMDashboardData['ciStatus'];
+      let ciIdentity = new Map<string, { name: string | null; type: string | null }>();
       try {
         const statusResult = await session.run(`
           MATCH (ci:CI)
@@ -555,60 +594,143 @@ export class DashboardService {
             lastSeen: ci.properties['updated_at'] || ci.properties['created_at'],
           })),
         }));
+
+        if (itil.topFailing.length > 0) {
+          // An incident's CI id is free text; only this organization's CIs name it.
+          const identities = await session.run(
+            `MATCH (ci:CI) WHERE ci.organization_id = $organizationId AND ci.id IN $ids
+             RETURN ci.id AS id, ci.name AS name, ci.type AS type`,
+            { organizationId, ids: itil.topFailing.map(row => row.ciId) },
+            { timeout: DASHBOARD_QUERY_TIMEOUT_MS }
+          );
+          ciIdentity = new Map(identities.records.map(record => [
+            record.get('id') as string,
+            { name: (record.get('name') as string | null) ?? null, type: (record.get('type') as string | null) ?? null },
+          ]));
+        }
       } finally {
         await session.close();
       }
 
-      // Mock incident and change data (would come from ITIL tables)
-      const openIncidents = [
-        {
-          id: 'INC-001',
-          title: 'Database performance degradation',
-          priority: 'P2',
-          status: 'In Progress',
-          affectedCI: 'db-prod-01',
-          assignedTeam: 'Database Team',
-          createdAt: new Date(Date.now() - 2 * 3600000).toISOString(),
-          updatedAt: new Date(Date.now() - 1800000).toISOString(),
-          age: 2,
-        },
-      ];
-
-      const changesInProgress = [
-        {
-          id: 'CHG-001',
-          title: 'Upgrade PostgreSQL to 15.4',
-          status: 'Scheduled',
-          type: 'Standard',
-          riskLevel: 'Medium',
-          scheduledDate: new Date(Date.now() + 86400000).toISOString(),
-          affectedCIs: ['db-prod-01', 'db-prod-02'],
-          assignedTo: 'Database Team',
-          createdAt: new Date(Date.now() - 86400000).toISOString(),
-        },
-      ];
-
-      const topFailingCIs: any[] = [];
-      const slaCompliance = [
-        { priority: 'P1', withinSLA: 95, total: 100, compliancePercentage: 95, target: 95 },
-        { priority: 'P2', withinSLA: 88, total: 100, compliancePercentage: 88, target: 90 },
-        { priority: 'P3', withinSLA: 92, total: 100, compliancePercentage: 92, target: 85 },
-      ];
-
-      const baselineCompliance: any[] = [];
-
       return {
-        openIncidents,
-        changesInProgress,
+        openIncidents: itil.openIncidents,
+        openIncidentCount: itil.openIncidentCount,
+        changesInProgress: itil.changesInProgress,
+        changesInProgressCount: itil.changesInProgressCount,
         ciStatus,
-        topFailingCIs,
-        slaCompliance,
-        baselineCompliance,
+        topFailingCIs: itil.topFailing.map(row => ({
+          ci_id: row.ciId,
+          name: ciIdentity.get(row.ciId)?.name ?? null,
+          type: ciIdentity.get(row.ciId)?.type ?? null,
+          incidentCount: row.incidentCount,
+          mttrMinutes: row.mttrMinutes,
+          lastFailure: row.lastFailure,
+        })),
+        slaCompliance: [],
+        baselineCompliance: [],
+        unavailable: [
+          ...(itil.available ? [] : [
+            'openIncidents', 'openIncidentCount', 'changesInProgress', 'changesInProgressCount', 'topFailingCIs',
+          ]),
+          'slaCompliance', 'baselineCompliance',
+        ],
       };
     } catch (error) {
       logger.error('Error fetching ITSM dashboard data', { error });
       throw error;
     }
+  }
+
+  /**
+   * The organization's open incidents, in-flight changes and most incident-prone
+   * CIs. Every statement is bound to `organization_id = $1`; rows with a NULL
+   * owner (pre-ownership records) never match. A deployment without the ITIL
+   * tables (catalog check) answers `available: false`; any query failure propagates.
+   */
+  private async queryITILRecords(organizationId: string): Promise<{
+    available: boolean;
+    openIncidents: ITSMDashboardData['openIncidents'];
+    openIncidentCount: number | null;
+    changesInProgress: ITSMDashboardData['changesInProgress'];
+    changesInProgressCount: number | null;
+    topFailing: Array<{
+      ciId: string; incidentCount: number; mttrMinutes: number | null; lastFailure: string;
+    }>;
+  }> {
+    if (!await itilRecordTablesAvailable((sql, params) => this.postgres.query(sql, params), 'itil_incidents', 'itil_changes')) {
+      return {
+        available: false, openIncidents: [], openIncidentCount: null,
+        changesInProgress: [], changesInProgressCount: null, topFailing: [],
+      };
+    }
+    const incidents = await this.postgres.query(
+      `SELECT incident_number, title, priority, status, affected_ci_id, assigned_group,
+              reported_at, updated_at, count(*) OVER () AS total
+         FROM itil_incidents
+        WHERE organization_id = $1 AND status NOT IN ('resolved', 'closed', 'cancelled')
+        ORDER BY priority ASC, reported_at ASC, id
+        LIMIT ${MAX_ITSM_ROWS}`,
+      [organizationId]
+    );
+    const changes = await this.postgres.query(
+      `SELECT change_number, title, status, change_type, risk_assessment->>'risk_level' AS risk_level,
+              scheduled_start, affected_ci_ids, assigned_to, created_at, count(*) OVER () AS total
+         FROM itil_changes
+        WHERE organization_id = $1 AND status IN ('scheduled', 'in_progress')
+        ORDER BY scheduled_start ASC NULLS LAST, created_at DESC, id
+        LIMIT ${MAX_ITSM_ROWS}`,
+      [organizationId]
+    );
+    // Cancelled incidents (opened in error) are not failures.
+    const failing = await this.postgres.query(
+      `SELECT affected_ci_id, count(*) AS incident_count,
+              avg(EXTRACT(EPOCH FROM (resolved_at - reported_at)) / 60)
+                FILTER (WHERE resolved_at IS NOT NULL) AS mttr_minutes, max(reported_at) AS last_failure
+         FROM itil_incidents
+        WHERE organization_id = $1 AND affected_ci_id IS NOT NULL AND affected_ci_id <> ''
+          AND status <> 'cancelled'
+          AND reported_at >= now() - make_interval(days => $2::int)
+        GROUP BY affected_ci_id
+        ORDER BY incident_count DESC, last_failure DESC, affected_ci_id
+        LIMIT ${MAX_TOP_FAILING_CIS}`,
+      [organizationId, TOP_FAILING_WINDOW_DAYS]
+    );
+
+    const now = Date.now();
+    return {
+      available: true,
+      // A page with no rows has no window total: nothing matched.
+      openIncidentCount: incidents.rows.length === 0 ? 0 : Number(incidents.rows[0].total),
+      openIncidents: incidents.rows.map(row => ({
+        id: row.incident_number,
+        title: row.title,
+        priority: `P${row.priority}`,
+        status: row.status,
+        affectedCI: row.affected_ci_id ?? null,
+        assignedTeam: row.assigned_group ?? null,
+        createdAt: new Date(row.reported_at).toISOString(),
+        updatedAt: new Date(row.updated_at).toISOString(),
+        age: Math.max(0, Math.floor((now - new Date(row.reported_at).getTime()) / 3600000)),
+      })),
+      changesInProgressCount: changes.rows.length === 0 ? 0 : Number(changes.rows[0].total),
+      changesInProgress: changes.rows.map(row => ({
+        id: row.change_number,
+        title: row.title,
+        status: row.status,
+        type: row.change_type,
+        riskLevel: row.risk_level ?? null,
+        scheduledDate: row.scheduled_start ? new Date(row.scheduled_start).toISOString() : null,
+        affectedCIs: row.affected_ci_ids ?? [],
+        assignedTo: row.assigned_to ?? null,
+        createdAt: new Date(row.created_at).toISOString(),
+      })),
+      topFailing: failing.rows.map(row => ({
+        ciId: row.affected_ci_id,
+        incidentCount: Number(row.incident_count),
+        mttrMinutes: row.mttr_minutes == null ? null : Math.round(Number(row.mttr_minutes)),
+        lastFailure: new Date(row.last_failure).toISOString(),
+      })),
+    };
   }
 
   /**
@@ -619,65 +741,54 @@ export class DashboardService {
 
     try {
       const session = this.neo4j.getSession();
-      let providerCosts: { awsCost: number; azureCost: number; gcpCost: number; totalCost: number };
+      let totalCost: number | null;
+      let cloudCost: number | null;
+      let onPremCost: number | null;
       let capabilities: ExecutiveSummaryData['costByCapability'];
-      let optimizations: FinOpsDashboardData['costOptimization'];
       try {
         const costs = await session.run(`
           MATCH (ci:CI)
           WHERE ci.status = 'active' AND ci.organization_id = $organizationId
-          RETURN sum(coalesce(ci.tbm_monthly_cost, 0)) AS totalCost,
-            sum(CASE WHEN ci.discovery_provider = 'aws' THEN coalesce(ci.tbm_monthly_cost, 0) ELSE 0 END) AS awsCost,
-            sum(CASE WHEN ci.discovery_provider = 'azure' THEN coalesce(ci.tbm_monthly_cost, 0) ELSE 0 END) AS azureCost,
-            sum(CASE WHEN ci.discovery_provider = 'gcp' THEN coalesce(ci.tbm_monthly_cost, 0) ELSE 0 END) AS gcpCost
+          RETURN sum(ci.tbm_monthly_cost) AS totalCost, count(ci.tbm_monthly_cost) AS costedCIs,
+            sum(CASE WHEN ci.discovery_provider IN ['aws', 'azure', 'gcp'] THEN ci.tbm_monthly_cost END) AS cloudCost,
+            count(CASE WHEN ci.discovery_provider IN ['aws', 'azure', 'gcp'] THEN ci.tbm_monthly_cost END) AS cloudCostedCIs
         `, { organizationId }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
         const row = costs.records[0];
-        providerCosts = {
-          totalCost: graphNumber(row?.get('totalCost')), awsCost: graphNumber(row?.get('awsCost')),
-          azureCost: graphNumber(row?.get('azureCost')), gcpCost: graphNumber(row?.get('gcpCost')),
-        };
+        const costedCIs = graphNumber(row?.get('costedCIs'));
+        const cloudCostedCIs = graphNumber(row?.get('cloudCostedCIs'));
+        totalCost = costedCIs > 0 ? graphNumber(row?.get('totalCost')) : null;
+        // Each segment is known only if a CI in that segment carries a cost.
+        cloudCost = cloudCostedCIs > 0 ? graphNumber(row?.get('cloudCost')) : null;
+        onPremCost = totalCost !== null && costedCIs - cloudCostedCIs > 0
+          ? totalCost - graphNumber(row?.get('cloudCost')) : null;
         capabilities = await this.aggregateCostByCapability(session, organizationId);
-        const sample = await session.run(`
-          MATCH (ci:CI)
-          WHERE ci.status = 'active' AND ci.organization_id = $organizationId
-            AND ci.tbm_monthly_cost > 100
-          WITH ci ORDER BY ci.id LIMIT 5
-          RETURN ci.name AS name, ci.tbm_monthly_cost AS monthlyCost
-        `, { organizationId }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
-        const recommendations = sample.records.map((item, idx) => {
-          const resource = item.get('name') as string;
-          const currentCost = graphNumber(item.get('monthlyCost'));
-          return {
-            id: `OPT-${idx + 1}`, type: 'Rightsizing', resource, currentCost,
-            potentialSavings: currentCost * 0.3,
-            description: `Downsize ${resource} based on utilization patterns`, priority: 'High',
-          };
-        });
-        optimizations = {
-          recommendations,
-          totalPotentialSavings: recommendations.reduce((sum, recommendation) => sum + recommendation.potentialSavings, 0),
-        };
       } finally {
         await session.close();
       }
 
-      const cloudCosts = this.aggregateCloudCosts(providerCosts, timeRange);
-      const cloudCost = providerCosts.awsCost + providerCosts.azureCost + providerCosts.gcpCost;
-      const onPremVsCloud = this.calculateOnPremVsCloud(providerCosts.totalCost - cloudCost, cloudCost);
+      const onPremVsCloud = this.calculateOnPremVsCloud(totalCost, cloudCost, onPremCost);
       const costByTower = capabilities.map(cap => ({
         tower: cap.capability, cost: cap.totalCost, subTowers: [],
       }));
       const budgetVariance = this.calculateBudgetVariance(capabilities);
-      const unitEconomics = this.calculateUnitEconomics();
-      const costOptimization = optimizations;
 
       return {
-        cloudCosts,
+        // No cost time series, budget, unit-economics or utilization data is stored.
+        cloudCosts: [],
         onPremVsCloud,
         costByTower,
         budgetVariance,
-        unitEconomics,
-        costOptimization,
+        unitEconomics: [],
+        costOptimization: { recommendations: [], totalPotentialSavings: null },
+        unavailable: [
+          'cloudCosts', 'onPremVsCloud.tcoComparison',
+          'budgetVariance.budgetAllocated', 'budgetVariance.variance', 'budgetVariance.variancePercent',
+          'unitEconomics', 'costOptimization',
+          ...(totalCost === null ? ['onPremVsCloud.totalCost'] : []),
+          ...(onPremCost === null ? ['onPremVsCloud.onPremCost'] : []),
+          ...(cloudCost === null ? ['onPremVsCloud.cloudCost'] : []),
+          ...(capabilities.some(cap => cap.totalCost === null) ? ['costByTower.cost', 'budgetVariance.actualSpend'] : []),
+        ],
       };
     } catch (error) {
       logger.error('Error fetching FinOps dashboard data', { error });
@@ -722,56 +833,28 @@ export class DashboardService {
         }
       }
 
-      // Health is currently static for both modes; the default route needs no graph read.
-      const serviceHealth = this.aggregateServiceHealth();
-
-      // Revenue at risk
-      const revenueAtRisk = {
-        totalAnnualRevenue: 50000000,
-        revenueAtRisk: 2500000,
-        percentageAtRisk: 5.0,
-        affectedIncidents: [],
-      };
-
-      // Customer impact
-      const customerImpact = {
-        totalCustomers: 10000,
-        customersImpacted: 250,
-        estimatedUserImpact: 750,
-        incidents: [],
-      };
-
-      // Compliance status
-      const complianceStatus = {
-        pciCompliant: true,
-        hipaaCompliant: false,
-        soxCompliant: true,
-        gdprCompliant: true,
-        lastAuditDate: new Date().toISOString(),
-        nonCompliantItems: [],
-      };
-
-      // Value stream health
-      const valueStreamHealth = {
-        stages: [
-          { name: 'Development', healthScore: 85, throughput: 45, bottleneck: false },
-          { name: 'Testing', healthScore: 72, throughput: 32, bottleneck: true },
-          { name: 'Deployment', healthScore: 90, throughput: 38, bottleneck: false },
-        ],
-        flowRate: 38,
-        cycleTime: 7.2,
-      };
-
-      // Service dependencies
+      // No CI health state exists yet (BW1), no incident source feeds revenue or customer
+      // impact, and no compliance, audit or value-stream record is stored.
       const serviceDependencies = await this.getServiceDependencies(organizationId, serviceId);
 
       return {
-        serviceHealth,
-        revenueAtRisk,
-        customerImpact,
-        complianceStatus,
-        valueStreamHealth,
+        serviceHealth: [],
+        revenueAtRisk: {
+          totalAnnualRevenue: null, revenueAtRisk: null, percentageAtRisk: null, affectedIncidents: [],
+        },
+        customerImpact: {
+          totalCustomers: null, customersImpacted: null, estimatedUserImpact: null, incidents: [],
+        },
+        complianceStatus: {
+          pciCompliant: null, hipaaCompliant: null, soxCompliant: null, gdprCompliant: null,
+          lastAuditDate: null, nonCompliantItems: [],
+        },
+        valueStreamHealth: { stages: [], flowRate: null, cycleTime: null },
         serviceDependencies,
+        unavailable: [
+          'serviceHealth', 'revenueAtRisk', 'customerImpact', 'complianceStatus', 'valueStreamHealth',
+          'serviceDependencies.healthScore', 'serviceDependencies.healthImpact',
+        ],
       };
     } catch (error) {
       logger.error('Error fetching business service dashboard data', { error });
@@ -785,6 +868,7 @@ export class DashboardService {
     session: Session, organizationId: string
   ): Promise<ExecutiveSummaryData['costByCapability']> {
     // Group server-side, then admit at most 100 distinct towers. Never transfer a tenant's CI list.
+    // A tower whose CIs carry no tbm_monthly_cost has an unknown cost, not a zero one.
     const result = await session.run(`
       MATCH (ci:CI)
       WHERE ci.status = 'active' AND ci.organization_id = $organizationId
@@ -792,160 +876,55 @@ export class DashboardService {
         WHEN ci.tbm_capability_tower IS NOT NULL AND ci.tbm_capability_tower <> '' THEN ci.tbm_capability_tower
         WHEN ci.tbm_resource_tower IS NOT NULL AND ci.tbm_resource_tower <> '' THEN ci.tbm_resource_tower
         ELSE 'Uncategorized'
-      END AS capability, coalesce(ci.tbm_monthly_cost, 0) AS monthlyCost
-      RETURN capability, sum(monthlyCost) AS totalCost
+      END AS capability, ci.tbm_monthly_cost AS monthlyCost
+      RETURN capability, sum(monthlyCost) AS totalCost, count(monthlyCost) AS costedCIs
       ORDER BY capability LIMIT ${MAX_DASHBOARD_GROUPS + 1}
     `, { organizationId }, { timeout: DASHBOARD_QUERY_TIMEOUT_MS });
     if (result.records.length > MAX_DASHBOARD_GROUPS) throw new DashboardAggregateLimitError();
     return result.records.map(row => ({
       capability: row.get('capability'),
-      totalCost: graphNumber(row.get('totalCost')),
+      totalCost: graphNumber(row.get('costedCIs')) > 0 ? graphNumber(row.get('totalCost')) : null,
       businessServices: [],
     }));
   }
 
-  private generateCostTrends(timeRange: TimeRange, totalCost: number): any[] {
-    const months = Math.ceil(timeRange.days / 30);
-    const trends = [];
-
-    for (let i = 0; i < Math.min(months, 12); i++) {
-      const monthDate = new Date();
-      monthDate.setMonth(monthDate.getMonth() - i);
-
-      trends.unshift({
-        month: monthDate.toISOString().substring(0, 7),
-        total: totalCost * (0.9 + Math.random() * 0.2),
-        compute: totalCost * 0.35,
-        storage: totalCost * 0.15,
-        network: totalCost * 0.10,
-        data: totalCost * 0.15,
-        security: totalCost * 0.10,
-        applications: totalCost * 0.15,
-        budget: totalCost * 1.1,
-        variance: totalCost * 0.05,
-      });
-    }
-
-    return trends;
-  }
-
-  private aggregateHealthByTier(record: { get(key: string): Integer } | undefined): any[] {
+  private aggregateHealthByTier(
+    record: { get(key: string): Integer } | undefined
+  ): ExecutiveSummaryData['serviceHealthByTier'] {
     const tiers = ['tier_1', 'tier_2', 'tier_3', 'tier_4'];
     return tiers.map(tier => ({
       tier,
-      averageHealthScore: 85 + Math.random() * 10,
+      averageHealthScore: null,
       serviceCount: record?.get(tier).toNumber() ?? 0,
-      trend: Math.random() > 0.5 ? 'up' : 'stable',
+      trend: null,
     }));
   }
 
-  private calculateServiceAvailability(): any[] {
+  private calculateServiceAvailability(): CIOMetricsData['serviceAvailability'] {
     const tiers = ['tier_1', 'tier_2', 'tier_3', 'tier_4'];
-
     return tiers.map(tier => ({
-      tier,
-      averageAvailability: 99.5 + Math.random() * 0.49,
-      slaTarget: tier === 'tier_1' ? 99.95 : tier === 'tier_2' ? 99.9 : 99.5,
-      complianceStatus: Math.random() > 0.2 ? 'Compliant' : 'At Risk',
+      tier, averageAvailability: null, slaTarget: null, complianceStatus: null,
     }));
   }
 
-  private generateCapacityPlan(timeRange: TimeRange): any[] {
-    const months = Math.ceil(timeRange.days / 30);
-    const plan = [];
-
-    for (let i = 0; i < Math.min(months, 12); i++) {
-      const monthDate = new Date();
-      monthDate.setMonth(monthDate.getMonth() - i);
-
-      plan.unshift({
-        month: monthDate.toISOString().substring(0, 7),
-        computeUtilization: 60 + Math.random() * 20,
-        storageUtilization: 70 + Math.random() * 15,
-        networkUtilization: 40 + Math.random() * 30,
-        forecast: 75 + i * 2,
-      });
-    }
-
-    return plan;
+  private calculateOnPremVsCloud(
+    totalCost: number | null, cloudCost: number | null, onPremCost: number | null
+  ): FinOpsDashboardData['onPremVsCloud'] {
+    // The per-category TCO split has no backing data.
+    return { onPremCost, cloudCost, totalCost, tcoComparison: [] };
   }
 
-  private aggregateCloudCosts(
-    { awsCost, azureCost, gcpCost }: { awsCost: number; azureCost: number; gcpCost: number },
-    timeRange: TimeRange
-  ): any[] {
-    const months = Math.ceil(timeRange.days / 30);
-    const costs = [];
-
-    for (let i = 0; i < Math.min(months, 12); i++) {
-      const monthDate = new Date();
-      monthDate.setMonth(monthDate.getMonth() - i);
-
-      const variance = 0.9 + Math.random() * 0.2;
-      costs.unshift({
-        month: monthDate.toISOString().substring(0, 7),
-        aws: awsCost * variance,
-        azure: azureCost * variance,
-        gcp: gcpCost * variance,
-        total: (awsCost + azureCost + gcpCost) * variance,
-        forecast: (awsCost + azureCost + gcpCost) * 1.05,
-      });
-    }
-
-    return costs;
-  }
-
-  private calculateOnPremVsCloud(onPremCost: number, cloudCost: number): any {
-
-    return {
-      onPremCost,
-      cloudCost,
-      totalCost: onPremCost + cloudCost,
-      tcoComparison: [
-        { category: 'Compute', onPrem: onPremCost * 0.4, cloud: cloudCost * 0.5 },
-        { category: 'Storage', onPrem: onPremCost * 0.3, cloud: cloudCost * 0.2 },
-        { category: 'Network', onPrem: onPremCost * 0.2, cloud: cloudCost * 0.2 },
-        { category: 'Licensing', onPrem: onPremCost * 0.1, cloud: cloudCost * 0.1 },
-      ],
-    };
-  }
-
-
-  private calculateBudgetVariance(capabilities: ExecutiveSummaryData['costByCapability']): any[] {
+  private calculateBudgetVariance(
+    capabilities: ExecutiveSummaryData['costByCapability']
+  ): FinOpsDashboardData['budgetVariance'] {
+    // The graph holds no budget, so spend has nothing to vary against.
     return capabilities.map(cap => ({
       capability: cap.capability,
-      budgetAllocated: cap.totalCost * 1.1,
+      budgetAllocated: null,
       actualSpend: cap.totalCost,
-      variance: cap.totalCost * 0.1,
-      variancePercent: 10,
+      variance: null,
+      variancePercent: null,
     }));
-  }
-
-  private calculateUnitEconomics(): any[] {
-    return [
-      { metric: 'Cost per User', value: 25.50, unit: 'USD/user/month', trend: 'down', changePercent: -5.2 },
-      { metric: 'Cost per Transaction', value: 0.15, unit: 'USD/transaction', trend: 'down', changePercent: -8.1 },
-      { metric: 'Infrastructure Efficiency', value: 72.5, unit: '%', trend: 'up', changePercent: 3.2 },
-    ];
-  }
-
-  private aggregateServiceHealth(): any[] {
-    return [
-      {
-        businessUnit: 'Customer Experience',
-        businessServices: [
-          { serviceId: 'svc-001', serviceName: 'Web Portal', healthScore: 92, status: 'healthy' },
-          { serviceId: 'svc-002', serviceName: 'Mobile App', healthScore: 88, status: 'healthy' },
-        ],
-      },
-      {
-        businessUnit: 'Internal Operations',
-        businessServices: [
-          { serviceId: 'svc-003', serviceName: 'ERP System', healthScore: 78, status: 'degraded' },
-          { serviceId: 'svc-004', serviceName: 'CRM Platform', healthScore: 95, status: 'healthy' },
-        ],
-      },
-    ];
   }
 
   private async getServiceDependencies(organizationId: string, serviceId?: string): Promise<any> {
@@ -973,7 +952,7 @@ export class DashboardService {
       discovered.add(serviceId);
       nodes.push({
         id: serviceId, label: start.properties['name'], type: start.properties['type'],
-        healthScore: 85, status: start.properties['status'], layer: 1,
+        healthScore: null, status: start.properties['status'], layer: 1,
       });
 
       let frontier = [serviceId];
@@ -1003,7 +982,7 @@ export class DashboardService {
             seenEdges.add(relationshipId);
             edges.push({
               id: relationshipId, from: record.get('fromId'), to: record.get('toId'),
-              type: record.get('relationshipType'), healthImpact: 75,
+              type: record.get('relationshipType'), healthImpact: null,
             });
           }
           if (discovered.has(id)) continue;
@@ -1011,7 +990,7 @@ export class DashboardService {
           if (discovered.size > MAX_CI_TRAVERSAL_NODES) throw new CITraversalLimitError();
           nodes.push({
             id, label: related.properties['name'], type: related.properties['type'],
-            healthScore: 85, status: related.properties['status'], layer,
+            healthScore: null, status: related.properties['status'], layer,
           });
           next.push(id);
         }

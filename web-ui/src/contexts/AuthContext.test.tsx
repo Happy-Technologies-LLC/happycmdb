@@ -5,6 +5,7 @@ import type React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, act, within, type RenderResult } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthProvider, useAuth } from './AuthContext';
 import * as api from '@services/api';
 import { mockApiHandlers } from '@/tests/mocks/handlers';
@@ -63,11 +64,13 @@ const AuthProbe: React.FC = () => {
 
 const renderAuthProbe = () =>
   render(
-    <MemoryRouter>
-      <AuthProvider>
-        <AuthProbe />
-      </AuthProvider>
-    </MemoryRouter>
+    <QueryClientProvider client={new QueryClient()}>
+      <MemoryRouter>
+        <AuthProvider>
+          <AuthProbe />
+        </AuthProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
   );
 
 /** api.refresh as the real one behaves: the refresh cookie buys a new in-memory access token. */

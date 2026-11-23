@@ -11,6 +11,7 @@
  * `unchanged` and writes nothing; `link` adds a stream's relationship once, and nothing here deletes.
  */
 import { createHash } from 'crypto';
+import { ciIncarnationId } from '@cmdb/common';
 import { isInt } from 'neo4j-driver';
 import type { AILifecycle, AuthoritativeSource, CIInput, SourceOwnedCIType } from '@cmdb/common';
 import { JournalAbortedError } from '../journal/journal';
@@ -139,18 +140,33 @@ export class AISyncWriter {
   }
 
   /**
-   * Add the stream's `type` relationship between two of this organization's AI CIs once: `unchanged` (no write) when
-   * it exists. One journaled relationship write by `sync:<stream>` (actor type `system`); there is no unlink.
+   * Add the stream's `type` relationship between two of this organization's AI CIs once. One journaled relationship write by
+   * `sync:<stream>` (actor type `system`); there is no unlink.
+   * HAP-2030: an existing edge is `unchanged` (no graph write, no audit row), but the source still sees it, so it gets one
+   * `static_observed` `supports` receipt per REOBSERVATION_THROTTLE_HOURS (`reobserved`): without it an edge older than the
+   * 7-day window would read stale while the sync still reports it. A recent receipt makes this a cheap read and no journal
+   * operation; an unthrottled edge takes the journaled path, which decides the throttle again under the endpoint slots.
    */
-  async link(organizationId: string, stream: AISyncStream, fromCiId: string, type: string, toCiId: string): Promise<'created' | 'unchanged'> {
+  async link(organizationId: string, stream: AISyncStream, fromCiId: string, type: string, toCiId: string): Promise<'created' | 'unchanged' | 'reobserved'> {
     const route = Object.hasOwn(STREAMS, stream) ? STREAMS[stream] : undefined;
     const allowed = route?.links.find(link => link.type === type);
     if (!allowed) throw new AISyncWriteRefused(`stream ${String(stream)} does not link ${String(type)}`);
     const [from, to] = await Promise.all([fromCiId, toCiId].map(id => this.neo4j.getCIProperties(id, organizationId)));
     if (from?.['type'] !== allowed.from || to?.['type'] !== allowed.to) throw new AISyncWriteRefused(`${type} needs ${allowed.from} -> ${allowed.to}`);
-    if (await this.neo4j.relationshipExists(organizationId, fromCiId, type, toCiId)) return 'unchanged';
+    const evidence = { evidenceClass: 'static_observed', sourceName: 'ai_sync', sourceId: stream, method: 'ai_sync' } as const; // an inventory states the link
+    if (await this.neo4j.relationshipExists(organizationId, fromCiId, type, toCiId)) {
+      // A legacy CI without an incarnation has no receipt to find: it goes to the journaled path, which assigns one.
+      const fromIncarnation = ciIncarnationId(from);
+      const toIncarnation = ciIncarnationId(to);
+      if (fromIncarnation && toIncarnation && await this.neo4j.hasRecentObservation(organizationId, fromCiId, toCiId, type,
+        fromIncarnation, toIncarnation, evidence)) return 'unchanged';
+      const outcome = await this.neo4j.reobserveRelationship(fromCiId, toCiId, type, organizationId, `sync:${stream}`,
+        SOURCE_OWNED_WRITE, evidence);
+      if (outcome !== 'missing') return outcome === 'reobserved' ? 'reobserved' : 'unchanged';
+      // The edge or an endpoint vanished since the check: create it below (a vanished endpoint still ends in a refusal).
+    }
     const written = await this.neo4j.writeRelationship('relationship_create', fromCiId, toCiId, type, organizationId, `sync:${stream}`,
-      {}, SOURCE_OWNED_WRITE, 'system');
+      {}, SOURCE_OWNED_WRITE, 'system', undefined, evidence);
     if (!written) throw new AISyncWriteRefused(`${type} endpoint is missing`);
     return 'created';
   }

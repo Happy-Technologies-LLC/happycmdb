@@ -2,7 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React from 'react';
-import { Icon } from '@happy-technologies/design-system';
+import {
+  Button,
+  Input,
+  Label,
+  NativeSelect,
+  SectionHeading,
+  Tag,
+  Textarea,
+} from '@happy-technologies/design-system';
 import { useForm, Controller } from 'react-hook-form';
 import {
   CI,
@@ -12,7 +20,6 @@ import {
   CreateCIRequest,
   UpdateCIRequest,
 } from '../../services/ci.service';
-import { cn } from '../../utils/cn';
 
 interface CIFormProps {
   ci?: CI;
@@ -94,225 +101,136 @@ export const CIForm: React.FC<CIFormProps> = ({
   };
 
   return (
-    <div className="bg-card rounded-lg border border-border p-6">
-      <h2 className="text-xl font-semibold mb-6">
-        {ci ? 'Edit Configuration Item' : 'Create Configuration Item'}
-      </h2>
+    <div className="p-6">
+      <SectionHeading level={2}>{ci ? 'Edit Configuration Item' : 'Create Configuration Item'}</SectionHeading>
 
       <form onSubmit={onFormSubmit} className="space-y-6">
         <div className="grid grid-cols-1 gap-6">
           {/* Name Field */}
-          <div>
-            <label htmlFor="name" className="block text-sm font-medium text-foreground mb-1">
-              Name <span className="text-danger">*</span>
-            </label>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="name" required>
+              Name
+            </Label>
             <Controller
               name="name"
               control={control}
               rules={{ required: 'Name is required' }}
               render={({ field }) => (
-                <>
-                  <input
-                    {...field}
-                    id="name"
-                    type="text"
-                    className={cn(
-                      'w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-sky/30 focus:border-sky',
-                      errors.name ? 'border-danger' : 'border-line'
-                    )}
-                  />
-                  {errors.name && (
-                    <p className="mt-1 text-sm text-destructive">{errors.name.message}</p>
-                  )}
-                </>
+                <Input {...field} id="name" type="text" error={errors.name?.message} />
               )}
             />
           </div>
 
           {/* Type and Status Row */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label htmlFor="type" className="block text-sm font-medium text-foreground mb-1">
-                Type <span className="text-danger">*</span>
-              </label>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="type" required>
+                Type
+              </Label>
               <Controller
                 name="type"
                 control={control}
                 rules={{ required: 'Type is required' }}
                 render={({ field }) => (
-                  <>
-                    <select
-                      {...field}
-                      id="type"
-                      className={cn(
-                        'w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-sky/30 focus:border-sky',
-                        errors.type ? 'border-danger' : 'border-line'
-                      )}
-                    >
-                      {CI_TYPES.map((type) => (
-                        <option key={type} value={type}>
-                          {formatLabel(type)}
-                        </option>
-                      ))}
-                    </select>
-                    {errors.type && (
-                      <p className="mt-1 text-sm text-destructive">{errors.type.message}</p>
-                    )}
-                  </>
+                  <NativeSelect {...field} id="type" error={errors.type?.message}>
+                    {CI_TYPES.map((type) => (
+                      <option key={type} value={type}>
+                        {formatLabel(type)}
+                      </option>
+                    ))}
+                  </NativeSelect>
                 )}
               />
             </div>
 
-            <div>
-              <label htmlFor="status" className="block text-sm font-medium text-foreground mb-1">
-                Status <span className="text-danger">*</span>
-              </label>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="status" required>
+                Status
+              </Label>
               <Controller
                 name="status"
                 control={control}
                 rules={{ required: 'Status is required' }}
                 render={({ field }) => (
-                  <>
-                    <select
-                      {...field}
-                      id="status"
-                      className={cn(
-                        'w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-sky/30 focus:border-sky',
-                        errors.status ? 'border-danger' : 'border-line'
-                      )}
-                    >
-                      {CI_STATUSES.map((status) => (
-                        <option key={status} value={status}>
-                          {formatLabel(status)}
-                        </option>
-                      ))}
-                    </select>
-                    {errors.status && (
-                      <p className="mt-1 text-sm text-destructive">{errors.status.message}</p>
-                    )}
-                  </>
+                  <NativeSelect {...field} id="status" error={errors.status?.message}>
+                    {CI_STATUSES.map((status) => (
+                      <option key={status} value={status}>
+                        {formatLabel(status)}
+                      </option>
+                    ))}
+                  </NativeSelect>
                 )}
               />
             </div>
           </div>
 
           {/* Environment Field */}
-          <div>
-            <label htmlFor="environment" className="block text-sm font-medium text-foreground mb-1">
-              Environment <span className="text-danger">*</span>
-            </label>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="environment" required>
+              Environment
+            </Label>
             <Controller
               name="environment"
               control={control}
               rules={{ required: 'Environment is required' }}
               render={({ field }) => (
-                <>
-                  <select
-                    {...field}
-                    id="environment"
-                    className={cn(
-                      'w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-sky/30 focus:border-sky',
-                      errors.environment ? 'border-danger' : 'border-line'
-                    )}
-                  >
-                    {ENVIRONMENTS.map((env) => (
-                      <option key={env} value={env}>
-                        {formatLabel(env)}
-                      </option>
-                    ))}
-                  </select>
-                  {errors.environment && (
-                    <p className="mt-1 text-sm text-destructive">{errors.environment.message}</p>
-                  )}
-                </>
+                <NativeSelect {...field} id="environment" error={errors.environment?.message}>
+                  {ENVIRONMENTS.map((env) => (
+                    <option key={env} value={env}>
+                      {formatLabel(env)}
+                    </option>
+                  ))}
+                </NativeSelect>
               )}
             />
           </div>
 
           {/* Description Field */}
-          <div>
-            <label htmlFor="description" className="block text-sm font-medium text-foreground mb-1">
-              Description
-            </label>
-            <Controller
-              name="description"
-              control={control}
-              render={({ field }) => (
-                <>
-                  <textarea
-                    {...field}
-                    id="description"
-                    rows={3}
-                    className={cn(
-                      'w-full px-3 py-2 border rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-sky/30 focus:border-sky',
-                      errors.description ? 'border-danger' : 'border-line'
-                    )}
-                  />
-                  {errors.description && (
-                    <p className="mt-1 text-sm text-destructive">{errors.description.message}</p>
-                  )}
-                </>
-              )}
-            />
-          </div>
+          <Controller
+            name="description"
+            control={control}
+            render={({ field }) => (
+              <Textarea
+                {...field}
+                id="description"
+                label="Description"
+                rows={3}
+                error={errors.description?.message}
+              />
+            )}
+          />
 
           {/* Tags Field */}
-          <div>
-            <label htmlFor="tags" className="block text-sm font-medium text-foreground mb-1">
-              Tags
-            </label>
-            <div className="space-y-2">
-              <input
-                id="tags"
-                type="text"
-                value={tagInput}
-                onChange={(e) => setTagInput(e.target.value)}
-                onKeyDown={handleAddTag}
-                placeholder="Add tags and press Enter"
-                className="w-full px-3 py-2 border border-line rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-sky/30 focus:border-sky"
-              />
-              <p className="text-sm text-muted-foreground">Press Enter to add a tag</p>
-              {tags.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {tags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="inline-flex items-center gap-1 px-3 py-1 bg-sky-soft text-sky-text rounded-full text-sm"
-                    >
-                      {tag}
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteTag(tag)}
-                        className="hover:bg-sky rounded-full p-0.5"
-                      >
-                        <Icon name="x" size={16} />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
+          <div className="space-y-2">
+            <Input
+              id="tags"
+              type="text"
+              label="Tags"
+              hint="Press Enter to add a tag"
+              value={tagInput}
+              onChange={(e) => setTagInput(e.target.value)}
+              onKeyDown={handleAddTag}
+              placeholder="Add tags and press Enter"
+            />
+            {tags.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {tags.map((tag) => (
+                  <Tag key={tag} tone="accent" onRemove={() => handleDeleteTag(tag)}>
+                    {tag}
+                  </Tag>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Action Buttons */}
           <div className="flex justify-end gap-3 pt-4">
-            <button
-              type="button"
-              onClick={onCancel}
-              disabled={isSubmitting}
-              className="inline-flex items-center gap-2 px-4 py-2 border border-line rounded-md shadow-sm text-sm font-medium text-ink bg-white hover:bg-warm focus:outline-none focus:ring-2 focus:ring-sky/30 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Icon name="x" size={16} />
+            <Button variant="secondary" size="md" icon="x" onClick={onCancel} disabled={isSubmitting}>
               Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="inline-flex items-center gap-2 px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-sky hover:bg-sky/90 focus:outline-none focus:ring-2 focus:ring-sky/30 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Icon name="floppy-disk" size={16} />
+            </Button>
+            <Button type="submit" size="md" icon="floppy-disk" disabled={isSubmitting}>
               {isSubmitting ? 'Saving...' : 'Save'}
-            </button>
+            </Button>
           </div>
         </div>
       </form>

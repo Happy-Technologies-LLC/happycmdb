@@ -263,7 +263,7 @@ export const CostAnalyticsDashboard: React.FC = () => {
           </SectionHeading>
           <div className="grid grid-cols-1 gap-6 text-center md:grid-cols-4">
             {[
-              ['Total Saved', `${savings.totalSaved.toFixed(2)}`, 'text-[var(--hh-success-text)]'],
+              ['Total Saved', money(savings.totalSaved, 2), 'text-[var(--hh-success-text)]'],
               ['Cost Reduction', formatPercent(savings.percentSaved, 0), 'text-[var(--hh-accent-text)]'],
               ['Pattern Matches', formatCount(savings.patternHits), ''],
               ['AI Discoveries', formatCount(savings.aiDiscoveries), 'text-[var(--hh-warning-text)]'],

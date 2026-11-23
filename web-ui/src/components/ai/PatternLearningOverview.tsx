@@ -126,7 +126,7 @@ export const PatternLearningOverview: React.FC = () => {
           {...(isKnown(percentSaved)
             ? {
                 value: `${percentSaved.toFixed(0)}%`,
-                sub: isKnown(totalSaved) ? `${totalSaved.toFixed(2)} saved` : NOT_AVAILABLE,
+                sub: isKnown(totalSaved) ? `$${totalSaved.toFixed(2)} saved` : NOT_AVAILABLE,
               }
             : unavailable)}
         />

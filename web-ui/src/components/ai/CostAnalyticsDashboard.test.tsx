@@ -97,4 +97,10 @@ describe('CostAnalyticsDashboard figures', () => {
     expect(screen.queryByText(/Infinity|NaN/)).toBeNull();
     expect(screen.queryByText(/\/session$/)).toBeNull();
   });
+
+  it('shows the pattern learning impact "Total Saved" as money, with its dollar sign', () => {
+    render(<CostAnalyticsDashboard />);
+    const label = screen.getByText('Total Saved');
+    expect(label.previousElementSibling).toHaveTextContent(/^\$5\.50$/);
+  });
 });

@@ -10,6 +10,7 @@
 
 // Direct module imports (not the @cmdb/database barrel), as the other operator
 // scripts do: the barrel also loads queue/cache clients these scripts never use.
+import neo4j from 'neo4j-driver';
 import { Neo4jClient } from '../../../database/src/neo4j/client';
 import { PostgresClient } from '../../../database/src/postgres/client';
 
@@ -46,7 +47,7 @@ throw new Error(`${name} is required`);
 function graphOf(client: Neo4jClient): RotationGraph {
   return {
     read: async (cypher, params) => {
-      const session = client.getSession();
+      const session = client.getSession('neo4j', neo4j.session.READ);
       try {
         return (await session.run(cypher, params)).records.map(record => record.toObject());
       } finally {

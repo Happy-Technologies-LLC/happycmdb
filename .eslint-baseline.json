@@ -76,12 +76,14 @@
  "packages/ai-discovery/src/pattern-matcher.ts": {
   "@typescript-eslint/no-explicit-any": 5,
   "@typescript-eslint/no-unnecessary-type-assertion": 2,
-  "@typescript-eslint/no-unsafe-assignment": 5,
-  "@typescript-eslint/no-unsafe-member-access": 4,
+  "@typescript-eslint/no-unsafe-argument": 1,
+  "@typescript-eslint/no-unsafe-assignment": 4,
+  "@typescript-eslint/no-unsafe-member-access": 7,
   "@typescript-eslint/no-unsafe-return": 3,
   "@typescript-eslint/prefer-nullish-coalescing": 1,
-  "@typescript-eslint/strict-boolean-expressions": 7,
-  "curly": 3,
+  "@typescript-eslint/strict-boolean-expressions": 12,
+  "brace-style": 2,
+  "curly": 14,
   "import/order": 8
  },
  "packages/ai-discovery/src/pattern-plan.ts": {
@@ -179,9 +181,9 @@
   "@typescript-eslint/no-unsafe-assignment": 13,
   "@typescript-eslint/no-unsafe-member-access": 1,
   "@typescript-eslint/prefer-nullish-coalescing": 1,
-  "@typescript-eslint/strict-boolean-expressions": 10,
+  "@typescript-eslint/strict-boolean-expressions": 9,
   "curly": 1,
-  "import/order": 4
+  "import/order": 3
  },
  "packages/ai-discovery/src/tools/index.ts": {
   "@typescript-eslint/prefer-nullish-coalescing": 1,
@@ -202,10 +204,12 @@
   "import/order": 3
  },
  "packages/ai-discovery/src/tools/safe-http.ts": {
-  "@typescript-eslint/explicit-function-return-type": 1,
+  "@typescript-eslint/explicit-function-return-type": 2,
+  "@typescript-eslint/no-unsafe-return": 1,
   "@typescript-eslint/prefer-nullish-coalescing": 1,
-  "@typescript-eslint/strict-boolean-expressions": 3,
-  "curly": 3,
+  "@typescript-eslint/strict-boolean-expressions": 4,
+  "brace-style": 2,
+  "curly": 7,
   "import/order": 3
  },
  "packages/ai-discovery/src/tools/ssh-tool.ts": {
@@ -317,7 +321,7 @@
   "import/order": 4
  },
  "packages/api-server/src/auth/neo4j-auth.repository.ts": {
-  "@typescript-eslint/no-unnecessary-type-assertion": 2,
+  "@typescript-eslint/no-unnecessary-type-assertion": 3,
   "@typescript-eslint/no-unsafe-argument": 1,
   "@typescript-eslint/no-unsafe-assignment": 31,
   "@typescript-eslint/no-unsafe-member-access": 29,
@@ -755,9 +759,9 @@
  },
  "packages/api-server/src/rest/controllers/connector-config/crud.controller.ts": {
   "@typescript-eslint/no-unnecessary-type-assertion": 1,
-  "@typescript-eslint/no-unsafe-argument": 2,
+  "@typescript-eslint/no-unsafe-argument": 5,
   "@typescript-eslint/no-unsafe-assignment": 7,
-  "@typescript-eslint/no-unsafe-member-access": 2,
+  "@typescript-eslint/no-unsafe-member-access": 5,
   "@typescript-eslint/prefer-nullish-coalescing": 1,
   "@typescript-eslint/strict-boolean-expressions": 8,
   "import/order": 9
@@ -767,7 +771,7 @@
   "@typescript-eslint/no-unsafe-assignment": 4,
   "@typescript-eslint/no-unsafe-member-access": 14,
   "@typescript-eslint/prefer-nullish-coalescing": 1,
-  "@typescript-eslint/strict-boolean-expressions": 6,
+  "@typescript-eslint/strict-boolean-expressions": 8,
   "import/order": 6
  },
  "packages/api-server/src/rest/controllers/connector-config/operations.controller.ts": {
@@ -949,7 +953,7 @@
   "import/order": 3
  },
  "packages/api-server/src/rest/controllers/reconciliation.controller.ts": {
-  "@typescript-eslint/no-unnecessary-type-assertion": 2,
+  "@typescript-eslint/no-unnecessary-type-assertion": 3,
   "@typescript-eslint/no-unsafe-argument": 7,
   "@typescript-eslint/no-unsafe-assignment": 41,
   "@typescript-eslint/no-unsafe-member-access": 26,
@@ -972,17 +976,14 @@
  },
  "packages/api-server/src/rest/controllers/search.controller.ts": {
   "@typescript-eslint/explicit-function-return-type": 1,
-  "@typescript-eslint/no-base-to-string": 1,
   "@typescript-eslint/no-unnecessary-type-assertion": 3,
-  "@typescript-eslint/no-unsafe-argument": 1,
   "@typescript-eslint/no-unsafe-assignment": 42,
   "@typescript-eslint/no-unsafe-call": 3,
   "@typescript-eslint/no-unsafe-member-access": 36,
   "@typescript-eslint/prefer-nullish-coalescing": 1,
-  "@typescript-eslint/restrict-template-expressions": 1,
-  "@typescript-eslint/strict-boolean-expressions": 10,
+  "@typescript-eslint/strict-boolean-expressions": 11,
   "brace-style": 6,
-  "curly": 1,
+  "curly": 2,
   "import/no-named-as-default-member": 6,
   "import/order": 8
  },
@@ -1043,7 +1044,8 @@
  },
  "packages/api-server/src/rest/impact-envelope.ts": {
   "@typescript-eslint/prefer-nullish-coalescing": 1,
-  "@typescript-eslint/strict-boolean-expressions": 1
+  "@typescript-eslint/strict-boolean-expressions": 1,
+  "import/order": 1
  },
  "packages/api-server/src/rest/middleware/refresh-cookie.ts": {
   "@typescript-eslint/prefer-nullish-coalescing": 1,
@@ -1198,7 +1200,8 @@
   "import/order": 5
  },
  "packages/api-server/src/rest/routes/search.routes.ts": {
-  "@typescript-eslint/no-unsafe-argument": 4,
+  "@typescript-eslint/no-unsafe-argument": 5,
+  "@typescript-eslint/no-unsafe-return": 1,
   "@typescript-eslint/prefer-nullish-coalescing": 1,
   "@typescript-eslint/strict-boolean-expressions": 1,
   "import/order": 7
@@ -1247,6 +1250,10 @@
   "import/no-duplicates": 2,
   "import/order": 43
  },
+ "packages/api-server/src/rest/statement-timeout.ts": {
+  "@typescript-eslint/prefer-nullish-coalescing": 1,
+  "@typescript-eslint/strict-boolean-expressions": 1
+ },
  "packages/api-server/src/rest/trust-proxy.ts": {
   "@typescript-eslint/prefer-nullish-coalescing": 1,
   "@typescript-eslint/strict-boolean-expressions": 1
@@ -1277,7 +1284,6 @@
   "@typescript-eslint/strict-boolean-expressions": 1
  },
  "packages/api-server/src/services/business-service-reference.ts": {
-  "@typescript-eslint/no-unnecessary-type-assertion": 1,
   "@typescript-eslint/prefer-nullish-coalescing": 1,
   "@typescript-eslint/strict-boolean-expressions": 1
  },
@@ -2450,9 +2456,8 @@
   "import/order": 2
  },
  "packages/event-processor/src/processors/metrics-aggregator.ts": {
-  "@typescript-eslint/no-explicit-any": 4,
+  "@typescript-eslint/no-explicit-any": 2,
   "@typescript-eslint/no-misused-promises": 3,
-  "@typescript-eslint/no-unsafe-argument": 2,
   "@typescript-eslint/no-unsafe-member-access": 7,
   "@typescript-eslint/prefer-nullish-coalescing": 3,
   "@typescript-eslint/strict-boolean-expressions": 3,

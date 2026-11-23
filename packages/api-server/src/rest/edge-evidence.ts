@@ -3,7 +3,7 @@
 
 import { CITraversalLimitError, getNeo4jClient, getPostgresClient, type CIEdgeRef } from '@cmdb/database';
 
-import { boundedStatementTimeoutMs } from './impact-envelope';
+import { boundedStatementTimeoutMs } from './statement-timeout';
 
 /**
  * HAP-2030 (evidence-qualified relationships, story 3): per-edge evidence and DERIVED currentness for the impact reads.

@@ -4,11 +4,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import axios, { AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { Badge } from '@happy-technologies/design-system';
 import { MemoryRouter } from 'react-router-dom';
 import cytoscape from 'cytoscape';
 import { BusinessServiceDashboard } from './BusinessServiceDashboard';
 import { ForbiddenHost } from '@/components/layout/ForbiddenHost';
 import { brand } from '@/lib/brandColors';
+import { EMPTY_VALUE } from '@/lib/dashboardValue';
 import { attachSession } from '@/lib/session';
 import { apiClient } from '@/services/api';
 import type { BusinessServiceDashboardData } from '@/services/dashboard.service';
@@ -374,6 +376,47 @@ describe('controls', () => {
 });
 
 describe('health and genuine zeros', () => {
+  /**
+   * The design-system Badge shows its variant only through its colour classes (`bg-`/`text-`/`border-`
+   * utilities over `--hh-*` tokens). The expected classes are read off a real Badge of that variant, so the
+   * assertion follows the package. The base geometry classes (`rounded-[var(--hh-radius-pill)]`) also carry
+   * `--hh-` but are the same for every variant, so only the colour utilities count.
+   */
+  const TONES = ['neutral', 'success', 'warning', 'danger'] as const;
+  const toneClassCache = new Map<(typeof TONES)[number], string[]>();
+  const badgeToneClasses = (variant: (typeof TONES)[number]) => {
+    const cached = toneClassCache.get(variant);
+    if (cached) return cached;
+    const { unmount } = render(<Badge variant={variant}>reference</Badge>);
+    const classes = screen
+      .getByText('reference')
+      .className.split(/\s+/)
+      .filter(c => /^(bg|text|border)-/.test(c) && c.includes('--hh-'));
+    unmount();
+    expect(classes.length).toBeGreaterThan(0);
+    toneClassCache.set(variant, classes);
+    return classes;
+  };
+
+  it('the design-system Badge renders a distinct colour class set per tone', () => {
+    const sets = TONES.map(tone => badgeToneClasses(tone).slice().sort().join(' '));
+    expect(new Set(sets).size).toBe(TONES.length);
+  });
+
+  const expectTileBadgeTone = (
+    tile: HTMLElement,
+    text: string,
+    tone: (typeof TONES)[number],
+  ) => {
+    const badge = within(tile).getByText(text);
+    const expected = badgeToneClasses(tone);
+    expect(badge).toHaveClass(...expected);
+    for (const other of TONES) {
+      if (other === tone) continue;
+      for (const c of badgeToneClasses(other).filter(c => !expected.includes(c))) expect(badge).not.toHaveClass(c);
+    }
+  };
+
   it('marks a service of unknown health neutral and "unknown", and a scored one by its band', () => {
     renderDashboard({
       ...selectablePayload,
@@ -391,13 +434,13 @@ describe('health and genuine zeros', () => {
     });
 
     const tile = (name: string) => screen.getByText(name).closest('button')!;
-    expect(tile('Quotes')).toHaveAttribute('data-health-tone', 'neutral');
+    expectTileBadgeTone(tile('Quotes'), EMPTY_VALUE, 'neutral');
     expect(tile('Quotes')).toHaveAccessibleName(/unknown/);
     expect(tile('Quotes')).not.toHaveAccessibleName(/healthy|warning|critical/);
-    expect(tile('Checkout')).toHaveAttribute('data-health-tone', 'success');
+    expectTileBadgeTone(tile('Checkout'), '92%', 'success');
     expect(tile('Checkout')).toHaveAccessibleName(/healthy/);
-    expect(tile('Billing')).toHaveAttribute('data-health-tone', 'warning');
-    expect(tile('Search')).toHaveAttribute('data-health-tone', 'danger');
+    expectTileBadgeTone(tile('Billing'), '65%', 'warning');
+    expectTileBadgeTone(tile('Search'), '12%', 'danger');
     expect(tile('Search')).toHaveAccessibleName(/critical/);
   });
 
@@ -416,7 +459,7 @@ describe('health and genuine zeros', () => {
     }, 'Quotes');
 
     expect(screen.getByText('0%')).toBeVisible();
-    expect(screen.getByText('Quotes').closest('button')).toHaveAttribute('data-health-tone', 'danger');
+    expectTileBadgeTone(screen.getByText('Quotes').closest('button')!, '0%', 'danger');
     expect(within(kpiCard('Revenue at Risk')).getByText('$0')).toBeVisible();
     expect(within(kpiCard('Customers Impacted')).getByText('0')).toBeVisible();
     expect(within(kpiCard('Customers Impacted')).getByText('0 total customers')).toBeVisible();

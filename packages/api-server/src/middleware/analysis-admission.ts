@@ -167,8 +167,11 @@ export async function executeBoundedAnalysis(
     });
     const result = await Promise.race([work, timeout]);
     if (Date.now() >= deadline) throw policy.deadlineError();
-    if (policy.render) policy.render(res, result);
-    else res.status(result.status).json(result.body);
+    if (policy.render !== undefined) {
+      policy.render(res, result);
+    } else {
+      res.status(result.status).json(result.body);
+    }
   } catch (error) {
     if (error instanceof CIGapError) {
       res.status(409).json(CI_GAP_RESPONSE);

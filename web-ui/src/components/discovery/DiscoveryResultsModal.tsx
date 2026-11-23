@@ -5,32 +5,17 @@ import React, { useState } from 'react';
 import { DiscoveredCIResult } from '../../services/discovery.service';
 import { useNavigate } from 'react-router-dom';
 import {
+  Badge,
+  Button,
+  ConfidenceBar,
+  DataTable,
   Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../ui/dialog';
-import { Button } from '../ui/button';
-import { Input } from '../ui/input';
-import { Badge } from '../ui/badge';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../ui/select';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '../ui/table';
-import { Icon } from '@happy-technologies/design-system';
+  Input,
+  NativeSelect,
+  Pagination,
+  SectionHeading,
+  type Column,
+} from '@happy-technologies/design-system';
 
 interface DiscoveryResultsModalProps {
   open: boolean;
@@ -62,136 +47,100 @@ export const DiscoveryResultsModal: React.FC<DiscoveryResultsModalProps> = ({
     return matchesSearch && matchesType;
   });
 
-  const paginatedResults = filteredResults.slice(
-    currentPage * pageSize,
-    (currentPage + 1) * pageSize
-  );
   const totalPages = Math.ceil(filteredResults.length / pageSize);
+  // A filter that shrinks the result set must not leave the table on a page past the end.
+  const page = Math.min(currentPage, Math.max(0, totalPages - 1));
+  const paginatedResults = filteredResults.slice(page * pageSize, (page + 1) * pageSize);
+
+  const columns: Array<Column<DiscoveredCIResult>> = [
+    { header: 'Name', className: 'min-w-[200px]', render: (ci) => ci.name },
+    { header: 'Type', render: (ci) => <Badge variant="neutral">{ci.type}</Badge> },
+    { header: 'Source', render: (ci) => <span className="text-xs uppercase">{ci.source}</span> },
+    {
+      header: 'Status',
+      render: (ci) => <Badge variant={ci.status === 'active' ? 'success' : 'info'}>{ci.status}</Badge>,
+    },
+    {
+      header: 'Confidence',
+      // No score is shown as a dash, not as 0%.
+      render: (ci) =>
+        typeof ci.confidenceScore === 'number' ? <ConfidenceBar value={ci.confidenceScore} /> : '\u2013',
+    },
+    {
+      header: 'Actions',
+      render: (ci) => (
+        <Button
+          variant="ghost"
+          icon="arrow-square-out"
+          onClick={() => {
+            navigate(`/inventory/${ci.id}`);
+            onClose();
+          }}
+        >
+          View
+        </Button>
+      ),
+    },
+  ];
 
   return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Discovery Results - Job {jobId}</DialogTitle>
-          <DialogDescription>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      aria-label={`Discovery Results - Job ${jobId}`}
+      className="max-w-6xl!"
+    >
+      <div className="max-h-[90vh] space-y-4 overflow-y-auto p-6">
+        <div>
+          <SectionHeading className="mb-1">Discovery Results - Job {jobId}</SectionHeading>
+          <p className="text-sm text-[var(--hh-text-muted)]">
             {filteredResults.length} of {results.length} CIs
-          </DialogDescription>
-        </DialogHeader>
+          </p>
+        </div>
 
-        <div className="flex gap-4 my-4">
+        <div className="flex gap-4">
           <Input
+            size="sm"
+            aria-label="Search by name or type"
             placeholder="Search by name or type..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="flex-1"
+            containerClassName="flex-1"
           />
-          <Select value={typeFilter} onValueChange={setTypeFilter}>
-            <SelectTrigger className="w-[200px]">
-              <SelectValue placeholder="Filter by type" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Types</SelectItem>
-              {uniqueTypes.map((type) => (
-                <SelectItem key={type} value={type}>
-                  {type}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <NativeSelect
+            size="sm"
+            aria-label="Filter by type"
+            containerClassName="w-[200px]"
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value)}
+          >
+            <option value="all">All Types</option>
+            {uniqueTypes.map((type) => (
+              <option key={type} value={type}>
+                {type}
+              </option>
+            ))}
+          </NativeSelect>
         </div>
 
-        <div className="border rounded-md">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Source</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Confidence</TableHead>
-                <TableHead>Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {paginatedResults.map((ci) => (
-                <TableRow key={ci.id}>
-                  <TableCell className="min-w-[200px]">{ci.name}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{ci.type}</Badge>
-                  </TableCell>
-                  <TableCell>
-                    <span className="text-xs uppercase">{ci.source}</span>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={ci.status === 'active' ? 'secondary' : 'default'}>
-                      {ci.status}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <div className="w-10 h-2 bg-line-soft rounded-full overflow-hidden">
-                        <div
-                          className={`h-full ${
-                            ci.confidenceScore >= 0.8
-                              ? 'bg-success'
-                              : ci.confidenceScore >= 0.5
-                              ? 'bg-warning'
-                              : 'bg-danger'
-                          }`}
-                          style={{ width: `${ci.confidenceScore * 100}%` }}
-                        />
-                      </div>
-                      <span className="text-xs">
-                        {(ci.confidenceScore * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => {
-                        navigate(`/inventory/${ci.id}`);
-                        onClose();
-                      }}
-                    >
-                      <Icon name="arrow-square-out" size={16} className="mr-1" />
-                      View
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
+        <DataTable
+          rows={paginatedResults}
+          columns={columns}
+          rowKey={(ci) => ci.id}
+          caption="Discovered CIs"
+          emptyLabel={results.length === 0 ? 'This job discovered no CIs' : 'No CIs match the current filters'}
+          footer={
+            totalPages > 1 ? (
+              <Pagination
+                page={page + 1}
+                pageCount={totalPages}
+                onChange={(next) => setCurrentPage(next - 1)}
+              />
+            ) : undefined
+          }
+        />
 
-        {totalPages > 1 && (
-          <div className="flex items-center justify-between mt-4">
-            <p className="text-sm text-muted-foreground">
-              Page {currentPage + 1} of {totalPages}
-            </p>
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
-                disabled={currentPage === 0}
-              >
-                Previous
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setCurrentPage((p) => Math.min(totalPages - 1, p + 1))}
-                disabled={currentPage === totalPages - 1}
-              >
-                Next
-              </Button>
-            </div>
-          </div>
-        )}
-
-        <DialogFooter>
+        <div className="flex justify-end gap-3">
           <Button variant="outline" onClick={onClose}>
             Close
           </Button>
@@ -203,8 +152,8 @@ export const DiscoveryResultsModal: React.FC<DiscoveryResultsModalProps> = ({
           >
             View All in Inventory
           </Button>
-        </DialogFooter>
-      </DialogContent>
+        </div>
+      </div>
     </Dialog>
   );
 };

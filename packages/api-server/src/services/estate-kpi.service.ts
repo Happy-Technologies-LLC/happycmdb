@@ -304,7 +304,7 @@ export async function readEstateKpiHistory(
   }
   const kpi_delta = Object.fromEntries(KPI_HISTORY_METRICS.map(metric => {
     const points = kpi_history[metric];
-    return [metric, points.length < 2 ? null : roundDelta(points[points.length - 1]!.value - points[points.length - 2]!.value)];
+    return [metric, points.length < 2 ? null : roundDelta(points[points.length - 1].value - points[points.length - 2].value)];
   })) as KpiDelta;
   return { kpi_history, kpi_delta };
 }

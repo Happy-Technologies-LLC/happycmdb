@@ -18,13 +18,29 @@ import {
  */
 export const AGENT_NOT_FOUND = 'Agent not found';
 
+/** The counters are INTEGER columns; the running totals saturate here instead of raising 22003. */
+const INT4_MAX = 2147483647;
+
+/**
+ * The verified caller of an agent write. Agents are bound to the principal that registered them
+ * (`owner_user_id`): a caller with `orgWide` false (the `agent` role) only touches rows it owns, and a foreign,
+ * ownerless or missing row is the same "not found" for it. `orgWide` (operator, admin) keeps control of every agent
+ * of the organization and is the only caller that may set or clear `disabled`.
+ */
+export interface AgentCaller {
+  /** Verified user id: an API key authenticates as its owning user. */
+  principalId: string;
+  orgWide: boolean;
+}
+
 export class DiscoveryAgentService {
   private postgresClient = getPostgresClient();
 
   /**
-   * Register a new agent or update existing registration
+   * Register a new agent or update existing registration. A fresh registration records the caller as the owner; an
+   * update by an operator/admin claims an ownerless (pre-057) row for that caller and never rewrites an owner.
    */
-  async registerAgent(input: DiscoveryAgentRegistration, organizationId: string): Promise<DiscoveryAgent | null> {
+  async registerAgent(input: DiscoveryAgentRegistration, organizationId: string, caller: AgentCaller): Promise<DiscoveryAgent | null> {
     const client = await this.postgresClient.getClient();
 
     try {
@@ -51,19 +67,22 @@ export class DiscoveryAgentService {
       ];
       const result = input.agent_id
         ? await client.query(
+          // `disabled` is operator-only in both directions: a bound caller's re-registration keeps it.
           `UPDATE discovery_agents SET
             hostname = $2, provider_capabilities = $3, reachable_networks = $4,
             version = $5, platform = $6, arch = $7, api_endpoint = $8, tags = $9,
-            status = 'active', last_heartbeat_at = NOW()
-           WHERE agent_id = $1 AND organization_id = $10
-           RETURNING ${columns}`, values
+            status = ${caller.orgWide ? "'active'" : "CASE WHEN status = 'disabled' THEN status ELSE 'active' END"},
+            owner_user_id = COALESCE(owner_user_id, $11),
+            last_heartbeat_at = NOW()
+           WHERE agent_id = $1 AND organization_id = $10${caller.orgWide ? '' : ' AND owner_user_id = $11'}
+           RETURNING ${columns}`, [...values, caller.principalId]
         )
         : await client.query(
           `INSERT INTO discovery_agents (
             agent_id, organization_id, hostname, provider_capabilities, reachable_networks,
-            version, platform, arch, api_endpoint, tags, status, last_heartbeat_at
-          ) VALUES ($1, $10, $2, $3, $4, $5, $6, $7, $8, $9, 'active', NOW())
-          RETURNING ${columns}`, values
+            version, platform, arch, api_endpoint, tags, status, last_heartbeat_at, owner_user_id
+          ) VALUES ($1, $10, $2, $3, $4, $5, $6, $7, $8, $9, 'active', NOW(), $11)
+          RETURNING ${columns}`, [...values, caller.principalId]
         );
 
       if (result.rows.length === 0) {
@@ -92,9 +111,11 @@ export class DiscoveryAgentService {
   }
 
   /**
-   * Update agent heartbeat
+   * Update agent heartbeat. A bound caller only reaches an agent it owns (anything else is `false`, the same as a
+   * missing agent) and cannot move an agent out of `disabled`. Setting `disabled` is refused one layer up, in the
+   * controller, before any query.
    */
-  async updateHeartbeat(heartbeat: AgentHeartbeat, organizationId: string): Promise<boolean> {
+  async updateHeartbeat(heartbeat: AgentHeartbeat, organizationId: string, caller: AgentCaller): Promise<boolean> {
     const client = await this.postgresClient.getClient();
 
     try {
@@ -105,30 +126,36 @@ export class DiscoveryAgentService {
 
       if (heartbeat.status) {
         params.push(heartbeat.status);
-        updates.push(`status = $${params.length}`);
+        updates.push(caller.orgWide
+          ? `status = $${params.length}`
+          : `status = CASE WHEN status = 'disabled' THEN status ELSE $${params.length}::varchar END`);
       }
 
       if (heartbeat.stats?.jobs_completed !== undefined) {
         params.push(heartbeat.stats.jobs_completed);
-        updates.push(`total_jobs_completed = total_jobs_completed + $${params.length}`);
+        updates.push(`total_jobs_completed = LEAST(total_jobs_completed::bigint + $${params.length}, ${INT4_MAX})::integer`);
       }
 
       if (heartbeat.stats?.jobs_failed !== undefined) {
         params.push(heartbeat.stats.jobs_failed);
-        updates.push(`total_jobs_failed = total_jobs_failed + $${params.length}`);
+        updates.push(`total_jobs_failed = LEAST(total_jobs_failed::bigint + $${params.length}, ${INT4_MAX})::integer`);
       }
 
       if (heartbeat.stats?.cis_discovered !== undefined) {
         params.push(heartbeat.stats.cis_discovered);
-        updates.push(`total_cis_discovered = total_cis_discovered + $${params.length}`);
+        updates.push(`total_cis_discovered = LEAST(total_cis_discovered::bigint + $${params.length}, ${INT4_MAX})::integer`);
       }
 
       params.push(heartbeat.agent_id, organizationId);
+      const scope = `agent_id = $${params.length - 1} AND organization_id = $${params.length}`;
+      if (!caller.orgWide) {
+        params.push(caller.principalId);
+      }
 
       const result = await client.query(
         `UPDATE discovery_agents
          SET ${updates.join(', ')}
-         WHERE agent_id = $${params.length - 1} AND organization_id = $${params.length}`,
+         WHERE ${scope}${caller.orgWide ? '' : ` AND owner_user_id = $${params.length}`}`,
         params
       );
 
@@ -259,8 +286,8 @@ export class DiscoveryAgentService {
         ORDER BY
           -- Prefer agents with better success rate
           CASE
-            WHEN (total_jobs_completed + total_jobs_failed) > 0
-            THEN total_jobs_completed::float / (total_jobs_completed + total_jobs_failed)
+            WHEN (total_jobs_completed::bigint + total_jobs_failed) > 0
+            THEN total_jobs_completed::float / (total_jobs_completed::bigint + total_jobs_failed)
             ELSE 0.5
           END DESC,
           -- Then prefer more recently active agents
@@ -290,13 +317,15 @@ export class DiscoveryAgentService {
   }
 
   /**
-   * Delete an agent
+   * Delete an agent. A bound (agent-role) caller cannot delete a `disabled` one: a fresh registration writes `active`,
+   * so delete-and-register would lift an operator's disable. Same "not found" as any other row it may not touch.
    */
-  async deleteAgent(agentId: string, organizationId: string): Promise<boolean> {
+  async deleteAgent(agentId: string, organizationId: string, caller: AgentCaller): Promise<boolean> {
     try {
       const result = await this.postgresClient.query(
-        'DELETE FROM discovery_agents WHERE agent_id = $1 AND organization_id = $2',
-        [agentId, organizationId]
+        `DELETE FROM discovery_agents WHERE agent_id = $1 AND organization_id = $2${
+          caller.orgWide ? '' : ` AND owner_user_id = $3 AND status <> 'disabled'`}`,
+        caller.orgWide ? [agentId, organizationId] : [agentId, organizationId, caller.principalId]
       );
 
       if (result.rowCount === 0) return false;

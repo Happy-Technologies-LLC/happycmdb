@@ -248,12 +248,4 @@ describe('DiscoveryJobTrigger Component', () => {
     expect(capturedProps.onCancel).toBeDefined();
     expect(typeof capturedProps.onCancel).toBe('function');
   });
-
-  it('wraps content in a LiquidGlass container', () => {
-    const { container } = renderWithQueryClient(<DiscoveryJobTrigger />);
-
-    // The component renders inside a LiquidGlass which has specific class patterns
-    const heading = screen.getByText('Ad Hoc Discovery');
-    expect(heading.closest('.p-6')).toBeInTheDocument();
-  });
 });

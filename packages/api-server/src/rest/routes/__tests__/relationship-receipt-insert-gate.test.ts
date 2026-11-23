@@ -8,8 +8,10 @@
  *
  * Real ciRoutes and relationshipRoutes behind the real JWT middleware, the production journal and Neo4jClient on PGlite; every
  * statement a route sends runs as the NOSUPERUSER app login `cmdb_user` (054's SELECT, INSERT grant on the receipts), fixtures
- * and grant changes run as the table owner. The journal caches readiness per process, so the tests run in order: G1 is the
- * cold gate, G2 the recovery, G3 the warm cache and its 42501 reset.
+ * and grant changes run as the table owner. The journal caches readiness per process, so the tests run in order: G0 is
+ * the cold gate with SELECT revoked (a refused probe is never cached, so the cache stays cold), G1 the cold gate with
+ * INSERT revoked, G2 the recovery, G3 the warm cache and its 42501 reset after an INSERT revocation, G4 the warm-cache
+ * window after a SELECT-only revocation (it also resets the cache on 42501).
  */
 import { fork } from 'child_process';
 import { randomBytes, randomUUID } from 'crypto';

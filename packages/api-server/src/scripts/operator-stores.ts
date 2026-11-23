@@ -10,9 +10,11 @@
 
 // Direct module imports (not the @cmdb/database barrel), as the other operator
 // scripts do: the barrel also loads queue/cache clients these scripts never use.
+import neo4j from 'neo4j-driver';
 import { Neo4jClient } from '../../../database/src/neo4j/client';
 import { PostgresClient } from '../../../database/src/postgres/client';
 
+import { resolveOperatorNeo4jEncrypted, resolveOperatorPostgresTls } from './operator-tls';
 import type { RotationGraph, RotationLock, RotationSql, Row } from './rotate-user-password';
 
 const LOCK_KEY = 'hp1:credential-rotation';
@@ -45,7 +47,7 @@ throw new Error(`${name} is required`);
 function graphOf(client: Neo4jClient): RotationGraph {
   return {
     read: async (cypher, params) => {
-      const session = client.getSession();
+      const session = client.getSession('neo4j', neo4j.session.READ);
       try {
         return (await session.run(cypher, params)).records.map(record => record.toObject());
       } finally {
@@ -162,27 +164,46 @@ return;
   };
 }
 
+/**
+ * Scheme `bolt` or `neo4j` exactly (lower case), a hostname/IPv4 or a bracketed IPv6 literal (it must contain a `:`,
+ * which every IPv6 literal does), then an optional `:port` of 1 to 5 digits. No `m` flag: `$` matches only at the very
+ * end of the input, so a trailing newline is refused. The grammar does not bound the port: `neo4j.driver` constructs
+ * with `:99999` and the range error comes only at connect time, so `assertPlainNeo4jUri` also refuses port 0 and
+ * anything above 65535.
+ */
+const PLAIN_NEO4J_URI =
+  /^(?:bolt|neo4j):\/\/(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[(?=[0-9A-Fa-f.]*:)[0-9A-Fa-f:.]+\])(?::(?<port>\d{1,5}))?$/;
+
+/**
+ * Only a plain scheme: TLS comes from `<encryptedVariable>` (system-CA verified), never from a +s/+ssc scheme (+ssc
+ * trusts any certificate). The message is fixed and never carries the value: a URI can carry credentials.
+ */
+export function assertPlainNeo4jUri(uri: string, variable: string, encryptedVariable: string): void {
+  const match = PLAIN_NEO4J_URI.exec(uri);
+  const port = match?.groups?.['port'];
+  if (match === null || (port !== undefined && (Number(port) < 1 || Number(port) > 65535))) {
+    throw new Error(`${variable} must be bolt://<host>[:port] or neo4j://<host>[:port] (use ${encryptedVariable}=true for TLS)`);
+  }
+}
+
 export function openOperatorStores(env: NodeJS.ProcessEnv): OperatorStores {
   const port = Number(required(env, 'CMDB_ROTATE_POSTGRES_PORT'));
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
 throw new Error('CMDB_ROTATE_POSTGRES_PORT must be a TCP port');
 }
-  const sslSetting = env['CMDB_ROTATE_POSTGRES_SSL'];
-  const ssl: 'require' | 'verify-full' | false = sslSetting === 'require' || sslSetting === 'verify-full' ? sslSetting : false;
-  if (sslSetting !== undefined && ssl === false) {
-throw new Error('CMDB_ROTATE_POSTGRES_SSL must be require or verify-full when set');
-}
-  const encrypted = env['CMDB_ROTATE_NEO4J_ENCRYPTED'];
-  if (encrypted !== undefined && encrypted !== 'true' && encrypted !== 'false') {
-    throw new Error('CMDB_ROTATE_NEO4J_ENCRYPTED must be true or false when set');
-  }
+  const neo4jUri = required(env, 'CMDB_ROTATE_NEO4J_URI');
+  assertPlainNeo4jUri(neo4jUri, 'CMDB_ROTATE_NEO4J_URI', 'CMDB_ROTATE_NEO4J_ENCRYPTED');
+  const postgresHost = required(env, 'CMDB_ROTATE_POSTGRES_HOST');
+  const { ssl, sslCa } = resolveOperatorPostgresTls(env, 'CMDB_ROTATE', postgresHost);
+  const encrypted = resolveOperatorNeo4jEncrypted(env, 'CMDB_ROTATE', neo4jUri);
   const postgres = new PostgresClient({
-    _host: required(env, 'CMDB_ROTATE_POSTGRES_HOST'), _port: port, _database: required(env, 'CMDB_ROTATE_POSTGRES_DB'),
+    _host: postgresHost, _port: port, _database: required(env, 'CMDB_ROTATE_POSTGRES_DB'),
     _user: required(env, 'CMDB_ROTATE_POSTGRES_USER'), _password: required(env, 'CMDB_ROTATE_POSTGRES_PASSWORD'), ssl,
+    ...(sslCa === undefined ? {} : { sslCa }),
   });
   const graph = new Neo4jClient(
-    required(env, 'CMDB_ROTATE_NEO4J_URI'), required(env, 'CMDB_ROTATE_NEO4J_USERNAME'),
-    required(env, 'CMDB_ROTATE_NEO4J_PASSWORD'), { encrypted: encrypted === 'true' }
+    neo4jUri, required(env, 'CMDB_ROTATE_NEO4J_USERNAME'),
+    required(env, 'CMDB_ROTATE_NEO4J_PASSWORD'), { encrypted }
   );
   return {
     graph: graphOf(graph), sql: sqlOf(postgres), lock: lockOf(postgres),
@@ -193,9 +214,3 @@ throw new Error('CMDB_ROTATE_POSTGRES_SSL must be require or verify-full when se
   };
 }
 
-/** Drops the API server's own TLS toggles so only CMDB_ROTATE_* defines connections. */
-export function isolateOperatorEnvironment(env: NodeJS.ProcessEnv): void {
-  for (const name of ['POSTGRES_SSL_MODE', 'POSTGRES_SSL_ENABLED', 'NEO4J_SSL_ENABLED', 'NEO4J_ENCRYPTION', 'NEO4J_SSL_TRUST_STRATEGY']) {
-    delete env[name];
-  }
-}

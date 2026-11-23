@@ -12,6 +12,7 @@ import fs from 'fs';
 import path from 'path';
 import { getPostgresClient } from '@cmdb/database';
 import { logger } from '@cmdb/common';
+import { sanitizeManifestUrl } from './safe-manifest-url';
 
 interface ConnectorMetadata {
   id: string;
@@ -51,6 +52,27 @@ interface ConnectorMetadata {
       default?: any;
     }>;
   };
+}
+
+/**
+ * A shallow copy of the manifest whose `homepage` and `repository` have passed `sanitizeManifestUrl`, so the
+ * registry cache and the stored manifest agree. Empty and absent fields are left as they are; a non-empty
+ * value that is blanked logs one warning naming the field only, never the value. Loading never fails here.
+ */
+function withSanitizedManifestUrls(manifest: ConnectorMetadata): ConnectorMetadata {
+  const metadata: ConnectorMetadata = { ...manifest };
+  for (const field of ['homepage', 'repository'] as const) {
+    const raw: unknown = manifest[field];
+    if (raw === undefined || raw === null || raw === '') {
+      continue;
+    }
+    const clean = sanitizeManifestUrl(raw);
+    if (clean === '') {
+      logger.warn('Connector manifest URL rejected', { field });
+    }
+    metadata[field] = clean;
+  }
+  return metadata;
 }
 
 export class ConnectorLoader {
@@ -167,10 +189,11 @@ export class ConnectorLoader {
    * Register connector metadata in PostgreSQL tables
    */
   private async registerConnectorInDatabase(
-    metadata: ConnectorMetadata,
+    manifest: ConnectorMetadata,
     installPath: string
   ): Promise<void> {
     const pool = this.postgresClient['pool'];
+    const metadata = withSanitizedManifestUrls(manifest);
 
     try {
       // 1. Register in connector_registry_cache (for catalog/discovery)
@@ -186,6 +209,8 @@ export class ConnectorLoader {
           description = EXCLUDED.description,
           latest_version = EXCLUDED.latest_version,
           versions = EXCLUDED.versions,
+          homepage = EXCLUDED.homepage,
+          repository = EXCLUDED.repository,
           fetched_at = NOW()`,
         [
           metadata.type,

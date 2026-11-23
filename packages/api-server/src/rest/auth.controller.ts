@@ -9,7 +9,7 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import { logger, errorClassFields } from '@cmdb/common';
 import {
-  ApiKeyNotFoundError, AuthFailureError, AuthService, CredentialsChangedError, CurrentPasswordIncorrectError,
+  ApiKeyNotFoundError, ApiKeysDisabledError, AuthFailureError, AuthService, CredentialsChangedError, CurrentPasswordIncorrectError,
   OrganizationChangedError, OrganizationRequiredError, PasswordNotAllowedError, type ApiKeyRevocation,
   type CredentialAuditOperation, type PasswordChangeOutcome, type UserProfile,
 } from '../auth/auth.service';
@@ -69,6 +69,10 @@ function credentialRefusal(res: Response, error: unknown): boolean {
   }
   if (error instanceof PasswordNotAllowedError) {
     res.status(400).json({ success: false, error: 'Bad Request', message: 'Password not allowed' });
+    return true;
+  }
+  if (error instanceof ApiKeysDisabledError) {
+    res.status(403).json({ success: false, error: 'Forbidden', message: 'API keys are disabled' });
     return true;
   }
   return false;

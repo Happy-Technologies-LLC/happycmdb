@@ -14,7 +14,6 @@ const { request, apiClient } = vi.hoisted(() => {
 });
 
 vi.mock('axios', () => ({ default: { create: vi.fn(() => apiClient) } }));
-vi.mock('../visualization/DependencyGraph', () => ({ default: () => null }));
 vi.mock('../drift/DriftTrackingPanel', () => ({ default: () => null }));
 vi.mock('./AuditHistory', () => ({ default: () => null }));
 vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
@@ -96,7 +95,7 @@ async function renderRelationshipsTab(waitForTopology = true) {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  await user.click(await screen.findByRole('button', { name: 'Relationships' }));
+  await user.click(await screen.findByRole('tab', { name: 'Relationships' }));
   if (waitForTopology) await screen.findByText('Dependency topology');
   return user;
 }

@@ -281,7 +281,6 @@ export const BusinessServiceDashboard: React.FC = () => {
                         key={service.serviceId}
                         variant="secondary"
                         aria-pressed={selectedService === service.serviceId}
-                        data-health-tone={tone}
                         className={`h-auto flex-col !rounded-[var(--hh-radius-md)] ${
                           selectedService === service.serviceId ? 'ring-2 ring-[var(--hh-accent-text)]' : ''
                         }`}

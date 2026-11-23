@@ -232,4 +232,16 @@ describe('ExecutiveDashboard structure', () => {
     expect(within(table).getAllByRole('row').slice(1).map(r => r.textContent?.slice(0, 8)))
       .toEqual(['checkout', 'storefro']);
   });
+
+  it('orders the scorecard by ROI, highest first, with an unknown ROI last, whatever order the API lists them', async () => {
+    const row = (serviceId: string, serviceName: string, roi: number | null) =>
+      ({ serviceId, serviceName, annualRevenue: null, monthlyCost: null, roi, customers: null });
+    renderWith({
+      ...KNOWN,
+      valueScorecard: [row('u', 'unrated', null), row('l', 'lowroi', 20), row('z', 'zeroroi', 0), row('h', 'highroi', 250), row('m', 'midroi', 90)],
+    });
+    const table = await screen.findByRole('table');
+    const names = within(table).getAllByRole('row').slice(1).map(r => within(r).getAllByRole('cell')[0].textContent);
+    expect(names).toEqual(['highroi', 'midroi', 'lowroi', 'zeroroi', 'unrated']);
+  });
 });

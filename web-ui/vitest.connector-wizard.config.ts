@@ -1,5 +1,6 @@
 import config from './vitest.config';
 
-// CI runs these regressions with this config name. The design system is an installed dependency
-// (@happy-technologies/design-system), so the connector screens render the real components here.
+// CI runs the HAP-1210 / HAP-1234 / HAP-567 regression tests under this config.
+// It resolves @happy-technologies/design-system to the real installed package,
+// so components that render design-system primitives behave as in production.
 export default config;

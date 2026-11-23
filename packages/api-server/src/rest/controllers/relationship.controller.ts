@@ -271,13 +271,25 @@ export class RelationshipController {
         const edge = [organizationId, from_id, to_id, type, fromIncarnation, toIncarnation];
         const where = `organization_id = $1 AND from_ci_id = $2 AND to_ci_id = $3 AND relationship_type = $4
           AND from_incarnation_id = $5 AND to_incarnation_id = $6`;
-        const postgres = getPostgresClient();
-        receipts = (await postgres.query(`SELECT receipt_id, evidence_class, polarity, source_name, source_id, source_version,
-            method, rationale_code, observed_at, observer, observer_type, correlation_id
-          FROM relationship_evidence_receipts WHERE ${where} ORDER BY observed_at DESC, receipt_id LIMIT $7 OFFSET $8`,
-        [...edge, limit, offset])).rows;
-        total = Number((await postgres.query(`SELECT count(*) AS total FROM relationship_evidence_receipts WHERE ${where}`,
-          edge)).rows[0]?.total ?? 0);
+        try {
+          const postgres = getPostgresClient();
+          receipts = (await postgres.query(`SELECT receipt_id, evidence_class, polarity, source_name, source_id, source_version,
+              method, rationale_code, observed_at, observer, observer_type, correlation_id
+            FROM relationship_evidence_receipts WHERE ${where} ORDER BY observed_at DESC, receipt_id LIMIT $7 OFFSET $8`,
+          [...edge, limit, offset])).rows;
+          total = Number((await postgres.query(`SELECT count(*) AS total FROM relationship_evidence_receipts WHERE ${where}`,
+            edge)).rows[0]?.total ?? 0);
+        } catch (error) {
+          // SQLSTATE 42P01 (table missing: rollback window) or 42501 (login lacks SELECT): the write side's schemaFault classes.
+          // Scoped to the two receipt statements: the same codes from the CI lookup above are an ordinary failure. Only the code is logged.
+          const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
+          if (code !== '42P01' && code !== '42501') {
+            throw error;
+          }
+          logger.warn('Relationship evidence read unavailable: receipt table missing or not readable', { code });
+          res.status(503).json({ success: false, error: 'Service Unavailable', message: 'Relationship evidence temporarily unavailable' });
+          return;
+        }
       }
       res.json({ success: true, data: { from_id, to_id, type, receipts },
         pagination: { total, count: receipts.length, offset, limit } });
@@ -341,8 +353,8 @@ export class RelationshipController {
         const total = countResult.records[0]!.get('total').toNumber();
 
         // Get paginated results
-        const limitNum = Math.min(parseInt(limit as string), 1000);
-        const offsetNum = parseInt(offset as string);
+        const limitNum = Math.min(Number(limit), 1000);
+        const offsetNum = Number(offset);
 
         const query = `
           MATCH (from:CI)-[r:${type}]->(to:CI)

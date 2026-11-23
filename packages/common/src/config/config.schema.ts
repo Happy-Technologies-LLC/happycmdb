@@ -16,6 +16,10 @@ export const BCRYPT_ROUNDS_MIN = 10;
 export const BCRYPT_ROUNDS_MAX = 15;
 export const BCRYPT_ROUNDS_DEFAULT = 12;
 
+// Rate-limit budget bounds: see `rateLimit.endpoints` in the schema below.
+const rateLimitMax = (defaultMax: number) => Joi.number().integer().min(0).default(defaultMax);
+const rateLimitWindowMs = (defaultWindowMs: number) => Joi.number().integer().min(1).default(defaultWindowMs);
+
 export const configSchema = Joi.object({
   // Environment
   env: Joi.string()
@@ -173,53 +177,63 @@ export const configSchema = Joi.object({
     }).default(),
 
     endpoints: Joi.object({
+      // Every `max` is a non-negative integer (0 = no limit / no limiter) and every `windowMs` a positive integer: a
+      // negative max would refuse every request and a window of 0 or less stops the limiter limiting, so a bad value
+      // fails the config load instead.
       // REST API - 1000 req/hour per IP (anonymous)
       rest: Joi.object({
-        max: Joi.number().default(1000),
-        windowMs: Joi.number().default(3600000), // 1 hour
+        max: rateLimitMax(1000),
+        windowMs: rateLimitWindowMs(3600000), // 1 hour
       }).default(),
 
       // GraphQL - 500 req/hour per IP (anonymous)
       graphql: Joi.object({
-        max: Joi.number().default(500),
-        windowMs: Joi.number().default(3600000), // 1 hour
+        max: rateLimitMax(500),
+        windowMs: rateLimitWindowMs(3600000), // 1 hour
       }).default(),
 
       // Health endpoints - unlimited
       health: Joi.object({
-        max: Joi.number().default(0), // 0 = unlimited
-        windowMs: Joi.number().default(60000),
+        max: rateLimitMax(0), // 0 = unlimited
+        windowMs: rateLimitWindowMs(60000),
       }).default(),
 
       // Authentication - 20 req/hour per IP
       auth: Joi.object({
-        max: Joi.number().default(20),
-        windowMs: Joi.number().default(3600000), // 1 hour
+        max: rateLimitMax(20),
+        windowMs: rateLimitWindowMs(3600000), // 1 hour
       }).default(),
 
       // POST /auth/login per account (normalized username) + client address: 5 per 15 min (HAP-1091)
       authAccount: Joi.object({
-        max: Joi.number().default(5),
-        windowMs: Joi.number().default(900000), // 15 minutes
+        max: rateLimitMax(5),
+        windowMs: rateLimitWindowMs(900000), // 15 minutes
       }).default(),
 
       // HAP-1764: POST /auth/login per account (normalized username) across ALL client addresses: 20 per 15 min, so
       // one account cannot be guessed at from many addresses. 0 turns this bucket off.
       authAccountGlobal: Joi.object({
-        max: Joi.number().default(20),
-        windowMs: Joi.number().default(900000), // 15 minutes
+        max: rateLimitMax(20),
+        windowMs: rateLimitWindowMs(900000), // 15 minutes
+      }).default(),
+
+      // POST /agents/heartbeat per verified user across all clients: 600 per hour, counting only admitted requests.
+      // 0 = no limiter.
+      agentHeartbeat: Joi.object({
+        max: rateLimitMax(600),
+        windowMs: rateLimitWindowMs(3600000), // 1 hour
       }).default(),
 
       // Discovery endpoints
       discovery: Joi.object({
-        max: Joi.number().default(100),
-        windowMs: Joi.number().default(3600000),
+        max: rateLimitMax(100),
+        windowMs: rateLimitWindowMs(3600000),
       }).default(),
 
       // Admin endpoints
       admin: Joi.object({
-        max: Joi.number().default(200),
-        windowMs: Joi.number().default(3600000),
+        max: rateLimitMax(200),
+        windowMs: rateLimitWindowMs(3600000),
       }).default(),
     }).default(),
 
@@ -429,6 +443,7 @@ export type ConfigSchema = {
       auth: { max: number; windowMs: number };
       authAccount: { max: number; windowMs: number };
       authAccountGlobal: { max: number; windowMs: number };
+      agentHeartbeat: { max: number; windowMs: number };
       discovery: { max: number; windowMs: number };
       admin: { max: number; windowMs: number };
     };

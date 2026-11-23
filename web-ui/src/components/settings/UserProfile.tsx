@@ -10,24 +10,21 @@ import React, { useEffect, useState } from 'react';
 import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Icon } from '@happy-technologies/design-system';
+import {
+  Avatar,
+  Banner,
+  Button,
+  ConfirmDialog,
+  FieldHint,
+  FileUpload,
+  Input,
+  Label,
+  SectionHeading,
+  Separator,
+} from '@happy-technologies/design-system';
 import { useAuth } from '../../contexts/AuthContext';
 import { api } from '../../services/api';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { SecretInput } from '@/components/ui/secret-input';
-import { Label } from '@/components/ui/label';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Separator } from '@/components/ui/separator';
 
 const profileSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
@@ -80,15 +77,12 @@ export const UserProfile: React.FC = () => {
     },
   });
 
-  const handleAvatarChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setAvatar(reader.result as string);
-      };
-      reader.readAsDataURL(file);
-    }
+  const handleAvatarFile = (file: File) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setAvatar(reader.result as string);
+    };
+    reader.readAsDataURL(file);
   };
 
   const onProfileSubmit = async (data: ProfileFormData) => {
@@ -148,102 +142,73 @@ export const UserProfile: React.FC = () => {
     }
   };
 
-  const getInitials = (name: string): string => {
-    const parts = name.split(' ');
-    if (parts.length >= 2) {
-      return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
-    }
-    return name.substring(0, 2).toUpperCase();
-  };
+  const passwordFields = [
+    { name: 'currentPassword', id: 'current-password', label: 'Current Password', autoComplete: 'current-password' },
+    { name: 'newPassword', id: 'new-password', label: 'New Password', autoComplete: 'new-password' },
+    { name: 'confirmPassword', id: 'confirm-password', label: 'Confirm New Password', autoComplete: 'new-password' },
+  ] as const;
 
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold tracking-tight">User Profile</h2>
-        <p className="text-sm text-muted-foreground mt-1">
+        <SectionHeading className="mb-1">User Profile</SectionHeading>
+        <p className="text-sm text-[var(--hh-text-muted)]">
           Manage your profile information and account settings
         </p>
       </div>
 
       {successMessage && (
-        <Alert>
-          <AlertDescription>{successMessage}</AlertDescription>
-        </Alert>
+        <Banner tone="success" icon="check-circle" role="status">
+          {successMessage}
+        </Banner>
       )}
 
-      {errorMessage && (
-        <Alert variant="destructive">
-          <AlertDescription>{errorMessage}</AlertDescription>
-        </Alert>
-      )}
+      {errorMessage && <Banner tone="danger" icon="warning-circle">{errorMessage}</Banner>}
 
       {/* Profile Information */}
-      <form onSubmit={profileForm.handleSubmit(onProfileSubmit)} className="space-y-6 max-w-2xl">
+      <form onSubmit={profileForm.handleSubmit(onProfileSubmit)} className="max-w-2xl space-y-6">
         <div>
-          <h3 className="text-lg font-medium mb-4">Profile Information</h3>
+          <SectionHeading level={3} className="mb-4">Profile Information</SectionHeading>
 
-          <div className="flex items-center gap-4 mb-6">
-            <Avatar className="h-24 w-24">
-              <AvatarImage src={avatar || undefined} alt={user?.full_name} />
-              <AvatarFallback className="text-lg">
-                {user?.full_name && getInitials(user.full_name)}
-              </AvatarFallback>
-            </Avatar>
-            <label htmlFor="avatar-upload" className="cursor-pointer">
-              <Button type="button" variant="outline" size="icon" asChild>
-                <span>
-                  <Icon name="camera" size={16} />
-                </span>
-              </Button>
-              <input
-                id="avatar-upload"
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={handleAvatarChange}
-              />
-            </label>
+          <div className="mb-6 flex items-center gap-4">
+            <Avatar size="lg" name={user?.full_name} src={avatar || undefined} />
+            <FileUpload
+              accept="image/*"
+              label="Upload a profile photo"
+              containerClassName="flex-1"
+              onFiles={([file]) => handleAvatarFile(file)}
+            />
           </div>
 
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="profile-name">Name</Label>
-              <Controller
-                name="name"
-                control={profileForm.control}
-                render={({ field, fieldState }) => (
-                  <div>
-                    <Input
-                      id="profile-name"
-                      {...field}
-                      className={fieldState.error ? 'border-destructive' : ''}
-                    />
-                    {fieldState.error && (
-                      <p className="text-sm text-destructive mt-1">{fieldState.error.message}</p>
-                    )}
-                  </div>
-                )}
-              />
-            </div>
+            <Controller
+              name="name"
+              control={profileForm.control}
+              render={({ field, fieldState }) => (
+                <Input
+                  id="profile-name"
+                  size="sm"
+                  label="Name"
+                  error={fieldState.error?.message}
+                  {...field}
+                />
+              )}
+            />
 
-            <div className="space-y-2">
-              <Label htmlFor="profile-email">Email</Label>
-              <Controller
-                name="email"
-                control={profileForm.control}
-                render={({ field, fieldState }) => (
-                  <div>
-                    <Input
-                      id="profile-email"
-                      {...field}
-                      disabled
-                      className="bg-muted"
-                    />
-                    <p className="text-sm text-muted-foreground mt-1">Email cannot be changed</p>
-                  </div>
-                )}
-              />
-            </div>
+            <Controller
+              name="email"
+              control={profileForm.control}
+              render={({ field }) => (
+                <Input
+                  id="profile-email"
+                  size="sm"
+                  label="Email"
+                  hint="Email cannot be changed"
+                  disabled
+                  {...field}
+                />
+              )}
+            />
           </div>
 
           <Button type="submit" className="mt-4">
@@ -255,73 +220,32 @@ export const UserProfile: React.FC = () => {
       <Separator />
 
       {/* Change Password */}
-      <form onSubmit={passwordForm.handleSubmit(onPasswordSubmit)} className="space-y-6 max-w-2xl">
+      <form onSubmit={passwordForm.handleSubmit(onPasswordSubmit)} className="max-w-2xl space-y-6">
         <div>
-          <h3 className="text-lg font-medium mb-4">Change Password</h3>
+          <SectionHeading level={3} className="mb-4">Change Password</SectionHeading>
 
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="current-password">Current Password</Label>
+            {passwordFields.map(({ name, id, label, autoComplete }) => (
               <Controller
-                name="currentPassword"
+                key={name}
+                name={name}
                 control={passwordForm.control}
                 render={({ field, fieldState }) => (
-                  <div>
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor={id}>{label}</Label>
                     <SecretInput
-                      id="current-password"
-                      autoComplete="current-password"
+                      id={id}
+                      autoComplete={autoComplete}
+                      aria-invalid={fieldState.error ? true : undefined}
+                      aria-describedby={fieldState.error ? `${id}-hint` : undefined}
                       {...field}
                       className={fieldState.error ? 'border-destructive' : ''}
                     />
-                    {fieldState.error && (
-                      <p className="text-sm text-destructive mt-1">{fieldState.error.message}</p>
-                    )}
+                    <FieldHint id={`${id}-hint`} error={fieldState.error?.message} />
                   </div>
                 )}
               />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="new-password">New Password</Label>
-              <Controller
-                name="newPassword"
-                control={passwordForm.control}
-                render={({ field, fieldState }) => (
-                  <div>
-                    <SecretInput
-                      id="new-password"
-                      autoComplete="new-password"
-                      {...field}
-                      className={fieldState.error ? 'border-destructive' : ''}
-                    />
-                    {fieldState.error && (
-                      <p className="text-sm text-destructive mt-1">{fieldState.error.message}</p>
-                    )}
-                  </div>
-                )}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="confirm-password">Confirm New Password</Label>
-              <Controller
-                name="confirmPassword"
-                control={passwordForm.control}
-                render={({ field, fieldState }) => (
-                  <div>
-                    <SecretInput
-                      id="confirm-password"
-                      autoComplete="new-password"
-                      {...field}
-                      className={fieldState.error ? 'border-destructive' : ''}
-                    />
-                    {fieldState.error && (
-                      <p className="text-sm text-destructive mt-1">{fieldState.error.message}</p>
-                    )}
-                  </div>
-                )}
-              />
-            </div>
+            ))}
           </div>
 
           <Button type="submit" className="mt-4">
@@ -333,12 +257,12 @@ export const UserProfile: React.FC = () => {
       <Separator />
 
       {/* HAP-1716: sign out other sessions */}
-      <form onSubmit={onRevokeOthersSubmit} className="space-y-4 max-w-2xl">
-        <h3 className="text-lg font-medium">Sign out other sessions</h3>
-        <p className="text-sm text-muted-foreground">
+      <form onSubmit={onRevokeOthersSubmit} className="max-w-2xl space-y-4">
+        <SectionHeading level={3} className="mb-0">Sign out other sessions</SectionHeading>
+        <p className="text-sm text-[var(--hh-text-muted)]">
           Ends every other session and all your API keys. Your password stays the same and this device stays signed in.
         </p>
-        <div className="space-y-2">
+        <div className="flex flex-col gap-2">
           <Label htmlFor="revoke-others-password">Current password to confirm</Label>
           <SecretInput
             id="revoke-others-password"
@@ -356,37 +280,25 @@ export const UserProfile: React.FC = () => {
 
       {/* Delete Account */}
       <div className="max-w-2xl">
-        <h3 className="text-lg font-medium mb-2 text-destructive">Danger Zone</h3>
-        <p className="text-sm text-muted-foreground mb-4">
+        <SectionHeading level={3} className="mb-2">Danger Zone</SectionHeading>
+        <p className="mb-4 text-sm text-[var(--hh-text-muted)]">
           Once you delete your account, there is no going back. Please be certain.
         </p>
-        <Button
-          variant="destructive"
-          onClick={() => setDeleteDialogOpen(true)}
-        >
+        <Button variant="danger" onClick={() => setDeleteDialogOpen(true)}>
           Delete Account
         </Button>
       </div>
 
       {/* Delete Confirmation Dialog */}
-      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete Account</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete your account? This action cannot be undone and all your data will be permanently removed.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={handleDeleteAccount}>
-              Delete
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        open={deleteDialogOpen}
+        title="Delete Account"
+        body="Are you sure you want to delete your account? This action cannot be undone and all your data will be permanently removed."
+        confirmLabel="Delete"
+        tone="danger"
+        onConfirm={handleDeleteAccount}
+        onCancel={() => setDeleteDialogOpen(false)}
+      />
     </div>
   );
 };

@@ -97,6 +97,17 @@ jest.mock('../../../services/discovery-agent.service', () => ({
   },
 }));
 
+// The heartbeat limiter is covered against a real limiter in discovery-agent.owner-binding.test.ts; here it must not
+// open a Redis connection. Plain functions (not jest.fn) so `resetMocks: true` cannot wipe them.
+jest.mock('@cmdb/database', () => ({ getRedisClient: () => ({ getConnection: () => ({}) }) }));
+jest.mock('../../../middleware/rate-limit.middleware', () => ({
+  RateLimitMiddleware: class {
+    custom() {
+      return (_req: unknown, _res: unknown, next: () => void) => next();
+    }
+  },
+}));
+
 import { logger } from '@cmdb/common';
 import { discoveryAgentRoutes } from '../discovery-agent.routes';
 
@@ -191,6 +202,77 @@ describe('discovery agent routes', () => {
   it('rejects an invalid/unrecognized bearer token with 401', async () => {
     const response = await invoke(testApp(), 'GET', '/agents', undefined, 'Bearer garbage-token');
     expect(response.status).toBe(401);
+    expect(mockRouteHandler).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /agents/heartbeat stats bounds', () => {
+  beforeEach(() => {
+    mockRouteHandler.mockImplementation((_req: Request, res: Response) => {
+      res.status(200).json({});
+    });
+  });
+
+  const heartbeatWith = (stats: Record<string, unknown>) =>
+    invoke(testApp(), 'POST', '/agents/heartbeat', { agent_id: 'agent-1', status: 'active', stats }, 'Bearer agent-token');
+
+  it.each(['jobs_completed', 'jobs_failed', 'cis_discovered'])('%s accepts 0, 1 and the 1000000 maximum', async (stat) => {
+    for (const value of [0, 1, 1_000_000]) {
+      const response = await heartbeatWith({ [stat]: value });
+      expect(response.status).toBe(200);
+    }
+    expect(mockRouteHandler).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(['jobs_completed', 'jobs_failed', 'cis_discovered'])('%s rejects values above the maximum, negatives and fractions with 400', async (stat) => {
+    for (const value of [1_000_001, 2_147_483_648, Number.MAX_SAFE_INTEGER, -1, 1.5]) {
+      const response = await heartbeatWith({ [stat]: value });
+      expect(response.status).toBe(400);
+    }
+    expect(mockRouteHandler).not.toHaveBeenCalled();
+  });
+
+  it('keeps converting a numeric string and hands the handler the number', async () => {
+    mockRouteHandler.mockImplementation((req: Request, res: Response) => {
+      res.status(200).json({ stats: req.body.stats });
+    });
+
+    const response = await heartbeatWith({ jobs_completed: '7' });
+
+    expect(response.status).toBe(200);
+    expect(response.body.stats).toEqual({ jobs_completed: 7 });
+  });
+
+  it('rejects a numeric string above the maximum', async () => {
+    const response = await heartbeatWith({ jobs_completed: '1000001' });
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('POST /agents/register tags bounds', () => {
+  beforeEach(() => {
+    mockRouteHandler.mockImplementation((_req: Request, res: Response) => {
+      res.status(200).json({});
+    });
+  });
+
+  const registerWith = (tags: unknown) =>
+    invoke(
+      testApp(),
+      'POST',
+      '/agents/register',
+      { agent_id: 'agent-1', hostname: 'h', provider_capabilities: ['nmap'], reachable_networks: ['10.0.0.0/24'], tags },
+      'Bearer agent-token'
+    );
+
+  it('accepts 50 tags of 100 characters', async () => {
+    const response = await registerWith(Array.from({ length: 50 }, () => 'x'.repeat(100)));
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects 51 tags and a 101-character tag with 400', async () => {
+    expect((await registerWith(Array.from({ length: 51 }, () => 't'))).status).toBe(400);
+    expect((await registerWith(['x'.repeat(101)])).status).toBe(400);
     expect(mockRouteHandler).not.toHaveBeenCalled();
   });
 });

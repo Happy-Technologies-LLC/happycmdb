@@ -401,6 +401,25 @@ describe('SettingsController', () => {
       expect(updateCall()).toBeUndefined();
     });
 
+    it('binds the insert, the lock and the update of the merge to the session user and the path provider', async () => {
+      mockMergeTransaction(null);
+
+      const req = mockReq({
+        params: { provider: 'aws' },
+        body: { userId: 'user-2', credentials: { accessKeyId: 'A' } },
+      });
+      await controller.updateDiscoveryProviderSettings(req, mockRes());
+
+      const byStatement = (needle: string) =>
+        mockPgQuery.mock.calls.filter(([sql]) => String(sql).includes(needle)) as [string, unknown[]][];
+      const [insert] = byStatement('INSERT INTO discovery_provider_settings');
+      const [lock] = byStatement('FOR UPDATE');
+      const [update] = byStatement('UPDATE discovery_provider_settings');
+      expect(insert![1].slice(0, 2)).toEqual(['user-1', 'aws']);
+      expect(lock![1]).toEqual(['user-1', 'aws']);
+      expect(update![1].slice(0, 2)).toEqual(['user-1', 'aws']);
+    });
+
     it('serializes the read-modify-write: the row is locked FOR UPDATE inside one transaction', async () => {
       mockMergeTransaction(null);
 

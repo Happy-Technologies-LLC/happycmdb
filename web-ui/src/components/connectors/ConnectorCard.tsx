@@ -1,17 +1,37 @@
 import React from 'react';
-import { Icon } from '@happy-technologies/design-system';
-import { Card } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
+import { Badge, Button, Card, Icon } from '@happy-technologies/design-system';
 import { ConnectorRegistry } from '@/services/connector.service';
-import { cn } from '@/lib/utils';
-import { getConnectorIcon, getCategoryColor, getCategoryLabel } from '@/lib/connector-icons';
+import { getConnectorIcon, getCategoryLabel } from '@/lib/connector-icons';
+import { safeExternalUrl } from '@/lib/safe-external-url';
 
 interface ConnectorCardProps {
   connector: ConnectorRegistry;
   isInstalled?: boolean;
   installedVersion?: string;
+  /** Opens the connector's detail. The whole card is clickable and the name is its keyboard-reachable trigger. */
+  onSelect?: () => void;
 }
+
+const TILE_TONE = {
+  accent: 'bg-[var(--hh-accent-bg)] text-[var(--hh-accent-text)]',
+  ai: 'bg-[var(--hh-indigo-bg)] text-[var(--hh-indigo-text)]',
+  success: 'bg-[var(--hh-success-bg)] text-[var(--hh-success-text)]',
+  danger: 'bg-[var(--hh-error-bg)] text-[var(--hh-error-text)]',
+  warning: 'bg-[var(--hh-warning-bg)] text-[var(--hh-warning-text)]',
+  neutral: 'bg-[var(--hh-bg-elevated)] text-[var(--hh-text-muted)]',
+} as const;
+
+const CATEGORY_TONE: Record<string, keyof typeof TILE_TONE> = {
+  itsm: 'accent', 'asset-management': 'accent', ticketing: 'accent',
+  cloud: 'ai', virtualization: 'ai', 'container-orchestration': 'ai',
+  monitoring: 'success', backup: 'success',
+  security: 'danger',
+  identity: 'warning', 'endpoint-management': 'warning',
+};
+
+/** Classes for the tinted tile behind a connector's glyph; the category label always accompanies it. */
+export const categoryTileClass = (category: string): string =>
+  TILE_TONE[CATEGORY_TONE[category?.toLowerCase()] ?? 'neutral'];
 
 // Helper function to infer category from connector type
 const inferCategoryFromType = (connectorType: string): string => {
@@ -58,6 +78,7 @@ export function ConnectorCard({
   connector,
   isInstalled = false,
   installedVersion,
+  onSelect,
 }: ConnectorCardProps) {
 
   // Extract category and icon from metadata if available
@@ -69,96 +90,79 @@ export function ConnectorCard({
   // Determine display category (with intelligent fallback)
   const displayCategory = connectorCategory || inferCategoryFromType(connector.connectorType);
 
-  return (
-    <Card className="group hover:shadow-lg transition-all duration-200 p-6 relative overflow-hidden">
-      {/* Category indicator bar */}
-      <div
-        className={cn(
-          'absolute top-0 left-0 right-0 h-1',
-          getCategoryColor(displayCategory)
-        )}
-      />
+  // The homepage is third-party manifest data: only an http(s) value becomes a button.
+  const homepageUrl = safeExternalUrl(connector.homepage);
 
+  return (
+    <Card className={onSelect ? 'cursor-pointer' : undefined} onClick={onSelect}>
       {/* Header */}
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-3 mb-2">
-            <div className={cn(
-              'flex items-center justify-center w-10 h-10 rounded-lg',
-              getCategoryColor(displayCategory),
-              'bg-opacity-10'
-            )}>
-              <IconComponent size={24} className={cn(
-                displayCategory === 'itsm' && 'text-sky-text',
-                displayCategory === 'cloud' && 'text-navy',
-                displayCategory === 'monitoring' && 'text-success',
-                displayCategory === 'security' && 'text-danger'
-              )} />
+      <div className="mb-4 flex items-start justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="mb-2 flex items-center gap-3">
+            <div
+              aria-hidden="true"
+              className={`flex h-10 w-10 flex-none items-center justify-center rounded-lg ${categoryTileClass(displayCategory)}`}
+            >
+              <IconComponent size={24} />
             </div>
-            <div className="flex-1 min-w-0">
-              <h3 className="text-lg font-semibold truncate">{connector.name}</h3>
+            <div className="min-w-0 flex-1">
+              <div role="heading" aria-level={3} className="truncate text-lg font-semibold">
+                {onSelect ? (
+                  <Button variant="link" size="md" className="max-w-full truncate text-left">
+                    {connector.name}
+                  </Button>
+                ) : (
+                  connector.name
+                )}
+              </div>
               {connector.verified && (
-                <div className="flex items-center gap-1 mt-0.5">
-                  <Icon name="check-circle" size={16} className="text-success flex-shrink-0" />
-                  <span className="text-xs text-success">Verified</span>
-                </div>
+                <Badge variant="success" className="mt-0.5">
+                  <Icon name="check-circle" size={14} className="flex-shrink-0" />
+                  Verified
+                </Badge>
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2 flex-wrap ml-13">
-            <Badge variant="outline" className="text-xs">
-              {getCategoryLabel(displayCategory)}
-            </Badge>
-            <span className="text-xs text-muted-foreground">
-              v{connector.latestVersion}
-            </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="neutral">{getCategoryLabel(displayCategory)}</Badge>
+            <span className="text-xs text-[var(--hh-text-muted)]">v{connector.latestVersion}</span>
             {connector.license && (
-              <span className="text-xs text-muted-foreground">
-                {connector.license}
-              </span>
+              <span className="text-xs text-[var(--hh-text-muted)]">{connector.license}</span>
             )}
           </div>
         </div>
       </div>
 
       {/* Description */}
-      <p className="text-sm text-muted-foreground mb-4 line-clamp-2">
-        {connector.description}
-      </p>
+      <p className="mb-4 line-clamp-2 text-sm text-[var(--hh-text-muted)]">{connector.description}</p>
 
       {/* Tags */}
       {connector.tags && connector.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1 mb-4">
+        <div className="mb-4 flex flex-wrap gap-1">
           {connector.tags.slice(0, 4).map((tag) => (
-            <Badge key={tag} variant="secondary" className="text-xs">
+            <Badge key={tag} variant="default">
               {tag}
             </Badge>
           ))}
-          {connector.tags.length > 4 && (
-            <Badge variant="secondary" className="text-xs">
-              +{connector.tags.length - 4}
-            </Badge>
-          )}
+          {connector.tags.length > 4 && <Badge variant="default">+{connector.tags.length - 4}</Badge>}
         </div>
       )}
 
       {/* Stats */}
-      <div className="flex items-center gap-4 mb-4 text-sm text-muted-foreground">
+      <div className="mb-4 flex items-center gap-4 text-sm text-[var(--hh-text-muted)]">
         <div className="flex items-center gap-1">
           <Icon name="download-simple" size={16} />
           <span>{connector.downloads.toLocaleString()}</span>
         </div>
         <div className="flex items-center gap-1">
-          <Icon name="star" size={16} className="fill-warning text-warning" />
+          <Icon name="star" size={16} />
           <span>{connector.rating.toFixed(1)}</span>
         </div>
       </div>
 
       {/* Author */}
       {connector.author && (
-        <div className="mb-4 text-xs text-muted-foreground">
-          by {connector.author}
-        </div>
+        <div className="mb-4 text-xs text-[var(--hh-text-muted)]">by {connector.author}</div>
       )}
 
       {/* Installation is managed by deployment packaging, not this application. */}
@@ -168,21 +172,21 @@ export function ConnectorCard({
             Installed {installedVersion && `(v${installedVersion})`}
           </Badge>
         ) : (
-          <Badge variant="secondary" className="flex-1 justify-center">
+          <Badge variant="neutral" className="flex-1 justify-center">
             Available for deployment
           </Badge>
         )}
-        {connector.homepage && (
+        {homepageUrl && (
           <Button
             size="sm"
             variant="ghost"
-            className="px-2"
+            icon="arrow-square-out"
             onClick={(e) => {
               e.stopPropagation();
-              window.open(connector.homepage, '_blank');
+              window.open(homepageUrl, '_blank', 'noopener,noreferrer');
             }}
           >
-            <Icon name="arrow-square-out" size={16} />
+            <span className="sr-only">{connector.name} homepage</span>
           </Button>
         )}
       </div>

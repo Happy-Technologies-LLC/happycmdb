@@ -61,8 +61,8 @@ ENCRYPTION_KEY=your-encryption-key-for-sensitive-data-minimum-32-characters
 ENCRYPTION_ALGORITHM=aes-256-gcm       # Default: aes-256-gcm
 
 # API Key Authentication
-API_KEY_HEADER=X-API-Key               # Header name for API keys
-API_KEY_PREFIX=cmdb_                   # Prefix for generated keys
+API_KEYS_ENABLED=true                  # Kill switch: "true" or "false" (case-insensitive); any other value fails startup; default true
+API_KEY_HEADER_NAME=X-API-Key         # Header name for API keys (default X-API-Key)
 
 # Session Configuration
 SESSION_SECRET=your-session-secret-minimum-32-characters

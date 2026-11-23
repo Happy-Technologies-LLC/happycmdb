@@ -258,6 +258,7 @@ export default defineConfig({
             { text: 'Daily Operations', link: '/operations/daily-operations' },
             { text: 'Backup & Restore', link: '/operations/backup-restore' },
             { text: 'Troubleshooting', link: '/operations/troubleshooting' },
+            { text: 'Impact Assessment Measurement', link: '/operations/impact-assessment-measurement' },
             { text: 'Quick Reference Card', link: '/operations/QUICK_REFERENCE_CARD' }
           ]
         },

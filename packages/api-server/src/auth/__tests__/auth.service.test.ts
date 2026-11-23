@@ -11,8 +11,8 @@
 
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { logger } from '@cmdb/common';
-import { ApiKeyNotFoundError, AUTH_TIME_TOLERANCE_SECONDS, AuthService, AuthRepository, OrganizationRequiredError, SESSION_ABSOLUTE_CAP_SECONDS, UserProfileUpdate } from '../auth.service';
-import type { GuardedEpochBump, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite } from '../auth.service';
+import { ApiKeyNotFoundError, ApiKeysDisabledError, AUTH_TIME_TOLERANCE_SECONDS, AuthFailureError, AuthService, AuthRepository, OrganizationRequiredError, SESSION_ABSOLUTE_CAP_SECONDS, UserProfileUpdate } from '../auth.service';
+import type { GuardedEpochBump, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite, UsersByIds } from '../auth.service';
 import { AmbiguousUserIdentityError, User, ApiKey, UserNotFoundError } from '../types';
 import { PasswordService } from '../password.service';
 import { JWTService } from '../jwt.service';
@@ -45,6 +45,16 @@ class InMemoryAuthRepository implements AuthRepository {
 
   async findUserById(id: string): Promise<User | null> {
     return this.users.get(id) || null;
+  }
+
+  /** Ids in `ambiguousIds` have two user nodes. */
+  ambiguousIds = new Set<string>();
+
+  async findUsersByIds(ids: readonly string[]): Promise<UsersByIds> {
+    return {
+      users: new Map(ids.flatMap(id => (this.users.has(id) && !this.ambiguousIds.has(id) ? [[id, this.users.get(id)!] as [string, User]] : []))),
+      ambiguous: ids.filter(id => this.ambiguousIds.has(id)),
+    };
   }
 
   async updateUserLastLogin(): Promise<void> {}
@@ -157,6 +167,29 @@ describe('AuthService profile/password/account lifecycle', () => {
       _createdAt: new Date('2024-01-01'),
       _updatedAt: new Date('2024-01-01'),
     } as User);
+  });
+
+  describe('findEnabledUsers', () => {
+    it('keeps only the enabled users among the ids, the same answer findEnabledUser gives one by one', async () => {
+      repository.users.set('user-off', { ...repository.users.get('user-1')!, _id: 'user-off', _enabled: false } as User);
+      const ids = ['user-1', 'user-off', 'ghost'];
+
+      const batch = await service.findEnabledUsers(ids, 1000);
+
+      expect([...batch.users.keys()]).toEqual(['user-1']);
+      for (const id of ids) {
+        expect((await service.findEnabledUser(id))?._id).toBe(batch.users.get(id)?._id);
+      }
+    });
+
+    it('reports an ambiguous id instead of failing the batch', async () => {
+      repository.ambiguousIds.add('user-1');
+      repository.users.set('user-2', { ...repository.users.get('user-1')!, _id: 'user-2' } as User);
+
+      const batch = await service.findEnabledUsers(['user-1', 'user-2'], 1000);
+
+      expect([[...batch.users.keys()], batch.ambiguous]).toEqual([['user-2'], ['user-1']]);
+    });
   });
 
   describe('getUserProfile', () => {
@@ -425,6 +458,92 @@ describe('AuthService profile/password/account lifecycle', () => {
     it('throws for an unknown user id instead of silently succeeding', async () => {
       await expect(service.deleteAccount('ghost', 0)).rejects.toBeInstanceOf(UserNotFoundError);
       expect(repository.deletedUserIds).toEqual([]);
+    });
+  });
+
+  describe('generateApiKey with the API-key kill switch', () => {
+    it('refuses before any repository read or write when auth.apiKeys.enabled is false', async () => {
+      const disabled = new AuthService({ ...authConfig, apiKeys: { ...authConfig.apiKeys, enabled: false } } as any, repository);
+      const read = jest.spyOn(repository, 'findUserById');
+      const write = jest.spyOn(repository, 'createApiKey');
+
+      await expect(disabled.generateApiKey('user-1', { name: 'ci key' }, 0)).rejects.toThrow(ApiKeysDisabledError);
+      await expect(disabled.generateApiKey('user-1', { name: 'ci key' }, 0)).rejects.toMatchObject({ message: 'API keys are disabled' });
+
+      expect(read).not.toHaveBeenCalled();
+      expect(write).not.toHaveBeenCalled();
+    });
+
+    it('still issues a key when auth.apiKeys.enabled is true', async () => {
+      const write = jest.spyOn(repository, 'createApiKey');
+
+      const issued = await service.generateApiKey('user-1', { name: 'ci key' }, 0);
+
+      expect(issued._apiKey).toMatch(/^[0-9a-f]{64}$/);
+      expect(write).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('verifyApiKey with the API-key kill switch', () => {
+    const seedKey = () => {
+      repository.apiKey = {
+        _id: 'key-1', _key: '', _keyHash: '', _name: 'cli',
+        _userId: 'user-1', _role: 'admin', _tier: 'standard', _enabled: true, _createdAt: new Date(),
+      } as ApiKey;
+    };
+    const withApiKeys = (apiKeys: unknown) => new AuthService({ ...authConfig, apiKeys } as any, repository);
+    const spies = () => ({
+      key: jest.spyOn(repository, 'findApiKeyByKey'),
+      user: jest.spyOn(repository, 'findUserById'),
+      used: jest.spyOn(repository, 'updateApiKeyLastUsed'),
+    });
+
+    it('refuses a key that verifies with the flag on, before any repository access', async () => {
+      seedKey();
+      await expect(service.verifyApiKey('opaque')).resolves.toMatchObject({ _userId: 'user-1' });
+      const disabled = withApiKeys({ ...authConfig.apiKeys, enabled: false });
+      const { key, user, used } = spies();
+      key.mockClear();
+      user.mockClear();
+      used.mockClear();
+
+      const failure = await disabled.verifyApiKey('opaque').catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(AuthFailureError);
+      expect(failure).toMatchObject({ reason: 'api_keys_disabled', message: 'Authentication failed' });
+      expect(key).not.toHaveBeenCalled();
+      expect(user).not.toHaveBeenCalled();
+      expect(used).not.toHaveBeenCalled();
+    });
+
+    it('gives an unknown key the same refusal without a lookup (no existence oracle)', async () => {
+      const disabled = withApiKeys({ ...authConfig.apiKeys, enabled: false });
+      const { key } = spies();
+
+      await expect(disabled.verifyApiKey('never-issued')).rejects.toMatchObject({ reason: 'api_keys_disabled', message: 'Authentication failed' });
+
+      expect(key).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['enabled: true', { enabled: true, headerName: 'X-API-Key' }],
+      ['apiKeys config absent', undefined],
+    ])('still verifies and records use with %s', async (_label, apiKeys) => {
+      seedKey();
+      const { used } = spies();
+
+      await expect(withApiKeys(apiKeys).verifyApiKey('opaque')).resolves.toMatchObject({ _userId: 'user-1' });
+
+      expect(used).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves listApiKeys and revokeApiKey available with the flag off', async () => {
+      const disabled = withApiKeys({ ...authConfig.apiKeys, enabled: false });
+      repository.listedApiKeys = [{ _id: 'key-1', _name: 'cli' } as Omit<ApiKey, '_key' | '_keyHash'>];
+
+      await expect(disabled.listApiKeys('user-1')).resolves.toHaveLength(1);
+      await expect(disabled.revokeApiKey('user-1', 'key-1')).resolves.toBeUndefined();
+      expect(repository.apiKeyDeleteRequests).toEqual([['user-1', 'key-1']]);
     });
   });
 

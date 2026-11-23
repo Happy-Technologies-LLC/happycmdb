@@ -1,0 +1,175 @@
+cmdb.dim_ci|SELECT|t
+cmdb.fact_ci_relationships|SELECT|t
+cmdb.fact_discovery|SELECT|t
+database cmdb|CONNECT|t
+database cmdb|TEMP|t
+function auth_credential_events_append_only()|EXECUTE|t
+function cmdb.get_date_key(timestamp with time zone)|EXECUTE|t
+function connector_jsonb_merge(jsonb,jsonb)|EXECUTE|t
+function connector_jsonb_nodes(jsonb,integer)|EXECUTE|t
+function enforce_connector_config_organization()|EXECUTE|t
+function enforce_connector_run_organization()|EXECUTE|t
+function estate_kpi_snapshots_append_only()|EXECUTE|t
+function get_pattern_success_rate(character varying)|EXECUTE|t
+function log_ci_change()|EXECUTE|t
+function reconciliation_conflicts_immutable()|EXECUTE|t
+function relationship_evidence_receipts_append_only()|EXECUTE|t
+function update_connector_configurations_updated_at()|EXECUTE|t
+function update_credentials_updated_at()|EXECUTE|t
+function update_discovery_agents_updated_at()|EXECUTE|t
+function update_discovery_definitions_updated_at()|EXECUTE|t
+function update_installed_connectors_updated_at()|EXECUTE|t
+function update_pattern_stats()|EXECUTE|t
+public.ai_discovery_patterns|DELETE|t
+public.ai_discovery_patterns|INSERT|t
+public.ai_discovery_patterns|SELECT|t
+public.ai_discovery_patterns|UPDATE|t
+public.ai_discovery_sessions|SELECT|t
+public.ai_pattern_review_history|INSERT|t
+public.ai_pattern_review_history|SELECT|t
+public.ai_pattern_usage|SELECT|t
+public.ai_sync_cursors|INSERT|t
+public.ai_sync_cursors|SELECT|t
+public.ai_sync_cursors|UPDATE|t
+public.anomalies|INSERT|t
+public.anomalies|SELECT|t
+public.anomalies|UPDATE|t
+public.api_keys|DELETE|t
+public.api_keys|INSERT|t
+public.api_keys|SELECT|t
+public.api_keys|UPDATE|t
+public.architecture_analyses|INSERT|t
+public.architecture_analyses|SELECT|t
+public.architecture_analyses|UPDATE|t
+public.audit_log|INSERT|t
+public.audit_log|SELECT|t
+public.auth_credential_events|INSERT|t
+public.baseline_snapshots|DELETE|t
+public.baseline_snapshots|INSERT|t
+public.baseline_snapshots|SELECT|t
+public.baseline_snapshots|UPDATE|t
+public.business_service_dependencies_id_seq|USAGE|t
+public.business_service_dependencies|DELETE|t
+public.business_service_dependencies|INSERT|t
+public.business_service_dependencies|SELECT|t
+public.business_service_dependencies|UPDATE|t
+public.ci_business_service_mappings_id_seq|USAGE|t
+public.ci_business_service_mappings|DELETE|t
+public.ci_business_service_mappings|INSERT|t
+public.ci_business_service_mappings|SELECT|t
+public.ci_business_service_mappings|UPDATE|t
+public.ci_change_history|INSERT|t
+public.ci_change_history|SELECT|t
+public.ci_change_statistics|SELECT|t
+public.ci_criticality_scores|DELETE|t
+public.ci_criticality_scores|INSERT|t
+public.ci_criticality_scores|SELECT|t
+public.ci_criticality_scores|UPDATE|t
+public.ci_field_sources|INSERT|t
+public.ci_field_sources|SELECT|t
+public.ci_field_sources|UPDATE|t
+public.ci_reconciliation_epochs|INSERT|t
+public.ci_reconciliation_epochs|SELECT|t
+public.ci_reconciliation_epochs|UPDATE|t
+public.ci_reconciliation_operations|INSERT|t
+public.ci_reconciliation_operations|SELECT|t
+public.ci_reconciliation_operations|UPDATE|t
+public.ci_source_lineage|INSERT|t
+public.ci_source_lineage|SELECT|t
+public.ci_source_lineage|UPDATE|t
+public.connector_configurations|DELETE|t
+public.connector_configurations|INSERT|t
+public.connector_configurations|SELECT|t
+public.connector_configurations|UPDATE|t
+public.connector_registry_cache|INSERT|t
+public.connector_registry_cache|SELECT|t
+public.connector_registry_cache|UPDATE|t
+public.connector_resource_metrics|SELECT|t
+public.connector_run_history|INSERT|t
+public.connector_run_history|SELECT|t
+public.connector_run_history|UPDATE|t
+public.connector_run_log_entries_sequence_seq|USAGE|t
+public.connector_run_log_entries|INSERT|t
+public.credential_set_summaries|SELECT|t
+public.credential_sets|DELETE|t
+public.credential_sets|INSERT|t
+public.credential_sets|SELECT|t
+public.credential_sets|UPDATE|t
+public.credential_summaries|SELECT|t
+public.credentials|DELETE|t
+public.credentials|INSERT|t
+public.credentials|SELECT|t
+public.credentials|UPDATE|t
+public.dim_business_services|DELETE|t
+public.dim_business_services|INSERT|t
+public.dim_business_services|SELECT|t
+public.dim_business_services|UPDATE|t
+public.discovery_agents|DELETE|t
+public.discovery_agents|INSERT|t
+public.discovery_agents|SELECT|t
+public.discovery_agents|UPDATE|t
+public.discovery_definitions|DELETE|t
+public.discovery_definitions|INSERT|t
+public.discovery_definitions|SELECT|t
+public.discovery_definitions|UPDATE|t
+public.discovery_provider_settings|DELETE|t
+public.discovery_provider_settings|INSERT|t
+public.discovery_provider_settings|SELECT|t
+public.discovery_provider_settings|UPDATE|t
+public.drift_detection_results|DELETE|t
+public.drift_detection_results|INSERT|t
+public.drift_detection_results|SELECT|t
+public.estate_kpi_snapshots|INSERT|t
+public.estate_kpi_snapshots|SELECT|t
+public.fact_business_service_changes_id_seq|USAGE|t
+public.fact_business_service_changes|INSERT|t
+public.fact_business_service_changes|SELECT|t
+public.fact_business_service_incidents_id_seq|USAGE|t
+public.fact_business_service_incidents|INSERT|t
+public.fact_business_service_incidents|SELECT|t
+public.impact_analyses|DELETE|t
+public.impact_analyses|INSERT|t
+public.impact_analyses|SELECT|t
+public.installed_connectors|INSERT|t
+public.installed_connectors|SELECT|t
+public.installed_connectors|UPDATE|t
+public.itil_baselines|DELETE|t
+public.itil_baselines|INSERT|t
+public.itil_baselines|SELECT|t
+public.itil_changes|INSERT|t
+public.itil_changes|SELECT|t
+public.itil_changes|UPDATE|t
+public.itil_incidents|INSERT|t
+public.itil_incidents|SELECT|t
+public.itil_incidents|UPDATE|t
+public.metrics_timeseries|SELECT|t
+public.portfolio_import_map|INSERT|t
+public.portfolio_import_map|SELECT|t
+public.portfolio_imports|INSERT|t
+public.portfolio_imports|SELECT|t
+public.reconciliation_conflicts|INSERT|t
+public.reconciliation_conflicts|SELECT|t
+public.reconciliation_conflicts|UPDATE|t
+public.reconciliation_rules|DELETE|t
+public.reconciliation_rules|INSERT|t
+public.reconciliation_rules|SELECT|t
+public.reconciliation_rules|UPDATE|t
+public.relationship_evidence_receipts|INSERT|t
+public.relationship_evidence_receipts|SELECT|t
+public.service_offerings|INSERT|t
+public.service_offerings|SELECT|t
+public.service_offerings|UPDATE|t
+public.source_authority|INSERT|t
+public.source_authority|SELECT|t
+public.source_authority|UPDATE|t
+public.system_config|SELECT|t
+public.tbm_cost_pools|SELECT|t
+public.tbm_cost_pools|UPDATE|t
+public.tbm_gl_mappings|INSERT|t
+public.tbm_gl_mappings|SELECT|t
+public.user_settings|DELETE|t
+public.user_settings|INSERT|t
+public.user_settings|SELECT|t
+public.user_settings|UPDATE|t
+schema cmdb|USAGE|t
+schema public|USAGE|t

@@ -13,8 +13,8 @@ import {
   CredentialMatchResult,
 } from '@cmdb/common';
 import { getEncryptionService } from '@cmdb/common';
-import { logger, errorClassFields } from '@cmdb/common';
-import { isIpInCidr, matchGlob } from './utils';
+import { logger, errorClassFields, assertMatchContextBounds } from '@cmdb/common';
+import { ipToInt, isIpIntInCidr, matchGlob } from './utils';
 
 export class CredentialAffinityService {
   private encryptionService = getEncryptionService();
@@ -35,6 +35,9 @@ export class CredentialAffinityService {
     createdBy: string,
     organizationId: string
   ): Promise<CredentialMatchResult[]> {
+    assertMatchContextBounds(context);
+    // Parsed once per request, not once per network of every credential scored
+    const ipInt = context.ip ? ipToInt(context.ip) : null;
     const client = await this.pool.connect();
     try {
       const conditions: string[] = ['created_by = $1', 'organization_id = $2'];
@@ -87,7 +90,8 @@ export class CredentialAffinityService {
 
           const { score, reasons } = this.calculateAffinityScore(
             credential,
-            context
+            context,
+            ipInt
           );
 
           scoredCredentials.push({
@@ -124,19 +128,22 @@ export class CredentialAffinityService {
    * - Environment match: +10 points
    * - Cloud provider match: +20 points
    * - Priority boost: +(priority * 2) points (10-20 bonus for priority 5-10)
+   *
+   * @param ipInt - `context.ip` already parsed with `ipToInt`; omitted, it is parsed here
    */
   calculateAffinityScore(
     credential: UnifiedCredential,
-    context: CredentialMatchContext
+    context: CredentialMatchContext,
+    ipInt: number | null = context.ip ? ipToInt(context.ip) : null
   ): { score: number; reasons: string[] } {
     let score = 0;
     const reasons: string[] = [];
     const affinity = credential.affinity;
 
     // Network match (CIDR)
-    if (context.ip && affinity.networks && affinity.networks.length > 0) {
+    if (ipInt !== null && affinity.networks && affinity.networks.length > 0) {
       for (const network of affinity.networks) {
-        if (network && isIpInCidr(context.ip, network)) {
+        if (network && isIpIntInCidr(ipInt, network)) {
           score += 30;
           reasons.push(`Network match: ${network}`);
           break;

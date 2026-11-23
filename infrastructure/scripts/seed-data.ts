@@ -104,6 +104,62 @@ function generateUUID(): string {
 }
 
 /**
+ * Strict TLS toggle, same rules as `Neo4jClient`: unset or empty is off, exactly `true` is on,
+ * exactly `false` is off, anything else throws. The error never echoes the value.
+ */
+function readTlsToggle(env: NodeJS.ProcessEnv, name: string): boolean {
+  const value = env[name];
+  if (value === undefined || value === '') {
+    return false;
+  }
+  if (value !== 'true' && value !== 'false') {
+    throw new Error(`${name} must be true or false when set`);
+  }
+  return value === 'true';
+}
+
+/**
+ * TLS part of the driver config, with the same semantics as `Neo4jClient` (kept standalone on
+ * purpose: importing the database package would drag in Redis/Postgres module-level code).
+ * A `bolt+s`, `bolt+ssc`, `neo4j+s` or `neo4j+ssc` URI carries encryption and trust itself, and
+ * the driver throws if `encrypted`/`trust` are given next to one, so those return `{}`.
+ */
+function neo4jTlsConfig(
+  uri: string,
+  env: NodeJS.ProcessEnv
+): { encrypted?: 'ENCRYPTION_ON' | 'ENCRYPTION_OFF'; trust?: 'TRUST_ALL_CERTIFICATES' | 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES' } {
+  // Every toggle is parsed (no short-circuit) so a malformed one refuses to start whatever the others say.
+  const toggles = ['NEO4J_SSL_ENABLED', 'NEO4J_ENCRYPTION', 'NEO4J_ENCRYPTED'].map((name) => readTlsToggle(env, name));
+  const sslEnabled = toggles.some(Boolean);
+
+  const rawTrust = env['NEO4J_SSL_TRUST_STRATEGY'];
+  const explicitTrust = rawTrust === undefined || rawTrust === '' ? undefined : rawTrust;
+  if (explicitTrust !== undefined && explicitTrust !== 'TRUST_ALL_CERTIFICATES' && explicitTrust !== 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES') {
+    throw new Error('NEO4J_SSL_TRUST_STRATEGY must be TRUST_SYSTEM_CA_SIGNED_CERTIFICATES or TRUST_ALL_CERTIFICATES when set');
+  }
+
+  if (/^(?:bolt|neo4j)\+ssc:/i.test(uri)) {
+    if (explicitTrust !== undefined && explicitTrust !== 'TRUST_ALL_CERTIFICATES') {
+      throw new Error('A +ssc Neo4j URI trusts any certificate and conflicts with an explicit certificate trust strategy');
+    }
+    console.warn('WARNING: the +ssc Neo4j URI scheme disables certificate verification');
+    return {};
+  }
+  if (/^(?:bolt|neo4j)\+s:/i.test(uri)) {
+    return {};
+  }
+
+  const trust = explicitTrust ?? 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES';
+  if (sslEnabled && trust === 'TRUST_ALL_CERTIFICATES') {
+    console.warn('Neo4j client initialized with SSL/TLS encryption enabled; certificate verification is disabled by NEO4J_SSL_TRUST_STRATEGY=TRUST_ALL_CERTIFICATES');
+  }
+  return {
+    encrypted: sslEnabled ? 'ENCRYPTION_ON' : 'ENCRYPTION_OFF',
+    trust,
+  };
+}
+
+/**
  * Create Neo4j driver
  */
 function createDriver(): Driver {
@@ -114,6 +170,7 @@ function createDriver(): Driver {
       maxConnectionLifetime: 3 * 60 * 60 * 1000, // 3 hours
       maxConnectionPoolSize: 50,
       connectionAcquisitionTimeout: 2 * 60 * 1000, // 2 minutes
+      ...neo4jTlsConfig(NEO4J_URI, process.env),
     }
   );
 }
@@ -1116,4 +1173,4 @@ if (require.main === module) {
     });
 }
 
-export { main, createDriver };
+export { main, createDriver, neo4jTlsConfig };

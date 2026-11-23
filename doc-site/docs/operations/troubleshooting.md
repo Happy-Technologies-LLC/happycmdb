@@ -252,7 +252,7 @@ curl -X POST "$CMDB/api/v1/cis/$CI_ID/oversized-delete" \
    The two printed values must equal the `bytes` and `sha256` of that field in the audit row. The audit row's `metadata` carries `recovery: "oversized_delete"`, `evidence_ref`, `oversized_count` and the largest 20 `{field, bytes, sha256}` entries. It is a hash-chained `audit_log` row by the verified admin, like any CI delete.
 4. A CI the ordinary `DELETE` can plan, including one whose stored values total up to about 1 MiB, is refused with `409` (`not_oversized`): use the ordinary `DELETE`, which keeps every value in history and audit. The ordinary `DELETE` and merge stay `422` for an oversized CI; there is no merge recovery, so delete the oversized CI through this path and re-create or re-discover it.
 
-Not covered: a CI with more than 1000 stored properties (a different limit) stays `422`.
+Not covered: a CI with more than 1000 stored properties and no oversized value (a key-count limit, not a per-value limit). The ordinary `DELETE` answers `422` for it, and this route answers `409` (`not_oversized`) because the route accepts only a CI that has at least one oversized value.
 
 ## Discovery Job Failures
 

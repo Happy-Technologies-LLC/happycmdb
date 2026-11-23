@@ -7,11 +7,7 @@
  */
 
 import React, { useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Icon } from '@happy-technologies/design-system';
+import { Input } from '@happy-technologies/design-system';
 import {
   LineChart,
   Line,
@@ -25,6 +21,7 @@ import {
 import { useHealthMetrics } from '../../hooks/useAnalytics';
 import { DateRangeSelector } from './DateRangeSelector';
 import { ExportButton } from './ExportButton';
+import { AnalyticsPanel } from './MetricCard';
 import { DateRangeParams } from '../../services/analytics.service';
 import { brand } from '@/lib/brandColors';
 
@@ -40,7 +37,7 @@ export const HealthMetrics: React.FC<HealthMetricsProps> = ({ dateRange: externa
   });
 
   const effectiveDateRange = externalDateRange || dateRange;
-  const { data, loading, error } = useHealthMetrics(ciId || null, effectiveDateRange);
+  const { data, loading, error, refetch } = useHealthMetrics(ciId || null, effectiveDateRange);
 
   const formatTimestamp = (timestamp: string) => {
     const date = new Date(timestamp);
@@ -71,40 +68,8 @@ export const HealthMetrics: React.FC<HealthMetricsProps> = ({ dateRange: externa
     return null;
   };
 
-  const renderContent = () => {
-    if (!ciId) {
-      return (
-        <Alert className="h-[350px] flex items-center">
-          <AlertDescription>Enter a CI ID to view health metrics</AlertDescription>
-        </Alert>
-      );
-    }
-
-    if (loading) {
-      return (
-        <div className="flex justify-center items-center h-[350px]">
-          <Icon name="spinner-gap" size={32} className="animate-spin text-primary" />
-        </div>
-      );
-    }
-
-    if (error) {
-      return (
-        <Alert variant="destructive">
-          <AlertDescription>Failed to load data</AlertDescription>
-        </Alert>
-      );
-    }
-
-    if (!data || data.length === 0) {
-      return (
-        <Alert>
-          <AlertDescription>No health metrics available for this CI</AlertDescription>
-        </Alert>
-      );
-    }
-
-    const chartData = data.map((metric) => ({
+  const renderChart = (metrics: NonNullable<typeof data>) => {
+    const chartData = metrics.map((metric) => ({
       timestamp: formatTimestamp(metric.timestamp),
       fullTimestamp: metric.timestamp,
       CPU: metric.cpu_usage,
@@ -116,9 +81,9 @@ export const HealthMetrics: React.FC<HealthMetricsProps> = ({ dateRange: externa
       <>
         <div className="flex justify-between items-center mb-4">
           <p className="text-sm text-muted-foreground font-medium">
-            {data.length} data points
+            {metrics.length} data points
           </p>
-          <ExportButton data={data} filename={`health_metrics_${ciId}`} />
+          <ExportButton data={metrics} filename={`health_metrics_${ciId}`} />
         </div>
 
         <ResponsiveContainer width="100%" height={350}>
@@ -169,26 +134,31 @@ export const HealthMetrics: React.FC<HealthMetricsProps> = ({ dateRange: externa
   };
 
   return (
-    <Card className="mb-4">
-      <CardHeader>
-        <CardTitle>CI Health Metrics</CardTitle>
-      </CardHeader>
-
-      <CardContent>
-        <div className="mb-4">
-          <Label htmlFor="ci-id">CI ID</Label>
+    <AnalyticsPanel
+      title="CI Health Metrics"
+      toolbar={
+        <>
           <Input
             id="ci-id"
+            label="CI ID"
+            size="sm"
+            containerClassName="mb-4"
             value={ciId}
             onChange={(e) => setCiId(e.target.value)}
             placeholder="Enter CI ID (e.g., server-001)"
           />
-        </div>
-
-        <DateRangeSelector onChange={setDateRange} />
-
-        {renderContent()}
-      </CardContent>
-    </Card>
+          <DateRangeSelector onChange={setDateRange} />
+        </>
+      }
+      loading={Boolean(ciId) && loading}
+      error={ciId ? error : null}
+      onRetry={refetch}
+      empty={!ciId || !data || data.length === 0}
+      emptyLabel={
+        ciId ? 'No health metrics available for this CI' : 'Enter a CI ID to view health metrics'
+      }
+    >
+      {() => (data ? renderChart(data) : null)}
+    </AnalyticsPanel>
   );
 };

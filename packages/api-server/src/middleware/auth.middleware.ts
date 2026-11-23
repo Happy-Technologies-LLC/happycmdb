@@ -63,10 +63,13 @@ export function optionalRequestOrganizationId(req: Request): string | null {
 export class AuthMiddleware {
   private authService: AuthService;
   private apiKeyHeader: string;
+  /** Only an explicit `false` disables API keys; a config without `enabled` keeps them on. */
+  private apiKeysEnabled: boolean;
 
   constructor(authService: AuthService, config: ConfigSchema['auth']) {
     this.authService = authService;
     this.apiKeyHeader = config.apiKeys.headerName;
+    this.apiKeysEnabled = config.apiKeys.enabled !== false;
   }
 
   /**
@@ -89,6 +92,9 @@ export class AuthMiddleware {
           req.user = payload;
           req.credentialType = 'api-key';
           next();
+        } else if (this.refusedForDisabledApiKey(req)) {
+          logAuthFailure('api-key', new AuthFailureError('api_keys_disabled'));
+          res.status(401).json(UNAUTHORIZED);
         } else {
           logAuthFailure('none', new AuthFailureError('invalid'));
           res.status(401).json(UNAUTHORIZED);
@@ -116,6 +122,8 @@ export class AuthMiddleware {
           const payload = await this.authService.verifyApiKey(apiKey);
           req.user = payload;
           req.credentialType = 'api-key';
+        } else if (this.refusedForDisabledApiKey(req)) {
+          logAuthFailure('api-key', new AuthFailureError('api_keys_disabled'));
         }
 
         next();
@@ -294,60 +302,25 @@ export class AuthMiddleware {
    * Extract API key from request
    */
   private extractApiKey(req: Request): string | null {
+    if (!this.apiKeysEnabled) {
+      return null;
+    }
     const apiKey = req.headers[this.apiKeyHeader.toLowerCase()] as string | undefined;
     return apiKey ?? null;
   }
-}
 
-/**
- * GraphQL context authentication
- *
- * Resolves the bearer token or API key on a GraphQL request into an
- * authenticated identity. This runs inside Apollo's context factory:
- * throwing here fails context creation *before any resolver executes*,
- * which Apollo Server surfaces as a top-level GraphQL error response
- * (see `errorResponse` in @apollo/server). That makes authentication
- * mandatory for every query and mutation with no per-resolver opt-in
- * required -- unlike returning `{}` and leaving each resolver to check
- * `context.user` itself, which silently permits anonymous access to any
- * resolver that forgets the check.
- */
-export async function authenticateGraphQLContext(
-  authService: AuthService,
-  apiKeyHeader: string,
-  req: Request
-): Promise<{ user: TokenPayload }> {
-  // Extract token
-  const authHeader = req.headers.authorization;
-  let token: string | null = null;
-
-  if (authHeader) {
-    const parts = authHeader.split(' ');
-    if (parts.length === 2 && parts[0] === 'Bearer') {
-      token = parts[1] || null;
-    }
+  /**
+   * True when the request carries the API key header (non-empty).
+   * Only presence is read: the header value is never held, so it cannot be logged.
+   */
+  private hasApiKeyHeader(req: Request): boolean {
+    const header = req.headers[this.apiKeyHeader.toLowerCase()];
+    return header !== undefined && header.length > 0;
   }
 
-  // Extract API key
-  const apiKey = (req.headers[apiKeyHeader.toLowerCase()] as string | undefined) || null;
-
-  if (!token && !apiKey) {
-    logAuthFailure('none', new AuthFailureError('invalid'));
-    throw new GraphQLError('Authentication failed', {
-      extensions: { code: 'UNAUTHENTICATED', http: { status: 401 } },
-    });
-  }
-
-  try {
-    const payload = token
-      ? await authService.verifyToken(token)
-      : await authService.verifyApiKey(apiKey as string);
-    return { user: payload };
-  } catch (error) {
-    logAuthFailure(token ? 'jwt' : 'api-key', error);
-    throw new GraphQLError('Authentication failed', {
-      extensions: { code: 'UNAUTHENTICATED', http: { status: 401 } },
-    });
+  /** A key-only request (no bearer token) refused solely because API keys are disabled. */
+  private refusedForDisabledApiKey(req: Request): boolean {
+    return !this.apiKeysEnabled && this.hasApiKeyHeader(req);
   }
 }
 
@@ -355,8 +328,8 @@ export async function authenticateGraphQLContext(
  * GraphQL permission checker
  *
  * Throws GraphQL UNAUTHENTICATED when no identity is present on the
- * context (defensive -- the context factory above already guarantees
- * `context.user` is set for every request that reaches a resolver), or
+ * context (defensive -- the GraphQL server mounts `authenticate()`, which
+ * already guarantees `context.user` is set for every request that reaches a resolver), or
  * FORBIDDEN when the authenticated user's role does not grant
  * `permission`. Returns the authenticated user so callers can use it
  * (e.g. as an actor id) without a second lookup. Single source of truth

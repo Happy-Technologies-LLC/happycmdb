@@ -19,7 +19,7 @@ vi.mock('axios', async () => ({ ...(await vi.importActual<object>('axios')), def
   ...request, interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } },
 }) } }));
 vi.mock('@/contexts/ToastContext', () => ({ useToast: () => ({ showToast }) }));
-vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null, Eyebrow: ({ children }: { children?: ReactNode }) => children }));
+vi.mock('@happy-technologies/design-system', async (importOriginal) => ({ ...(await importOriginal<object>()), Icon: () => null, Eyebrow: ({ children }: { children?: ReactNode }) => children }));
 
 import { AxiosError, AxiosHeaders } from 'axios';
 import { Credentials } from './Credentials';

@@ -26,8 +26,15 @@ for one_shot in app-login migrator; do
   compose --profile migrate config --services | grep -qx "$one_shot"
 done
 
-# Inspect the actual unqualified up plan without creating any services.
-up_plan=$(compose --dry-run up -d --no-build 2>&1)
+# Inspect the actual unqualified up plan without creating any services. The plan is captured, so a failing compose must
+# report its own output and exit status: under `set -e` a bare `up_plan=$(...)` exits silently with compose's status.
+up_plan_status=0
+up_plan=$(compose --dry-run up -d --no-build 2>&1) || up_plan_status=$?
+if [ "$up_plan_status" -ne 0 ]; then
+  echo "compose --dry-run up failed with exit status $up_plan_status:" >&2
+  printf '%s\n' "$up_plan" >&2
+  exit 1
+fi
 if [[ "$up_plan" == *migrator* || "$up_plan" == *app-login* ]]; then
   echo 'Unqualified compose up unexpectedly plans a migrate-profile one-shot' >&2
   exit 1

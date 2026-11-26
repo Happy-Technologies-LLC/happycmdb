@@ -13,7 +13,8 @@ permissions:
 
 jobs:
   cla-check:
-    runs-on: ubuntu-latest
+    # Never checks out or runs PR code (the action only calls the GitHub API and the signatures branch).
+    runs-on: [self-hosted, build01]
     steps:
       - name: CLA Assistant
         if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'

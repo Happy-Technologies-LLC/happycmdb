@@ -17,10 +17,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Runner placement: Build01 runners have no Docker daemon. Jobs that need one stay on ubuntu-latest:
+# web-ui-build (docker build), integration-tests, sec12-02-p99 and every *-real-store job (Testcontainers
+# in tests/setup/integration.global-setup.ts), e2e-tests (tests/e2e/setup.ts, Testcontainers),
+# staging-migrations (docker compose), nginx-config-test (docker run) and api-image-nmap (docker build).
+# Every other job runs on [self-hosted, build01]; no job here uses `services:` containers.
 jobs:
   unit-tests:
     name: Unit Tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, build01]
     env:
       NODE_OPTIONS: --experimental-vm-modules
     timeout-minutes: 10
@@ -90,6 +95,7 @@ jobs:
           flags: unit
           name: unit-tests
 
+      # Left blocking: test-report's download-all (`Download all test results`) consumes this artifact.
       - name: Upload unit test results
         uses: actions/upload-artifact@v4
         if: always()
@@ -142,7 +148,7 @@ jobs:
 
   web-ui-lint:
     name: Web UI Lint (eslint)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, build01]
     timeout-minutes: 10
     steps:
       - name: Checkout code
@@ -161,7 +167,7 @@ jobs:
 
   backend-lint:
     name: Backend Lint (eslint ratchet)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, build01]
     timeout-minutes: 30
     permissions:
       contents: read
@@ -216,6 +222,7 @@ jobs:
           flags: integration
           name: integration-tests
 
+      # Left blocking: test-report's download-all (`Download all test results`) consumes this artifact.
       - name: Upload integration test results
         uses: actions/upload-artifact@v4
         if: always()
@@ -307,6 +314,9 @@ jobs:
       - name: Upload SEC12-02 results
         if: always() && steps.scope.outputs.run == 'true'
         uses: actions/upload-artifact@v4
+        # Report artifact only: a refused upload (GitHub storage quota) must not fail the job; the SEC12-02
+        # verdict step above still gates. Nothing downloads this by name; test-report publishes only *.xml.
+        continue-on-error: true
         with:
           name: sec12-02-p99-results
           path: test-results/sec12-02-p99/
@@ -636,7 +646,7 @@ jobs:
     # HAP-1212: ts-jest runs e2e with isolatedModules, which never type-checks, so tests/e2e drifted from
     # the package types unnoticed. tests/e2e/tsconfig.json type-checks it (noEmit).
     name: E2E Type Check (tsc)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, build01]
     timeout-minutes: 10
     permissions:
       contents: read
@@ -788,7 +798,7 @@ jobs:
     # local asset, so unclosed tags, bare `<`/`{` and dangling image references fail here instead of silently
     # leaving main red. Isolated from the monorepo: only doc-site/ is installed.
     name: Doc site build (vitepress)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, build01]
     timeout-minutes: 10
     permissions:
       contents: read
@@ -838,6 +848,7 @@ jobs:
       - name: Run E2E tests
         run: npm run test:e2e
 
+      # Left blocking: test-report's download-all (`Download all test results`) consumes this artifact.
       - name: Upload E2E test results
         uses: actions/upload-artifact@v4
         if: always()
@@ -877,7 +888,7 @@ jobs:
 
   test-report:
     name: Generate Test Report
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, build01]
     needs: [unit-tests, integration-tests, e2e-tests]
     if: always()
 
@@ -898,7 +909,7 @@ jobs:
 
   coverage-report:
     name: Coverage Report
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, build01]
     needs: [unit-tests, integration-tests]
     if: always()
 
@@ -940,7 +951,7 @@ jobs:
   ci-rollup:
     needs: [unit-tests, integration-tests, e2e-tests, e2e-typecheck, staging-migrations, web-ui-build, web-ui-lint, backend-lint, nginx-config-test, docs-build, api-image-nmap, hap630-real-store, hap644-real-store, hap668-real-store, hap835-real-store, hap1422-real-store, hap1562-real-store]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, build01]
     permissions:
       statuses: write
     steps:

@@ -93,6 +93,7 @@ jobs:
       - name: Upload unit test results
         uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
           name: unit-test-results
           path: test-results/unit/junit.xml
@@ -219,6 +220,7 @@ jobs:
       - name: Upload integration test results
         uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
           name: integration-test-results
           path: test-results/integration/junit.xml
@@ -307,6 +309,9 @@ jobs:
       - name: Upload SEC12-02 results
         if: always() && steps.scope.outputs.run == 'true'
         uses: actions/upload-artifact@v4
+        # Non-fatal: a refused upload (storage quota) must not fail the job. The
+        # verdict step above prints the head/base summaries, so diagnostics stay in its log.
+        continue-on-error: true
         with:
           name: sec12-02-p99-results
           path: test-results/sec12-02-p99/
@@ -841,6 +846,7 @@ jobs:
       - name: Upload E2E test results
         uses: actions/upload-artifact@v4
         if: always()
+        continue-on-error: true
         with:
           name: e2e-test-results
           path: test-results/e2e/junit.xml

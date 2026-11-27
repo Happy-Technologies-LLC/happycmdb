@@ -13,7 +13,7 @@ import {
   OrganizationChangedError, OrganizationRequiredError, PasswordNotAllowedError, type ApiKeyRevocation,
   type CredentialAuditOperation, type PasswordChangeOutcome, type UserProfile,
 } from '../auth/auth.service';
-import { ROLE_PERMISSIONS, UserNotFoundError } from '../auth/types';
+import { ROLE_PERMISSIONS, UserNotFoundError, type UserRole } from '../auth/types';
 import { ValidationMiddleware } from './middleware/validation.middleware';
 import { clearRefreshCookie, hasAuthHeader, readRefreshCookie, requireAuthHeader, setRefreshCookie } from './middleware/refresh-cookie';
 import { authSchemas } from '../validation/schemas';
@@ -61,7 +61,7 @@ function authorizingEpoch(req: AuthenticatedRequest): number {
   return req.user?._cep ?? Number.NaN;
 }
 
-/** Sends the fixed response for an S6 credential refusal; false when `error` is not one. */
+/** Sends the fixed response for an S6 credential refusal or the API-key kill-switch refusal; false when `error` is neither. */
 function credentialRefusal(res: Response, error: unknown): boolean {
   if (error instanceof CredentialsChangedError) {
     res.status(401).json({ success: false, error: 'Unauthorized', message: 'Credentials changed' });
@@ -76,6 +76,34 @@ function credentialRefusal(res: Response, error: unknown): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * Shapes the caller's own profile into the RawUserPayload-compatible
+ * response body the frontend's ApiService.mapUser() expects (see
+ * web-ui/src/services/api.ts). `platformAdmin` and `organizationId` come
+ * from the stored user the service just loaded (HAP-1911), never from the
+ * request. `permissionsRole` is the role whose grants `permissions` reports:
+ * the caller's effective role (an API key is narrowed to the subset of its
+ * own role and the owner's), supplied by the caller rather than read here.
+ */
+function toRawUserPayload(user: UserProfile, permissionsRole: string): Record<string, unknown> {
+  return {
+    userId: user._id,
+    username: user._username,
+    email: user._email,
+    name: user._name || user._username,
+    avatar: user._avatar,
+    role: user._role,
+    // HAP-1930 (BW16): what the server's role table grants this role, so a client need not mirror the table.
+    permissions: Object.hasOwn(ROLE_PERMISSIONS, permissionsRole)
+      ? [...ROLE_PERMISSIONS[permissionsRole as UserRole]]
+      : [],
+    createdAt: user._createdAt,
+    lastLoginAt: user.lastLoginAt,
+    platformAdmin: user.platformAdmin,
+    organizationId: user._organizationId ?? null,
+  };
 }
 
 export class AuthController {
@@ -426,30 +454,6 @@ export class AuthController {
   }
 
   /**
-   * Shapes the caller's own profile into the RawUserPayload-compatible
-   * response body the frontend's ApiService.mapUser() expects (see
-   * web-ui/src/services/api.ts). `platformAdmin` and `organizationId` come
-   * from the stored user the service just loaded (HAP-1911), never from the
-   * request.
-   */
-  private toRawUserPayload(user: UserProfile): Record<string, unknown> {
-    return {
-      userId: user._id,
-      username: user._username,
-      email: user._email,
-      name: user._name || user._username,
-      avatar: user._avatar,
-      role: user._role,
-      // HAP-1930 (BW16): what the server's role table grants this role, so a client need not mirror the table.
-      permissions: [...(ROLE_PERMISSIONS[user._role] ?? [])],
-      createdAt: user._createdAt,
-      lastLoginAt: user.lastLoginAt,
-      platformAdmin: user.platformAdmin,
-      organizationId: user._organizationId ?? null,
-    };
-  }
-
-  /**
    * Get current user info endpoint
    */
   private async getCurrentUser(req: AuthenticatedRequest, res: Response): Promise<void> {
@@ -475,7 +479,7 @@ export class AuthController {
 
       res.json({
         success: true,
-        data: this.toRawUserPayload(profile),
+        data: toRawUserPayload(profile, req.credentialType === 'api-key' ? req.user._role : profile._role),
       });
     } catch (error: any) {
       logger.error('Error loading current user', { ...errorClassFields(error), userId: req.user?._userId });
@@ -506,7 +510,7 @@ export class AuthController {
 
       res.json({
         success: true,
-        data: this.toRawUserPayload(profile),
+        data: toRawUserPayload(profile, profile._role),
         message: 'Profile updated successfully',
       });
     } catch (error: any) {

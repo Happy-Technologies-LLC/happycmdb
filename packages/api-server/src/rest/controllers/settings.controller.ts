@@ -62,6 +62,8 @@ const PROVIDER_CONFIG_FIELDS: Record<DiscoveryProvider, string[]> = {
 
 const SAFE_FIELD_NAME = /^[A-Za-z0-9_]{1,64}$/;
 
+type ProviderSettingsRow = { config: unknown; has_credentials: boolean; updated_at: unknown };
+
 const PROVIDER_ROW_PREDICATE = 'user_id = $1 AND provider = $2';
 const PROVIDER_ROW_RETURNING =
   'RETURNING config, (encrypted_credentials IS NOT NULL) AS has_credentials, updated_at';
@@ -73,9 +75,9 @@ function mergeStoredSecrets(
 ): string {
   const encryption = getEncryptionService();
   let stored: Record<string, unknown> = {};
-  if (storedBlob) {
+  if (storedBlob !== null && storedBlob !== undefined && storedBlob !== '') {
     const decrypted: unknown = encryption.decryptCredential(storedBlob);
-    if (!decrypted || typeof decrypted !== 'object' || Array.isArray(decrypted)) {
+    if (decrypted === null || typeof decrypted !== 'object' || Array.isArray(decrypted)) {
       throw new Error('Stored discovery provider credentials are not an object');
     }
     stored = decrypted as Record<string, unknown>;
@@ -318,8 +320,9 @@ export class SettingsController {
       }
 
       const pgClient = getPostgresClient();
-      const params = [req.user._userId, provider, JSON.stringify(configPart)];
-      let row: { config: unknown; has_credentials: boolean; updated_at: unknown } | undefined;
+      const userId = req.user._userId;
+      const params = [userId, provider, JSON.stringify(configPart)];
+      let row: ProviderSettingsRow | undefined;
       if (Object.keys(secretPart).length === 0) {
         // Nothing to merge: one atomic statement; COALESCE keeps the stored blob.
         const result = await pgClient.query(
@@ -342,17 +345,18 @@ export class SettingsController {
             `INSERT INTO discovery_provider_settings (user_id, provider, config, encrypted_credentials, updated_at)
              VALUES ($1, $2, '{}'::jsonb, NULL, NOW())
              ON CONFLICT (user_id, provider) DO NOTHING`,
-            [req.user!._userId, provider]
+            [userId, provider]
           );
           const locked = await client.query(
             `SELECT encrypted_credentials FROM discovery_provider_settings
              WHERE ${PROVIDER_ROW_PREDICATE} FOR UPDATE`,
-            [req.user!._userId, provider]
+            [userId, provider]
           );
           if (locked.rows.length === 0) {
             throw new Error('Discovery provider settings row vanished while locked');
           }
-          const merged = mergeStoredSecrets(locked.rows[0].encrypted_credentials, secretPart);
+          const storedBlob = (locked.rows[0] as { encrypted_credentials: string | null }).encrypted_credentials;
+          const merged = mergeStoredSecrets(storedBlob, secretPart);
           const updated = await client.query(
             `UPDATE discovery_provider_settings
              SET config = $3::jsonb, encrypted_credentials = $4, updated_at = NOW()
@@ -360,10 +364,10 @@ export class SettingsController {
              ${PROVIDER_ROW_RETURNING}`,
             [...params, merged]
           );
-          return updated.rows[0];
+          return updated.rows[0] as ProviderSettingsRow | undefined;
         });
       }
-      if (!row) {
+      if (row === undefined) {
         throw new Error('Discovery provider settings write returned no row');
       }
       res.json({

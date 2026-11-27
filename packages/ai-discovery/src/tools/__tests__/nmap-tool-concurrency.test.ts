@@ -36,6 +36,22 @@ function holdSubprocesses(): { pending: Pending[]; started: () => number } {
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+/**
+ * Finish every held subprocess until all scans settle. A scan left queued would
+ * keep its real 60 s wait timer and reject unhandled inside a later test.
+ */
+async function drain(pending: Pending[], scans: Array<Promise<unknown>>): Promise<void> {
+  let settled = false;
+  const all = Promise.allSettled(scans).then(() => {
+    settled = true;
+  });
+  while (!settled) {
+    pending.splice(0).forEach((p) => p.finish());
+    await tick();
+  }
+  await all;
+}
+
 beforeEach(() => {
   jest.mocked(lookup).mockReset();
   jest.mocked(lookup).mockResolvedValue([{ address: '8.8.8.8', family: 4 }] as never);
@@ -69,22 +85,24 @@ describe('nmap subprocess concurrency', () => {
 
   it('honours the environment override', async () => {
     const tool = loadTool('2');
-    const { started } = holdSubprocesses();
+    const { pending, started } = holdSubprocesses();
 
-    void Promise.all(Array.from({ length: 5 }, () => tool.execute({ host: 'public.example' })));
+    const scans = Array.from({ length: 5 }, () => tool.execute({ host: 'public.example' }));
     await tick();
 
     expect(started()).toBe(2);
+    await drain(pending, scans);
   });
 
   it.each(['0', '65', '-1', 'many', '2.5', ''])('falls back to 4 for the invalid override %p', async (value) => {
     const tool = loadTool(value);
-    const { started } = holdSubprocesses();
+    const { pending, started } = holdSubprocesses();
 
-    void Promise.all(Array.from({ length: 6 }, () => tool.execute({ host: 'public.example' })));
+    const scans = Array.from({ length: 6 }, () => tool.execute({ host: 'public.example' }));
     await tick();
 
     expect(started()).toBe(4);
+    await drain(pending, scans);
   });
 
   it('releases the slot when a scan fails', async () => {

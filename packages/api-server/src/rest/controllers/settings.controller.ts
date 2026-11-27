@@ -36,13 +36,54 @@ interface DatabaseStatusEntry {
 /**
  * Per-provider split of the DiscoverySettings.tsx `credentials` payload
  * into fields that must never be stored in plaintext.
+ *
+ * `sessionToken` (aws) and `password`/`passphrase` (ssh) are not sent by the
+ * UI and not read by the connection test today; they are listed here so a
+ * client that does send them gets them encrypted, never stored as config.
  */
 const PROVIDER_SECRET_FIELDS: Record<DiscoveryProvider, string[]> = {
-  aws: ['accessKeyId', 'secretAccessKey'],
+  aws: ['accessKeyId', 'secretAccessKey', 'sessionToken'],
   azure: ['clientSecret'],
   gcp: ['credentials'],
-  ssh: ['privateKey'],
+  ssh: ['privateKey', 'password', 'passphrase'],
 };
+
+/**
+ * Per-provider non-secret keys stored as plain JSONB `config` and echoed back.
+ * Derived from DiscoverySettings.tsx and the keys the connection test reads.
+ * Any `credentials` key in neither list is refused before anything is stored.
+ */
+const PROVIDER_CONFIG_FIELDS: Record<DiscoveryProvider, string[]> = {
+  aws: ['region'],
+  azure: ['subscriptionId', 'tenantId', 'clientId'],
+  gcp: ['projectId'],
+  ssh: ['username'],
+};
+
+const SAFE_FIELD_NAME = /^[A-Za-z0-9_]{1,64}$/;
+
+type ProviderSettingsRow = { config: unknown; has_credentials: boolean; updated_at: unknown };
+
+const PROVIDER_ROW_PREDICATE = 'user_id = $1 AND provider = $2';
+const PROVIDER_ROW_RETURNING =
+  'RETURNING config, (encrypted_credentials IS NOT NULL) AS has_credentials, updated_at';
+
+/** Decrypts the stored blob and overlays the new secret keys on it. Throws on an unreadable blob. */
+function mergeStoredSecrets(
+  storedBlob: string | null | undefined,
+  secretPart: Record<string, unknown>
+): string {
+  const encryption = getEncryptionService();
+  let stored: Record<string, unknown> = {};
+  if (storedBlob !== null && storedBlob !== undefined && storedBlob !== '') {
+    const decrypted: unknown = encryption.decryptCredential(storedBlob);
+    if (decrypted === null || typeof decrypted !== 'object' || Array.isArray(decrypted)) {
+      throw new Error('Stored discovery provider credentials are not an object');
+    }
+    stored = decrypted as Record<string, unknown>;
+  }
+  return encryption.encryptCredential({ ...stored, ...secretPart });
+}
 
 export class SettingsController {
   /**
@@ -222,8 +263,10 @@ export class SettingsController {
    * as plain JSONB) and secret fields (AES-256-GCM encrypted via
    * @cmdb/common's EncryptionService and stored only as ciphertext).
    * Blank/omitted secret fields leave any previously-saved secret intact
-   * rather than clearing it, matching the common "leave blank to keep
-   * current value" credential-editing convention.
+   * rather than clearing it: new secret keys are overlaid on the decrypted
+   * stored blob under a row lock and the merged object is re-encrypted.
+   * A credentials key on neither the secret nor the config list for the
+   * provider is refused with 400 before anything is stored.
    */
   async updateDiscoveryProviderSettings(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
@@ -253,6 +296,7 @@ export class SettingsController {
       }
 
       const secretFields = PROVIDER_SECRET_FIELDS[provider as DiscoveryProvider];
+      const configFields = PROVIDER_CONFIG_FIELDS[provider as DiscoveryProvider];
       const secretPart: Record<string, unknown> = {};
       const configPart: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(credentials as Record<string, unknown>)) {
@@ -260,27 +304,72 @@ export class SettingsController {
           if (value !== undefined && value !== null && value !== '') {
             secretPart[key] = value;
           }
-        } else {
+        } else if (configFields.includes(key)) {
           configPart[key] = value;
+        } else {
+          // Only the field name is ever echoed, and only when it is a short identifier.
+          res.status(400).json({
+            success: false,
+            error: 'Bad Request',
+            message: SAFE_FIELD_NAME.test(key)
+              ? `Unsupported credential field '${key}' for provider '${provider}'`
+              : 'Unsupported credential field',
+          });
+          return;
         }
       }
 
-      const encryptedCredentials =
-        Object.keys(secretPart).length > 0 ? getEncryptionService().encryptCredential(secretPart) : null;
-
       const pgClient = getPostgresClient();
-      const result = await pgClient.query(
-        `INSERT INTO discovery_provider_settings (user_id, provider, config, encrypted_credentials, updated_at)
-         VALUES ($1, $2, $3::jsonb, $4, NOW())
-         ON CONFLICT (user_id, provider) DO UPDATE
-         SET config = $3::jsonb,
-             encrypted_credentials = COALESCE($4, discovery_provider_settings.encrypted_credentials),
-             updated_at = NOW()
-         RETURNING config, (encrypted_credentials IS NOT NULL) AS has_credentials, updated_at`,
-        [req.user._userId, provider, JSON.stringify(configPart), encryptedCredentials]
-      );
-
-      const row = result.rows[0];
+      const userId = req.user._userId;
+      const params = [userId, provider, JSON.stringify(configPart)];
+      let row: ProviderSettingsRow | undefined;
+      if (Object.keys(secretPart).length === 0) {
+        // Nothing to merge: one atomic statement; COALESCE keeps the stored blob.
+        const result = await pgClient.query(
+          `INSERT INTO discovery_provider_settings (user_id, provider, config, encrypted_credentials, updated_at)
+           VALUES ($1, $2, $3::jsonb, $4, NOW())
+           ON CONFLICT (user_id, provider) DO UPDATE
+           SET config = $3::jsonb,
+               encrypted_credentials = COALESCE($4, discovery_provider_settings.encrypted_credentials),
+               updated_at = NOW()
+           ${PROVIDER_ROW_RETURNING}`,
+          [...params, null]
+        );
+        row = result.rows[0];
+      } else {
+        // Read-modify-write of the encrypted blob: serialize per (user, provider).
+        // The row is created first so FOR UPDATE has something to lock on a first save;
+        // a failure below rolls the transaction back and that empty row with it.
+        row = await pgClient.transaction(async (client) => {
+          await client.query(
+            `INSERT INTO discovery_provider_settings (user_id, provider, config, encrypted_credentials, updated_at)
+             VALUES ($1, $2, '{}'::jsonb, NULL, NOW())
+             ON CONFLICT (user_id, provider) DO NOTHING`,
+            [userId, provider]
+          );
+          const locked = await client.query(
+            `SELECT encrypted_credentials FROM discovery_provider_settings
+             WHERE ${PROVIDER_ROW_PREDICATE} FOR UPDATE`,
+            [userId, provider]
+          );
+          if (locked.rows.length === 0) {
+            throw new Error('Discovery provider settings row vanished while locked');
+          }
+          const storedBlob = (locked.rows[0] as { encrypted_credentials: string | null }).encrypted_credentials;
+          const merged = mergeStoredSecrets(storedBlob, secretPart);
+          const updated = await client.query(
+            `UPDATE discovery_provider_settings
+             SET config = $3::jsonb, encrypted_credentials = $4, updated_at = NOW()
+             WHERE ${PROVIDER_ROW_PREDICATE}
+             ${PROVIDER_ROW_RETURNING}`,
+            [...params, merged]
+          );
+          return updated.rows[0] as ProviderSettingsRow | undefined;
+        });
+      }
+      if (row === undefined) {
+        throw new Error('Discovery provider settings write returned no row');
+      }
       res.json({
         success: true,
         data: {

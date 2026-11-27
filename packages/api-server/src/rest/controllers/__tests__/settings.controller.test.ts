@@ -38,7 +38,7 @@ jest.mock('../settings/discovery-connection-test', () => {
 });
 
 import { getNeo4jClient, getPostgresClient, getRedisClient } from '@cmdb/database';
-import { getEncryptionService } from '@cmdb/common';
+import { getEncryptionService, logger } from '@cmdb/common';
 import { SettingsController } from '../settings.controller';
 import { testDiscoveryProviderConnection } from '../settings/discovery-connection-test';
 import type { AuthenticatedRequest } from '../../../middleware/auth.middleware';
@@ -68,12 +68,16 @@ function mockReq(overrides: Partial<AuthenticatedRequest> = {}): AuthenticatedRe
 describe('SettingsController', () => {
   let controller: SettingsController;
   let mockPgQuery: AnyMock;
-  let mockPgClient: { query: AnyMock };
+  let mockPgClient: { query: AnyMock; transaction: AnyMock };
   let mockEncryptionService: { encryptCredential: AnyMock; decryptCredential: AnyMock };
 
   beforeEach(() => {
     mockPgQuery = jest.fn();
-    mockPgClient = { query: mockPgQuery };
+    mockPgClient = {
+      query: mockPgQuery,
+      // One transaction client whose query is the same mock, so every statement is observable in order.
+      transaction: jest.fn(async (cb: (client: { query: AnyMock }) => Promise<unknown>) => cb({ query: mockPgQuery })),
+    };
     mockEncryptionService = {
       encryptCredential: jest.fn().mockReturnValue('encrypted-blob'),
       decryptCredential: jest.fn(),
@@ -203,10 +207,24 @@ describe('SettingsController', () => {
       expect(res.status).toHaveBeenCalledWith(400);
     });
 
-    it('encrypts secret fields and stores non-secret fields as plain config', async () => {
-      mockPgQuery.mockResolvedValue({
-        rows: [{ config: { region: 'us-west-2' }, has_credentials: true, updated_at: new Date() }],
+    const updateCall = () =>
+      mockPgQuery.mock.calls.find(([sql]) => String(sql).includes('UPDATE discovery_provider_settings')) as
+        | [string, unknown[]]
+        | undefined;
+
+    // Routes each statement of the merge transaction; `stored` is the blob already in the row.
+    function mockMergeTransaction(stored: string | null, row: Record<string, unknown> = {}): void {
+      mockPgQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT encrypted_credentials')) return { rows: [{ encrypted_credentials: stored }] };
+        if (sql.includes('UPDATE discovery_provider_settings')) {
+          return { rows: [{ config: {}, has_credentials: true, updated_at: new Date(), ...row }] };
+        }
+        return { rows: [] };
       });
+    }
+
+    it('encrypts secret fields and stores non-secret fields as plain config', async () => {
+      mockMergeTransaction(null, { config: { region: 'us-west-2' } });
 
       const req = mockReq({
         params: { provider: 'aws' },
@@ -221,9 +239,10 @@ describe('SettingsController', () => {
         secretAccessKey: 'shh',
       });
 
-      const [, params] = mockPgQuery.mock.calls[0] as [string, unknown[]];
+      const [, params] = updateCall()!;
       expect(params[2]).toBe(JSON.stringify({ region: 'us-west-2' }));
-      expect(JSON.stringify(params)).not.toContain('shh');
+      expect(params[3]).toBe('encrypted-blob');
+      expect(JSON.stringify(mockPgQuery.mock.calls)).not.toContain('shh');
 
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({ success: true, data: expect.objectContaining({ hasCredentials: true }) })
@@ -246,6 +265,219 @@ describe('SettingsController', () => {
       expect(mockEncryptionService.encryptCredential).not.toHaveBeenCalled();
       const [, params] = mockPgQuery.mock.calls[0] as [string, unknown[]];
       expect(params[3]).toBeNull();
+    });
+
+    it.each([
+      ['ssh', { username: 'u', host: 'h' }, 'host'],
+      ['aws', { region: 'us-east-1', secretAcessKey: 'typo-secret-value' }, 'secretAcessKey'],
+      ['azure', { clientsecret: 'typo-secret-value' }, 'clientsecret'],
+      ['gcp', { private_key: 'typo-secret-value' }, 'private_key'],
+    ])('refuses an unknown %s credential field before storing anything', async (provider, credentials, name) => {
+      const req = mockReq({ params: { provider }, body: { credentials } });
+      const res = mockRes();
+
+      await controller.updateDiscoveryProviderSettings(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        error: 'Bad Request',
+        message: `Unsupported credential field '${name}' for provider '${provider}'`,
+      });
+      expect(mockPgQuery).not.toHaveBeenCalled();
+      expect(mockPgClient.transaction).not.toHaveBeenCalled();
+      expect(mockEncryptionService.encryptCredential).not.toHaveBeenCalled();
+      const observable = JSON.stringify([
+        (res.json as AnyMock).mock.calls,
+        (logger.error as AnyMock).mock.calls,
+        (logger.warn as AnyMock).mock.calls,
+        (logger.info as AnyMock).mock.calls,
+      ]);
+      expect(observable).not.toContain('typo-secret-value');
+    });
+
+    it('names only a short identifier in the refusal; any other key name is not echoed', async () => {
+      const hostile = "x'; DROP TABLE y;--<script>secret-in-name";
+      const req = mockReq({ params: { provider: 'aws' }, body: { credentials: { [hostile]: 'v' } } });
+      const res = mockRes();
+
+      await controller.updateDiscoveryProviderSettings(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        success: false,
+        error: 'Bad Request',
+        message: 'Unsupported credential field',
+      });
+      expect(mockPgQuery).not.toHaveBeenCalled();
+    });
+
+    it('refuses __proto__ as an unsupported field instead of storing it', async () => {
+      const credentials = JSON.parse('{"__proto__": {"region": "evil"}}');
+      const req = mockReq({ params: { provider: 'aws' }, body: { credentials } });
+      const res = mockRes();
+
+      await controller.updateDiscoveryProviderSettings(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockPgQuery).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['aws', 'sessionToken', 'tok-secret-value'],
+      ['ssh', 'password', 'pw-secret-value'],
+      ['ssh', 'passphrase', 'pp-secret-value'],
+    ])('encrypts %s %s and never stores or echoes it as config', async (provider, field, value) => {
+      mockMergeTransaction(null, { config: {} });
+      const req = mockReq({ params: { provider }, body: { credentials: { [field]: value } } });
+      const res = mockRes();
+
+      await controller.updateDiscoveryProviderSettings(req, res);
+
+      expect(mockEncryptionService.encryptCredential).toHaveBeenCalledWith({ [field]: value });
+      const [, params] = updateCall()!;
+      expect(params[2]).toBe('{}');
+      expect(params[3]).toBe('encrypted-blob');
+      expect(JSON.stringify(mockPgQuery.mock.calls)).not.toContain(value);
+      expect(JSON.stringify((res.json as AnyMock).mock.calls)).not.toContain(value);
+    });
+
+    it('keeps the saved secretAccessKey when an aws update sends only accessKeyId', async () => {
+      mockEncryptionService.decryptCredential.mockReturnValue({ accessKeyId: 'OLD', secretAccessKey: 'saved-secret' });
+      mockMergeTransaction('stored-blob');
+
+      const req = mockReq({ params: { provider: 'aws' }, body: { credentials: { accessKeyId: 'NEW' } } });
+      await controller.updateDiscoveryProviderSettings(req, mockRes());
+
+      expect(mockEncryptionService.decryptCredential).toHaveBeenCalledWith('stored-blob');
+      expect(mockEncryptionService.encryptCredential).toHaveBeenCalledWith({
+        accessKeyId: 'NEW',
+        secretAccessKey: 'saved-secret',
+      });
+    });
+
+    it('keeps stored secrets whose keys are sent blank, null or missing', async () => {
+      mockEncryptionService.decryptCredential.mockReturnValue({ accessKeyId: 'OLD', secretAccessKey: 'saved-secret' });
+      mockMergeTransaction('stored-blob');
+
+      const req = mockReq({
+        params: { provider: 'aws' },
+        body: { credentials: { accessKeyId: 'NEW', secretAccessKey: '', sessionToken: null } },
+      });
+      await controller.updateDiscoveryProviderSettings(req, mockRes());
+
+      expect(mockEncryptionService.encryptCredential).toHaveBeenCalledWith({
+        accessKeyId: 'NEW',
+        secretAccessKey: 'saved-secret',
+      });
+    });
+
+    it('answers 500 and writes nothing when the stored blob cannot be decrypted', async () => {
+      mockEncryptionService.decryptCredential.mockImplementation(() => {
+        throw new Error('Failed to decrypt credential: bad tag');
+      });
+      mockMergeTransaction('corrupt-blob');
+
+      const req = mockReq({ params: { provider: 'aws' }, body: { credentials: { accessKeyId: 'NEW' } } });
+      const res = mockRes();
+      await controller.updateDiscoveryProviderSettings(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ message: 'Internal error' }));
+      expect(mockEncryptionService.encryptCredential).not.toHaveBeenCalled();
+      expect(updateCall()).toBeUndefined();
+    });
+
+    it('answers 500 and writes nothing when the stored blob decrypts to a non-object', async () => {
+      mockEncryptionService.decryptCredential.mockReturnValue('just-a-string');
+      mockMergeTransaction('odd-blob');
+
+      const req = mockReq({ params: { provider: 'aws' }, body: { credentials: { accessKeyId: 'NEW' } } });
+      const res = mockRes();
+      await controller.updateDiscoveryProviderSettings(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(mockEncryptionService.encryptCredential).not.toHaveBeenCalled();
+      expect(updateCall()).toBeUndefined();
+    });
+
+    it('binds the insert, the lock and the update of the merge to the session user and the path provider', async () => {
+      mockMergeTransaction(null);
+
+      const req = mockReq({
+        params: { provider: 'aws' },
+        body: { userId: 'user-2', credentials: { accessKeyId: 'A' } },
+      });
+      await controller.updateDiscoveryProviderSettings(req, mockRes());
+
+      const byStatement = (needle: string) =>
+        mockPgQuery.mock.calls.filter(([sql]) => String(sql).includes(needle)) as [string, unknown[]][];
+      const [insert] = byStatement('INSERT INTO discovery_provider_settings');
+      const [lock] = byStatement('FOR UPDATE');
+      const [update] = byStatement('UPDATE discovery_provider_settings');
+      expect(insert![1].slice(0, 2)).toEqual(['user-1', 'aws']);
+      expect(lock![1]).toEqual(['user-1', 'aws']);
+      expect(update![1].slice(0, 2)).toEqual(['user-1', 'aws']);
+    });
+
+    it('serializes the read-modify-write: the row is locked FOR UPDATE inside one transaction', async () => {
+      mockMergeTransaction(null);
+
+      const req = mockReq({ params: { provider: 'aws' }, body: { credentials: { accessKeyId: 'A' } } });
+      await controller.updateDiscoveryProviderSettings(req, mockRes());
+
+      const sqls = mockPgQuery.mock.calls.map(([sql]) => String(sql));
+      const lockIdx = sqls.findIndex((s) => s.includes('FOR UPDATE'));
+      const updateIdx = sqls.findIndex((s) => s.includes('UPDATE discovery_provider_settings'));
+      expect(mockPgClient.transaction).toHaveBeenCalledTimes(1);
+      expect(lockIdx).toBeGreaterThan(-1);
+      expect(updateIdx).toBeGreaterThan(lockIdx);
+    });
+
+    it('keeps both secrets when two saves for the same user and provider run concurrently', async () => {
+      // In-memory row with a row lock held from FOR UPDATE until the transaction ends,
+      // and a yield after every read so an unlocked implementation interleaves.
+      let blob: string | null = null;
+      let held: Promise<void> | null = null;
+      mockEncryptionService.encryptCredential.mockImplementation((o: unknown) => JSON.stringify(o));
+      mockEncryptionService.decryptCredential.mockImplementation((s: string) => JSON.parse(s));
+      mockPgClient.transaction.mockImplementation(async (cb: (c: { query: AnyMock }) => Promise<unknown>) => {
+        let release!: () => void;
+        const done = new Promise<void>((r) => (release = r));
+        const client = {
+          query: jest.fn(async (sql: string, params: unknown[]) => {
+            if (sql.includes('SELECT encrypted_credentials')) {
+              if (sql.includes('FOR UPDATE')) {
+                while (held) await held;
+                held = done;
+              }
+              const seen = blob;
+              await new Promise((r) => setImmediate(r));
+              return { rows: [{ encrypted_credentials: seen }] };
+            }
+            if (sql.includes('UPDATE discovery_provider_settings')) {
+              blob = params[3] as string;
+              return { rows: [{ config: {}, has_credentials: true, updated_at: new Date() }] };
+            }
+            return { rows: [] };
+          }),
+        };
+        try {
+          return await cb(client);
+        } finally {
+          held = null;
+          release();
+        }
+      });
+
+      const save = (credentials: Record<string, string>) =>
+        controller.updateDiscoveryProviderSettings(
+          mockReq({ params: { provider: 'aws' }, body: { credentials } }),
+          mockRes()
+        );
+      await Promise.all([save({ accessKeyId: 'AK' }), save({ secretAccessKey: 'SK' })]);
+
+      expect(JSON.parse(blob!)).toEqual({ accessKeyId: 'AK', secretAccessKey: 'SK' });
     });
   });
 

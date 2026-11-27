@@ -89,9 +89,17 @@ export interface CredentialEventInput {
   actor: string;
 }
 
+/** The answer of a batched user lookup: the users found, and the ids that matched more than one node. */
+export interface UsersByIds<U = User> {
+  users: Map<string, U>;
+  ambiguous: string[];
+}
+
 export interface AuthRepository {
   findUserByUsername(username: string): Promise<User | null>;
   findUserById(id: string): Promise<User | null>;
+  /** Users by id in one batched read: an id with no node, or with more than one (ambiguous), is absent from `users`; an ambiguous id is also listed in `ambiguous`. */
+  findUsersByIds(ids: readonly string[], timeoutMs: number): Promise<UsersByIds>;
   updateUserLastLogin(userId: string): Promise<void>;
   /** Applies a partial profile update (name/avatar) and returns the updated user. */
   updateUser(id: string, updates: UserProfileUpdate): Promise<User>;
@@ -497,6 +505,17 @@ export class AuthService {
   async findEnabledUser(userId: string): Promise<User | null> {
     const user = await this.repository.findUserById(userId);
     return user && user._enabled ? user : null;
+  }
+
+  /**
+   * The enabled users among `ids` (one batched identity-store read bounded by `timeoutMs`), by id. A missing,
+   * disabled or ambiguous (two nodes) id is absent from `users`; the ambiguous ids are reported in `ambiguous` so the
+   * caller can raise the integrity alarm findEnabledUser's AmbiguousUserIdentityError is. Same per-id result as
+   * findEnabledUser, without a read per id.
+   */
+  async findEnabledUsers(ids: readonly string[], timeoutMs: number): Promise<UsersByIds> {
+    const { users, ambiguous } = await this.repository.findUsersByIds(ids, timeoutMs);
+    return { users: new Map([...users].filter(([, user]) => user._enabled)), ambiguous };
   }
 
   /**

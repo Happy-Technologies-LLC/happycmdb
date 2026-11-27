@@ -144,7 +144,7 @@ SELECT event, reason, revoked_api_keys FROM auth_credential_events WHERE ref_eve
 export type Row = Record<string, unknown>;
 
 export interface RotationGraph {
-  /** Auto-commit read routed to the primary. */
+  /** Auto-commit read in a READ-mode session: the server refuses a write Cypher. */
   read(cypher: string, params: Row): Promise<Row[]>;
   /** One explicit write transaction; resolves only after the commit is acknowledged. */
   write(cypher: string, params: Row): Promise<Row[]>;

@@ -25,10 +25,14 @@ import {
 const PRE_APPROVAL_STATUSES: readonly string[] = ['draft', 'pending_approval'];
 const PRE_APPROVAL_STATUS_LIST = PRE_APPROVAL_STATUSES.map(status => `'${status}'`).join(', ');
 
-/** The verified caller, never a body field. No 'system' fallback: an approval attributed to no one defeats the record. */
+/**
+ * The verified caller's user id, never a body field. Only `_userId` is stamped: a username fallback would store a
+ * non-UUID value, and every real principal (JWT access token, API key) carries `_userId`. No 'system' fallback: an
+ * approval attributed to no one defeats the record.
+ */
 function changeApprover(req: Request): string | undefined {
-  const user = (req as AuthenticatedRequest).user;
-  return [user?._userId, user?._username].find(name => typeof name === 'string' && name !== '');
+  const userId = (req as AuthenticatedRequest).user?._userId;
+  return typeof userId === 'string' && userId !== '' ? userId : undefined;
 }
 function refuseUnauthenticatedApprover(res: Response): void {
   res.status(401).json({
@@ -59,6 +63,12 @@ function previousApproverFields(approvedBy: string | null): Record<string, unkno
   return UUID_PATTERN.test(approvedBy)
     ? { previous_approved_by: approvedBy }
     : { previous_approved_by_kind: 'legacy' };
+}
+
+/** What the caller claimed in closedBy, without the claim: the actor's own id, some other UUID, or anything else. */
+function claimedClosedByKind(claimed: unknown, actorId: string | null): 'matches_actor' | 'uuid' | 'other' {
+  if (actorId !== null && claimed === actorId) return 'matches_actor';
+  return typeof claimed === 'string' && UUID_PATTERN.test(claimed) ? 'uuid' : 'other';
 }
 
 /**
@@ -316,7 +326,7 @@ export class ITILController {
       try {
         impact = deriveImpact(await readMappedServices(
           { query: (text, params) => this.postgresClient.pool.query(text, params) },
-          requestOrganizationId(req), [affectedCIId]));
+          requestOrganizationId(req), [affectedCIId as string]));
       } catch (error) {
         logger.warn('Incident business impact unavailable', error);
       }
@@ -857,10 +867,10 @@ export class ITILController {
           const pool = this.postgresClient.pool;
           const organizationId = requestOrganizationId(req);
           const current = await pool.query(
-            `SELECT status, approved_by, approved_at::text AS approved_at_stamp, approved_at
+            `SELECT status, approved_by, approved_at::text AS approved_at_stamp
                FROM itil_changes WHERE id = $1 AND organization_id = $2`, [id, organizationId]);
           const before = current.rows[0] as { status: string; approved_by: string | null;
-            approved_at_stamp: string | null; approved_at: Date | null } | undefined;
+            approved_at_stamp: string | null } | undefined;
           if (!before) {
             res.status(404).json({ success: false, error: 'Not Found', message: 'Change not found' });
             return;
@@ -879,11 +889,11 @@ export class ITILController {
               message: 'The change was modified since it was read; reload it and retry',
             },
           };
-          if (before.approved_by != null || before.approved_at != null) {
+          if (before.approved_by != null || before.approved_at_stamp != null) {
             clearedStamp = {
               change_id: id, organization_id: organizationId,
               ...previousApproverFields(before.approved_by),
-              previous_approved_at: before.approved_at == null ? null : new Date(before.approved_at).toISOString(),
+              previous_approved_at: before.approved_at_stamp,
               actor_user_id: (req as AuthenticatedRequest).user?._userId ?? null,
             };
           }
@@ -1080,6 +1090,11 @@ export class ITILController {
     try {
       const { id } = req.params;
       const { result: changeResult, notes, closedBy: claimedClosedBy } = req.body;
+      // GraphQL closeChange calls this controller directly, bypassing REST's Joi schema (closedBy max 255).
+      if (typeof claimedClosedBy === 'string' && claimedClosedBy.length > 255) {
+        res.status(400).json({ success: false, error: 'Bad Request', message: 'Invalid request' });
+        return;
+      }
 
       const outcomeMap: Record<string, string> = {
         SUCCESS: 'successful',
@@ -1088,11 +1103,6 @@ export class ITILController {
         ROLLED_BACK: 'backed_out',
       };
       const outcome = outcomeMap[changeResult] ?? null;
-
-      // closed_by is the verified actor; the body's closedBy is only what the caller claimed.
-      logger.info('Closing change', {
-        id, closed_by: (req as AuthenticatedRequest).user?._userId ?? null, claimed_closed_by: claimedClosedBy,
-      });
 
       const pool = this.postgresClient.pool;
       const result = await pool.query(
@@ -1117,6 +1127,11 @@ export class ITILController {
         });
         return;
       }
+
+      // closed_by is the verified actor. The body's closedBy is free text (an email, a name) and is never logged:
+      // only its kind is, and only for a change this organization owns.
+      const actorId = (req as AuthenticatedRequest).user?._userId ?? null;
+      logger.info('Change closed', { id, closed_by: actorId, claimed_closed_by_kind: claimedClosedByKind(claimedClosedBy, actorId) });
 
       res.json({
         success: true,

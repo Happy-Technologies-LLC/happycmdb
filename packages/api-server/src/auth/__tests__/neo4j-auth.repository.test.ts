@@ -90,6 +90,29 @@ describe('Neo4jAuthRepository', () => {
       await expect(repository.findUserById('x')).rejects.toBeInstanceOf(AmbiguousUserIdentityError);
     });
 
+    it('findUsersByIds: one batched read; an id with no node or with two distinct nodes is absent, one ambiguous id never fails the batch', async () => {
+      const a = node('4:a', { _id: 'x', _role: 'viewer', _enabled: true });
+      const dupA = node('4:d1', { _id: 'dup', _enabled: true });
+      const dupB = node('4:d2', { id: 'dup', _enabled: true });
+      const rows = [['x', a], ['x', a], ['dup', dupA], ['dup', dupB]] as const;
+      mockSession.run.mockResolvedValueOnce({ records: rows.map(([requested, u]) => ({ get: (k: string) => (k === 'requested' ? requested : u) })) });
+
+      const { users, ambiguous } = await repository.findUsersByIds(['x', 'dup', 'ghost'], 1234);
+
+      expect([...users.keys()]).toEqual(['x']);
+      expect(ambiguous).toEqual(['dup']);
+      expect(users.get('x')).toMatchObject({ _elementId: '4:a', _role: 'viewer' });
+      expect(mockSession.run).toHaveBeenCalledTimes(1);
+      const [, params] = mockSession.run.mock.calls[0] as [string, Record<string, unknown>, Record<string, unknown>];
+      expect(params).toEqual({ ids: ['x', 'dup', 'ghost'] });
+      expect(mockSession.close).toHaveBeenCalled();
+    });
+
+    it('findUsersByIds: an empty list runs no query', async () => {
+      await expect(repository.findUsersByIds([], 1000)).resolves.toEqual({ users: new Map(), ambiguous: [] });
+      expect(mockSession.run).not.toHaveBeenCalled();
+    });
+
     it('findUserByUsername refuses two nodes', async () => {
       mockSession.run.mockResolvedValueOnce(records(node('4:a', { _username: 'dup' }), node('4:b', { username: 'dup' })));
 

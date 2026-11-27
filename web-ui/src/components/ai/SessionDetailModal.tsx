@@ -2,13 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Badge,
+  Card,
+  Dialog,
+  FieldList,
+  Icon,
+  JsonBlock,
+  SectionHeading,
+  Stat,
+  TabPanel,
+  Tabs,
+  type BadgeVariant,
+} from '@happy-technologies/design-system';
 import { AIDiscoverySession } from '@/services/ai-pattern.service';
-import { Icon } from '@happy-technologies/design-system';
+import { EMPTY_VALUE, formatCount, isKnown } from '@/lib/dashboardValue';
 
 /**
  * Discovered CIs are heterogeneous (their shape depends on the pattern/tool
@@ -36,239 +44,200 @@ interface SessionDetailModalProps {
   onClose: () => void;
 }
 
+type TabValue = 'overview' | 'tools' | 'results' | 'reasoning';
+
+const TABS_ID = 'session-detail-tabs';
+const TAB_OPTIONS: Array<{ value: TabValue; label: string }> = [
+  { value: 'overview', label: 'Overview' },
+  { value: 'tools', label: 'Tool Calls' },
+  { value: 'results', label: 'Results' },
+  { value: 'reasoning', label: 'AI Reasoning' },
+];
+
+const STATUS_VARIANT: Record<string, BadgeVariant> = { completed: 'success', failed: 'danger' };
+
+/** A stat whose figure is unknown shows a dash and says so in its label: never 0. */
+const figure = (known: boolean, value: string, label: string) => ({
+  value: known ? value : EMPTY_VALUE,
+  label: known ? label : `${label} (not available yet)`,
+});
+
 export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ session, open, onClose }) => {
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState<TabValue>('overview');
+
+  const confidence = figure(
+    isKnown(session.confidenceScore),
+    `${((session.confidenceScore ?? 0) * 100).toFixed(0)}%`,
+    'Confidence',
+  );
+  const cost = figure(isKnown(session.estimatedCost), `$${(session.estimatedCost ?? 0).toFixed(4)}`, 'Cost');
+
+  const panel = (value: TabValue, content: React.ReactNode) => (
+    <TabPanel tabsId={TABS_ID} value={value} selected={activeTab === value} className="mt-4 space-y-4">
+      {activeTab === value && content}
+    </TabPanel>
+  );
 
   return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-3">
-            <Icon name="brain" size={20} className="text-navy" />
+    <Dialog
+      open={open}
+      onClose={onClose}
+      aria-label={`Discovery session ${session.sessionId}`}
+      className="max-h-[90vh] max-w-5xl overflow-y-auto"
+    >
+      <div className="space-y-4 p-6">
+        <SectionHeading className="mb-0 pr-10">
+          <span className="flex items-center gap-3">
+            <Icon name="brain" size={20} />
             <span>Discovery Session</span>
-            <Badge variant="outline" className="font-mono text-xs">
+            <Badge variant="neutral" className="hh-mono">
               {session.sessionId}
             </Badge>
-          </DialogTitle>
-        </DialogHeader>
+          </span>
+        </SectionHeading>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid grid-cols-4 w-full">
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="tools">Tool Calls</TabsTrigger>
-            <TabsTrigger value="results">Results</TabsTrigger>
-            <TabsTrigger value="reasoning">AI Reasoning</TabsTrigger>
-          </TabsList>
+        <Tabs
+          id={TABS_ID}
+          aria-label="Session details"
+          value={activeTab}
+          onChange={setActiveTab}
+          options={TAB_OPTIONS}
+        />
 
-          <TabsContent value="overview" className="space-y-4 mt-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">Session Information</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                  <div>
-                    <p className="text-xs text-muted-foreground">Target</p>
-                    <p className="font-mono font-semibold">
-                      {session.targetHost}:{session.targetPort}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Status</p>
-                    <div className="mt-1">
-                      <Badge variant={
-                        session.status === 'completed' ? 'default' :
-                        session.status === 'failed' ? 'destructive' : 'outline'
-                      }>
-                        {session.status}
+        {panel(
+          'overview',
+          <Card className="space-y-4">
+            <SectionHeading level={3} className="mb-0">Session Information</SectionHeading>
+            <FieldList
+              fields={[
+                ['Target', <span className="hh-mono font-semibold">{session.targetHost}:{session.targetPort}</span>],
+                [
+                  'Status',
+                  <Badge variant={STATUS_VARIANT[session.status] ?? 'info'}>{session.status}</Badge>,
+                ],
+                ['AI Model', session.aiModel],
+              ]}
+            />
+
+            <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+              <Stat size="sm" align="left" {...confidence} />
+              <Stat size="sm" align="left" {...cost} />
+              <Stat
+                size="sm"
+                align="left"
+                label="Duration"
+                value={session.durationMs ? `${(session.durationMs / 1000).toFixed(1)}s` : '-'}
+              />
+              <Stat
+                size="sm"
+                align="left"
+                label="CIs Found"
+                value={session.discoveredCIs ? session.discoveredCIs.length : EMPTY_VALUE}
+              />
+            </div>
+
+            <div className="border-t border-[var(--hh-hairline)] pt-4">
+              <p className="mb-2 text-xs text-[var(--hh-text-muted)]">Token Usage</p>
+              <FieldList
+                fields={[
+                  ['Total', formatCount(session.totalTokens)],
+                  ['Prompt', formatCount(session.promptTokens)],
+                  ['Completion', formatCount(session.completionTokens)],
+                ]}
+              />
+            </div>
+
+            <div className="border-t border-[var(--hh-hairline)] pt-4">
+              <FieldList
+                fields={[
+                  ['Started', new Date(session.startedAt).toLocaleString()],
+                  ['Completed', session.completedAt ? new Date(session.completedAt).toLocaleString() : null],
+                ]}
+              />
+            </div>
+          </Card>,
+        )}
+
+        {panel(
+          'tools',
+          <Card className="space-y-4">
+            <SectionHeading level={3} className="mb-0">
+              <span className="flex items-center gap-2">
+                <Icon name="wrench" size={16} />
+                Tool Execution Timeline
+              </span>
+            </SectionHeading>
+            {session.toolCalls && session.toolCalls.length > 0 ? (
+              <div className="space-y-3">
+                {session.toolCalls.map((toolCall, index) => (
+                  <Card key={index} inset="none" className="space-y-3 p-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold">{toolCall.toolName}</p>
+                        <p className="text-xs text-[var(--hh-text-muted)]">
+                          {new Date(toolCall.timestamp).toLocaleTimeString()} • {toolCall.executionTime}ms
+                        </p>
+                      </div>
+                      <Badge variant={toolCall.success ? 'success' : 'danger'}>
+                        <Icon name={toolCall.success ? 'check-circle' : 'x-circle'} size={12} />
+                        {toolCall.success ? 'Succeeded' : 'Failed'}
                       </Badge>
                     </div>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">AI Model</p>
-                    <p className="font-semibold">{session.aiModel}</p>
-                  </div>
-                </div>
+                    <JsonBlock label="Input" value={toolCall.input} />
+                    <JsonBlock label="Output" value={toolCall.output} />
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-[var(--hh-text-muted)]">No tool calls recorded</p>
+            )}
+          </Card>,
+        )}
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div>
-                    <p className="text-xs text-muted-foreground">Confidence</p>
-                    <p className="text-lg font-bold text-primary">
-                      {((session.confidenceScore ?? 0) * 100).toFixed(0)}%
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Cost</p>
-                    <p className="text-lg font-bold">
-                      ${session.estimatedCost?.toFixed(4) || '0.0000'}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Duration</p>
-                    <p className="text-lg font-bold">
-                      {session.durationMs ? `${(session.durationMs / 1000).toFixed(1)}s` : '-'}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">CIs Found</p>
-                    <p className="text-lg font-bold">
-                      {session.discoveredCIs?.length || 0}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="border-t pt-4">
-                  <p className="text-xs text-muted-foreground mb-2">Token Usage</p>
-                  <div className="grid grid-cols-3 gap-4">
-                    <div>
-                      <p className="text-xs text-muted-foreground">Total</p>
-                      <p className="font-semibold">{session.totalTokens?.toLocaleString() || 0}</p>
+        {panel(
+          'results',
+          <Card className="space-y-4">
+            <SectionHeading level={3} className="mb-0">
+              <span className="flex items-center gap-2">
+                <Icon name="file-code" size={16} />
+                Discovered Configuration Items
+              </span>
+            </SectionHeading>
+            {session.discoveredCIs && session.discoveredCIs.length > 0 ? (
+              <div className="space-y-3">
+                {session.discoveredCIs.map((ci, index) => (
+                  <Card key={index} inset="none" className="space-y-2 p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="font-semibold">{ciDisplayName(ci)}</p>
+                      <Badge variant="neutral">{ciType(ci)}</Badge>
                     </div>
-                    <div>
-                      <p className="text-xs text-muted-foreground">Prompt</p>
-                      <p className="font-semibold">{session.promptTokens?.toLocaleString() || 0}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-muted-foreground">Completion</p>
-                      <p className="font-semibold">{session.completionTokens?.toLocaleString() || 0}</p>
-                    </div>
-                  </div>
-                </div>
+                    <JsonBlock label="Data" value={ci} />
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-[var(--hh-text-muted)]">No configuration items discovered</p>
+            )}
+          </Card>,
+        )}
 
-                <div className="border-t pt-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <p className="text-xs text-muted-foreground">Started</p>
-                      <p className="text-sm">{new Date(session.startedAt).toLocaleString()}</p>
-                    </div>
-                    {session.completedAt && (
-                      <div>
-                        <p className="text-xs text-muted-foreground">Completed</p>
-                        <p className="text-sm">{new Date(session.completedAt).toLocaleString()}</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="tools" className="space-y-4 mt-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <Icon name="wrench" size={16} />
-                  Tool Execution Timeline
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {session.toolCalls && session.toolCalls.length > 0 ? (
-                  <div className="space-y-3">
-                    {session.toolCalls.map((toolCall, index) => (
-                      <div
-                        key={index}
-                        className={`p-4 border rounded-lg ${
-                          toolCall.success ? 'border-success/30 bg-success-soft' : 'border-danger/30 bg-danger-soft'
-                        }`}
-                      >
-                        <div className="flex items-start justify-between mb-3">
-                          <div className="flex items-center gap-2">
-                            {toolCall.success ? (
-                              <Icon name="check-circle" size={20} className="text-success" />
-                            ) : (
-                              <Icon name="x-circle" size={20} className="text-danger" />
-                            )}
-                            <div>
-                              <p className="font-semibold text-sm">{toolCall.toolName}</p>
-                              <p className="text-xs text-muted-foreground">
-                                {new Date(toolCall.timestamp).toLocaleTimeString()} • {toolCall.executionTime}ms
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="space-y-2">
-                          <div>
-                            <p className="text-xs font-semibold text-muted-foreground mb-1">Input</p>
-                            <pre className="bg-muted/50 p-2 rounded text-xs overflow-x-auto">
-                              <code>{JSON.stringify(toolCall.input, null, 2)}</code>
-                            </pre>
-                          </div>
-
-                          <div>
-                            <p className="text-xs font-semibold text-muted-foreground mb-1">Output</p>
-                            <pre className="bg-muted/50 p-2 rounded text-xs overflow-x-auto max-h-48">
-                              <code>{JSON.stringify(toolCall.output, null, 2)}</code>
-                            </pre>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">No tool calls recorded</p>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="results" className="mt-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <Icon name="file-code" size={16} />
-                  Discovered Configuration Items
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {session.discoveredCIs && session.discoveredCIs.length > 0 ? (
-                  <div className="space-y-3">
-                    {session.discoveredCIs.map((ci, index) => (
-                      <div key={index} className="p-3 border rounded-lg">
-                        <div className="flex items-center justify-between mb-2">
-                          <p className="font-semibold">{ciDisplayName(ci)}</p>
-                          <Badge variant="outline">{ciType(ci)}</Badge>
-                        </div>
-                        <pre className="bg-muted/50 p-2 rounded text-xs overflow-x-auto">
-                          <code>{JSON.stringify(ci, null, 2)}</code>
-                        </pre>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">No configuration items discovered</p>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="reasoning" className="mt-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <Icon name="chat-text" size={16} />
-                  AI Reasoning
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {session.aiReasoning ? (
-                  <div className="prose prose-sm max-w-none">
-                    <p className="whitespace-pre-wrap">{session.aiReasoning}</p>
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">No reasoning available</p>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
-
-        <div className="flex justify-end gap-2 mt-4">
-          <Button variant="outline" onClick={onClose}>
-            Close
-          </Button>
-        </div>
-      </DialogContent>
+        {panel(
+          'reasoning',
+          <Card className="space-y-4">
+            <SectionHeading level={3} className="mb-0">
+              <span className="flex items-center gap-2">
+                <Icon name="chat-text" size={16} />
+                AI Reasoning
+              </span>
+            </SectionHeading>
+            {session.aiReasoning ? (
+              <p className="whitespace-pre-wrap text-sm">{session.aiReasoning}</p>
+            ) : (
+              <p className="text-sm text-[var(--hh-text-muted)]">No reasoning available</p>
+            )}
+          </Card>,
+        )}
+      </div>
     </Dialog>
   );
 };

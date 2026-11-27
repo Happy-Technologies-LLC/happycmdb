@@ -9,15 +9,18 @@
 // (001 needs TimescaleDB), so the whole-grant matrix test builds each database from stand-in tables for every relation that 045
 // grants (read from 045 itself), then runs 045 to 048, 054 and 056 verbatim. The same matrix is proven on a real server, over the
 // full migration set, by the "role re-creation" step of deploy/test-staging-migrations.sh (hosted CI job `staging-migrations`).
-import { fork } from 'child_process';
-import { readdirSync, readFileSync } from 'fs';
+import { fork, spawnSync } from 'child_process';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 
 const HOST = join(__dirname, '../../../../../api-server/src/rest/routes/__tests__/fixtures/pglite-host.cjs');
+/** The same host with the uuid-ossp extension available (migration 001 creates it). */
+const UUID_HOST = join(__dirname, 'fixtures/pglite-uuid-host.cjs');
 const children: Array<ReturnType<typeof fork>> = [];
 /** A fresh in-memory PostgreSQL; roles are cluster-wide, so each scenario needs its own. */
-function open(): (sql: string) => Promise<Array<Record<string, any>>> {
-  const host = fork(HOST, [], { serialization: 'advanced' });
+function open(hostFile = HOST): (sql: string) => Promise<Array<Record<string, any>>> {
+  const host = fork(hostFile, [], { serialization: 'advanced' });
   children.push(host);
   let serial = 0;
   const pending = new Map<number, { resolve: (rows: Array<Record<string, any>>) => void; reject: (error: Error) => void }>();
@@ -229,14 +232,29 @@ function grantMatrixSql(role: string): string {
         || CASE WHEN has_function_privilege('${role}', f.oid, 'EXECUTE WITH GRANT OPTION') THEN 'g'
                 WHEN has_function_privilege('${role}', f.oid, 'EXECUTE') THEN 't' ELSE 'f' END
       FROM pg_proc f JOIN pg_namespace n ON n.oid = f.pronamespace WHERE n.nspname IN ('public', 'cmdb')
+        AND (NOT EXISTS (SELECT 1 FROM pg_depend e WHERE e.classid = 'pg_proc'::regclass AND e.objid = f.oid AND e.deptype = 'e')
+             OR EXISTS (SELECT 1 FROM aclexplode(f.proacl) a JOIN pg_roles r ON r.oid = a.grantee WHERE r.rolname = '${role}'))
     UNION ALL
     SELECT 'column ' || n.nspname || '.' || c.relname || '.' || a.attname || '|' || p.privilege || '|'
         || CASE WHEN has_column_privilege('${role}', a.attrelid, a.attnum, p.privilege || ' WITH GRANT OPTION') THEN 'g' ELSE 't' END
       FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
       CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('REFERENCES')) AS p(privilege)
       WHERE n.nspname IN ('public', 'cmdb') AND c.relkind IN ('r', 'p', 'v', 'm') AND a.attnum > 0 AND NOT a.attisdropped
-        AND has_column_privilege('${role}', a.attrelid, a.attnum, p.privilege)
-        AND NOT has_table_privilege('${role}', a.attrelid, p.privilege)`;
+        AND ((has_column_privilege('${role}', a.attrelid, a.attnum, p.privilege)
+              AND NOT has_table_privilege('${role}', a.attrelid, p.privilege))
+             OR (has_column_privilege('${role}', a.attrelid, a.attnum, p.privilege || ' WITH GRANT OPTION')
+                 AND NOT has_table_privilege('${role}', a.attrelid, p.privilege || ' WITH GRANT OPTION')))
+    UNION ALL
+    SELECT 'default_acl ' || r.rolname || ' ' || coalesce(n.nspname, '*') || ' ' || d.defaclobjtype::text || '|'
+        || coalesce(g.rolname, 'PUBLIC') || '|' || x.privilege_type || '|' || CASE WHEN x.is_grantable THEN 'g' ELSE 't' END
+      FROM pg_default_acl d JOIN pg_roles r ON r.oid = d.defaclrole LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace
+      CROSS JOIN LATERAL aclexplode(d.defaclacl) x LEFT JOIN pg_roles g ON g.oid = x.grantee
+      WHERE r.rolname = '${role}' OR g.rolname = '${role}'
+    UNION ALL
+    SELECT 'database ' || current_database() || '|' || p.privilege || '|'
+        || CASE WHEN has_database_privilege('${role}', current_database(), p.privilege || ' WITH GRANT OPTION') THEN 'g'
+                WHEN has_database_privilege('${role}', current_database(), p.privilege) THEN 't' ELSE 'f' END
+      FROM (VALUES ('CONNECT'), ('CREATE'), ('TEMP')) AS p(privilege)`;
 }
 
 /**
@@ -303,6 +321,23 @@ describe('the column section of the grant matrix', () => {
     await query('REVOKE SELECT (id) ON public.t FROM cmdb_app');
     expect((await grantMatrix(query, 'cmdb_app')).filter(row => row.startsWith('column '))).toEqual([]);
   }, 60000);
+
+  it('lists a column grant option that sits under a table grant without one (a g row), and nothing once the table holds the grant option too', async () => {
+    const query = open();
+    await query('CREATE ROLE cmdb_app LOGIN');
+    await query('CREATE TABLE public.t (id int, name text)');
+    const columns = async () => (await grantMatrix(query, 'cmdb_app')).filter(row => row.startsWith('column '));
+    await query('GRANT SELECT ON public.t TO cmdb_app');
+    expect(await columns()).toEqual([]);
+    await query('GRANT SELECT (id) ON public.t TO cmdb_app WITH GRANT OPTION');
+    expect(await columns()).toEqual(['column public.t.id|SELECT|g']);
+    expect(await grantMatrix(query, 'cmdb_app')).toContain('public.t|SELECT|t'); // the table row alone would have read t
+    await query('REVOKE GRANT OPTION FOR SELECT (id) ON public.t FROM cmdb_app');
+    expect(await columns()).toEqual([]);
+    await query('GRANT SELECT ON public.t TO cmdb_app WITH GRANT OPTION; GRANT SELECT (id) ON public.t TO cmdb_app WITH GRANT OPTION');
+    expect(await columns()).toEqual([]); // the table row reads g, so the column rows would only repeat it
+    expect(await grantMatrix(query, 'cmdb_app')).toContain('public.t|SELECT|g');
+  }, 60000);
 });
 
 describe('the grant option field of the grant matrix', () => {
@@ -343,6 +378,207 @@ describe('the two copies of the grant matrix query', () => {
     expect(shellSql).toBeDefined();
     expect(collapse(shellSql!)).toEqual(collapse(grantMatrixSql('cmdb_app')));
   });
+});
+
+describe('the default ACL and database sections of the grant matrix', () => {
+  const section = async (query: ReturnType<typeof open>, prefix: string) =>
+    (await grantMatrix(query, 'cmdb_app')).filter(row => row.startsWith(prefix));
+
+  it('lists a default privilege that grants to cmdb_app or applies to what cmdb_app creates, and none that touches neither', async () => {
+    const query = open();
+    await query('CREATE ROLE cmdb_app LOGIN; CREATE ROLE cmdb_user LOGIN; CREATE ROLE other LOGIN');
+    expect(await section(query, 'default_acl ')).toEqual([]);
+    await query('ALTER DEFAULT PRIVILEGES FOR ROLE cmdb_user IN SCHEMA public GRANT SELECT ON TABLES TO other');
+    expect(await section(query, 'default_acl ')).toEqual([]); // neither the grantee nor the role is cmdb_app
+    await query('ALTER DEFAULT PRIVILEGES FOR ROLE cmdb_user IN SCHEMA public GRANT SELECT ON TABLES TO cmdb_app');
+    expect(await section(query, 'default_acl ')).toEqual(['default_acl cmdb_user public r|cmdb_app|SELECT|t']);
+    await query('ALTER DEFAULT PRIVILEGES FOR ROLE cmdb_user IN SCHEMA public GRANT SELECT ON TABLES TO cmdb_app WITH GRANT OPTION');
+    expect(await section(query, 'default_acl ')).toEqual(['default_acl cmdb_user public r|cmdb_app|SELECT|g']);
+    await query('ALTER DEFAULT PRIVILEGES FOR ROLE cmdb_user GRANT EXECUTE ON FUNCTIONS TO cmdb_app'); // no schema: every schema
+    expect(await section(query, 'default_acl ')).toEqual([
+      'default_acl cmdb_user * f|cmdb_app|EXECUTE|t',
+      'default_acl cmdb_user public r|cmdb_app|SELECT|g',
+    ]);
+    await query('ALTER DEFAULT PRIVILEGES FOR ROLE cmdb_app IN SCHEMA public GRANT USAGE ON SEQUENCES TO other'); // objects cmdb_app creates
+    expect(await section(query, 'default_acl cmdb_app ')).toEqual(['default_acl cmdb_app public S|other|USAGE|t']);
+  }, 60000);
+
+  it('lists the CONNECT, CREATE and TEMP privileges of the current database', async () => {
+    const query = open();
+    await query('CREATE ROLE cmdb_app LOGIN');
+    const database = (await query('SELECT current_database() AS name'))[0]!['name'] as string;
+    const rows = (fields: string) => fields.split(',').map((field, i) => `database ${database}|${['CONNECT', 'CREATE', 'TEMP'][i]}|${field}`);
+    expect(await section(query, 'database ')).toEqual(rows('t,f,t')); // PUBLIC's CONNECT and TEMP reach cmdb_app
+    await query(`GRANT CREATE ON DATABASE ${database} TO cmdb_app`);
+    expect(await section(query, 'database ')).toEqual(rows('t,t,t'));
+    await query(`GRANT CREATE ON DATABASE ${database} TO cmdb_app WITH GRANT OPTION`);
+    expect(await section(query, 'database ')).toEqual(rows('t,g,t'));
+    await query(`REVOKE CONNECT, TEMP ON DATABASE ${database} FROM PUBLIC`);
+    expect(await section(query, 'database ')).toEqual(rows('f,g,f'));
+  }, 60000);
+});
+
+describe('the function section of the grant matrix and extension functions', () => {
+  it('skips an extension\'s functions unless cmdb_app holds an ACL entry of its own on one, and always lists the others', async () => {
+    const query = open(UUID_HOST);
+    await query('CREATE ROLE cmdb_app LOGIN; CREATE EXTENSION "uuid-ossp"');
+    await query(`CREATE FUNCTION public.fn() RETURNS int LANGUAGE sql AS 'SELECT 1'`);
+    const functions = async () => (await grantMatrix(query, 'cmdb_app')).filter(row => row.startsWith('function '));
+    expect(await functions()).toEqual(['function fn()|EXECUTE|t']); // PUBLIC's EXECUTE on uuid_generate_v4() and the rest is not listed
+    await query('GRANT EXECUTE ON FUNCTION uuid_generate_v4() TO cmdb_app');
+    expect(await functions()).toEqual(['function fn()|EXECUTE|t', 'function uuid_generate_v4()|EXECUTE|t']);
+    await query('GRANT EXECUTE ON FUNCTION uuid_generate_v4() TO cmdb_app WITH GRANT OPTION');
+    expect(await functions()).toEqual(['function fn()|EXECUTE|t', 'function uuid_generate_v4()|EXECUTE|g']);
+  }, 60000);
+});
+
+describe('deploy/cmdb-app-grant-checks.sh, the checks the hosted job sources', () => {
+  const CHECKS = join(__dirname, '../../../../../../deploy/cmdb-app-grant-checks.sh');
+  const scratch = mkdtempSync(join(tmpdir(), 'cmdb-app-grant-checks-'));
+  afterAll(() => { rmSync(scratch, { recursive: true, force: true }); });
+  let serial = 0;
+  const file = (lines: string[]): string => {
+    const path = join(scratch, `f${serial++}`);
+    writeFileSync(path, lines.map(line => `${line}\n`).join(''));
+    return path;
+  };
+  /** Runs one function of the sourced file the way the job does (bash, no `set -e`), returning its exit status and stderr. */
+  const run = (fn: string, ...args: string[]) => {
+    const result = spawnSync('bash', ['-c', 'source "$1"; shift; "$@"', 'bash', CHECKS, fn, ...args], { encoding: 'utf8' });
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  };
+  /** The held rows of a small matrix (what the fixture lists), and the same matrix as the job's query reports it: with an f row. */
+  const HELD = ['column public.t.id|SELECT|t', 'database cmdb|CONNECT|t', 'public.t|SELECT|t', 'schema public|USAGE|t'];
+  const CLEAN = [...HELD, 'database cmdb|CREATE|f'];
+
+  describe('check_no_grant_option', () => {
+    it('fails on a matrix with a |g line, naming the row', () => {
+      const result = run('check_no_grant_option', file([...CLEAN, 'public.estate_kpi_snapshots|SELECT|g']));
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('WITH GRANT OPTION');
+      expect(result.stderr).toContain('public.estate_kpi_snapshots|SELECT|g');
+    });
+    it('passes a matrix without one (a g inside a name or an f row is not a grant option)', () => {
+      expect(run('check_no_grant_option', file([...CLEAN, 'public.g|SELECT|f', 'public.t|g|f'])).status).toBe(0);
+    });
+    it('fails when the matrix file cannot be read (grep would exit 2, which an `if` reads as clean)', () => {
+      expect(run('check_no_grant_option', join(scratch, 'missing')).status).toBe(1);
+    });
+  });
+
+  describe('check_matrix_allowlist', () => {
+    const expected = file(HELD);
+    it('passes when the held rows equal the fixture, whatever f rows the matrix carries', () => {
+      expect(run('check_matrix_allowlist', expected, file([...CLEAN, 'public.u|SELECT|f'].sort())).status).toBe(0);
+    });
+    it('fails on an extra grant, naming it and the fixture', () => {
+      const result = run('check_matrix_allowlist', expected, file([...CLEAN, 'public.u|DELETE|t'].sort()));
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('extra grant (not in the expected cmdb_app grants): public.u|DELETE|t');
+      expect(result.stderr).not.toContain('missing grant');
+      expect(result.stderr).toContain(expected);
+    });
+    it('fails on a missing grant, one that is now f included', () => {
+      const result = run('check_matrix_allowlist', expected, file(CLEAN.map(row => row === 'public.t|SELECT|t' ? 'public.t|SELECT|f' : row).sort()));
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('missing grant (expected, not held): public.t|SELECT|t');
+      expect(result.stderr).not.toContain('extra grant');
+    });
+    it('reads a grant option as an extra row (|g is not the fixture\'s |t)', () => {
+      const result = run('check_matrix_allowlist', expected, file(CLEAN.map(row => row === 'public.t|SELECT|t' ? 'public.t|SELECT|g' : row).sort()));
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('extra grant (not in the expected cmdb_app grants): public.t|SELECT|g');
+      expect(result.stderr).toContain('missing grant (expected, not held): public.t|SELECT|t');
+    });
+    it('fails on a matrix that is not in the fixture\'s sort order instead of mis-reporting', () => {
+      expect(run('check_matrix_allowlist', expected, file([...CLEAN].reverse())).status).toBe(1);
+    });
+  });
+
+  describe('check_no_owned_objects, over the SQL of cmdb_app_owned_objects_sql', () => {
+    const ownedSql = () => run('cmdb_app_owned_objects_sql').stdout;
+    const owned = async (query: ReturnType<typeof open>) => (await query(ownedSql())).map(row => row['owned'] as string);
+
+    it('lists what cmdb_app owns, whatever the kind, and nothing for a role that owns nothing', async () => {
+      const query = open();
+      await query('CREATE ROLE cmdb_app LOGIN; CREATE ROLE cmdb_user LOGIN; CREATE TABLE public.theirs (id int)');
+      await query('ALTER TABLE public.theirs OWNER TO cmdb_user');
+      expect(await owned(query)).toEqual([]);
+      await query(`CREATE TABLE public.mine (id int); ALTER TABLE public.mine OWNER TO cmdb_app;
+        CREATE SCHEMA scratch AUTHORIZATION cmdb_app;
+        CREATE FUNCTION public.fn() RETURNS int LANGUAGE sql AS 'SELECT 1'; ALTER FUNCTION public.fn() OWNER TO cmdb_app`);
+      expect(await owned(query)).toEqual(expect.arrayContaining(['table mine', 'schema scratch', 'function fn()']));
+      expect(await owned(query)).not.toContain('table theirs');
+      const database = (await query('SELECT current_database() AS name'))[0]!['name'] as string;
+      await query(`ALTER DATABASE ${database} OWNER TO cmdb_app`);
+      expect(await owned(query)).toContain(`database ${database}`);
+    }, 60000);
+
+    it('fails naming each owned object, and passes an empty list', () => {
+      const result = run('check_no_owned_objects', file(['table mine', 'schema scratch']));
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('cmdb_app owns table mine');
+      expect(result.stderr).toContain('cmdb_app owns schema scratch');
+      expect(run('check_no_owned_objects', file([])).status).toBe(0);
+      expect(run('check_no_owned_objects', join(scratch, 'missing')).status).toBe(1);
+    });
+  });
+});
+
+describe('deploy/cmdb-app-grants.expected, the cmdb_app grants a finished install must hold', () => {
+  const FIXTURE = join(__dirname, '../../../../../../deploy/cmdb-app-grants.expected');
+  const CHECKS = join(__dirname, '../../../../../../deploy/cmdb-app-grant-checks.sh');
+  /** Stand-ins for the two TimescaleDB calls of 001 (the extension is not in PGlite), kept out of public and cmdb so they are not in the matrix. */
+  const TIMESCALE_STUBS = `CREATE SCHEMA tsstub;
+    CREATE FUNCTION tsstub.create_hypertable(regclass, name, if_not_exists boolean DEFAULT false, chunk_time_interval interval DEFAULT NULL)
+      RETURNS void LANGUAGE sql AS 'SELECT';
+    CREATE FUNCTION tsstub.add_retention_policy(regclass, interval, if_not_exists boolean DEFAULT false) RETURNS void LANGUAGE sql AS 'SELECT';
+    SET search_path = public, tsstub`;
+
+  /** Every row cmdb_app holds after all migrations ran, in the job's form: app-login created the role first, the migrator then ran every file in order. */
+  async function heldAfterAllMigrations(): Promise<{ all: string[]; held: string[] }> {
+    const query = open(UUID_HOST);
+    await query(`CREATE ROLE cmdb_user LOGIN SUPERUSER; CREATE ROLE cmdb_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS; ${TIMESCALE_STUBS}`);
+    const database = (await query('SELECT current_database() AS name'))[0]!['name'] as string;
+    for (const name of readdirSync(MIGRATIONS).filter(file => file.endsWith('.sql')).sort()) {
+      await query(`BEGIN;\n${migration(name).replace('CREATE EXTENSION IF NOT EXISTS timescaledb;', '')}\nCOMMIT;`);
+    }
+    // The staging database is named cmdb; PGlite's is `postgres`.
+    const all = (await grantMatrix(query, 'cmdb_app')).map(row => row.replace(`database ${database}|`, 'database cmdb|')).sort();
+    return { all, held: all.filter(row => !row.endsWith('|f')) };
+  }
+
+  it('lists exactly the held rows of cmdb_app after every migration (regenerate: UPDATE_GRANT_FIXTURE=1, see deploy/BUILD01-STAGING.md)', async () => {
+    const { held } = await heldAfterAllMigrations();
+    if (process.env['UPDATE_GRANT_FIXTURE'] === '1') writeFileSync(FIXTURE, held.map(row => `${row}\n`).join(''));
+    const expected = readFileSync(FIXTURE, 'utf8').split('\n').filter(line => line !== '');
+    expect({ extra: held.filter(row => !expected.includes(row)), missing: expected.filter(row => !held.includes(row)) })
+      .toEqual({ extra: [], missing: [] });
+    expect(expected).toEqual([...expected].sort()); // the job's comm needs the fixture in byte order
+    expect(expected.filter(row => row.endsWith('|g') || row.endsWith('|f'))).toEqual([]);
+    for (const [table, privileges] of Object.entries(EXPECTED)) {
+      for (const privilege of PRIVILEGES) expect(expected.includes(`${table}|${privilege}|t`)).toBe(privileges.includes(privilege));
+    }
+  }, 180000);
+
+  it('is accepted by check_matrix_allowlist for that matrix, and refuses it once a grant is added or dropped', async () => {
+    const { all } = await heldAfterAllMigrations();
+    const dir = mkdtempSync(join(tmpdir(), 'cmdb-app-grants-'));
+    try {
+      const check = (rows: string[]) => {
+        const matrix = join(dir, 'matrix');
+        writeFileSync(matrix, [...rows].sort().map(row => `${row}\n`).join(''));
+        return spawnSync('bash', ['-c', 'source "$1"; check_matrix_allowlist "$2" "$3"', 'bash', CHECKS, FIXTURE, matrix], { encoding: 'utf8' });
+      };
+      expect(check(all).status).toBe(0);
+      const extra = check([...all, 'public.audit_log|DELETE|t']);
+      expect([extra.status, extra.stderr]).toEqual([1, expect.stringContaining('extra grant (not in the expected cmdb_app grants): public.audit_log|DELETE|t')]);
+      const dropped = check(all.map(row => row === 'public.audit_log|INSERT|t' ? 'public.audit_log|INSERT|f' : row));
+      expect([dropped.status, dropped.stderr]).toEqual([1, expect.stringContaining('missing grant (expected, not held): public.audit_log|INSERT|t')]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 180000);
 });
 
 describe('the $hap2126$ block cannot silently drift from the migrations (grants, dynamic grantees, REVOKE, every file)', () => {

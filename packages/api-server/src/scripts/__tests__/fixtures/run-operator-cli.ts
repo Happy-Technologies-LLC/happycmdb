@@ -8,6 +8,7 @@
  */
 
 import { spawn } from 'child_process';
+import { createServer, type Socket } from 'net';
 import { join } from 'path';
 
 const REGISTER = join(__dirname, 'ts-source-register.cjs');
@@ -47,9 +48,46 @@ const DEFAULT_DEADLINE_MS = 8000;
 
 /**
  * `REDIS_HOST`/`REDIS_PORT` point at a port nothing listens on: if a CLI ever loaded the `@cmdb/database` barrel, its
- * import-time IORedis connection would be refused instead of reaching a real Redis on localhost:6379. A test can override.
+ * import-time IORedis connection would be refused instead of reaching a real Redis on localhost:6379. A test can
+ * override it (`listenStrayRedis`) to observe, not just refuse, such a connection.
  */
 const STRAY_REDIS_ENV = { REDIS_HOST: '127.0.0.1', REDIS_PORT: '1' };
+
+export interface StrayRedis {
+  /** `REDIS_HOST`/`REDIS_PORT` of the API server's Redis, for the CLI's environment. */
+  env: { REDIS_HOST: string; REDIS_PORT: string };
+  /** How many connections have reached the listener so far. */
+  connections(): number;
+  close(): Promise<void>;
+}
+
+/**
+ * A real TCP listener standing in for the API server's Redis (the ambient `REDIS_HOST`/`REDIS_PORT`). It answers
+ * nothing; a CLI that never loads the `@cmdb/database` barrel never connects, so `connections()` stays 0.
+ */
+export async function listenStrayRedis(): Promise<StrayRedis> {
+  let connections = 0;
+  const sockets = new Set<Socket>();
+  const server = createServer(socket => {
+    connections += 1;
+    sockets.add(socket);
+    socket.on('error', () => undefined);
+    socket.on('close', () => sockets.delete(socket));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const { port } = server.address() as { port: number };
+  return {
+    env: { REDIS_HOST: '127.0.0.1', REDIS_PORT: String(port) },
+    connections: () => connections,
+    close: () => new Promise<void>(resolve => {
+      server.close(() => resolve());
+      sockets.forEach(socket => socket.destroy());
+    }),
+  };
+}
 
 /** Rejects, after SIGKILL of the child, once `deadlineMs` elapse; the message carries the stderr collected so far. */
 export function runOperatorCli(

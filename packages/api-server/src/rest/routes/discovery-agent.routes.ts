@@ -15,7 +15,7 @@
  * heartbeat themselves alongside operator/admin. Those three writes are
  * owner-bound: an agent-role caller only reaches agents it registered
  * (see DiscoveryAgentService, AgentCaller); operator/admin act org-wide.
- * Heartbeats also pass a per-principal rate limit (HEARTBEAT_BUDGET).
+ * Heartbeats also pass a per-principal rate limit (rateLimit.endpoints.agentHeartbeat).
  * Finding the best agent for a job and listing/reading agents are
  * read-like -- they don't change agent state -- so they stay
  * authenticated-only with no extra gate.
@@ -61,20 +61,33 @@ const registerAgentSchema = Joi.object({
 const MAX_HEARTBEAT_STAT_DELTA = 1_000_000;
 
 /**
- * Heartbeats per verified principal per window: 600 per hour, ten times the nominal one-per-minute cadence of one agent,
- * so retries, restarts and a few agents under one credential never trip it. The bucket is the verified user (an API key
- * authenticates as its owning user and carries no key id), so all keys of one user share it. Not configurable; it
- * honours `rateLimit.enabled` and the internal-service bypass header like every limiter, and fails open on a store error.
+ * Heartbeats per verified principal per window (`rateLimit.endpoints.agentHeartbeat`, env
+ * `RATE_LIMIT_AGENT_HEARTBEAT_MAX` / `_WINDOW_MS`): 600 per hour by default, ten times the nominal one-per-minute
+ * cadence of one agent, so one agent's retries and restarts never trip it. The ceiling is about ten agents per user
+ * at a 60 s interval; a user running more raises the budget. The bucket is the verified user (an API key authenticates
+ * as its owning user and carries no key id), so all keys of one user share it. Only admitted heartbeats are counted:
+ * a refused retry does not extend the lockout, so the user is admitted again once its oldest admitted heartbeat leaves
+ * the window. Max 0 mounts no limiter. It honours `rateLimit.enabled` and the internal-service bypass header like every
+ * limiter, and fails open on a store error.
  */
-const HEARTBEAT_BUDGET = { _max: 600, _windowMs: 3_600_000 };
-let heartbeatLimiter: RequestHandler | undefined;
-// Built on the first heartbeat: no Redis connection or limiter state at import time.
-const limitHeartbeats: RequestHandler = (req, res, next) => {
+// undefined: not built yet; null: no limiter (max 0, or construction failed and was logged once).
+let heartbeatLimiter: RequestHandler | null | undefined;
+// Built once on the first heartbeat: no Redis connection or limiter state at import time.
+function buildHeartbeatLimiter(): RequestHandler | null {
   try {
-    heartbeatLimiter ??= new RateLimitMiddleware(getRedisClient().getConnection(), loadConfig().rateLimit)
-      .custom(HEARTBEAT_BUDGET, 'agent-heartbeat') as unknown as RequestHandler;
+    const limiter = new RateLimitMiddleware(getRedisClient().getConnection(), loadConfig().rateLimit);
+    const budget = limiter.endpointBudget('agentHeartbeat');
+    return budget._max === 0
+      ? null
+      : limiter.custom(budget, 'agent-heartbeat', { admittedOnly: true }) as unknown as RequestHandler;
   } catch (error) {
-    logger.error('Heartbeat rate limiter unavailable - allowing request', undefined, errorClassFields(error));
+    logger.error('Heartbeat rate limiter unavailable - allowing requests', undefined, errorClassFields(error));
+    return null;
+  }
+}
+const limitHeartbeats: RequestHandler = (req, res, next) => {
+  if (heartbeatLimiter === undefined) heartbeatLimiter = buildHeartbeatLimiter();
+  if (heartbeatLimiter === null) {
     next();
     return;
   }

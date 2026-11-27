@@ -120,7 +120,8 @@ const node = (id: unknown, organizationId?: string, overrides: Record<string, un
 // A dim_ci version whose attributes equal node(): history (before SINCE, closed)
 // or current (after SINCE).
 async function dim(
-  ciId: string, organizationId: string, kind: 'history' | 'current', overrides: { status?: string; metadata?: object } = {}
+  ciId: string, organizationId: string, kind: 'history' | 'current',
+  overrides: { status?: string; metadata?: object; historyFrom?: string } = {}
 ): Promise<number> {
   const rows = await rowsOf<{ ci_key: number }>(
     `INSERT INTO cmdb.dim_ci (ci_id, ci_name, ci_type, ci_status, environment, metadata, effective_from, effective_to,
@@ -128,7 +129,7 @@ async function dim(
      VALUES ($1, $2, 'server', $3, 'production', $4, $5, $6, $7, $8, FALSE) RETURNING ci_key`,
     [
       ciId, `name-${ciId.slice(0, 8)}`, overrides.status ?? 'active', JSON.stringify(overrides.metadata ?? {}),
-      kind === 'history' ? BEFORE_SINCE : '2026-01-01T12:00:00Z',
+      kind === 'history' ? overrides.historyFrom ?? BEFORE_SINCE : '2026-01-01T12:00:00Z',
       kind === 'history' ? '2026-01-01T12:00:00Z' : '9999-12-31',
       kind === 'current', organizationId,
     ]
@@ -276,10 +277,12 @@ describe('a change is attributed to the organization of its node', () => {
   });
 
   it('diffs against the history of the node organization', async () => {
-    // A's history equals the node, so only B's history yields a change.
-    await dim('ci-1', ORG_A, 'history');
+    // A's history equals the node, so only B's history yields a change. A's
+    // is the LATER row before SINCE: without the organization predicate the
+    // diff would read A's row, find no change, and record nothing.
+    await dim('ci-1', ORG_A, 'history', { historyFrom: '2025-12-20T00:00:00Z' });
     await dim('ci-1', ORG_A, 'current');
-    await dim('ci-1', ORG_B, 'history', { status: 'maintenance' });
+    await dim('ci-1', ORG_B, 'history', { status: 'maintenance', historyFrom: '2025-12-01T00:00:00Z' });
     const keyB = await dim('ci-1', ORG_B, 'current');
     nodes = [node('ci-1', ORG_B)];
 

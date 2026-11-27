@@ -20,6 +20,8 @@ jest.mock('neo4j-driver', () => ({
   default: {
     driver: jest.fn(),
     auth: { basic: () => ({}) },
+    // The driver's own access-mode constants: the test compares against what the real driver defines.
+    session: jest.requireActual('neo4j-driver').session,
   },
 }));
 jest.mock('../../../../database/src/postgres/client', () => ({
@@ -341,5 +343,39 @@ describe('openOperatorStores TLS settings (CMDB_ROTATE_*)', () => {
     });
 
     expect(postgresMock.mock.calls[0][0]).toMatchObject({ _host: 'db.example', ssl: 'verify-full', sslCa: pem });
+  });
+});
+
+describe('openOperatorStores graph sessions', () => {
+  // A driver stand-in that records the config of every session the graph store opens.
+  const openGraph = () => {
+    const configs: Array<Record<string, unknown>> = [];
+    const run = jest.fn(async () => ({ records: [{ toObject: () => ({ n: 1 }) }] }));
+    const tx = { run, commit: jest.fn(async () => undefined), isOpen: () => false };
+    const session = { run, beginTransaction: jest.fn(() => tx), close: jest.fn(async () => undefined) };
+    driverMock.mockReturnValue({
+      session: (config: Record<string, unknown>) => {
+        configs.push(config);
+        return session;
+      },
+    });
+    return { graph: openOperatorStores(envWith('bolt://127.0.0.1:7687')).graph, configs };
+  };
+
+  it('opens a READ-mode session for graph.read, so the server refuses a write Cypher through it', async () => {
+    const { graph, configs } = openGraph();
+
+    await expect(graph.read('MATCH (u:User) RETURN count(u) AS n', {})).resolves.toEqual([{ n: 1 }]);
+
+    expect(configs).toEqual([{ database: 'neo4j', defaultAccessMode: neo4j.session.READ }]);
+  });
+
+  it('keeps graph.write on a session that is not READ-mode', async () => {
+    const { graph, configs } = openGraph();
+
+    await graph.write('CREATE (:X)', {});
+
+    expect(configs).toHaveLength(1);
+    expect(configs[0]!['defaultAccessMode']).toBeUndefined();
   });
 });

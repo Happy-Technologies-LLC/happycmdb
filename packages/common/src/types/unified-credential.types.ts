@@ -63,7 +63,7 @@ export interface CredentialAffinity {
   /** Target networks (CIDR notation) - e.g., ['10.0.0.0/8', '192.168.1.0/24'] */
   networks?: string[];
 
-  /** Hostname patterns (glob or regex) - e.g., ['*.prod.company.com', 'db-*'] */
+  /** Hostname patterns (glob: * and ?) - e.g., ['*.prod.company.com', 'db-*'] */
   hostname_patterns?: string[];
 
   /** Operating systems - e.g., ['linux', 'windows', 'cisco-ios'] */
@@ -602,7 +602,7 @@ export interface CredentialMatchResult {
  * Credential Match Context - Context for credential selection
  */
 export interface CredentialMatchContext {
-  /** Target IP address or CIDR */
+  /** Target IPv4 address (dotted quad, no prefix) */
   ip?: string;
 
   /** Target hostname */

@@ -7,18 +7,9 @@
  */
 
 import React, { useState } from 'react';
-import { Icon } from '@happy-technologies/design-system';
+import { Banner, Button, Disclosure, Icon, Input, Label, SectionHeading } from '@happy-technologies/design-system';
 import { apiClient } from '../../services/api';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { SecretInput, SecretTextarea } from '@/components/ui/secret-input';
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
 
 interface ProviderCredentials {
   aws?: {
@@ -47,6 +38,56 @@ interface ConnectionStatus {
   status: 'idle' | 'success' | 'error';
   message?: string;
 }
+
+type ProviderKey = keyof ProviderCredentials;
+
+/**
+ * `text` fields are plain DS inputs. `secret` and `secret-text` fields stay on the HAP-1213 secret inputs, whose value
+ * never reaches a DOM attribute or text node (the DS ships no secret field). The AWS access key id is stored encrypted
+ * by the server like the secret key, so it is a secret field; `type="text"` keeps it unmasked as before.
+ */
+type ProviderField =
+  | { key: string; id: string; label: string; kind: 'text'; fallback?: string }
+  | { key: string; id: string; label: string; kind: 'secret'; masked: boolean }
+  | { key: string; id: string; label: string; kind: 'secret-text' };
+
+const PROVIDERS: Array<{ key: ProviderKey; title: string; fields: ProviderField[] }> = [
+  {
+    key: 'aws',
+    title: 'AWS',
+    fields: [
+      { key: 'accessKeyId', id: 'aws-access-key', label: 'Access Key ID', kind: 'secret', masked: false },
+      { key: 'secretAccessKey', id: 'aws-secret-key', label: 'Secret Access Key', kind: 'secret', masked: true },
+      { key: 'region', id: 'aws-region', label: 'Region', kind: 'text', fallback: 'us-east-1' },
+    ],
+  },
+  {
+    key: 'azure',
+    title: 'Azure',
+    fields: [
+      { key: 'subscriptionId', id: 'azure-subscription', label: 'Subscription ID', kind: 'text' },
+      { key: 'tenantId', id: 'azure-tenant', label: 'Tenant ID', kind: 'text' },
+      { key: 'clientId', id: 'azure-client', label: 'Client ID', kind: 'text' },
+      { key: 'clientSecret', id: 'azure-secret', label: 'Client Secret', kind: 'secret', masked: true },
+    ],
+  },
+  {
+    key: 'gcp',
+    title: 'Google Cloud Platform',
+    fields: [
+      { key: 'projectId', id: 'gcp-project', label: 'Project ID', kind: 'text' },
+      { key: 'credentials', id: 'gcp-credentials', label: 'Service Account Credentials (JSON)', kind: 'secret-text' },
+    ],
+  },
+  {
+    key: 'ssh',
+    title: 'SSH',
+    fields: [
+      { key: 'username', id: 'ssh-username', label: 'Username', kind: 'text' },
+      { key: 'privateKey', id: 'ssh-private-key', label: 'Private Key', kind: 'secret-text' },
+    ],
+  },
+];
 
 export const DiscoverySettings: React.FC = () => {
   const [credentials, setCredentials] = useState<ProviderCredentials>({});
@@ -94,227 +135,94 @@ export const DiscoverySettings: React.FC = () => {
     if (!status) return null;
 
     if (status.status === 'success') {
-      return <Icon name="check-circle" size={20} className="text-green-600" />;
+      return <Icon name="check-circle" size={20} className="text-[var(--hh-success-text)]" />;
     }
 
     if (status.status === 'error') {
-      return <Icon name="x-circle" size={20} className="text-destructive" />;
+      return <Icon name="x-circle" size={20} className="text-[var(--hh-error-text)]" />;
     }
 
     return null;
   };
 
-  const toggleSection = (provider: string) => {
-    setOpenSections(prev => ({ ...prev, [provider]: !prev[provider] }));
+  const toggleSection = (provider: string, open: boolean) => {
+    setOpenSections((prev) => ({ ...prev, [provider]: open }));
+  };
+
+  const renderField = (provider: ProviderKey, field: ProviderField) => {
+    const stored = (credentials[provider] as Record<string, string> | undefined)?.[field.key];
+    const onChange = (e: { target: { value: string } }) =>
+      handleCredentialChange(provider, field.key, e.target.value);
+
+    if (field.kind === 'text') {
+      return (
+        <Input
+          key={field.id}
+          id={field.id}
+          size="sm"
+          label={field.label}
+          value={stored || field.fallback || ''}
+          onChange={onChange}
+        />
+      );
+    }
+    return (
+      <div key={field.id} className="flex flex-col gap-2">
+        <Label htmlFor={field.id}>{field.label}</Label>
+        {field.kind === 'secret' ? (
+          <SecretInput
+            id={field.id}
+            type={field.masked ? 'password' : 'text'}
+            autoComplete={field.masked ? undefined : 'off'}
+            value={stored || ''}
+            onChange={onChange}
+          />
+        ) : (
+          <SecretTextarea id={field.id} rows={4} value={stored || ''} onChange={onChange} />
+        )}
+      </div>
+    );
   };
 
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Discovery Settings</h2>
-        <p className="text-sm text-muted-foreground mt-1">
+        <SectionHeading className="mb-1">Discovery Settings</SectionHeading>
+        <p className="text-sm text-[var(--hh-text-muted)]">
           Configure cloud provider credentials for automated discovery
         </p>
       </div>
 
       <div className="space-y-2">
-        {/* AWS */}
-        <Collapsible open={openSections.aws} onOpenChange={() => toggleSection('aws')}>
-          <div className="border rounded-lg">
-            <CollapsibleTrigger className="flex items-center justify-between w-full p-4 hover:bg-accent/50 transition-colors">
-              <div className="flex items-center gap-3 flex-1">
-                <span className="font-medium">AWS</span>
-                {renderStatus('aws')}
-              </div>
-              <Icon name="caret-down" size={20} className={`transition-transform ${openSections.aws ? 'transform rotate-180' : ''}`} />
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <div className="p-4 pt-0 space-y-4">
-                {connectionStatus.aws?.message && (
-                  <Alert variant={connectionStatus.aws.status === 'success' ? 'default' : 'destructive'}>
-                    <AlertDescription>{connectionStatus.aws.message}</AlertDescription>
-                  </Alert>
-                )}
-                <div className="space-y-2">
-                  <Label htmlFor="aws-access-key">Access Key ID</Label>
-                  <Input
-                    id="aws-access-key"
-                    value={credentials.aws?.accessKeyId || ''}
-                    onChange={(e) => handleCredentialChange('aws', 'accessKeyId', e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="aws-secret-key">Secret Access Key</Label>
-                  <SecretInput
-                    id="aws-secret-key"
-                    value={credentials.aws?.secretAccessKey || ''}
-                    onChange={(e) => handleCredentialChange('aws', 'secretAccessKey', e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="aws-region">Region</Label>
-                  <Input
-                    id="aws-region"
-                    value={credentials.aws?.region || 'us-east-1'}
-                    onChange={(e) => handleCredentialChange('aws', 'region', e.target.value)}
-                  />
-                </div>
+        {PROVIDERS.map(({ key, title, fields }) => (
+          <div key={key} className="rounded-[var(--hh-radius-lg)] border border-[var(--hh-hairline)] px-4">
+            <Disclosure
+              open={Boolean(openSections[key])}
+              onOpenChange={(open) => toggleSection(key, open)}
+              title={
+                <span className="flex items-center gap-3">
+                  <span>{title}</span>
+                  {renderStatus(key)}
+                </span>
+              }
+            >
+              <div className="space-y-4 pt-1 pr-1">
+                {connectionStatus[key]?.message &&
+                  (connectionStatus[key].status === 'success' ? (
+                    <Banner tone="success" role="status">
+                      {connectionStatus[key].message}
+                    </Banner>
+                  ) : (
+                    <Banner tone="danger">{connectionStatus[key].message}</Banner>
+                  ))}
+                {fields.map((field) => renderField(key, field))}
                 <div className="flex gap-2">
-                  <Button onClick={() => saveCredentials('aws')}>
-                    Save
-                  </Button>
+                  <Button onClick={() => saveCredentials(key)}>Save</Button>
                 </div>
               </div>
-            </CollapsibleContent>
+            </Disclosure>
           </div>
-        </Collapsible>
-
-        {/* Azure */}
-        <Collapsible open={openSections.azure} onOpenChange={() => toggleSection('azure')}>
-          <div className="border rounded-lg">
-            <CollapsibleTrigger className="flex items-center justify-between w-full p-4 hover:bg-accent/50 transition-colors">
-              <div className="flex items-center gap-3 flex-1">
-                <span className="font-medium">Azure</span>
-                {renderStatus('azure')}
-              </div>
-              <Icon name="caret-down" size={20} className={`transition-transform ${openSections.azure ? 'transform rotate-180' : ''}`} />
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <div className="p-4 pt-0 space-y-4">
-                {connectionStatus.azure?.message && (
-                  <Alert variant={connectionStatus.azure.status === 'success' ? 'default' : 'destructive'}>
-                    <AlertDescription>{connectionStatus.azure.message}</AlertDescription>
-                  </Alert>
-                )}
-                <div className="space-y-2">
-                  <Label htmlFor="azure-subscription">Subscription ID</Label>
-                  <Input
-                    id="azure-subscription"
-                    value={credentials.azure?.subscriptionId || ''}
-                    onChange={(e) => handleCredentialChange('azure', 'subscriptionId', e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="azure-tenant">Tenant ID</Label>
-                  <Input
-                    id="azure-tenant"
-                    value={credentials.azure?.tenantId || ''}
-                    onChange={(e) => handleCredentialChange('azure', 'tenantId', e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="azure-client">Client ID</Label>
-                  <Input
-                    id="azure-client"
-                    value={credentials.azure?.clientId || ''}
-                    onChange={(e) => handleCredentialChange('azure', 'clientId', e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="azure-secret">Client Secret</Label>
-                  <SecretInput
-                    id="azure-secret"
-                    value={credentials.azure?.clientSecret || ''}
-                    onChange={(e) => handleCredentialChange('azure', 'clientSecret', e.target.value)}
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <Button onClick={() => saveCredentials('azure')}>
-                    Save
-                  </Button>
-                </div>
-              </div>
-            </CollapsibleContent>
-          </div>
-        </Collapsible>
-
-        {/* GCP */}
-        <Collapsible open={openSections.gcp} onOpenChange={() => toggleSection('gcp')}>
-          <div className="border rounded-lg">
-            <CollapsibleTrigger className="flex items-center justify-between w-full p-4 hover:bg-accent/50 transition-colors">
-              <div className="flex items-center gap-3 flex-1">
-                <span className="font-medium">Google Cloud Platform</span>
-                {renderStatus('gcp')}
-              </div>
-              <Icon name="caret-down" size={20} className={`transition-transform ${openSections.gcp ? 'transform rotate-180' : ''}`} />
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <div className="p-4 pt-0 space-y-4">
-                {connectionStatus.gcp?.message && (
-                  <Alert variant={connectionStatus.gcp.status === 'success' ? 'default' : 'destructive'}>
-                    <AlertDescription>{connectionStatus.gcp.message}</AlertDescription>
-                  </Alert>
-                )}
-                <div className="space-y-2">
-                  <Label htmlFor="gcp-project">Project ID</Label>
-                  <Input
-                    id="gcp-project"
-                    value={credentials.gcp?.projectId || ''}
-                    onChange={(e) => handleCredentialChange('gcp', 'projectId', e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="gcp-credentials">Service Account Credentials (JSON)</Label>
-                  <SecretTextarea
-                    id="gcp-credentials"
-                    rows={4}
-                    value={credentials.gcp?.credentials || ''}
-                    onChange={(e) => handleCredentialChange('gcp', 'credentials', e.target.value)}
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <Button onClick={() => saveCredentials('gcp')}>
-                    Save
-                  </Button>
-                </div>
-              </div>
-            </CollapsibleContent>
-          </div>
-        </Collapsible>
-
-        {/* SSH */}
-        <Collapsible open={openSections.ssh} onOpenChange={() => toggleSection('ssh')}>
-          <div className="border rounded-lg">
-            <CollapsibleTrigger className="flex items-center justify-between w-full p-4 hover:bg-accent/50 transition-colors">
-              <div className="flex items-center gap-3 flex-1">
-                <span className="font-medium">SSH</span>
-                {renderStatus('ssh')}
-              </div>
-              <Icon name="caret-down" size={20} className={`transition-transform ${openSections.ssh ? 'transform rotate-180' : ''}`} />
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <div className="p-4 pt-0 space-y-4">
-                {connectionStatus.ssh?.message && (
-                  <Alert variant={connectionStatus.ssh.status === 'success' ? 'default' : 'destructive'}>
-                    <AlertDescription>{connectionStatus.ssh.message}</AlertDescription>
-                  </Alert>
-                )}
-                <div className="space-y-2">
-                  <Label htmlFor="ssh-username">Username</Label>
-                  <Input
-                    id="ssh-username"
-                    value={credentials.ssh?.username || ''}
-                    onChange={(e) => handleCredentialChange('ssh', 'username', e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="ssh-private-key">Private Key</Label>
-                  <SecretTextarea
-                    id="ssh-private-key"
-                    rows={4}
-                    value={credentials.ssh?.privateKey || ''}
-                    onChange={(e) => handleCredentialChange('ssh', 'privateKey', e.target.value)}
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <Button onClick={() => saveCredentials('ssh')}>
-                    Save
-                  </Button>
-                </div>
-              </div>
-            </CollapsibleContent>
-          </div>
-        </Collapsible>
+        ))}
       </div>
     </div>
   );

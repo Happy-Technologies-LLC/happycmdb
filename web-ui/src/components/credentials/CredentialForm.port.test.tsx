@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // HAP-444 K1: a typed port is sent as a JSON number, an empty one is omitted, and a 400 toasts the fixed _message. Forms are submitted directly, past the native required-field gate.
 import { expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 const { request, showToast } = vi.hoisted(() => ({ request: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() }, showToast: vi.fn() }));
 vi.mock('axios', async () => ({ ...(await vi.importActual<object>('axios')), default: { create: () => ({ ...request, interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } } }) } }));
 vi.mock('@/contexts/ToastContext', () => ({ useToast: () => ({ showToast }) }));
-vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null, Eyebrow: () => null }));
+vi.mock('@happy-technologies/design-system', async (importOriginal) => ({ ...(await importOriginal<object>()), Icon: () => null, Eyebrow: () => null }));
 import { CredentialForm } from './CredentialForm';
 import { Credentials } from '@/pages/Credentials';
 import { PROTOCOL_DISPLAY_NAMES } from '@/lib/credential-display';
@@ -46,4 +46,32 @@ it('a refused update shows the fixed server _message in the edit-dialog toast (H
   await screen.findByRole('button', { name: /save credential/i });
   save();
   await waitFor(() => expect(showToast).toHaveBeenCalledWith('Invalid SSH port', 'error'));
+});
+it.each([
+  ['snmp_v3', 'auth_protocol', 'MD5'],
+  ['snmp_v3', 'priv_protocol', 'DES'],
+  ['winrm', 'transport', 'HTTPS'],
+])('%s submits the %s chosen in the select as the same wire value', async (protocol, field, label) => {
+  const onSubmit = vi.fn();
+  cleanup();
+  render(<CredentialForm credential={{ id: 'c1', name: 'n', protocol, scope: 'universal', credentials: { username: 'svc' }, tags: [] } as never} onSubmit={onSubmit} onCancel={vi.fn()} />);
+  fireEvent.click(document.getElementById(field)!);
+  fireEvent.click(within(screen.getByRole('listbox')).getByRole('option', { name: label }));
+  save();
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+  expect(onSubmit.mock.calls[0][0].credentials[field]).toBe(label === 'HTTPS' ? 'https' : label);
+});
+it('the protocol is locked while editing, and the scope select submits the chosen scope', async () => {
+  const onSubmit = vi.fn();
+  cleanup();
+  render(<CredentialForm credential={{ id: 'c1', name: 'n', protocol: 'ssh_password', scope: 'universal', credentials: { username: 'svc' }, tags: [] } as never} onSubmit={onSubmit} onCancel={vi.fn()} />);
+  const protocol = document.getElementById('protocol')!;
+  expect(protocol).toBeDisabled();
+  fireEvent.click(protocol);
+  expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+  fireEvent.click(document.getElementById('scope')!);
+  fireEvent.click(within(screen.getByRole('listbox')).getAllByRole('option').find((o) => o.getAttribute('aria-selected') !== 'true')!);
+  save();
+  await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+  expect(onSubmit.mock.calls[0][0].scope).not.toBe('universal');
 });

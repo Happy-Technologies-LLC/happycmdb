@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React from 'react';
-import { Icon } from '@happy-technologies/design-system';
+import { Button, PageHeader } from '@happy-technologies/design-system';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Button } from '@/components/ui/button';
-import { Eyebrow } from '@/components/ui/eyebrow';
 import CIList from '../components/ci/CIList';
 
 /**
@@ -28,20 +26,17 @@ export const CIListPage: React.FC = () => {
   const initialSearch = searchParams.get('search') || '';
 
   return (
-    <div>
-      <div className="mb-6 flex items-end justify-between gap-5 flex-wrap">
-        <div>
-          <Eyebrow>CMDB · Configuration Items</Eyebrow>
-          <h1 className="mt-3 text-[1.9rem]">Configuration Items</h1>
-          <p className="mt-1.5 text-ink-soft">
-            Browse and manage all configuration items in your CMDB
-          </p>
-        </div>
-        <Button onClick={() => navigate('/inventory')}>
-          <Icon name="plus" size={16} className="mr-2" />
-          Manage CIs
-        </Button>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="CMDB · Configuration Items"
+        title="Configuration Items"
+        lede="Browse and manage all configuration items in your CMDB"
+        actions={
+          <Button icon="plus" onClick={() => navigate('/inventory')}>
+            Manage CIs
+          </Button>
+        }
+      />
 
       <CIList
         onView={handleView}

@@ -1,19 +1,30 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import React, { useState } from 'react';
-import { Icon } from '@happy-technologies/design-system';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  Button,
+  Card,
+  Chip,
+  ConfidenceBar,
+  DataTable,
+  EmptyState,
+  IconButton,
+  NativeSelect,
+  Pagination,
+  SearchInput,
+  fmtDate,
+  type Column,
+  type DataTableSort,
+} from '@happy-technologies/design-system';
 import { useNavigate } from 'react-router-dom';
 import { useCIs } from '../../hooks/useCIs';
 import { CI, CIType, CIStatus, Environment } from '../../services/ci.service';
+import { classifyError } from '../../lib/estate';
+import { QueryState } from '../estate/SurfaceState';
 import CIStatusBadge from './CIStatusBadge';
 import CITypeBadge, { typeIcons } from './CITypeBadge';
-import { cn } from '../../utils/cn';
-import { LiquidGlass } from '../ui/liquid-glass';
-import { healthColor } from '../../lib/brandColors';
-import SearchBar from '../common/SearchBar';
-import DataTable from '../common/DataTable';
-import type { DataTableColumn, SortOptions } from '../../types';
+import CIDrawer from './CIDrawer';
 
 interface CIListProps {
   onEdit?: (ci: CI) => void;
@@ -43,6 +54,17 @@ const CI_STATUSES: CIStatus[] = ['active', 'inactive', 'maintenance', 'decommiss
 
 const ENVIRONMENTS: Environment[] = ['production', 'staging', 'development', 'test'];
 
+const ROWS_PER_PAGE = [5, 10, 25, 50, 100];
+
+/** How long typing pauses before the search term is applied. */
+const SEARCH_DEBOUNCE_MS = 300;
+
+const formatLabel = (value: string) =>
+  value
+    .split('-')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+
 export const CIList: React.FC<CIListProps> = ({
   onEdit,
   onDelete,
@@ -57,11 +79,19 @@ export const CIList: React.FC<CIListProps> = ({
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
   const [search, setSearch] = useState(initialSearch);
+  const [searchText, setSearchText] = useState(initialSearch);
   const [typeFilter, setTypeFilter] = useState<CIType | ''>(initialTypeFilter);
   const [statusFilter, setStatusFilter] = useState<CIStatus | ''>(initialStatusFilter);
   const [environmentFilter, setEnvironmentFilter] = useState<Environment | ''>(initialEnvironmentFilter);
   const [sortBy, setSortBy] = useState('name');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+  const [peekCI, setPeekCI] = useState<CI | null>(null);
+
+  // The debounced search commit reads the filters as they are when it fires, not when typing started.
+  const filters = useRef({ typeFilter, statusFilter, environmentFilter });
+  filters.current = { typeFilter, statusFilter, environmentFilter };
+  const searchTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => () => clearTimeout(searchTimer.current), []);
 
   // Update URL when filters change
   const updateURLFilters = (type: string, status: string, environment: string, searchTerm: string) => {
@@ -75,7 +105,7 @@ export const CIList: React.FC<CIListProps> = ({
     navigate(`?${queryString}`, { replace: true });
   };
 
-  const { data, isLoading, error } = useCIs({
+  const { data, isLoading, error, refetch } = useCIs({
     page: page + 1,
     limit: rowsPerPage,
     search: search || undefined,
@@ -86,9 +116,29 @@ export const CIList: React.FC<CIListProps> = ({
     sort_order: sortOrder,
   });
 
-  const handleSort = (sort: SortOptions) => {
-    setSortBy(sort.field);
-    setSortOrder(sort.order);
+  const commitSearch = (value: string) => {
+    setSearch(value);
+    updateURLFilters(
+      filters.current.typeFilter,
+      filters.current.statusFilter,
+      filters.current.environmentFilter,
+      value
+    );
+  };
+
+  const handleSearchChange = (value: string) => {
+    setSearchText(value);
+    clearTimeout(searchTimer.current);
+    if (value === '') {
+      commitSearch('');
+    } else {
+      searchTimer.current = setTimeout(() => commitSearch(value), SEARCH_DEBOUNCE_MS);
+    }
+  };
+
+  const handleSort = (sort: DataTableSort) => {
+    setSortBy(sort.key);
+    setSortOrder(sort.direction);
   };
 
   const handleView = (ci: CI) => {
@@ -99,172 +149,139 @@ export const CIList: React.FC<CIListProps> = ({
     }
   };
 
-  const handleEdit = (ci: CI) => {
-    onEdit?.(ci);
-  };
+  const rows = data?.data || [];
+  const total = data?.total || 0;
+  const pageCount = Math.max(1, Math.ceil(total / rowsPerPage));
 
-  const handleDelete = (ci: CI) => {
-    onDelete?.(ci);
-  };
-
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  };
-
-  const formatLabel = (value: string) => {
-    return value
-      .split('-')
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-  };
-
-  const searchResults = search
-    ? (data?.data || []).map((ci) => ({
-        id: ci.id,
-        title: ci.name,
-        subtitle: formatLabel(ci.environment),
-        type: formatLabel(ci.type),
-      }))
-    : [];
-
-  const columns: DataTableColumn<CI>[] = [
+  const columns: Array<Column<CI>> = [
     {
-      field: 'name',
-      headerName: 'Name',
+      key: 'name',
+      header: 'Name',
       sortable: true,
-      renderCell: (_value, ci) => (
-        <div className="flex items-center gap-3 min-w-0">
-          <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-sm bg-sky-soft text-sky-text">
+      render: (ci) => (
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex h-[34px] w-[34px] flex-none items-center justify-center rounded-[var(--hh-radius-sm)] bg-[var(--hh-accent-bg)] text-[var(--hh-accent-text)]">
             {typeIcons[ci.type]}
           </span>
           <span className="min-w-0">
-            <span className="block font-display font-semibold text-[13.5px] text-navy truncate">
-              {ci.name}
-            </span>
-            <span className="text-[11.5px] text-ink-soft capitalize">{ci.environment}</span>
+            <span className="block truncate font-semibold text-[var(--hh-text-primary)]">{ci.name}</span>
+            <span className="text-[11.5px] text-[var(--hh-text-muted)] capitalize">{ci.environment}</span>
           </span>
         </div>
       ),
     },
+    { header: 'Type', render: (ci) => <CITypeBadge type={ci.type} /> },
+    { header: 'Status', render: (ci) => <CIStatusBadge status={ci.status} /> },
     {
-      field: 'type',
-      headerName: 'Type',
-      sortable: false,
-      renderCell: (_value, ci) => <CITypeBadge type={ci.type} />,
-    },
-    {
-      field: 'status',
-      headerName: 'Status',
-      sortable: false,
-      renderCell: (_value, ci) => <CIStatusBadge status={ci.status} />,
-    },
-    {
-      field: 'confidence_score',
-      headerName: 'Confidence',
-      sortable: false,
-      renderCell: (_value, ci) => {
-        const healthPct = ci.confidence_score != null ? Math.round(ci.confidence_score * 100) : null;
-        return healthPct != null ? (
-          <div className="flex items-center gap-2 min-w-[110px]">
-            <span className="flex-1 h-1.5 rounded bg-line-soft overflow-hidden">
-              <span
-                className="block h-full rounded"
-                style={{ width: `${healthPct}%`, backgroundColor: healthColor(healthPct) }}
-              />
-            </span>
-            <span className="font-display text-[11.5px] font-bold" style={{ color: healthColor(healthPct) }}>
-              {healthPct}%
-            </span>
-          </div>
+      header: 'Confidence',
+      render: (ci) =>
+        ci.confidence_score != null ? (
+          <ConfidenceBar value={ci.confidence_score} />
         ) : (
-          <span className="text-sm text-ink-soft">-</span>
-        );
-      },
+          <span className="text-[var(--hh-text-muted)]">-</span>
+        ),
     },
     {
-      field: 'updated_at',
-      headerName: 'Last Updated',
+      key: 'updated_at',
+      header: 'Last Updated',
       sortable: true,
-      renderCell: (_value, ci) => (
-        <span className="font-display text-xs text-ink-soft">{formatDate(ci.updated_at)}</span>
+      render: (ci) => <span className="text-xs text-[var(--hh-text-muted)]">{fmtDate(ci.updated_at)}</span>,
+    },
+    {
+      header: showActions ? 'Actions' : 'Quick view',
+      className: 'w-32 text-right',
+      render: (ci) => (
+        <div className="flex justify-end gap-1">
+          <IconButton
+            icon="sidebar-simple"
+            variant="ghost"
+            size="sm"
+            title="Quick view"
+            aria-label={`Quick view ${ci.name}`}
+            onClick={() => setPeekCI(ci)}
+          />
+          {showActions && (
+            <IconButton
+              icon="eye"
+              variant="ghost"
+              size="sm"
+              title="View Details"
+              aria-label={`View details for ${ci.name}`}
+              onClick={() => handleView(ci)}
+            />
+          )}
+          {showActions && onEdit && (
+            <IconButton
+              icon="pencil-simple"
+              variant="ghost"
+              size="sm"
+              title="Edit"
+              aria-label={`Edit ${ci.name}`}
+              onClick={() => onEdit(ci)}
+            />
+          )}
+          {showActions && onDelete && (
+            <IconButton
+              icon="trash"
+              variant="ghost"
+              size="sm"
+              title="Delete"
+              aria-label={`Delete ${ci.name}`}
+              onClick={() => onDelete(ci)}
+            />
+          )}
+        </div>
       ),
     },
   ];
-
-  if (error) {
-    return (
-      <div className="p-6 text-center">
-        <p className="text-danger">Error loading CIs: {error.message}</p>
-      </div>
-    );
-  }
 
   const statusPills: { value: CIStatus | ''; label: string }[] = [
     { value: '', label: 'All' },
     ...CI_STATUSES.map((status) => ({ value: status, label: formatLabel(status) })),
   ];
 
+  const failure = error ? classifyError(error) : null;
+
   return (
-    <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
-      {/* Filters */}
-      <div className="p-4 border-b border-line space-y-3">
-        <div className="flex flex-wrap gap-3 items-center">
-          <div className="relative flex-1 min-w-[250px]">
-            <SearchBar
-              fullWidth
-              placeholder="Search items…"
-              value={search}
-              results={searchResults}
-              debounceTime={300}
-              onChange={(newValue) => {
-                if (newValue === '') {
-                  setSearch('');
-                  updateURLFilters(typeFilter, statusFilter, environmentFilter, '');
-                }
-              }}
-              onSearch={(newSearch) => {
-                setSearch(newSearch);
-                updateURLFilters(typeFilter, statusFilter, environmentFilter, newSearch);
-              }}
-              onResultClick={(result) => navigate(`/cis/${result.id}`)}
-            />
-          </div>
+    <div className="space-y-4">
+      <Card className="space-y-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <SearchInput
+            className="min-w-[250px] flex-1"
+            placeholder="Search items…"
+            value={searchText}
+            onChange={handleSearchChange}
+          />
 
-          <div className="relative min-w-[150px]">
-            <Icon name="funnel" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-soft" />
-            <select
-              value={typeFilter}
-              onChange={(e) => {
-                const newType = e.target.value as CIType | '';
-                setTypeFilter(newType);
-                updateURLFilters(newType, statusFilter, environmentFilter, search);
-              }}
-              className="w-full pl-10 pr-8 py-2 border-2 border-line rounded-md text-sm appearance-none bg-white text-ink focus:outline-none focus:border-sky focus:ring-4 focus:ring-sky/10"
-            >
-              <option value="">All Types</option>
-              {CI_TYPES.map((type) => (
-                <option key={type} value={type}>
-                  {formatLabel(type)}
-                </option>
-              ))}
-            </select>
-          </div>
+          <NativeSelect
+            size="sm"
+            aria-label="Filter by type"
+            containerClassName="min-w-[150px]"
+            value={typeFilter}
+            onChange={(e) => {
+              const newType = e.target.value as CIType | '';
+              setTypeFilter(newType);
+              updateURLFilters(newType, statusFilter, environmentFilter, search);
+            }}
+          >
+            <option value="">All Types</option>
+            {CI_TYPES.map((type) => (
+              <option key={type} value={type}>
+                {formatLabel(type)}
+              </option>
+            ))}
+          </NativeSelect>
 
-          <select
+          <NativeSelect
+            size="sm"
+            aria-label="Filter by environment"
+            containerClassName="min-w-[150px]"
             value={environmentFilter}
             onChange={(e) => {
               const newEnvironment = e.target.value as Environment | '';
               setEnvironmentFilter(newEnvironment);
               updateURLFilters(typeFilter, statusFilter, newEnvironment, search);
             }}
-            className="min-w-[150px] px-3 py-2 border-2 border-line rounded-md text-sm appearance-none bg-white text-ink focus:outline-none focus:border-sky focus:ring-4 focus:ring-sky/10"
           >
             <option value="">All Environments</option>
             {ENVIRONMENTS.map((env) => (
@@ -272,54 +289,92 @@ export const CIList: React.FC<CIListProps> = ({
                 {formatLabel(env)}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </div>
 
         <div className="flex flex-wrap gap-2">
           {statusPills.map((p) => (
-            <button
+            <Chip
               key={p.value || 'all'}
+              active={statusFilter === p.value}
               onClick={() => {
                 setStatusFilter(p.value);
                 updateURLFilters(typeFilter, p.value, environmentFilter, search);
               }}
-              className={cn(
-                'cursor-pointer inline-flex items-center rounded-full border-[1.5px] px-3.5 py-1.5 font-display text-[12.5px] font-semibold transition-colors',
-                statusFilter === p.value
-                  ? 'border-sky bg-sky-soft text-sky-text'
-                  : 'border-line bg-white text-ink-soft hover:border-sky'
-              )}
             >
               {p.label}
-            </button>
+            </Chip>
           ))}
         </div>
-      </div>
+      </Card>
 
-      {/* Table */}
-      <DataTable
-        columns={columns}
-        data={data?.data || []}
-        total={data?.total || 0}
-        page={page}
-        rowsPerPage={rowsPerPage}
-        sortBy={sortBy}
-        sortOrder={sortOrder}
-        onSortChange={handleSort}
-        onPageChange={setPage}
-        onRowsPerPageChange={(rows) => {
-          setRowsPerPage(rows);
-          setPage(0);
-        }}
-        onRowClick={handleView}
-        onView={showActions ? handleView : undefined}
-        onEdit={showActions ? onEdit : undefined}
-        onDelete={showActions ? onDelete : undefined}
-        rowIdField="id"
-        emptyMessage="No configuration items match this filter."
-        loading={isLoading}
-      />
-    </LiquidGlass>
+      {failure ? (
+        failure.kind === 'forbidden' ? (
+          <QueryState what="configuration items" error={error} />
+        ) : (
+          <EmptyState
+            tone="danger"
+            icon="warning-circle"
+            title="Error loading CIs"
+            description={failure.message}
+            action={
+              <Button size="sm" variant="secondary" onClick={() => void refetch()}>
+                Try again
+              </Button>
+            }
+          />
+        )
+      ) : (
+        <DataTable
+          aria-busy={isLoading}
+          caption="Configuration items"
+          columns={columns}
+          rows={rows}
+          rowKey={(ci) => ci.id}
+          loading={isLoading}
+          emptyLabel="No configuration items match this filter."
+          sort={{ key: sortBy, direction: sortOrder }}
+          onSortChange={handleSort}
+          onRowClick={handleView}
+          footer={
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-xs text-[var(--hh-text-muted)]">
+                <span aria-hidden="true">Rows per page</span>
+                <NativeSelect
+                  size="sm"
+                  aria-label="Rows per page"
+                  value={rowsPerPage}
+                  onChange={(e) => {
+                    setRowsPerPage(Number(e.target.value));
+                    setPage(0);
+                  }}
+                >
+                  {ROWS_PER_PAGE.map((size) => (
+                    <option key={size} value={size}>
+                      {size}
+                    </option>
+                  ))}
+                </NativeSelect>
+              </div>
+              <Pagination page={page + 1} pageCount={pageCount} onChange={(next) => setPage(next - 1)} />
+            </div>
+          }
+        />
+      )}
+
+      {peekCI && (
+        <CIDrawer
+          ciId={peekCI.id}
+          open
+          onClose={() => setPeekCI(null)}
+          onOpenFull={() => {
+            const ci = peekCI;
+            setPeekCI(null);
+            handleView(ci);
+          }}
+        />
+      )}
+    </div>
   );
 };
 

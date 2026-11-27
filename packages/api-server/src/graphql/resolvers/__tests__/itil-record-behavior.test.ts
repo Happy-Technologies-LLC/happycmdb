@@ -59,6 +59,7 @@ jest.mock('../../../auth/auth-bootstrap', () => ({
 }));
 
 import { createGraphQLServer } from '../../server';
+import { ITILController } from '../../../rest/controllers/itil.controller';
 import { itilNestedRecords, itilRecordQueries } from '../itil-record.resolvers';
 import type { GraphQLContext } from '../index';
 
@@ -215,6 +216,19 @@ it('HAP-922: updateChange persists implementedBy and actualDuration; change and 
   expect(await sql('SELECT * FROM itil_changes ORDER BY id')).toEqual(rows);
 });
 
+it.each([[255, 'closed'], [256, 'implemented']])(
+  'closeChange accepts a closedBy of 255 characters and refuses longer, like REST Joi: %i chars leaves status %s', async (length, status) => {
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await seedChange(id, 'implemented');
+    const response = await graphql(`mutation { closeChange(id: "${id}", result: SUCCESS, closedBy: "${'x'.repeat(length)}") { id status } }`);
+    if (length === 255) expect(response.body).toEqual({ data: { closeChange: { id, status: 'CLOSED' } } });
+    else {
+      expect(response.body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
+      expect(response.body.data).toBeNull();
+    }
+    expect(await sql('SELECT status FROM itil_changes WHERE id = $1', [id])).toEqual([{ status }]);
+  });
+
 it('updateChange status APPROVED records the verified principal and refuses a non-pre-approval change', async () => {
   const pending = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const closed = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -253,6 +267,27 @@ it('updateChange passes the controller code in extensions, keeping code BAD_USER
   expect(lost.body.errors?.[0]?.extensions).toMatchObject({ code: 'BAD_USER_INPUT', controllerCode: 'CHANGE_APPROVAL_CHANGED' });
   expect(await sql('SELECT status, approved_by FROM itil_changes WHERE id = $1', [raced]))
     .toEqual([{ status: 'approved', approved_by: 'someone-else' }]);
+});
+
+it.each([
+  ['a lowercase code', 'change_not_approvable'],
+  ['a code over 64 characters', `C${'A'.repeat(64)}`],
+  ['a code with a space', 'CHANGE NOT APPROVABLE'],
+])('updateChange drops %s from extensions: no controllerCode, code stays BAD_USER_INPUT', async (_label, code) => {
+  const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  await seedChange(id, 'draft');
+  const handler = jest.spyOn(ITILController.prototype, 'updateChange').mockImplementation(async (_req, res) => {
+    res.status(409).json({ success: false, error: 'Conflict', code, message: 'refused' });
+  });
+  try {
+    const response = await graphql(`mutation { updateChange(id: "${id}", input: { status: SCHEDULED }) { status } }`);
+    const extensions = response.body.errors?.[0]?.extensions;
+    expect(extensions?.code).toBe('BAD_USER_INPUT');
+    expect(extensions).not.toHaveProperty('controllerCode');
+    expect(JSON.stringify(response.body)).not.toContain(code);
+  } finally {
+    handler.mockRestore();
+  }
 });
 
 const seedIncident = (id: string, number: string, priority = 3, ci = 'ci-a', org = A) => sql(

@@ -8,16 +8,15 @@
  */
 
 import React, { useState } from 'react';
-import { Icon } from '@happy-technologies/design-system';
-import { Button } from '../ui/button';
 import {
+  Banner,
+  Button,
   Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '../ui/dialog';
+  FieldList,
+  SectionHeading,
+  type ButtonVariant,
+} from '@happy-technologies/design-system';
+import { usePermission } from '@/hooks/usePermission';
 import { Job } from '../../services/jobs.service';
 
 interface JobRetryButtonProps {
@@ -28,6 +27,15 @@ interface JobRetryButtonProps {
   size?: 'sm' | 'default' | 'lg';
 }
 
+const VARIANT: Record<NonNullable<JobRetryButtonProps['variant']>, ButtonVariant> = {
+  default: 'primary',
+  outline: 'outline',
+  ghost: 'ghost',
+  secondary: 'secondary',
+};
+
+const SIZE = { sm: 'sm', default: 'md', lg: 'lg' } as const;
+
 export const JobRetryButton: React.FC<JobRetryButtonProps> = ({
   job,
   onRetry,
@@ -35,9 +43,13 @@ export const JobRetryButton: React.FC<JobRetryButtonProps> = ({
   variant = 'outline',
   size = 'sm',
 }) => {
+  // The server route (POST /jobs/:queue/:id/retry) is the authority; this only hides the control from read-only roles.
+  const canWrite = usePermission('write');
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  if (!canWrite) return null;
 
   const handleOpen = () => {
     setOpen(true);
@@ -67,70 +79,41 @@ export const JobRetryButton: React.FC<JobRetryButtonProps> = ({
   return (
     <>
       <Button
-        variant={variant}
-        size={size}
+        variant={VARIANT[variant]}
+        size={SIZE[size]}
+        icon="arrow-clockwise"
         onClick={handleOpen}
         disabled={disabled || !canRetry}
         title={canRetry ? 'Retry this job' : 'Cannot retry this job'}
-        className="gap-1"
       >
-        <Icon name="arrow-clockwise" size={16} />
         Retry
       </Button>
 
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Retry Job</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to retry this job?
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2 py-4">
-            <div className="grid gap-1">
-              <span className="text-sm">
-                <strong>Job:</strong> {job.name}
-              </span>
-              <span className="text-sm">
-                <strong>Queue:</strong> {job.queueName}
-              </span>
-              <span className="text-sm">
-                <strong>Attempts:</strong> {job.attempts} / {job.maxAttempts}
-              </span>
-            </div>
-            {error && (
-              <div className="text-sm text-destructive mt-2">
-                Error: {error}
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={handleClose}
-              disabled={loading}
-            >
+      <Dialog open={open} onClose={handleClose} aria-label="Retry Job">
+        <div className="space-y-4 p-6">
+          <SectionHeading className="mb-0! pr-8">Retry Job</SectionHeading>
+          <p className="text-sm text-[var(--hh-text-body)]">Are you sure you want to retry this job?</p>
+          <FieldList
+            fields={[
+              ['Job', job.name],
+              ['Queue', job.queueName],
+              ['Attempts', `${job.attempts} / ${job.maxAttempts}`],
+            ]}
+          />
+          {error && <Banner tone="danger">Error: {error}</Banner>}
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={handleClose} disabled={loading}>
               Cancel
             </Button>
             <Button
+              icon="arrow-clockwise"
               onClick={handleConfirm}
-              disabled={loading}
-              className="gap-1"
+              loading={loading}
             >
-              {loading ? (
-                <>
-                  <Icon name="spinner-gap" size={16} className="animate-spin" />
-                  Retrying...
-                </>
-              ) : (
-                <>
-                  <Icon name="arrow-clockwise" size={16} />
-                  Retry
-                </>
-              )}
+              {loading ? 'Retrying...' : 'Retry'}
             </Button>
-          </DialogFooter>
-        </DialogContent>
+          </div>
+        </div>
       </Dialog>
     </>
   );

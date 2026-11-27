@@ -4,7 +4,9 @@
 // The hosted `Staging Migration Contract` job (deploy/test-staging-migrations.sh) once failed on main with exit 255 and no output
 // at all (run 45482752034): the compose dry-run plan is captured into a variable, so under `set -e` a failing compose ended the
 // script silently. A failing dry-run must now name its status and print compose's own output. The `docker` here is a stub on PATH
-// that answers the service listings the script reads and fails the dry-run the way an unreachable registry does.
+// that answers the service listings the script reads and fails the dry-run the way an unreachable registry does. The profile
+// listing arrives in two writes, as a loaded runner can deliver it: the script must read it whole instead of letting `grep -q`
+// close the pipe on the first match (SIGPIPE to the writer is exit 141 under pipefail, seen as a Coverage Report failure).
 import { spawnSync } from 'child_process';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -21,7 +23,7 @@ describe('deploy/test-staging-migrations.sh compose dry-run failure', () => {
 args="$*"
 case "$args" in
   *--dry-run*) echo 'fake-registry: manifest unknown' >&2; exit 255 ;;
-  *--profile*config*--services*) printf '%s\\n' api-server app-login migrator postgres ;;
+  *--profile*config*--services*) printf '%s\\n' api-server app-login; sleep 0.3; printf '%s\\n' migrator postgres ;;
   *config*--services*) printf '%s\\n' api-server postgres ;;
   *) exit 99 ;;
 esac

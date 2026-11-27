@@ -18,12 +18,15 @@ export IMAGE_TAG="$COMPOSE_PROJECT_NAME"
 
 compose() { docker compose -f deploy/build01-staging.compose.yml "$@"; }
 services=$(compose config --services)
+# Both listings are read whole before matching: `compose ... | grep -q` closes the pipe on the first match, and under pipefail
+# compose's next write then dies of SIGPIPE (exit 141) and fails the job.
+migrate_services=$(compose --profile migrate config --services)
 for one_shot in app-login migrator; do
-  if printf '%s\n' "$services" | grep -qx "$one_shot"; then
+  if grep -qx "$one_shot" <<<"$services"; then
     echo "Default compose services unexpectedly include $one_shot" >&2
     exit 1
   fi
-  compose --profile migrate config --services | grep -qx "$one_shot"
+  grep -qx "$one_shot" <<<"$migrate_services"
 done
 
 # Inspect the actual unqualified up plan without creating any services. The plan is captured, so a failing compose must

@@ -309,6 +309,8 @@ jobs:
       - name: Upload SEC12-02 results
         if: always() && steps.scope.outputs.run == 'true'
         uses: actions/upload-artifact@v4
+        # Non-fatal: a refused upload (storage quota) must not fail the job. The
+        # verdict step above prints the head/base summaries, so diagnostics stay in its log.
         continue-on-error: true
         with:
           name: sec12-02-p99-results

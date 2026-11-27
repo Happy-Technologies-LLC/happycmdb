@@ -83,7 +83,9 @@ export default function ConnectorConfigDetail() {
     }
   }, [id]);
 
-  const loadConfig = async () => {
+  // `keepOnFailure`: a reload after a successful action must not replace the page already on screen with an
+  // error (the action itself worked); the stale data stays and a toast says the refresh failed.
+  const readConfig = async (keepOnFailure: boolean) => {
     if (!id) return;
 
     try {
@@ -92,15 +94,22 @@ export default function ConnectorConfigDetail() {
       const data = await connectorService.getConnectorConfiguration(id);
       setConfig(data);
     } catch (err) {
-      setConfig(null);
-      setError(err ?? new Error('Request failed'));
-      if (refusalReason(err) === null) {
-        showToast('Failed to load connector configuration', 'error');
+      if (keepOnFailure) {
+        showToast('Failed to refresh connector configuration', 'error');
+      } else {
+        setConfig(null);
+        setError(err ?? new Error('Request failed'));
+        if (refusalReason(err) === null) {
+          showToast('Failed to load connector configuration', 'error');
+        }
       }
     } finally {
       setLoading(false);
     }
   };
+
+  const loadConfig = () => readConfig(false);
+  const refreshConfig = () => readConfig(true);
 
   const handleRunNow = async () => {
     if (!id) return;
@@ -109,7 +118,7 @@ export default function ConnectorConfigDetail() {
       setRunning(true);
       await connectorService.runConnector(id);
       showToast(`${config?.name} is now running`, 'success');
-      await loadConfig();
+      await refreshConfig();
     } catch {
       showToast('Failed to run connector', 'error');
     } finally {
@@ -128,7 +137,7 @@ export default function ConnectorConfigDetail() {
         await connectorService.enableConnectorConfiguration(id);
         showToast(`${config.name} has been enabled`, 'success');
       }
-      await loadConfig();
+      await refreshConfig();
     } catch {
       showToast('Failed to update configuration', 'error');
     }

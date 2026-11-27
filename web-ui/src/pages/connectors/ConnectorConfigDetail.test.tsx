@@ -221,6 +221,29 @@ describe('ConnectorConfigDetail actions', () => {
     await loaded();
   });
 
+  it('a failed reload after Run Now keeps the page on screen and says the refresh failed', async () => {
+    renderPage();
+    await loaded();
+    svc.getConnectorConfiguration.mockRejectedValueOnce(new Error('boom'));
+    await userEvent.click(screen.getByRole('button', { name: 'Run Now' }));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith('Failed to refresh connector configuration', 'error'));
+    expect(screen.getByRole('heading', { level: 1, name: 'Prod AWS' })).toBeInTheDocument();
+    expect(screen.queryByText('Could not load connector configuration')).not.toBeInTheDocument();
+  });
+
+  it('a failed reload after Disable keeps the page on screen', async () => {
+    renderPage();
+    await loaded();
+    svc.getConnectorConfiguration.mockRejectedValueOnce(new Error('boom'));
+    await userEvent.click(screen.getByRole('button', { name: /more actions/i }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Disable' }));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith('Failed to refresh connector configuration', 'error'));
+    expect(screen.getByRole('heading', { level: 1, name: 'Prod AWS' })).toBeInTheDocument();
+    expect(screen.queryByText('Could not load connector configuration')).not.toBeInTheDocument();
+  });
+
   it('the menu disables an enabled configuration', async () => {
     renderPage();
     await loaded();

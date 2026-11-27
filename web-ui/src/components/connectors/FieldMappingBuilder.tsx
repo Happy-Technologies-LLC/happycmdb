@@ -231,6 +231,7 @@ export const FieldMappingBuilder: React.FC<FieldMappingBuilderProps> = ({
                                   setCustomFieldName('');
                                   setShowCustomFieldInput(null);
                                 } else if (e.key === 'Escape') {
+                                  e.preventDefault();
                                   setCustomFieldName('');
                                   setShowCustomFieldInput(null);
                                 }

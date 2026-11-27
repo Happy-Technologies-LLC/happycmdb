@@ -235,7 +235,15 @@ export const ConnectorConfigModal: React.FC<ConnectorConfigModalProps> = ({
       </div>
 
       {/* Content */}
-      <div className="min-h-0 flex-1 overflow-y-auto p-6">
+      {/* The Dialog closes on every Escape that reaches `document`. A nested control that already
+          handled its own Escape (Select listbox, custom-target input) marks it defaultPrevented;
+          keep that Escape from discarding the wizard and the credentials typed into it. */}
+      <div
+        className="min-h-0 flex-1 overflow-y-auto p-6"
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && e.defaultPrevented) e.stopPropagation();
+        }}
+      >
         {/* Step 1: Basic Info */}
         {step === 1 && (
           <div className="mx-auto max-w-2xl space-y-6">

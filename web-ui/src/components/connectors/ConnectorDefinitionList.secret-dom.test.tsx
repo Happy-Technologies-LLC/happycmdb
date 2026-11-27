@@ -188,3 +188,60 @@ describe('ConnectorDefinitionList states and write gating (HAP-1922)', () => {
     await waitFor(() => expect(apiClient.delete).toHaveBeenCalledWith('/connector-configs/cfg-1'));
   });
 });
+
+// HAP-1922 (review B2): the Install dialog's own states. A failed or refused installed-connector read is shown as such
+// (never as an empty catalogue), and a search with no hit says so.
+describe('ConnectorDefinitionList Install dialog states (HAP-1922)', () => {
+  const mockInstalled = (installed: () => Promise<unknown>) =>
+    apiClient.get.mockImplementation(async (url: string) => {
+      if (url === '/connector-configs') return { data: [] };
+      if (url === '/connectors/installed') return installed();
+      throw new Error('Unexpected test endpoint');
+    });
+  const openInstall = async () => {
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter><ConnectorDefinitionList /></MemoryRouter>
+      </QueryClientProvider>
+    );
+    await user.click(await screen.findByRole('button', { name: 'Install Connector' }));
+    return { user, dialog: await screen.findByRole('dialog', { name: 'Install Connector' }) };
+  };
+
+  it('shows a failed installed-connector read with a retry, not an empty catalogue', async () => {
+    let attempts = 0;
+    mockInstalled(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('Request failed with status code 500');
+      return { data: [] };
+    });
+    const { user, dialog } = await openInstall();
+
+    expect(await within(dialog).findByText('Could not load installed connectors')).toBeInTheDocument();
+    expect(within(dialog).queryByText('No connectors match the current filters.')).toBeNull();
+    const before = attempts;
+    await user.click(within(dialog).getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(attempts).toBeGreaterThan(before));
+    await waitFor(() => expect(within(dialog).queryByText('Could not load installed connectors')).toBeNull());
+  });
+
+  it('shows a refused installed-connector read as not permitted, with no retry', async () => {
+    mockInstalled(async () => {
+      throw { response: { status: 403, data: { _message: "Permission 'read' required" } } };
+    });
+    const { dialog } = await openInstall();
+
+    expect(await within(dialog).findByText('No access to installed connectors')).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(within(dialog).queryByText('No connectors match the current filters.')).toBeNull();
+  });
+
+  it('says so when the search matches no connector', async () => {
+    mockInstalled(async () => ({ data: [] }));
+    const { user, dialog } = await openInstall();
+
+    await user.type(within(dialog).getByLabelText('Search available connectors'), 'zzz-no-such-connector');
+    expect(await within(dialog).findByText('No connectors match the current filters.')).toBeInTheDocument();
+  });
+});

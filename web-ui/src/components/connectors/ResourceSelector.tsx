@@ -62,11 +62,6 @@ export function ResourceSelector({
     onChange(newResources, resourceConfigs);
   };
 
-  const handleResourceConfigChange = (resourceId: string, config: any) => {
-    const newConfigs = { ...resourceConfigs, [resourceId]: config };
-    onChange(selectedResources, newConfigs);
-  };
-
   const toggleExpanded = (resourceId: string) => {
     setExpandedResources((prev) => {
       const newSet = new Set(prev);

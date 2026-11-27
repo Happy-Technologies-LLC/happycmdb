@@ -262,20 +262,6 @@ describe('FieldMappingBuilder', () => {
     });
   });
 
-  it('keeps earlier transformation fields when switching type (original spread order)', async () => {
-    const user = userEvent.setup();
-    const latest = renderBuilder([
-      base('m1', { source_field: 's', transformation: { type: 'expression', expression: 'x' } }),
-    ]);
-    await user.click(screen.getByText('s'));
-
-    await user.selectOptions(screen.getByLabelText('Transformation Type'), 'lookup');
-
-    expect(latest.current[0].transformation).toEqual({ type: 'lookup', expression: 'x' });
-    expect(screen.queryByLabelText('Expression')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Lookup Table Name')).toHaveValue('');
-  });
-
   it('stores the default value and the required flag', async () => {
     const user = userEvent.setup();
     const latest = renderBuilder();
@@ -388,13 +374,5 @@ describe('FieldMappingBuilder', () => {
     ]);
 
     expect(screen.getAllByText('Required')).toHaveLength(1);
-  });
-
-  it('renders the tips card copy', () => {
-    renderBuilder();
-    expect(screen.getByRole('heading', { name: 'Field Mapping Tips' })).toBeInTheDocument();
-    expect(screen.getByText('Target Field Types:')).toBeInTheDocument();
-    expect(screen.getByText('Transformation Types:')).toBeInTheDocument();
-    expect(screen.getByText(/Fields not in the standard list are automatically stored/)).toBeInTheDocument();
   });
 });

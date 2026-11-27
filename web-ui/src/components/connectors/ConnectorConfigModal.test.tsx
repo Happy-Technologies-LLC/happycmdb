@@ -124,13 +124,14 @@ describe('ConnectorConfigModal on the design system (HAP-1922)', () => {
   async function openResourceStep(template = SCHEMA_TEMPLATE) {
     const user = userEvent.setup();
     const onDeploy = vi.fn();
-    render(<ConnectorConfigModal template={template} onClose={vi.fn()} onDeploy={onDeploy} />);
+    const onClose = vi.fn();
+    render(<ConnectorConfigModal template={template} onClose={onClose} onDeploy={onDeploy} />);
     await waitFor(() => expect(apiClient.get).toHaveBeenCalled());
     await user.type(screen.getByLabelText('Connector Name *'), 'Instance');
     await user.click(screen.getByRole('button', { name: /Next/i }));
     await user.type(screen.getByLabelText('Host *'), 'h.example.com');
     await user.click(screen.getByRole('button', { name: /Next/i }));
-    return { user, onDeploy };
+    return { user, onDeploy, onClose };
   }
 
   beforeEach(() => {
@@ -195,5 +196,42 @@ describe('ConnectorConfigModal on the design system (HAP-1922)', () => {
     expect(await screen.findByText('No access to connector resources')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
     expect(document.body).not.toHaveTextContent('leaked-detail');
+  });
+
+  // The DS Dialog closes on every Escape that reaches `document`; an Escape a nested control already used must not
+  // discard the wizard (and the credentials typed into it).
+  it('Escape that closes the Region listbox leaves the wizard open', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<ConnectorConfigModal template={SCHEMA_TEMPLATE} onClose={onClose} onDeploy={vi.fn()} />);
+    await user.type(screen.getByLabelText('Connector Name *'), 'Instance');
+    await user.click(screen.getByRole('button', { name: /Next/i }));
+    await user.click(screen.getByRole('combobox', { name: 'Region' }));
+    expect(await screen.findByRole('option', { name: 'eu-west' })).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByRole('option', { name: 'eu-west' })).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Host *')).toBeInTheDocument();
+  });
+
+  it('Escape that cancels a custom mapping target leaves the wizard open and keeps the typed name', async () => {
+    const { user, onClose } = await openResourceStep();
+    await screen.findByText('Servers');
+    await user.click(screen.getByRole('button', { name: 'Add Field Mapping' }));
+    await user.selectOptions(screen.getByLabelText('Target Field'), 'custom');
+    await user.type(screen.getByLabelText('Target Field'), 'abandoned{Escape}');
+
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: 'Configure Config Test Connector' })).toBeInTheDocument();
+  });
+
+  it('Escape with nothing nested open still closes the wizard', async () => {
+    const { user, onClose } = await openResourceStep();
+    await screen.findByText('Servers');
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

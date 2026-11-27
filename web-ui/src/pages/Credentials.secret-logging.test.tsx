@@ -3,7 +3,6 @@
 // HAP-1210 S2a (P-3): a failed credential create or update never logs the typed secret or the bearer token.
 import { inspect } from 'node:util';
 import type { InternalAxiosRequestConfig } from 'axios';
-import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 

@@ -2,28 +2,23 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState, useEffect } from 'react';
-import { Icon } from '@happy-technologies/design-system';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { LiquidGlass } from '@/components/ui/liquid-glass';
-import { Eyebrow } from '@/components/ui/eyebrow';
 import {
+  Badge,
+  Button,
+  DataTable,
   Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import {
-  FormDialog,
-  FormDialogContent,
-  FormDialogHeader,
-  FormDialogBody,
-  FormDialogTitle,
-} from '@/components/ui/form-dialog';
+  IconButton,
+  Input,
+  NativeSelect,
+  PageHeader,
+  Pagination,
+  SectionHeading,
+  Tag,
+  type Column,
+} from '@happy-technologies/design-system';
 import CredentialForm, { hasSecretEntry } from '@/components/credentials/CredentialForm';
 import { RequirePermission } from '@/components/common/RequirePermission';
+import { QueryState } from '@/components/estate/SurfaceState';
 import CredentialDetail from '@/components/credentials/CredentialDetail';
 import {
   credentialService,
@@ -36,13 +31,19 @@ import { useToast } from '@/contexts/ToastContext';
 import { formatProtocol } from '@/lib/credential-display';
 import { logClientError } from '@/utils/logger';
 
+// The DS Dialog is a narrow panel (max-w-md); the credential form and detail need the wide one. Its body scrolls, the panel does not.
+const DIALOG_WIDE = 'max-w-3xl!';
+const DIALOG_BODY = 'max-h-[85vh] overflow-y-auto p-6';
+
 export const Credentials: React.FC = () => {
   const { showToast } = useToast();
   const [credentials, setCredentials] = useState<UnifiedCredentialSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(10);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  // The read's failure as thrown (boxed: a throw of nothing is still a failure), so QueryState can tell a 403 from any other error.
+  const [loadError, setLoadError] = useState<{ error: unknown } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [protocolFilter, setProtocolFilter] = useState<AuthProtocol | 'all'>('all');
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'discovery' | 'connector'>('all');
@@ -66,6 +67,7 @@ export const Credentials: React.FC = () => {
   const loadCredentials = async () => {
     try {
       setLoading(true);
+      setLoadError(null);
       const response = await credentialService.listCredentials({
         limit: rowsPerPage,
         page: page,
@@ -84,6 +86,10 @@ export const Credentials: React.FC = () => {
       setTotal(filteredData.length);
     } catch (error) {
       logClientError('Failed to load credentials:', error);
+      // A failed read shows an error, never the previous rows or an empty list.
+      setCredentials([]);
+      setTotal(0);
+      setLoadError({ error });
     } finally {
       setLoading(false);
     }
@@ -207,8 +213,9 @@ export const Credentials: React.FC = () => {
   };
 
 
-  const formatDate = (date: string | Date) => {
-    const dateObj = new Date(date);
+  const formatDate = (date?: string | Date) => {
+    const dateObj = date ? new Date(date) : null;
+    if (!dateObj || Number.isNaN(dateObj.getTime())) return '-';
     return dateObj.toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'short',
@@ -218,356 +225,275 @@ export const Credentials: React.FC = () => {
     });
   };
 
+  const usageLabel = (count: number | undefined) =>
+    typeof count === 'number' ? `${count} definition${count !== 1 ? 's' : ''}` : '-';
+
+  const rowAction = (
+    icon: string,
+    verb: string,
+    title: string,
+    credential: UnifiedCredentialSummary,
+    onClick: (credential: UnifiedCredentialSummary) => void
+  ) => (
+    <IconButton
+      icon={icon}
+      variant="ghost"
+      size="sm"
+      shape="rounded"
+      aria-label={`${verb} ${credential.name}`}
+      title={title}
+      onClick={() => onClick(credential)}
+    />
+  );
+
+  const columns: Column<UnifiedCredentialSummary>[] = [
+    {
+      header: 'Name',
+      render: (credential) => (
+        <div>
+          <span className="text-sm font-medium text-[var(--hh-text-primary)]">{credential.name}</span>
+          {credential.description && (
+            <p className="mt-0.5 max-w-[300px] truncate text-xs text-[var(--hh-text-muted)]">
+              {credential.description}
+            </p>
+          )}
+        </div>
+      ),
+    },
+    { header: 'Type', render: (credential) => <Badge variant="info">{formatProtocol(credential.protocol)}</Badge> },
+    { header: 'Used By', render: (credential) => usageLabel(credential.usage_count) },
+    {
+      header: 'Tags',
+      render: (credential) =>
+        !credential.tags || credential.tags.length === 0 ? (
+          '-'
+        ) : (
+          <div className="flex flex-wrap gap-1">
+            {credential.tags.slice(0, 2).map((tag: string) => (
+              <Tag key={tag}>{tag}</Tag>
+            ))}
+            {credential.tags.length > 2 && <Tag>+{credential.tags.length - 2}</Tag>}
+          </div>
+        ),
+    },
+    { header: 'Created', render: (credential) => formatDate(credential.created_at) },
+    {
+      header: 'Actions',
+      className: 'text-right',
+      render: (credential) => (
+        <div className="flex justify-end gap-1">
+          {rowAction('eye', 'View', 'View Details', credential, openDetailDialog)}
+          <RequirePermission permission="write">
+            {rowAction('pencil-simple', 'Edit', 'Edit', credential, openEditDialog)}
+            {rowAction('trash', 'Delete', 'Delete', credential, openDeleteDialog)}
+          </RequirePermission>
+        </div>
+      ),
+    },
+  ];
+
+  const usageWarning = selectedCredential?.usage_count ?? 0;
+
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <Eyebrow>Discovery · Credentials</Eyebrow>
-          <h1 className="mt-3 text-[1.9rem]">Discovery Credentials</h1>
-          <p className="mt-1.5 text-ink-soft">
-            Manage reusable credentials for discovery definitions
-          </p>
-        </div>
-        <RequirePermission permission="write">
-          <Button onClick={() => setCreateDialogOpen(true)}>
-            <Icon name="plus" size={16} className="mr-2" />
-            Create Credential
-          </Button>
-        </RequirePermission>
+      <PageHeader
+        eyebrow="Discovery · Credentials"
+        title="Discovery Credentials"
+        lede="Manage reusable credentials for discovery definitions"
+        actions={
+          <RequirePermission permission="write">
+            <Button icon="plus" onClick={() => setCreateDialogOpen(true)}>
+              Create Credential
+            </Button>
+          </RequirePermission>
+        }
+      />
+
+      <div className="flex flex-wrap items-end gap-3">
+        <Input
+          size="sm"
+          icon="magnifying-glass"
+          type="text"
+          aria-label="Search credentials"
+          placeholder="Search credentials by name or type..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          containerClassName="min-w-[250px] flex-1"
+        />
+        <NativeSelect
+          size="sm"
+          aria-label="Category"
+          value={categoryFilter}
+          onChange={(e) => {
+            setCategoryFilter(e.target.value as 'all' | 'discovery' | 'connector');
+            setProtocolFilter('all'); // Reset protocol filter when category changes
+          }}
+          containerClassName="min-w-[150px]"
+        >
+          <option value="all">All Categories</option>
+          <option value="discovery">Discovery</option>
+          <option value="connector">Connector</option>
+        </NativeSelect>
+        <NativeSelect
+          size="sm"
+          aria-label="Protocol"
+          value={protocolFilter}
+          onChange={(e) => {
+            setProtocolFilter(e.target.value as AuthProtocol | 'all');
+            if (e.target.value !== 'all') {
+              setCategoryFilter('all'); // Clear category filter when specific protocol is selected
+            }
+          }}
+          containerClassName="min-w-[180px]"
+        >
+          <option value="all">All Protocols</option>
+          <optgroup label="Cloud Providers">
+            <option value="aws_iam">AWS IAM</option>
+            <option value="azure_sp">Azure Service Principal</option>
+            <option value="gcp_sa">GCP Service Account</option>
+          </optgroup>
+          <optgroup label="Network & SSH">
+            <option value="ssh_key">SSH Key</option>
+            <option value="ssh_password">SSH Password</option>
+            <option value="snmp_v2c">SNMP v2c</option>
+            <option value="snmp_v3">SNMP v3</option>
+          </optgroup>
+          <optgroup label="Authentication">
+            <option value="oauth2">OAuth 2.0</option>
+            <option value="api_key">API Key</option>
+            <option value="basic">Basic Auth</option>
+            <option value="bearer">Bearer Token</option>
+          </optgroup>
+          <optgroup label="Other">
+            <option value="certificate">Certificate</option>
+            <option value="kerberos">Kerberos</option>
+            <option value="winrm">WinRM</option>
+          </optgroup>
+        </NativeSelect>
       </div>
 
-      <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
-        {/* Filters */}
-        <div className="p-4 flex flex-wrap gap-3 items-center border-b border-border/50">
-          <div className="relative flex-1 min-w-[250px]">
-            <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="text"
-              placeholder="Search credentials by name or type..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-3 py-2 border border-input rounded-md text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
-
-          <div className="relative min-w-[150px]">
-            <Icon name="funnel" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <select
-              value={categoryFilter}
-              onChange={(e) => {
-                setCategoryFilter(e.target.value as 'all' | 'discovery' | 'connector');
-                setProtocolFilter('all'); // Reset protocol filter when category changes
-              }}
-              className="w-full pl-10 pr-8 py-2 border border-input rounded-md text-sm appearance-none bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              <option value="all">All Categories</option>
-              <option value="discovery">Discovery</option>
-              <option value="connector">Connector</option>
-            </select>
-          </div>
-
-          <div className="relative min-w-[180px]">
-            <Icon name="funnel" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <select
-              value={protocolFilter}
-              onChange={(e) => {
-                setProtocolFilter(e.target.value as AuthProtocol | 'all');
-                if (e.target.value !== 'all') {
-                  setCategoryFilter('all'); // Clear category filter when specific protocol is selected
-                }
-              }}
-              className="w-full pl-10 pr-8 py-2 border border-input rounded-md text-sm appearance-none bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              <option value="all">All Protocols</option>
-              <optgroup label="Cloud Providers">
-                <option value="aws_iam">AWS IAM</option>
-                <option value="azure_sp">Azure Service Principal</option>
-                <option value="gcp_sa">GCP Service Account</option>
-              </optgroup>
-              <optgroup label="Network & SSH">
-                <option value="ssh_key">SSH Key</option>
-                <option value="ssh_password">SSH Password</option>
-                <option value="snmp_v2c">SNMP v2c</option>
-                <option value="snmp_v3">SNMP v3</option>
-              </optgroup>
-              <optgroup label="Authentication">
-                <option value="oauth2">OAuth 2.0</option>
-                <option value="api_key">API Key</option>
-                <option value="basic">Basic Auth</option>
-                <option value="bearer">Bearer Token</option>
-              </optgroup>
-              <optgroup label="Other">
-                <option value="certificate">Certificate</option>
-                <option value="kerberos">Kerberos</option>
-                <option value="winrm">WinRM</option>
-              </optgroup>
-            </select>
-          </div>
-        </div>
-
-        {/* Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-muted/30 border-b border-border/50">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Name
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Type
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Used By
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Tags
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Created
-                </th>
-                <th className="px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/30">
-              {loading ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center">
-                    <div className="flex justify-center">
-                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-                    </div>
-                  </td>
-                </tr>
-              ) : credentials.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                    No credentials found. Create your first credential to get started.
-                  </td>
-                </tr>
-              ) : (
-                credentials.map((credential) => (
-                  <tr
-                    key={credential.id}
-                    className="hover:bg-muted/50 cursor-pointer transition-colors"
-                    onClick={() => openDetailDialog(credential)}
-                  >
-                    <td className="px-4 py-3">
-                      <div>
-                        <span className="text-sm font-medium text-foreground">{credential.name}</span>
-                        {credential.description && (
-                          <p className="text-xs text-muted-foreground mt-0.5 max-w-[300px] truncate">
-                            {credential.description}
-                          </p>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge variant="secondary">{formatProtocol(credential.protocol)}</Badge>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="text-sm text-foreground">
-                        {credential.usage_count || 0} definition{credential.usage_count !== 1 ? 's' : ''}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      {!credential.tags || credential.tags.length === 0 ? (
-                        <span className="text-sm text-muted-foreground">-</span>
-                      ) : (
-                        <div className="flex flex-wrap gap-1">
-                          {credential.tags.slice(0, 2).map((tag: string) => (
-                            <Badge key={tag} variant="outline" className="text-xs">
-                              {tag}
-                            </Badge>
-                          ))}
-                          {credential.tags.length > 2 && (
-                            <Badge variant="outline" className="text-xs">
-                              +{credential.tags.length - 2}
-                            </Badge>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="text-sm text-muted-foreground">{formatDate(credential.created_at)}</span>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex justify-end gap-1">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openDetailDialog(credential);
-                          }}
-                          className="p-1.5 hover:bg-muted rounded transition-colors"
-                          title="View Details"
-                        >
-                          <Icon name="eye" size={16} className="text-muted-foreground" />
-                        </button>
-                        <RequirePermission permission="write">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openEditDialog(credential);
-                            }}
-                            className="p-1.5 hover:bg-primary/10 rounded transition-colors"
-                            title="Edit"
-                          >
-                            <Icon name="pencil-simple" size={16} className="text-primary" />
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openDeleteDialog(credential);
-                            }}
-                            className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
-                            title="Delete"
-                          >
-                            <Icon name="trash" size={16} className="text-destructive" />
-                          </button>
-                        </RequirePermission>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pagination */}
-        <div className="px-4 py-3 flex items-center justify-between border-t border-border/50">
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-foreground">Rows per page:</span>
-            <select
-              value={rowsPerPage}
-              onChange={(e) => {
-                setRowsPerPage(parseInt(e.target.value, 10));
-                setPage(0);
-              }}
-              className="px-2 py-1 border border-input rounded text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              {[5, 10, 25, 50].map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-foreground">
-              {page * rowsPerPage + 1}-{Math.min((page + 1) * rowsPerPage, total)} of {total}
-            </span>
-            <div className="flex gap-1">
-              <button
-                onClick={() => setPage(Math.max(0, page - 1))}
-                disabled={page === 0}
-                className="px-3 py-1 border border-input rounded text-sm bg-background text-foreground hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+      {loadError ? (
+        <QueryState what="credentials" error={loadError.error} onRetry={loadCredentials} />
+      ) : loading && credentials.length === 0 ? (
+        <QueryState what="credentials" loading />
+      ) : (
+        <DataTable
+          caption="Credentials"
+          rows={credentials}
+          columns={columns}
+          rowKey={(credential) => credential.id}
+          onRowClick={openDetailDialog}
+          emptyLabel="No credentials found. Create your first credential to get started."
+          footer={
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <NativeSelect
+                size="sm"
+                aria-label="Rows per page"
+                value={String(rowsPerPage)}
+                onChange={(e) => {
+                  setRowsPerPage(parseInt(e.target.value, 10));
+                  setPage(0);
+                }}
               >
-                Previous
-              </button>
-              <button
-                onClick={() => setPage(page + 1)}
-                disabled={(page + 1) * rowsPerPage >= total}
-                className="px-3 py-1 border border-input rounded text-sm bg-background text-foreground hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                Next
-              </button>
-            </div>
-          </div>
-        </div>
-      </LiquidGlass>
-
-      {/* Create Dialog */}
-      <FormDialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-        <FormDialogContent>
-          <FormDialogHeader>
-            <FormDialogTitle>Create Credential</FormDialogTitle>
-          </FormDialogHeader>
-          <FormDialogBody>
-            <div className="overflow-y-auto max-h-[calc(85vh-12rem)]">
-              <CredentialForm
-                onSubmit={handleCreate}
-                onCancel={() => setCreateDialogOpen(false)}
-                isSubmitting={isSubmitting}
+                {[5, 10, 25, 50].map((value) => (
+                  <option key={value} value={value}>
+                    {value} per page
+                  </option>
+                ))}
+              </NativeSelect>
+              <Pagination
+                mode="range"
+                offset={page * rowsPerPage}
+                limit={rowsPerPage}
+                total={total}
+                onChange={(offset) => setPage(Math.floor(offset / rowsPerPage))}
               />
             </div>
-          </FormDialogBody>
-        </FormDialogContent>
-      </FormDialog>
+          }
+        />
+      )}
 
-      {/* Edit Dialog */}
-      <FormDialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <FormDialogContent>
-          <FormDialogHeader>
-            <FormDialogTitle>Edit Credential</FormDialogTitle>
-          </FormDialogHeader>
-          <FormDialogBody>
-            <div className="overflow-y-auto max-h-[calc(85vh-12rem)]">
-              {selectedCredential && (
-                <CredentialForm
-                  credential={selectedCredential}
-                  onSubmit={handleEdit}
-                  onCancel={() => {
-                    setEditDialogOpen(false);
-                    setSelectedCredential(null);
-                  }}
-                  isSubmitting={isSubmitting}
-                />
-              )}
-            </div>
-          </FormDialogBody>
-        </FormDialogContent>
-      </FormDialog>
+      <Dialog
+        open={createDialogOpen}
+        onClose={() => setCreateDialogOpen(false)}
+        aria-label="Create credential"
+        className={DIALOG_WIDE}
+      >
+        <div className={DIALOG_BODY}>
+          <SectionHeading className="pr-10">Create Credential</SectionHeading>
+          <CredentialForm
+            onSubmit={handleCreate}
+            onCancel={() => setCreateDialogOpen(false)}
+            isSubmitting={isSubmitting}
+          />
+        </div>
+      </Dialog>
 
-      {/* Detail Dialog */}
-      <FormDialog open={detailDialogOpen} onOpenChange={setDetailDialogOpen}>
-        <FormDialogContent>
-          <FormDialogHeader>
-            <FormDialogTitle>Credential Details</FormDialogTitle>
-          </FormDialogHeader>
-          <FormDialogBody>
-            <div className="overflow-y-auto max-h-[calc(85vh-12rem)]">
-              {selectedCredential && (
-                <CredentialDetail
-                  credential={selectedCredential}
-                  usageCount={selectedCredential.usage_count}
-                  onEdit={() => {
-                    setDetailDialogOpen(false);
-                    setEditDialogOpen(true);
-                  }}
-                  onDelete={() => {
-                    setDetailDialogOpen(false);
-                    setDeleteDialogOpen(true);
-                  }}
-                  onTest={handleTestCredential}
-                />
-              )}
-            </div>
-          </FormDialogBody>
-        </FormDialogContent>
-      </FormDialog>
+      <Dialog
+        open={editDialogOpen}
+        onClose={() => setEditDialogOpen(false)}
+        aria-label="Edit credential"
+        className={DIALOG_WIDE}
+      >
+        <div className={DIALOG_BODY}>
+          <SectionHeading className="pr-10">Edit Credential</SectionHeading>
+          {selectedCredential && (
+            <CredentialForm
+              credential={selectedCredential}
+              onSubmit={handleEdit}
+              onCancel={() => {
+                setEditDialogOpen(false);
+                setSelectedCredential(null);
+              }}
+              isSubmitting={isSubmitting}
+            />
+          )}
+        </div>
+      </Dialog>
 
-      {/* Delete Confirmation Dialog */}
-      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete Credential</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete "{selectedCredential?.name}"?
-              {selectedCredential?.usage_count && selectedCredential.usage_count > 0 && (
-                <span className="block mt-2 text-destructive font-medium">
-                  Warning: This credential is used by {selectedCredential.usage_count} discovery
-                  definition{selectedCredential.usage_count !== 1 ? 's' : ''}. Deleting it may
-                  affect those definitions.
-                </span>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
+      <Dialog
+        open={detailDialogOpen}
+        onClose={() => setDetailDialogOpen(false)}
+        aria-label="Credential details"
+        className={DIALOG_WIDE}
+      >
+        <div className={DIALOG_BODY}>
+          <SectionHeading className="pr-10">Credential Details</SectionHeading>
+          {selectedCredential && (
+            <CredentialDetail
+              credential={selectedCredential}
+              usageCount={selectedCredential.usage_count}
+              onEdit={() => {
+                setDetailDialogOpen(false);
+                setEditDialogOpen(true);
+              }}
+              onDelete={() => {
+                setDetailDialogOpen(false);
+                setDeleteDialogOpen(true);
+              }}
+              onTest={handleTestCredential}
+            />
+          )}
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={deleteDialogOpen}
+        onClose={() => setDeleteDialogOpen(false)}
+        aria-label="Delete credential"
+      >
+        <div className="space-y-4 p-6">
+          <SectionHeading className="mb-0 pr-10">Delete Credential</SectionHeading>
+          <p className="text-sm">Are you sure you want to delete "{selectedCredential?.name}"?</p>
+          {usageWarning > 0 && (
+            <p className="text-sm font-medium text-[var(--hh-error-text)]">
+              Warning: This credential is used by {usageWarning} discovery definition
+              {usageWarning !== 1 ? 's' : ''}. Deleting it may affect those definitions.
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
             <Button
-              variant="outline"
+              variant="secondary"
               onClick={() => {
                 setDeleteDialogOpen(false);
                 setSelectedCredential(null);
@@ -576,11 +502,11 @@ export const Credentials: React.FC = () => {
             >
               Cancel
             </Button>
-            <Button variant="destructive" onClick={handleDelete} disabled={isSubmitting}>
+            <Button variant="danger" onClick={handleDelete} disabled={isSubmitting}>
               {isSubmitting ? 'Deleting...' : 'Delete'}
             </Button>
-          </DialogFooter>
-        </DialogContent>
+          </div>
+        </div>
       </Dialog>
     </div>
   );

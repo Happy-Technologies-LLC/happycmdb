@@ -1,10 +1,6 @@
 import React from 'react';
-import { Icon } from '@happy-technologies/design-system';
-import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { Badge, Button, FieldList, SectionHeading, Separator, Tag } from '@happy-technologies/design-system';
 import { RequirePermission } from '@/components/common/RequirePermission';
-import { Separator } from '@/components/ui/separator';
 import type { UnifiedCredential } from '@/services/credential.service';
 import { formatProtocol } from '@/lib/credential-display';
 
@@ -18,272 +14,181 @@ interface CredentialDetailProps {
 
 const MASKED_VALUE = '••••••••••••';
 
+type Fields = Array<[label: string, value: React.ReactNode]>;
+
+/** A stored value in the mono face; an absent one stays absent (FieldList skips it) rather than rendering a blank or a made-up default. */
+const mono = (value: React.ReactNode) =>
+  value === undefined || value === null || value === '' ? null : <span className="hh-mono">{value}</span>;
+
 export const CredentialDetail: React.FC<CredentialDetailProps> = ({
   credential,
-  usageCount = 0,
+  usageCount,
   onEdit,
   onDelete,
   onTest,
 }) => {
   const [showSecrets, setShowSecrets] = React.useState(false);
 
-
-  const formatDate = (date: string | Date) => {
-    return new Date(date).toLocaleString();
+  const formatDate = (date?: string | Date) => {
+    const dateObj = date ? new Date(date) : null;
+    return dateObj && !Number.isNaN(dateObj.getTime()) ? dateObj.toLocaleString() : null;
   };
 
-  const renderCredentialFields = () => {
+  const credentialFields = (): Fields => {
     const { credentials } = credential;
     const displayValue = (value: string) => (showSecrets ? value : MASKED_VALUE);
 
     switch (credential.protocol) {
       case 'aws_iam':
-        return (
-          <>
-            <div>
-              <p className="text-sm text-muted-foreground">Access Key ID</p>
-              <p className="font-mono text-sm">{displayValue(credentials.access_key_id)}</p>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">Secret Access Key</p>
-              <p className="font-mono text-sm">{MASKED_VALUE}</p>
-            </div>
-            {credentials.region && (
-              <div>
-                <p className="text-sm text-muted-foreground">Default Region</p>
-                <p className="font-mono text-sm">{credentials.region}</p>
-              </div>
-            )}
-          </>
-        );
+        return [
+          ['Access Key ID', mono(displayValue(credentials.access_key_id))],
+          ['Secret Access Key', mono(MASKED_VALUE)],
+          ['Default Region', mono(credentials.region)],
+        ];
 
       case 'azure_sp':
-        return (
-          <>
-            <div>
-              <p className="text-sm text-muted-foreground">Subscription ID</p>
-              <p className="font-mono text-sm">{credentials.subscription_id}</p>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">Client ID</p>
-              <p className="font-mono text-sm">{credentials.client_id}</p>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">Client Secret</p>
-              <p className="font-mono text-sm">{MASKED_VALUE}</p>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">Tenant ID</p>
-              <p className="font-mono text-sm">{credentials.tenant_id}</p>
-            </div>
-          </>
-        );
+        return [
+          ['Subscription ID', mono(credentials.subscription_id)],
+          ['Client ID', mono(credentials.client_id)],
+          ['Client Secret', mono(MASKED_VALUE)],
+          ['Tenant ID', mono(credentials.tenant_id)],
+        ];
 
       case 'gcp_sa':
-        return (
-          <>
-            <div>
-              <p className="text-sm text-muted-foreground">Project ID</p>
-              <p className="font-mono text-sm">{credentials.project_id}</p>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">Service Account JSON</p>
-              <p className="font-mono text-sm">{MASKED_VALUE} (encrypted)</p>
-            </div>
-          </>
-        );
+        return [
+          ['Project ID', mono(credentials.project_id)],
+          ['Service Account JSON', mono(`${MASKED_VALUE} (encrypted)`)],
+        ];
 
       case 'ssh_key':
       case 'ssh_password':
-        return (
-          <>
-            <div>
-              <p className="text-sm text-muted-foreground">Username</p>
-              <p className="font-mono text-sm">{credentials.username}</p>
-            </div>
-            {credentials.password && (
-              <div>
-                <p className="text-sm text-muted-foreground">Password</p>
-                <p className="font-mono text-sm">{MASKED_VALUE}</p>
-              </div>
-            )}
-            {credentials.private_key && (
-              <div>
-                <p className="text-sm text-muted-foreground">Private Key</p>
-                <p className="font-mono text-sm">{MASKED_VALUE} (encrypted)</p>
-              </div>
-            )}
-            {credentials.passphrase && (
-              <div>
-                <p className="text-sm text-muted-foreground">Passphrase</p>
-                <p className="font-mono text-sm">{MASKED_VALUE}</p>
-              </div>
-            )}
-          </>
-        );
+        return [
+          ['Username', mono(credentials.username)],
+          ['Password', credentials.password ? mono(MASKED_VALUE) : null],
+          ['Private Key', credentials.private_key ? mono(`${MASKED_VALUE} (encrypted)`) : null],
+          ['Passphrase', credentials.passphrase ? mono(MASKED_VALUE) : null],
+        ];
 
       case 'api_key':
-        return (
-          <>
-            <div>
-              <p className="text-sm text-muted-foreground">API Key</p>
-              <p className="font-mono text-sm">{displayValue(credentials.api_key)}</p>
-            </div>
-            {credentials.api_secret && (
-              <div>
-                <p className="text-sm text-muted-foreground">API Secret</p>
-                <p className="font-mono text-sm">{MASKED_VALUE}</p>
-              </div>
-            )}
-          </>
-        );
+        return [
+          ['API Key', mono(displayValue(credentials.api_key))],
+          ['API Secret', credentials.api_secret ? mono(MASKED_VALUE) : null],
+        ];
 
       case 'snmp_v2c':
       case 'snmp_v3':
-        return (
-          <>
-            <div>
-              <p className="text-sm text-muted-foreground">Community String</p>
-              <p className="font-mono text-sm">{MASKED_VALUE}</p>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">SNMP Version</p>
-              <p className="font-mono text-sm">{credentials.version}</p>
-            </div>
-          </>
-        );
+        return [
+          ['Community String', mono(MASKED_VALUE)],
+          ['SNMP Version', mono(credentials.version)],
+        ];
 
       default:
-        return null;
+        return [];
     }
   };
 
   return (
-    <Card className="p-6">
+    <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-start justify-between mb-6">
-        <div className="flex-1">
-          <h2 className="text-2xl font-semibold mb-1">{credential.name}</h2>
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <SectionHeading level={3} className="mb-1">
+            {credential.name}
+          </SectionHeading>
           {credential.description && (
-            <p className="text-muted-foreground">{credential.description}</p>
+            <p className="text-[var(--hh-text-muted)]">{credential.description}</p>
           )}
         </div>
         <RequirePermission permission="write">
           <div className="flex gap-2">
             {onTest && (
-              <Button variant="outline" size="sm" onClick={onTest}>
-                <Icon name="test-tube" size={16} className="mr-2" />
+              <Button variant="secondary" icon="test-tube" onClick={onTest}>
                 Test
               </Button>
             )}
-            <Button variant="outline" size="sm" onClick={onEdit}>
-              <Icon name="pencil-simple" size={16} className="mr-2" />
+            <Button variant="secondary" icon="pencil-simple" onClick={onEdit}>
               Edit
             </Button>
-            <Button variant="destructive" size="sm" onClick={onDelete}>
-              <Icon name="trash" size={16} className="mr-2" />
+            <Button variant="danger" icon="trash" onClick={onDelete}>
               Delete
             </Button>
           </div>
         </RequirePermission>
       </div>
 
-      <Separator className="mb-6" />
+      <Separator />
 
       {/* Basic Info */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-        <div>
-          <p className="text-sm text-muted-foreground mb-1">Protocol</p>
-          <Badge variant="secondary" className="text-sm">
-            {formatProtocol(credential.protocol)}
-          </Badge>
-        </div>
-        <div>
-          <p className="text-sm text-muted-foreground mb-1">Usage</p>
-          <p className="text-sm">
-            Used by <span className="font-semibold">{usageCount}</span> discovery definition
-            {usageCount !== 1 ? 's' : ''}
-          </p>
-        </div>
-      </div>
+      <FieldList
+        className="md:grid-cols-2 lg:grid-cols-2"
+        fields={[
+          ['Protocol', <Badge variant="info">{formatProtocol(credential.protocol)}</Badge>],
+          [
+            'Usage',
+            typeof usageCount === 'number'
+              ? `Used by ${usageCount} discovery definition${usageCount !== 1 ? 's' : ''}`
+              : '-',
+          ],
+        ]}
+      />
 
-      <Separator className="mb-6" />
+      <Separator />
 
       {/* Credential Details */}
-      <div className="mb-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-medium">Credential Details</h3>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setShowSecrets(!showSecrets)}
-          >
-            {showSecrets ? (
-              <>
-                <Icon name="eye-slash" size={16} className="mr-2" />
-                Hide Partial Values
-              </>
-            ) : (
-              <>
-                <Icon name="eye" size={16} className="mr-2" />
-                Show Partial Values
-              </>
-            )}
-          </Button>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 bg-muted/50 rounded-lg">
-          {renderCredentialFields()}
-        </div>
-        <p className="text-xs text-muted-foreground mt-2">
+      <div>
+        <SectionHeading
+          level={3}
+          right={
+            <Button
+              variant="ghost"
+              icon={showSecrets ? 'eye-slash' : 'eye'}
+              onClick={() => setShowSecrets(!showSecrets)}
+            >
+              {showSecrets ? 'Hide Partial Values' : 'Show Partial Values'}
+            </Button>
+          }
+        >
+          Credential Details
+        </SectionHeading>
+        <FieldList
+          className="rounded-[var(--hh-radius-lg)] bg-[var(--hh-bg-elevated)] p-4 lg:grid-cols-2"
+          fields={credentialFields()}
+        />
+        <p className="mt-2 text-xs text-[var(--hh-text-muted)]">
           All sensitive values are encrypted and stored securely. Full values are never displayed in
           the UI.
         </p>
       </div>
 
-      <Separator className="mb-6" />
+      <Separator />
 
       {/* Tags */}
       {credential.tags && credential.tags.length > 0 && (
         <>
-          <div className="mb-6">
-            <div className="flex items-center gap-2 mb-2">
-              <Icon name="tag" size={16} className="text-muted-foreground" />
-              <h3 className="text-sm font-medium">Tags</h3>
-            </div>
+          <div>
+            <SectionHeading level={4} className="mb-2">
+              Tags
+            </SectionHeading>
             <div className="flex flex-wrap gap-2">
               {credential.tags.map((tag: string) => (
-                <Badge key={tag} variant="outline">
-                  {tag}
-                </Badge>
+                <Tag key={tag}>{tag}</Tag>
               ))}
             </div>
           </div>
-          <Separator className="mb-6" />
+          <Separator />
         </>
       )}
 
       {/* Metadata */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-        <div className="flex items-center gap-2 text-muted-foreground">
-          <Icon name="user" size={16} />
-          <span>
-            Created by: <span className="font-medium">{credential.created_by}</span>
-          </span>
-        </div>
-        <div className="flex items-center gap-2 text-muted-foreground">
-          <Icon name="calendar" size={16} />
-          <span>
-            Created: <span className="font-medium">{formatDate(credential.created_at)}</span>
-          </span>
-        </div>
-        <div className="flex items-center gap-2 text-muted-foreground col-span-1 md:col-span-2">
-          <Icon name="calendar" size={16} />
-          <span>
-            Last updated: <span className="font-medium">{formatDate(credential.updated_at)}</span>
-          </span>
-        </div>
-      </div>
-    </Card>
+      <FieldList
+        className="md:grid-cols-2 lg:grid-cols-2"
+        fields={[
+          ['Created by', credential.created_by],
+          ['Created', formatDate(credential.created_at)],
+          ['Last updated', formatDate(credential.updated_at)],
+        ]}
+      />
+    </div>
   );
 };
 

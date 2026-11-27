@@ -11,7 +11,24 @@ import { DiscoveryTool } from '../types';
 import { logger } from '@cmdb/common';
 import { resolveDiscoveryHost, connectDiscoveryHost } from '@cmdb/common';
 
+/**
+ * Most stdout plus stderr bytes one SSH command may return (1 MiB, the same
+ * bound as safe-http.ts). The stored session trace holds the same output.
+ */
+export const SSH_MAX_OUTPUT_BYTES = 1048576;
+
+/** What `ssh_execute` resolves with. */
+interface SshExecuteResult {
+  success: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+}
+
 export const sshExecuteTool: DiscoveryTool = {
+  targetScoped: true,
   name: 'ssh_execute',
   description:
     'Execute commands on a remote host via SSH. Use this to gather system information, check installed software, read configuration files, etc. Be careful with commands that modify state.',
@@ -51,14 +68,51 @@ export const sshExecuteTool: DiscoveryTool = {
 
     return new Promise((resolve, reject) => {
       const conn = new SSHClient();
-      let output = '';
-      let errorOutput = '';
+      const stdoutChunks: Buffer[] = [];
+      const stderrChunks: Buffer[] = [];
+      let collectedBytes = 0;
+      let truncated = false;
 
       // Set timeout
       const timeout = setTimeout(() => {
         conn.end();
         reject(new Error('SSH command timeout after 30 seconds'));
       }, 30000);
+
+      const finish = (code: number | null, signal: string | null): void => {
+        clearTimeout(timeout);
+        conn.end();
+        logger.info('SSH command completed', { code, truncated });
+        resolve({
+          // A cut command's exit status is unknown, so it is never reported as a success.
+          success: !truncated && code === 0,
+          exitCode: code,
+          signal,
+          stdout: Buffer.concat(stdoutChunks).toString(),
+          stderr: Buffer.concat(stderrChunks).toString(),
+          truncated,
+        });
+      };
+
+      // The remote host controls the stream: stdout and stderr share one byte budget,
+      // and once it is spent the connection is closed and later data is dropped.
+      const collect = (chunks: Buffer[], data: Buffer): void => {
+        if (truncated) {
+          return;
+        }
+        const room = SSH_MAX_OUTPUT_BYTES - collectedBytes;
+        if (data.length <= room) {
+          chunks.push(data);
+          collectedBytes += data.length;
+          return;
+        }
+        if (room > 0) {
+          chunks.push(data.subarray(0, room));
+          collectedBytes += room;
+        }
+        truncated = true;
+        finish(null, null);
+      };
 
       conn
         .on('ready', () => {
@@ -74,25 +128,12 @@ export const sshExecuteTool: DiscoveryTool = {
 
             stream
               .on('close', (code: number, signal: string) => {
-                clearTimeout(timeout);
-                conn.end();
-
-                logger.info('SSH command completed', { code });
-
-                resolve({
-                  success: code === 0,
-                  exitCode: code,
-                  signal,
-                  stdout: output,
-                  stderr: errorOutput,
-                });
+                if (!truncated) {
+                  finish(code, signal);
+                }
               })
-              .on('data', (data: Buffer) => {
-                output += data.toString();
-              })
-              .stderr.on('data', (data: Buffer) => {
-                errorOutput += data.toString();
-              });
+              .on('data', (data: Buffer) => collect(stdoutChunks, data))
+              .stderr.on('data', (data: Buffer) => collect(stderrChunks, data));
           });
         })
         .on('error', () => {
@@ -119,6 +160,7 @@ export const sshExecuteTool: DiscoveryTool = {
  * Helper tool for reading configuration files
  */
 export const sshReadFileTool: DiscoveryTool = {
+  targetScoped: true,
   name: 'ssh_read_file',
   description:
     'Read and return contents of a file on remote host via SSH. Use this to examine configuration files, logs, etc.',
@@ -160,11 +202,21 @@ export const sshReadFileTool: DiscoveryTool = {
     const quotedPath = `'${filePath.replace(/'/g, `'\"'\"'`)}'`;
     const command = `head -n ${maxLines} -- ${quotedPath}`;
 
-    const result = await sshExecuteTool.execute({
+    const result = (await sshExecuteTool.execute({
       ...sshParams,
       host,
       command,
-    });
+    })) as SshExecuteResult;
+
+    if (result.truncated) {
+      // The output cap cut the command off: return what was collected, flagged.
+      return {
+        filePath,
+        content: result.stdout,
+        truncated: true,
+        lines: result.stdout.split('\n').length,
+      };
+    }
 
     if (!result.success) {
       // The remote output and requested path may contain credentials.
@@ -174,7 +226,7 @@ export const sshReadFileTool: DiscoveryTool = {
     return {
       filePath,
       content: result.stdout,
-      truncated: maxLines !== undefined,
+      truncated: false,
       lines: result.stdout.split('\n').length,
     };
   },

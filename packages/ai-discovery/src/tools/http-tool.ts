@@ -10,7 +10,10 @@ import { DiscoveryTool } from '../types';
 import { logger, DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
 import { DiscoveryHttpError, safeDiscoveryHttp } from './safe-http';
 
+const HTTP_PROBE_METHODS: readonly string[] = ['GET', 'HEAD', 'POST', 'OPTIONS'];
+
 export const httpProbeTool: DiscoveryTool = {
+  targetScoped: true,
   name: 'http_probe',
   description:
     'Probe HTTP/HTTPS endpoints to check availability, headers, and content. Use this to identify web services, APIs, and application frameworks.',
@@ -48,24 +51,28 @@ export const httpProbeTool: DiscoveryTool = {
       port,
       protocol = 'http',
       path = '/',
-      method = 'GET',
+      method: requestedMethod = 'GET',
     } = params;
-    // protocol, port and path are model text: each must stay in its own URL
-    // component so the authority is exactly `host:port` (no `@`, `#` or `\` tricks).
+    // protocol, port, path and method are model text: each must stay in its own URL
+    // component so the authority is exactly `host:port` (no `@`, `#` or `\` tricks),
+    // and only the four documented methods may be sent.
+    const method = typeof requestedMethod === 'string' ? requestedMethod.toUpperCase() : '';
     if ((protocol !== 'http' && protocol !== 'https') ||
       (port !== undefined && (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535)) ||
-      typeof path !== 'string' || !path.startsWith('/') || /[\\\s]/.test(path)) {
+      typeof path !== 'string' || !path.startsWith('/') || /[\\\s]/.test(path) ||
+      !HTTP_PROBE_METHODS.includes(method)) {
       throw new Error('Invalid HTTP probe parameters');
     }
-    const methodLabel = ['GET', 'HEAD', 'POST', 'OPTIONS'].includes(method) ? method : 'OTHER';
 
     // Determine default port
     const defaultPort = protocol === 'https' ? 443 : 80;
     const targetPort = port || defaultPort;
 
-    const url = `${protocol}://${host}:${targetPort}${path}`;
+    // An IPv6 literal needs brackets in the authority (the scope check accepts both forms).
+    const urlHost = typeof host === 'string' && host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+    const url = `${protocol}://${urlHost}:${targetPort}${path}`;
 
-    logger.info('Probing HTTP endpoint', { method: methodLabel });
+    logger.info('Probing HTTP endpoint', { method });
 
     try {
       const response = await safeDiscoveryHttp(url, {
@@ -96,7 +103,7 @@ export const httpProbeTool: DiscoveryTool = {
         responseTime: (response.config as any)?.responseTime || null,
       };
 
-      logger.info('HTTP probe successful', { method: methodLabel, status: result.status });
+      logger.info('HTTP probe successful', { method, status: result.status });
 
       return result;
     } catch (error) {
@@ -113,11 +120,11 @@ export const httpProbeTool: DiscoveryTool = {
         };
       } else if (error instanceof DiscoveryHttpError) {
         // Request made but no response
-        logger.warn('HTTP probe failed - no response', { method: methodLabel });
+        logger.warn('HTTP probe failed - no response', { method });
         throw new Error('No HTTP response');
       } else {
         // Setup errors may include the entire URL in their message.
-        logger.error('HTTP probe failed', { method: methodLabel });
+        logger.error('HTTP probe failed', { method });
         throw new Error('HTTP probe failed');
       }
     }

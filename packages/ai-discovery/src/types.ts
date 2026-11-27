@@ -33,6 +33,12 @@ export interface LLMConfig {
  */
 export interface DiscoveryTool {
   name: string;
+  /**
+   * The tool opens a connection to the host named in its `host` argument. The
+   * provider then only runs it against the session's own `targetHost`. A tool
+   * whose schema has a `host` property must set this to `true`.
+   */
+  targetScoped?: boolean;
   description: string;
   inputSchema: {
     type: 'object';

@@ -482,6 +482,29 @@ describe('PUT /auth/password rate limiting (HAP-1368)', () => {
     expect(statuses).toEqual([...Array(ACCOUNT_MAX).fill(400), 429]);
   });
 
+  it('with the audit chain not ready, the 503 spends no per-user bucket however many clients one user comes from (HAP-1712)', async () => {
+    const { app, reached, chain } = passwordApp(new FakeRedis());
+    chain.ready = false;
+    const statuses: number[] = [];
+    for (let i = 0; i <= ACCOUNT_MAX; i++) statuses.push((await changePassword(app, 'user-a', `198.51.100.${i}`)).status);
+    expect(statuses).toEqual(Array(ACCOUNT_MAX + 1).fill(503));
+    expect(reached).toEqual([]);
+
+    chain.ready = true;
+    expect((await changePassword(app, 'user-a', '203.0.113.7')).status).toBe(400);
+  });
+
+  it('with both buckets already spent (429) and the audit chain then not ready, the answer is the 503 body, not the 429 (HAP-1712)', async () => {
+    const { app, chain } = passwordApp(new FakeRedis());
+    for (let i = 0; i < ACCOUNT_MAX; i++) expect((await changePassword(app, 'user-a', '198.51.100.9')).status).toBe(400);
+    expect((await changePassword(app, 'user-a', '198.51.100.9')).status).toBe(429);
+
+    chain.ready = false;
+    const res = await changePassword(app, 'user-a', '198.51.100.9');
+    expect([res.status, res.headers['cache-control'], res.body]).toEqual([
+      503, 'no-store', { success: false, error: 'Service Unavailable', message: 'Password change temporarily unavailable' }]);
+  });
+
   it('an unauthenticated request is 401 whether or not the audit chain is ready, never the 503', async () => {
     const { app, chain } = passwordApp(new FakeRedis());
     const statuses: number[] = [];

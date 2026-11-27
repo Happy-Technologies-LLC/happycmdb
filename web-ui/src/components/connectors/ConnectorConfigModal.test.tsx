@@ -104,3 +104,134 @@ describe('ConnectorConfigModal (F-043)', () => {
     expect(screen.getByLabelText('Connector Name *')).toBeInTheDocument();
   });
 });
+
+// UX-4b S8e (HAP-1922): the wizard on the design system. Its dialog is named, its fields keep their labels and
+// types, and a failed resource read is shown with a retry instead of reading as "no resources".
+describe('ConnectorConfigModal on the design system (HAP-1922)', () => {
+  const SCHEMA_TEMPLATE = {
+    ...TEMPLATE,
+    config_schema: {
+      host: { type: 'string', required: true, label: 'Host' },
+      api_token: { type: 'string', sensitive: true, required: false, label: 'API Token' },
+      region: { type: 'select', required: false, label: 'Region', options: ['us-east', 'eu-west'], default: 'us-east' },
+    },
+  };
+  const RESOURCE = {
+    id: 'servers', name: 'Servers', description: 'Server inventory', ci_type: 'server',
+    enabled_by_default: true, field_mappings: {},
+  };
+
+  async function openResourceStep(template = SCHEMA_TEMPLATE) {
+    const user = userEvent.setup();
+    const onDeploy = vi.fn();
+    const onClose = vi.fn();
+    render(<ConnectorConfigModal template={template} onClose={onClose} onDeploy={onDeploy} />);
+    await waitFor(() => expect(apiClient.get).toHaveBeenCalled());
+    await user.type(screen.getByLabelText('Connector Name *'), 'Instance');
+    await user.click(screen.getByRole('button', { name: /Next/i }));
+    await user.type(screen.getByLabelText('Host *'), 'h.example.com');
+    await user.click(screen.getByRole('button', { name: /Next/i }));
+    return { user, onDeploy, onClose };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiClient.get.mockResolvedValue({ data: { metadata: { resources: [RESOURCE] } } });
+  });
+
+  it('names the dialog and keeps the labels and types of a sensitive and a non-sensitive field', async () => {
+    const user = userEvent.setup();
+    render(<ConnectorConfigModal template={SCHEMA_TEMPLATE} onClose={vi.fn()} onDeploy={vi.fn()} />);
+    expect(screen.getByRole('dialog', { name: 'Configure Config Test Connector' })).toBeInTheDocument();
+    await user.type(screen.getByLabelText('Connector Name *'), 'Instance');
+    await user.click(screen.getByRole('button', { name: /Next/i }));
+
+    expect(screen.getByLabelText('Host *')).toHaveAttribute('type', 'text');
+    const token = screen.getByLabelText('API Token');
+    expect(token).toHaveAttribute('type', 'password');
+    expect(token).toHaveAttribute('autocomplete', 'new-password');
+    expect(screen.getByRole('combobox', { name: 'Region' })).toBeInTheDocument();
+  });
+
+  it('deploys the typed values and the chosen select option in the same payload shape', async () => {
+    const { user, onDeploy } = await openResourceStep();
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    await user.click(screen.getByRole('combobox', { name: 'Region' }));
+    await user.click(await screen.findByRole('option', { name: 'eu-west' }));
+    await user.click(screen.getByRole('button', { name: /Next/i }));
+    await screen.findByText('Servers');
+    await user.click(screen.getByRole('button', { name: 'Deploy Connector' }));
+
+    const payload = onDeploy.mock.calls[0][0];
+    expect(payload).toMatchObject({
+      name: 'Instance',
+      type: TEMPLATE.type,
+      enabled: true,
+      connection: { host: 'h.example.com', region: 'eu-west' },
+      enabled_resources: ['servers'],
+      schedule: { enabled: false, cron_expression: '0 9 * * *' },
+    });
+  });
+
+  it('shows a failed resource read with a retry, without echoing the server error', async () => {
+    apiClient.get
+      .mockRejectedValueOnce(new Error('upstream leaked-detail 10.0.0.7'))
+      .mockResolvedValue({ data: { metadata: { resources: [RESOURCE] } } });
+    const { user } = await openResourceStep();
+
+    expect(await screen.findByText('Could not load connector resources')).toBeInTheDocument();
+    expect(screen.queryByText('No resources found for this connector')).toBeNull();
+    expect(document.body).not.toHaveTextContent('leaked-detail');
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Servers')).toBeInTheDocument();
+    expect(apiClient.get).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText('Could not load connector resources')).toBeNull();
+  });
+
+  it('shows a refused resource read as not permitted, with no retry', async () => {
+    apiClient.get.mockRejectedValue({ response: { status: 403, data: { message: 'leaked-detail' } } });
+    await openResourceStep();
+
+    expect(await screen.findByText('No access to connector resources')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(document.body).not.toHaveTextContent('leaked-detail');
+  });
+
+  // The DS Dialog closes on every Escape that reaches `document`; an Escape a nested control already used must not
+  // discard the wizard (and the credentials typed into it).
+  it('Escape that closes the Region listbox leaves the wizard open', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(<ConnectorConfigModal template={SCHEMA_TEMPLATE} onClose={onClose} onDeploy={vi.fn()} />);
+    await user.type(screen.getByLabelText('Connector Name *'), 'Instance');
+    await user.click(screen.getByRole('button', { name: /Next/i }));
+    await user.click(screen.getByRole('combobox', { name: 'Region' }));
+    expect(await screen.findByRole('option', { name: 'eu-west' })).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByRole('option', { name: 'eu-west' })).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Host *')).toBeInTheDocument();
+  });
+
+  it('Escape that cancels a custom mapping target leaves the wizard open and keeps the typed name', async () => {
+    const { user, onClose } = await openResourceStep();
+    await screen.findByText('Servers');
+    await user.click(screen.getByRole('button', { name: 'Add Field Mapping' }));
+    await user.selectOptions(screen.getByLabelText('Target Field'), 'custom');
+    await user.type(screen.getByLabelText('Target Field'), 'abandoned{Escape}');
+
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: 'Configure Config Test Connector' })).toBeInTheDocument();
+  });
+
+  it('Escape with nothing nested open still closes the wizard', async () => {
+    const { user, onClose } = await openResourceStep();
+    await screen.findByText('Servers');
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});

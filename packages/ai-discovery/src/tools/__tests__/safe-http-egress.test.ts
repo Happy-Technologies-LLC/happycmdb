@@ -7,7 +7,8 @@ import { safeDiscoveryHttp } from '../safe-http';
 import { DISCOVERY_TARGET_REFUSED } from '@cmdb/common';
 
 jest.mock('dns/promises', () => ({ lookup: jest.fn() }));
-jest.mock('axios', () => jest.fn());
+// safeDiscoveryHttp chains the real default response transforms after its byte counter.
+jest.mock('axios', () => Object.assign(jest.fn(), { defaults: jest.requireActual('axios').defaults }));
 const mockedLookup = jest.mocked(lookup);
 const mockedAxios = jest.mocked(axios);
 

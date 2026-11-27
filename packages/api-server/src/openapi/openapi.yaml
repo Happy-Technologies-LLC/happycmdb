@@ -30,7 +30,7 @@ info:
 
     The API mounts no global rate limiter (`ApiServer.setupMiddleware`), so there is
     no per-token or per-API-key hourly or burst budget. Limiters sit on four auth
-    routes registered in `AuthController`:
+    routes registered in `AuthController` and on `POST /agents/heartbeat`:
     - `POST /auth/login`: `RateLimitMiddleware.limit('auth', …)` with
       `rateLimit.endpoints.auth` (default 20 per hour per client address),
       `endpoints.authAccount` (5 per 15 minutes per account and client address) and
@@ -46,6 +46,9 @@ info:
       `RateLimitMiddleware.custom(endpointBudget('rest'), 'auth-refresh')`, on
       `endpoints.rest` (default 1000 per hour per client address); not mounted when
       `endpoints.rest.max` is 0.
+    - `POST /agents/heartbeat`: `RateLimitMiddleware.custom(…, 'agent-heartbeat', { admittedOnly: true })` on
+      `endpoints.agentHeartbeat` (default 600 per hour per verified user: the user behind the JWT or API key,
+      ahead of body validation; only admitted requests count; not mounted when `max` is 0).
 
     Analysis requests (`executeBoundedAnalysis`) and GraphQL requests
     (`admitGraphQLRequest`) have in-process admission gates that answer 429 without
@@ -57,8 +60,8 @@ info:
     https://github.com/Happy-Technologies-LLC/happycmdb/blob/main/packages/api-server/docs/API_DOCUMENTATION.md#rate-limiting
 
     Rate limit headers are sent only by `POST /auth/login`, `PUT /auth/password`,
-    `POST /auth/sessions/revoke-others` and `POST /auth/refresh`, on allowed and on 429 responses, and not when
-    `rateLimit.enabled` is false, on a bypass-header match, when the endpoint's
+    `POST /auth/sessions/revoke-others`, `POST /auth/refresh` and `POST /agents/heartbeat`, on allowed and on 429
+    responses, and not when `rateLimit.enabled` is false, on a bypass-header match, when the endpoint's
     `max` is 0 or on a limiter store error. No other route sends them:
     - `X-RateLimit-Limit`: Maximum requests per window
     - `X-RateLimit-Remaining`: Remaining requests
@@ -1073,6 +1076,7 @@ paths:
                 _query:
                   type: string
                   minLength: 1
+                  maxLength: 500
                   description: Search query string
                   example: web server
                 _limit:
@@ -2090,6 +2094,7 @@ paths:
                 _query:
                   type: string
                   minLength: 1
+                  maxLength: 500
                 _type:
                   $ref: '#/components/schemas/CIType'
                 _status:
@@ -2098,8 +2103,20 @@ paths:
                   $ref: '#/components/schemas/Environment'
                 _metadata_filters:
                   type: object
-                  additionalProperties: true
-                  description: Filter by metadata fields
+                  maxProperties: 20
+                  additionalProperties:
+                    oneOf:
+                      - type: string
+                        maxLength: 256
+                      - type: number
+                        minimum: -9007199254740991
+                        maximum: 9007199254740991
+                      - type: boolean
+                  description: >-
+                    Filter by metadata fields. At most 20 keys; each key is 1 to 128 characters (and not
+                    `__proto__`); each value is a string of at most 256 characters, a safe number or a boolean.
+                    Nested objects, arrays and null are refused. A string matches a stored string, a number a stored
+                    number of exactly that value (3 does not match 30 or 3.5). Violations answer 400.
                   example:
                     os: Ubuntu
                     cpu_cores: 8
@@ -2148,6 +2165,7 @@ paths:
                 _query:
                   type: string
                   minLength: 1
+                  maxLength: 500
                 _limit:
                   type: integer
                   minimum: 1
@@ -3086,9 +3104,12 @@ paths:
       tags: [Discovery Agents]
       summary: Register agent
       description: >-
-        Omit agent_id to create an agent and receive its server-assigned ID.
-        Supply that issued ID to retry/update within the same organization;
-        foreign and missing IDs both return 404. Keep the ID for heartbeat.
+        Omit agent_id to create an agent and receive its server-assigned ID; the caller is recorded as its owner.
+        Supply that issued ID to retry/update within the same organization. An agent-role credential can only
+        update an agent it registered, and a re-registration never moves a `disabled` agent out of `disabled`.
+        An operator or admin can update any agent of the organization (and re-enable a `disabled` one); doing so
+        on an ownerless agent (registered before migration 057) claims it for that operator or admin. Foreign,
+        ownerless-to-an-agent-role-caller and missing IDs all return 404. Keep the ID for heartbeat.
       operationId: registerDiscoveryAgent
       requestBody:
         required: true
@@ -3121,6 +3142,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -3128,7 +3151,17 @@ paths:
     post:
       tags: [Discovery Agents]
       summary: Update heartbeat
-      description: Update agent status and statistics
+      description: >-
+        Update agent status and statistics. An agent-role credential can only heartbeat an agent it registered
+        (the verified user behind the JWT or API key); a foreign, ownerless (registered before migration 057)
+        or missing agent all return the same 404. Operators and admins can heartbeat any agent of the
+        organization. `disabled` is operator-only: an agent-role caller sending it gets 403 ROLE_REQUIRED, and
+        its heartbeat never moves an agent out of `disabled` (the counters and liveness are still recorded).
+        Each verified principal is limited to 600 heartbeats per hour by default (`rateLimit.endpoints.agentHeartbeat`,
+        env `RATE_LIMIT_AGENT_HEARTBEAT_MAX`, about 10 agents per user at a 60 s interval); only admitted heartbeats
+        count, so a client that keeps retrying is admitted again once its oldest admitted heartbeat leaves the window.
+        Beyond the budget the endpoint returns 429 with X-RateLimit-* headers and a JSON body carrying _retryAfter
+        (seconds). The limit is checked before the body is validated, so malformed requests count too.
       operationId: updateAgentHeartbeat
       requestBody:
         required: true
@@ -3140,6 +3173,8 @@ paths:
               properties:
                 agent_id:
                   type: string
+                  minLength: 1
+                  maxLength: 255
                 status:
                   type: string
                   enum: [active, inactive, offline, disabled]
@@ -3148,17 +3183,29 @@ paths:
                   properties:
                     jobs_completed:
                       type: integer
+                      minimum: 0
+                      maximum: 1000000
                     jobs_failed:
                       type: integer
+                      minimum: 0
+                      maximum: 1000000
                     cis_discovered:
                       type: integer
+                      minimum: 0
+                      maximum: 1000000
       responses:
         '200':
           description: Heartbeat updated
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: >-
+            The caller lacks the `write` permission (a viewer: `PERMISSION_REQUIRED`), or an agent-role caller
+            attempted to set status `disabled` (`ROLE_REQUIRED`)
         '404':
-          description: Agent not found
+          description: Agent not found (also returned for an agent the caller did not register)
+        '429':
+          description: Per-principal heartbeat budget (default 600 per hour, counting only admitted heartbeats) exhausted
 
   /agents/find-best:
     post:
@@ -3225,7 +3272,11 @@ paths:
     delete:
       tags: [Discovery Agents]
       summary: Delete agent
-      description: Unregister a discovery agent
+      description: >-
+        Unregister a discovery agent. An agent-role credential can only delete an agent it registered; an
+        operator or admin can delete any agent of the organization. A foreign, ownerless (registered before
+        migration 057), `disabled` (an agent-role credential cannot delete one: it could otherwise delete and
+        re-register it as `active`; an operator or admin still can) or missing agent all return the same 404.
       operationId: deleteAgent
       parameters:
         - name: agentId
@@ -3234,10 +3285,24 @@ paths:
           schema:
             type: string
       responses:
-        '204':
+        '200':
           description: Agent deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+              example:
+                success: true
+                message: Agent deleted successfully
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -4794,7 +4859,7 @@ paths:
       summary: Get a business service (C1 service read)
       description: >-
         The service plus its mapped-CI and dependency counts, and the Suite
-        Contracts v2 C1 service-reference fields (tenant_id, owner,
+        Contracts v2 C1 service-reference fields (tenant_id, owner, owner_valid,
         owner_group, criticality, lifecycle, version, dependencies, offerings).
         Another organization's service answers the same 404 as a missing one;
         the tenant is the token's organization, never a request parameter.
@@ -4887,7 +4952,9 @@ paths:
           description: >-
             Stale If-Match (`message: Version mismatch`, with the current
             `version`), a backward or post-retirement lifecycle move, or a move
-            out of live while the service has a live offering (HAP-1424).
+            out of live while the service has a live offering (HAP-1424), or
+            the stored owner changed between the owner check of a lifecycle move
+            and the row lock (`message: Business service changed; retry`).
           content:
             application/json:
               schema:
@@ -6396,6 +6463,9 @@ components:
         echoes nothing from the request, so it cannot tell which ids exist in
         other tenants. Nothing is written and no audit row is appended. An
         identity-store failure during that check is the write-unavailable 503.
+        A PATCH that moves a service into live or retiring without naming
+        owner_principal_id approves with the stored owner, which gets the same
+        check and the same body when it does not resolve.
       content:
         application/json:
           schema:
@@ -7321,29 +7391,43 @@ components:
       properties:
         agent_id:
           type: string
+          minLength: 1
+          maxLength: 255
           description: Omit to create; supply an issued ID only to update an owned agent
         hostname:
           type: string
+          minLength: 1
+          maxLength: 255
         provider_capabilities:
           type: array
+          minItems: 1
           items:
             $ref: '#/components/schemas/DiscoveryProvider'
         reachable_networks:
           type: array
+          minItems: 1
           items:
             type: string
+            description: IPv4 CIDR
         version:
           type: string
+          maxLength: 50
         platform:
           type: string
+          maxLength: 50
         arch:
           type: string
+          maxLength: 50
         api_endpoint:
           type: string
+          format: uri
+          maxLength: 500
         tags:
           type: array
+          maxItems: 50
           items:
             type: string
+            maxLength: 100
 
     # =========================================================================
     # CONNECTORS
@@ -8034,7 +8118,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/BusinessService'
         - type: object
-          required: [mapped_cis_count, dependencies_count, tenant_id, owner, owner_group, criticality, lifecycle, version, dependencies, offerings]
+          required: [mapped_cis_count, dependencies_count, tenant_id, owner, owner_valid, owner_group, criticality, lifecycle, version, dependencies, offerings]
           properties:
             mapped_cis_count:
               type: integer
@@ -8060,6 +8144,16 @@ components:
                   type: string
                   nullable: true
                   description: The stored owned_by
+            owner_valid:
+              type: boolean
+              description: >-
+                Whether owner.principal_id resolves, at read time, to an enabled
+                user of this service's organization (the check an owner write
+                applies). false when there is no principal, when it is unknown,
+                disabled or a user of another organization, and when the
+                identity store cannot answer (the read still succeeds). A
+                consumer that routes a D15 approval to the owner must refuse an
+                owner that is not valid.
             owner_group:
               type: string
               nullable: true

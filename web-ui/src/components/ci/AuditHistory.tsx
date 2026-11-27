@@ -2,10 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState, useMemo } from 'react';
-import { Icon } from '@happy-technologies/design-system';
+import {
+  Badge,
+  Card,
+  EmptyState,
+  Icon,
+  IconButton,
+  JsonBlock,
+  NativeSelect,
+} from '@happy-technologies/design-system';
 import { useCIAuditHistory } from '../../hooks/useCIs';
 import { AuditLogEntry, AuditChange } from '../../services/ci.service';
-import { Badge } from '../ui/badge';
+import { QueryState } from '../estate/SurfaceState';
 import { cn } from '../../utils/cn';
 
 interface AuditHistoryProps {
@@ -15,10 +23,10 @@ interface AuditHistoryProps {
 const ACTION_COLORS = {
   CREATE: 'success',
   UPDATE: 'info',
-  DELETE: 'destructive',
+  DELETE: 'danger',
   RELATIONSHIP_ADD: 'success',
   RELATIONSHIP_REMOVE: 'warning',
-  DISCOVERY_UPDATE: 'secondary',
+  DISCOVERY_UPDATE: 'neutral',
 } as const;
 
 const ACTION_LABELS = {
@@ -37,7 +45,7 @@ const ACTOR_TYPE_ICONS = {
 };
 
 export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
-  const { data: auditLogs, isLoading, error } = useCIAuditHistory(ciId);
+  const { data: auditLogs, isLoading, error, refetch } = useCIAuditHistory(ciId);
   const [selectedAction, setSelectedAction] = useState<string>('all');
   const [dateRange, setDateRange] = useState<'all' | '24h' | '7d' | '30d'>('all');
   const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
@@ -131,19 +139,19 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
     return (
       <div
         key={index}
-        className="border border-border/30 rounded-lg p-3 bg-muted/20 hover:bg-muted/30 transition-colors"
+        className="rounded-lg p-3 bg-[var(--hh-bg-elevated)]"
       >
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
-            <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+            <p className="hh-heading text-[length:var(--hh-text-2xs)] text-[var(--hh-text-muted)] mb-2">
               {change.field.replace(/_/g, ' ')}
             </p>
             <div className="space-y-2">
               <div className="flex items-start gap-2">
-                <span className="text-xs text-muted-foreground shrink-0 mt-1">From:</span>
+                <span className="text-xs text-[var(--hh-text-muted)] shrink-0 mt-1">From:</span>
                 <code
                   className={cn(
-                    'text-xs bg-destructive/10 text-destructive px-2 py-1 rounded flex-1',
+                    'text-xs bg-[var(--hh-error-bg)] text-[var(--hh-error-text)] px-2 py-1 rounded flex-1',
                     isLongValue && !isExpanded && 'truncate'
                   )}
                 >
@@ -151,13 +159,13 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
                 </code>
               </div>
               <div className="flex items-center justify-center">
-                <Icon name="arrow-right" size={12} className="text-muted-foreground" />
+                <Icon name="arrow-right" size={12} className="text-[var(--hh-text-muted)]" />
               </div>
               <div className="flex items-start gap-2">
-                <span className="text-xs text-muted-foreground shrink-0 mt-1">To:</span>
+                <span className="text-xs text-[var(--hh-text-muted)] shrink-0 mt-1">To:</span>
                 <code
                   className={cn(
-                    'text-xs bg-success-soft text-success px-2 py-1 rounded flex-1',
+                    'text-xs bg-[var(--hh-success-bg)] text-[var(--hh-success-text)] px-2 py-1 rounded flex-1',
                     isLongValue && !isExpanded && 'truncate'
                   )}
                 >
@@ -167,17 +175,14 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
             </div>
           </div>
           {isLongValue && (
-            <button
+            <IconButton
+              icon={isExpanded ? 'caret-up' : 'caret-down'}
+              variant="ghost"
+              size="sm"
+              aria-label={isExpanded ? 'Collapse' : 'Expand'}
+              aria-expanded={isExpanded}
               onClick={() => toggleExpanded(`change-${index}`)}
-              className="p-1 hover:bg-muted rounded transition-colors shrink-0"
-              title={isExpanded ? 'Collapse' : 'Expand'}
-            >
-              {isExpanded ? (
-                <Icon name="caret-up" size={16} className="text-muted-foreground" />
-              ) : (
-                <Icon name="caret-down" size={16} className="text-muted-foreground" />
-              )}
-            </button>
+            />
           )}
         </div>
       </div>
@@ -190,58 +195,51 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
     const hasChanges = entry.changes && entry.changes.length > 0;
 
     return (
-      <div
-        key={entry.id}
-        className="border border-border/30 rounded-lg p-4 hover:border-primary/30 transition-colors"
-      >
+      <Card as="article" key={entry.id} inset="none" className="p-4">
         <div className="flex items-start justify-between gap-4 mb-3">
           <div className="flex items-start gap-3 flex-1">
-            <div className="p-2 bg-primary/10 rounded-lg shrink-0">
-              <Icon name={actorIconName} size={16} className="text-primary" />
+            <div className="p-2 bg-[var(--hh-accent-bg)] rounded-lg shrink-0">
+              <Icon name={actorIconName} size={16} className="text-[var(--hh-accent-text)]" />
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap mb-1">
-                <Badge variant={ACTION_COLORS[entry.action] as any}>
+                <Badge variant={ACTION_COLORS[entry.action]}>
                   {ACTION_LABELS[entry.action]}
                 </Badge>
-                <span className="text-sm text-foreground font-medium">{entry.actor}</span>
-                <span className="text-xs text-muted-foreground">
+                <span className="text-sm text-[var(--hh-text-primary)] font-medium">{entry.actor}</span>
+                <span className="text-xs text-[var(--hh-text-muted)]">
                   ({entry.actor_type})
                 </span>
               </div>
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <div className="flex items-center gap-2 text-xs text-[var(--hh-text-muted)]">
                 <Icon name="clock" size={12} />
                 <span title={formatFullTimestamp(entry.timestamp)}>
                   {formatTimestamp(entry.timestamp)}
                 </span>
-                <span className="text-muted-foreground/50">•</span>
+                <span aria-hidden="true">•</span>
                 <span>{formatFullTimestamp(entry.timestamp)}</span>
               </div>
               {entry.ip_address && (
-                <div className="text-xs text-muted-foreground mt-1">
+                <div className="text-xs text-[var(--hh-text-muted)] mt-1">
                   IP: {entry.ip_address}
                 </div>
               )}
             </div>
           </div>
           {hasChanges && (
-            <button
+            <IconButton
+              icon={isExpanded ? 'caret-up' : 'caret-down'}
+              variant="ghost"
+              aria-label={isExpanded ? 'Collapse changes' : 'Expand changes'}
+              aria-expanded={isExpanded}
               onClick={() => toggleExpanded(entry.id)}
-              className="p-2 hover:bg-muted rounded-lg transition-colors shrink-0"
-              title={isExpanded ? 'Collapse changes' : 'Expand changes'}
-            >
-              {isExpanded ? (
-                <Icon name="caret-up" size={20} className="text-muted-foreground" />
-              ) : (
-                <Icon name="caret-down" size={20} className="text-muted-foreground" />
-              )}
-            </button>
+            />
           )}
         </div>
 
         {hasChanges && isExpanded && (
           <div className="mt-4 space-y-2 pl-11">
-            <h4 className="text-xs font-semibold text-foreground uppercase tracking-wider mb-2">
+            <h4 className="hh-heading text-[length:var(--hh-text-2xs)] text-[var(--hh-text-muted)] mb-2">
               Changes ({entry.changes.length})
             </h4>
             <div className="space-y-2">
@@ -251,63 +249,45 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
         )}
 
         {entry.metadata && Object.keys(entry.metadata).length > 0 && isExpanded && (
-          <div className="mt-4 pl-11">
-            <h4 className="text-xs font-semibold text-foreground uppercase tracking-wider mb-2">
-              Metadata
-            </h4>
-            <div className="bg-muted/30 border border-border/30 rounded p-2">
-              <pre className="text-xs text-foreground overflow-x-auto">
-                {JSON.stringify(entry.metadata, null, 2)}
-              </pre>
-            </div>
-          </div>
+          <JsonBlock className="mt-4 pl-11" label="Metadata" value={entry.metadata} />
         )}
-      </div>
+      </Card>
     );
   };
 
   if (isLoading) {
-    return (
-      <div className="flex justify-center py-8">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-      </div>
-    );
+    return <QueryState what="audit history" loading />;
   }
 
   if (error) {
-    return (
-      <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-4 text-destructive">
-        Failed to load audit history. Please try again later.
-      </div>
-    );
+    return <QueryState what="audit history" error={error} onRetry={() => void refetch()} />;
   }
 
   if (!auditLogs || auditLogs.length === 0) {
     return (
-      <div className="bg-primary/10 border border-primary/20 rounded-lg p-8 text-center">
-        <Icon name="clock" size={48} className="text-primary mx-auto mb-3 opacity-50" />
-        <p className="text-primary text-lg font-medium">No audit history available</p>
-        <p className="text-muted-foreground text-sm mt-1">
-          Changes to this CI will appear here once they occur.
-        </p>
-      </div>
+      <EmptyState
+        icon="clock"
+        title="No audit history available"
+        description="Changes to this CI will appear here once they occur."
+      />
     );
   }
 
   return (
     <div className="space-y-4">
       {/* Filters */}
-      <div className="flex flex-wrap gap-3 items-center justify-between bg-muted/30 border border-border/30 rounded-lg p-4">
+      <Card inset="none" className="flex flex-wrap items-center justify-between gap-3 p-4">
         <div className="flex items-center gap-2">
-          <Icon name="funnel" size={16} className="text-muted-foreground" />
-          <span className="text-sm font-medium text-foreground">Filters:</span>
+          <Icon name="funnel" size={16} className="text-[var(--hh-text-muted)]" />
+          <span className="text-sm font-medium text-[var(--hh-text-primary)]">Filters:</span>
         </div>
         <div className="flex flex-wrap gap-2">
           {/* Action Type Filter */}
-          <select
+          <NativeSelect
+            size="sm"
+            aria-label="Filter by action"
             value={selectedAction}
             onChange={(e) => setSelectedAction(e.target.value)}
-            className="px-3 py-1.5 text-sm border border-input rounded-lg bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-primary"
           >
             <option value="all">All Actions</option>
             {uniqueActions.map((action) => (
@@ -315,36 +295,30 @@ export const AuditHistory: React.FC<AuditHistoryProps> = ({ ciId }) => {
                 {ACTION_LABELS[action as keyof typeof ACTION_LABELS]}
               </option>
             ))}
-          </select>
+          </NativeSelect>
 
           {/* Date Range Filter */}
-          <div className="flex items-center gap-1 border border-input rounded-lg bg-background overflow-hidden">
-            <Icon name="calendar" size={16} className="text-muted-foreground ml-2" />
-            <select
-              value={dateRange}
-              onChange={(e) => setDateRange(e.target.value as any)}
-              className="px-2 py-1.5 text-sm bg-transparent text-foreground focus:outline-none border-0"
-            >
-              <option value="all">All Time</option>
-              <option value="24h">Last 24 Hours</option>
-              <option value="7d">Last 7 Days</option>
-              <option value="30d">Last 30 Days</option>
-            </select>
-          </div>
+          <NativeSelect
+            size="sm"
+            aria-label="Filter by date range"
+            value={dateRange}
+            onChange={(e) => setDateRange(e.target.value as typeof dateRange)}
+          >
+            <option value="all">All Time</option>
+            <option value="24h">Last 24 Hours</option>
+            <option value="7d">Last 7 Days</option>
+            <option value="30d">Last 30 Days</option>
+          </NativeSelect>
         </div>
-        <div className="text-sm text-muted-foreground">
+        <div className="text-sm text-[var(--hh-text-muted)]">
           Showing {filteredLogs.length} of {auditLogs.length} entries
         </div>
-      </div>
+      </Card>
 
       {/* Timeline */}
       <div className="space-y-3">
         {filteredLogs.length === 0 ? (
-          <div className="bg-muted/30 border border-border/30 rounded-lg p-8 text-center">
-            <p className="text-muted-foreground">
-              No audit entries match the selected filters.
-            </p>
-          </div>
+          <EmptyState label="No audit entries match the selected filters." />
         ) : (
           filteredLogs.map((entry) => renderAuditEntry(entry))
         )}

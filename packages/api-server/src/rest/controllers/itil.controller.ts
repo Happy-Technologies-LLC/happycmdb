@@ -25,10 +25,14 @@ import {
 const PRE_APPROVAL_STATUSES: readonly string[] = ['draft', 'pending_approval'];
 const PRE_APPROVAL_STATUS_LIST = PRE_APPROVAL_STATUSES.map(status => `'${status}'`).join(', ');
 
-/** The verified caller, never a body field. No 'system' fallback: an approval attributed to no one defeats the record. */
+/**
+ * The verified caller's user id, never a body field. Only `_userId` is stamped: a username fallback would store a
+ * non-UUID value, and every real principal (JWT access token, API key) carries `_userId`. No 'system' fallback: an
+ * approval attributed to no one defeats the record.
+ */
 function changeApprover(req: Request): string | undefined {
-  const user = (req as AuthenticatedRequest).user;
-  return [user?._userId, user?._username].find(name => typeof name === 'string' && name !== '');
+  const userId = (req as AuthenticatedRequest).user?._userId;
+  return typeof userId === 'string' && userId !== '' ? userId : undefined;
 }
 function refuseUnauthenticatedApprover(res: Response): void {
   res.status(401).json({
@@ -37,10 +41,34 @@ function refuseUnauthenticatedApprover(res: Response): void {
     message: 'An authenticated user is required to approve a change',
   });
 }
+/** Extra WHERE condition of the change UPDATE; `sql` references params already pushed. */
+interface ChangeWriteGuard { sql: string; conflict: { code: string; message: string } }
+const APPROVABLE_GUARD: ChangeWriteGuard = {
+  sql: `status IN (${PRE_APPROVAL_STATUS_LIST})`,
+  conflict: { code: 'CHANGE_NOT_APPROVABLE', message: 'Only a draft or pending_approval change can be approved' },
+};
 /** SET assignments for an approval; the stamp is overwritten, not COALESCEd: the status guard admits only unapproved changes. */
 function approvalAssignments(approver: string, params: unknown[]): string[] {
   params.push(approver);
   return ["status = 'approved'", "approval_status = 'approved'", `approved_by = $${params.length}`, 'approved_at = NOW()'];
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * The cleared approval stamp's approver for the trail event: ids only. approved_by is free text and legacy rows can
+ * hold an email or a name, so only a UUID is logged; anything else is reported as a kind with no value.
+ */
+function previousApproverFields(approvedBy: string | null): Record<string, unknown> {
+  if (approvedBy == null) return { previous_approved_by: null };
+  return UUID_PATTERN.test(approvedBy)
+    ? { previous_approved_by: approvedBy }
+    : { previous_approved_by_kind: 'legacy' };
+}
+
+/** What the caller claimed in closedBy, without the claim: the actor's own id, some other UUID, or anything else. */
+function claimedClosedByKind(claimed: unknown, actorId: string | null): 'matches_actor' | 'uuid' | 'other' {
+  if (actorId !== null && claimed === actorId) return 'matches_actor';
+  return typeof claimed === 'string' && UUID_PATTERN.test(claimed) ? 'uuid' : 'other';
 }
 
 /**
@@ -298,7 +326,7 @@ export class ITILController {
       try {
         impact = deriveImpact(await readMappedServices(
           { query: (text, params) => this.postgresClient.pool.query(text, params) },
-          requestOrganizationId(req), [affectedCIId]));
+          requestOrganizationId(req), [affectedCIId as string]));
       } catch (error) {
         logger.warn('Incident business impact unavailable', error);
       }
@@ -820,6 +848,8 @@ export class ITILController {
       const approving = statusValue === 'approved';
       const updates: string[] = [];
       const params: unknown[] = [];
+      let guard: ChangeWriteGuard | undefined;
+      let clearedStamp: Record<string, unknown> | undefined;
 
       if (approving) {
         // The verified caller, never a body approved_by/approved_at; same rules as POST /approve.
@@ -834,7 +864,39 @@ export class ITILController {
         updates.push(`status = $${params.length}`);
         // Back to a pre-approval status: the earlier approval no longer stands, so a later approve records its own.
         if (PRE_APPROVAL_STATUSES.includes(statusValue)) {
-          updates.push('approved_by = NULL', 'approved_at = NULL');
+          const pool = this.postgresClient.pool;
+          const organizationId = requestOrganizationId(req);
+          const current = await pool.query(
+            `SELECT status, approved_by, approved_at::text AS approved_at_stamp
+               FROM itil_changes WHERE id = $1 AND organization_id = $2`, [id, organizationId]);
+          const before = current.rows[0] as { status: string; approved_by: string | null;
+            approved_at_stamp: string | null } | undefined;
+          if (!before) {
+            res.status(404).json({ success: false, error: 'Not Found', message: 'Change not found' });
+            return;
+          }
+          // approval_status moves with the stamp in the same statement (BI views, datamart and framework read it).
+          updates.push("approval_status = 'pending'", 'approved_by = NULL', 'approved_at = NULL');
+          // Conditional on the state just read, so an approval that committed in between is not undone. The stamp
+          // is compared as the text the server rendered (microsecond precision a JS Date would lose).
+          params.push(before.status, before.approved_by, before.approved_at_stamp);
+          const at = params.length;
+          guard = {
+            sql: `status = $${at - 2} AND approved_by IS NOT DISTINCT FROM $${at - 1}::varchar
+              AND approved_at IS NOT DISTINCT FROM $${at}::timestamptz`,
+            conflict: {
+              code: 'CHANGE_APPROVAL_CHANGED',
+              message: 'The change was modified since it was read; reload it and retry',
+            },
+          };
+          if (before.approved_by != null || before.approved_at_stamp != null) {
+            clearedStamp = {
+              change_id: id, organization_id: organizationId,
+              ...previousApproverFields(before.approved_by),
+              previous_approved_at: before.approved_at_stamp,
+              actor_user_id: (req as AuthenticatedRequest).user?._userId ?? null,
+            };
+          }
         }
       }
       if (implementedBy != null) {
@@ -856,7 +918,11 @@ export class ITILController {
       }
       updates.push('updated_at = NOW()');
 
-      await this.writeChange(req, res, id!, updates, params, approving, 'Change updated successfully');
+      const written = await this.writeChange(req, res, id!, updates, params, guard ??
+        (approving ? APPROVABLE_GUARD : undefined), 'Change updated successfully');
+      if (written && clearedStamp) {
+        logger.info('Change approval stamp cleared', clearedStamp);
+      }
     } catch (error) {
       logger.error('Error updating change', error);
       res.status(500).json({
@@ -917,7 +983,7 @@ export class ITILController {
 
       const params: unknown[] = [];
       const assignments = [...approvalAssignments(approver, params), 'updated_at = NOW()'];
-      await this.writeChange(req, res, id!, assignments, params, true, 'Change approved successfully');
+      await this.writeChange(req, res, id!, assignments, params, APPROVABLE_GUARD, 'Change approved successfully');
     } catch (error) {
       logger.error('Error approving change', error);
       res.status(500).json({
@@ -929,13 +995,13 @@ export class ITILController {
   }
 
   /**
-   * The one UPDATE behind approve and PATCH status=APPROVED. `approving` adds the pre-approval
-   * status guard to the same statement (race-free: a concurrent write serialises on the row lock
-   * and the guard is re-evaluated), then a 0-row result is a 404 (absent or another organization,
-   * nothing written) or a 409 (present, not approvable, nothing written).
+   * The one UPDATE behind approve and PATCH status. A `guard` adds its condition to the same statement
+   * (race-free: a concurrent write serialises on the row lock and the condition is re-evaluated), then a
+   * 0-row result is a 404 (absent or another organization, nothing written) or the guard's 409 (present,
+   * condition not met, nothing written). Returns whether the row was written.
    */
   private async writeChange(req: Request, res: Response, id: string, assignments: string[],
-    params: unknown[], approving: boolean, message: string): Promise<void> {
+    params: unknown[], guard: ChangeWriteGuard | undefined, message: string): Promise<boolean> {
     const pool = this.postgresClient.pool;
     const organizationId = requestOrganizationId(req);
     params.push(id, organizationId);
@@ -943,31 +1009,31 @@ export class ITILController {
       `
       UPDATE itil_changes
       SET ${assignments.join(', ')}
-      WHERE id = $${params.length - 1} AND organization_id = $${params.length}${approving ? `
-        AND status IN (${PRE_APPROVAL_STATUS_LIST})` : ''}
+      WHERE id = $${params.length - 1} AND organization_id = $${params.length}${guard ? `
+        AND ${guard.sql}` : ''}
       RETURNING *
       `,
       params
     );
 
     if (result.rows.length === 0) {
-      const exists = approving && (await pool.query(
+      const exists = guard && (await pool.query(
         'SELECT 1 FROM itil_changes WHERE id = $1 AND organization_id = $2', [id, organizationId])).rows.length > 0;
-      if (exists) {
+      if (guard && exists) {
         res.status(409).json({
           success: false,
           error: 'Conflict',
-          code: 'CHANGE_NOT_APPROVABLE',
-          message: 'Only a draft or pending_approval change can be approved',
+          code: guard.conflict.code,
+          message: guard.conflict.message,
         });
-        return;
+        return false;
       }
       res.status(404).json({
         success: false,
         error: 'Not Found',
         message: 'Change not found',
       });
-      return;
+      return false;
     }
 
     res.json({
@@ -975,6 +1041,7 @@ export class ITILController {
       data: result.rows[0],
       message,
     });
+    return true;
   }
 
   async implementChange(req: Request, res: Response): Promise<void> {
@@ -1022,7 +1089,12 @@ export class ITILController {
   async closeChange(req: Request, res: Response): Promise<void> {
     try {
       const { id } = req.params;
-      const { result: changeResult, notes, closedBy } = req.body;
+      const { result: changeResult, notes, closedBy: claimedClosedBy } = req.body;
+      // GraphQL closeChange calls this controller directly, bypassing REST's Joi schema (closedBy max 255).
+      if (typeof claimedClosedBy === 'string' && claimedClosedBy.length > 255) {
+        res.status(400).json({ success: false, error: 'Bad Request', message: 'Invalid request' });
+        return;
+      }
 
       const outcomeMap: Record<string, string> = {
         SUCCESS: 'successful',
@@ -1031,8 +1103,6 @@ export class ITILController {
         ROLLED_BACK: 'backed_out',
       };
       const outcome = outcomeMap[changeResult] ?? null;
-
-      logger.info('Closing change', { id, closedBy });
 
       const pool = this.postgresClient.pool;
       const result = await pool.query(
@@ -1057,6 +1127,11 @@ export class ITILController {
         });
         return;
       }
+
+      // closed_by is the verified actor. The body's closedBy is free text (an email, a name) and is never logged:
+      // only its kind is, and only for a change this organization owns.
+      const actorId = (req as AuthenticatedRequest).user?._userId ?? null;
+      logger.info('Change closed', { id, closed_by: actorId, claimed_closed_by_kind: claimedClosedByKind(claimedClosedBy, actorId) });
 
       res.json({
         success: true,

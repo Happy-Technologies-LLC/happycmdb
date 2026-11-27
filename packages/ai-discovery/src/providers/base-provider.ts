@@ -9,6 +9,37 @@
 import { ILLMProvider, LLMConfig, AIDiscoveryContext, DiscoveryTool, AIToolCall } from '../types';
 import { DISCOVERY_TARGET_REFUSED, logger } from '@cmdb/common';
 
+/**
+ * Tools that open a connection to a host the model names. They may only be
+ * pointed at the session's own target (`AIDiscoveryContext.targetHost`): the
+ * model's tool arguments are influenced by text from scanned hosts, so the
+ * host argument is never trusted. A discovery definition carries no allowed
+ * ranges to widen this (checked 2026-11): the session target is the scope.
+ */
+export const TARGET_SCOPED_TOOLS: ReadonlySet<string> = new Set([
+  'nmap_scan', 'http_probe', 'ssh_execute', 'ssh_read_file',
+]);
+
+/**
+ * Most characters of one tool result serialized for the model (about 4k
+ * tokens). Applies to every tool; the session record keeps the full output.
+ */
+export const MAX_TOOL_RESULT_CHARS = 16000;
+
+/** Compare hosts case-insensitively, ignoring one trailing dot and IPv6 brackets. */
+function normalizeHost(host: string): string {
+  let value = host.toLowerCase();
+  if (value.startsWith('[') && value.endsWith(']')) {
+    value = value.slice(1, -1);
+  }
+  return value.endsWith('.') ? value.slice(0, -1) : value;
+}
+
+function isSessionTarget(context: AIDiscoveryContext, host: unknown): boolean {
+  return typeof host === 'string' && typeof context?.targetHost === 'string' &&
+    host !== '' && normalizeHost(host) === normalizeHost(context.targetHost);
+}
+
 export abstract class BaseLLMProvider implements ILLMProvider {
   protected config: LLMConfig;
 
@@ -100,12 +131,38 @@ Use available tools to gather information. Think step-by-step and explain your r
   }
 
   /**
+   * Serialize a tool call for the model, cut at MAX_TOOL_RESULT_CHARS.
+   */
+  protected formatToolResult(toolCall: AIToolCall): string {
+    if (!toolCall.success) {
+      return `Error: ${toolCall.error}`;
+    }
+    const serialized = JSON.stringify(toolCall.output) ?? 'null';
+    if (serialized.length <= MAX_TOOL_RESULT_CHARS) {
+      return serialized;
+    }
+    let cut = serialized.slice(0, MAX_TOOL_RESULT_CHARS);
+    // Never end on half of a surrogate pair.
+    if (/[\ud800-\udbff]$/.test(cut)) {
+      cut = cut.slice(0, -1);
+    }
+    return `${cut}... [tool result truncated: ${serialized.length} characters, limit ${MAX_TOOL_RESULT_CHARS}]`;
+  }
+
+  /**
    * Execute a tool and track metrics
    */
   protected async executeTool(
     tool: DiscoveryTool,
-    params: any
+    params: any,
+    context: AIDiscoveryContext
   ): Promise<AIToolCall> {
+    if (TARGET_SCOPED_TOOLS.has(tool.name) && !isSessionTarget(context, params?.host)) {
+      // Fixed error and no target in the log: the host is model/scanned-host text.
+      logger.warn('Discovery tool target outside session scope', { toolName: tool.name });
+      throw new Error(DISCOVERY_TARGET_REFUSED);
+    }
+
     const startTime = Date.now();
     const toolCall: AIToolCall = {
       id: `tool_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,

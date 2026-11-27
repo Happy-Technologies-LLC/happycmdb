@@ -23,7 +23,17 @@ function sql(text: string, params: unknown[] = [], mode: 'query' | 'exec' = 'que
   host.send({ id, op: mode, sql: text, params });
   return promise;
 }
-const query = (text: string, params?: unknown[]) => sql(text, params).then(rows => ({ rows }));
+/** Runs once after the next re-pend read of a change (before its conditional write): the race window. */
+let afterRependRead: (() => Promise<unknown>) | undefined;
+const query = async (text: string, params?: unknown[]) => {
+  const result = { rows: await sql(text, params) };
+  if (afterRependRead && /SELECT status, approved_by/.test(text)) {
+    const hook = afterRependRead;
+    afterRependRead = undefined;
+    await hook();
+  }
+  return result;
+};
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
 const ciNodes = new Map<string, string>();
@@ -49,6 +59,7 @@ jest.mock('../../../auth/auth-bootstrap', () => ({
 }));
 
 import { createGraphQLServer } from '../../server';
+import { ITILController } from '../../../rest/controllers/itil.controller';
 import { itilNestedRecords, itilRecordQueries } from '../itil-record.resolvers';
 import type { GraphQLContext } from '../index';
 
@@ -205,6 +216,19 @@ it('HAP-922: updateChange persists implementedBy and actualDuration; change and 
   expect(await sql('SELECT * FROM itil_changes ORDER BY id')).toEqual(rows);
 });
 
+it.each([[255, 'closed'], [256, 'implemented']])(
+  'closeChange accepts a closedBy of 255 characters and refuses longer, like REST Joi: %i chars leaves status %s', async (length, status) => {
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await seedChange(id, 'implemented');
+    const response = await graphql(`mutation { closeChange(id: "${id}", result: SUCCESS, closedBy: "${'x'.repeat(length)}") { id status } }`);
+    if (length === 255) expect(response.body).toEqual({ data: { closeChange: { id, status: 'CLOSED' } } });
+    else {
+      expect(response.body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
+      expect(response.body.data).toBeNull();
+    }
+    expect(await sql('SELECT status FROM itil_changes WHERE id = $1', [id])).toEqual([{ status }]);
+  });
+
 it('updateChange status APPROVED records the verified principal and refuses a non-pre-approval change', async () => {
   const pending = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const closed = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -221,8 +245,49 @@ it('updateChange status APPROVED records the verified principal and refuses a no
     .toEqual([{ status: 'approved', approved_by: 'gql-user', stamped: true }]);
   const back = await graphql(`mutation { updateChange(id: "${pending}", input: { status: REQUESTED }) { status } }`);
   expect(back.body.data).toEqual({ updateChange: { status: 'REQUESTED' } });
-  expect(await sql('SELECT approved_by, approved_at FROM itil_changes WHERE id = $1', [pending]))
-    .toEqual([{ approved_by: null, approved_at: null }]);
+  expect(await sql('SELECT approval_status, approved_by, approved_at FROM itil_changes WHERE id = $1', [pending]))
+    .toEqual([{ approval_status: 'pending', approved_by: null, approved_at: null }]);
+});
+
+it('updateChange passes the controller code in extensions, keeping code BAD_USER_INPUT, so a retryable 409 is distinguishable', async () => {
+  const closed = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const raced = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  await seedChange(closed, 'closed');
+  await seedChange(raced, 'pending_approval');
+  const mutate = (id: string, status: string) =>
+    graphql(`mutation { updateChange(id: "${id}", input: { status: ${status} }) { status } }`);
+
+  const refused = await mutate(closed, 'APPROVED');
+  expect(refused.body.errors?.[0]?.extensions).toMatchObject({ code: 'BAD_USER_INPUT', controllerCode: 'CHANGE_NOT_APPROVABLE' });
+
+  afterRependRead = () => sql(`UPDATE itil_changes SET status = 'approved', approval_status = 'approved',
+    approved_by = 'someone-else', approved_at = now() WHERE id = $1`, [raced]);
+  const lost = await mutate(raced, 'REQUESTED');
+  expect(afterRependRead).toBeUndefined();
+  expect(lost.body.errors?.[0]?.extensions).toMatchObject({ code: 'BAD_USER_INPUT', controllerCode: 'CHANGE_APPROVAL_CHANGED' });
+  expect(await sql('SELECT status, approved_by FROM itil_changes WHERE id = $1', [raced]))
+    .toEqual([{ status: 'approved', approved_by: 'someone-else' }]);
+});
+
+it.each([
+  ['a lowercase code', 'change_not_approvable'],
+  ['a code over 64 characters', `C${'A'.repeat(64)}`],
+  ['a code with a space', 'CHANGE NOT APPROVABLE'],
+])('updateChange drops %s from extensions: no controllerCode, code stays BAD_USER_INPUT', async (_label, code) => {
+  const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  await seedChange(id, 'draft');
+  const handler = jest.spyOn(ITILController.prototype, 'updateChange').mockImplementation(async (_req, res) => {
+    res.status(409).json({ success: false, error: 'Conflict', code, message: 'refused' });
+  });
+  try {
+    const response = await graphql(`mutation { updateChange(id: "${id}", input: { status: SCHEDULED }) { status } }`);
+    const extensions = response.body.errors?.[0]?.extensions;
+    expect(extensions?.code).toBe('BAD_USER_INPUT');
+    expect(extensions).not.toHaveProperty('controllerCode');
+    expect(JSON.stringify(response.body)).not.toContain(code);
+  } finally {
+    handler.mockRestore();
+  }
 });
 
 const seedIncident = (id: string, number: string, priority = 3, ci = 'ci-a', org = A) => sql(

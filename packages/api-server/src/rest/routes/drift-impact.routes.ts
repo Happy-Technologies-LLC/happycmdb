@@ -55,7 +55,7 @@ function executeImpact(
       return error instanceof JournalUnavailableError ? { status: 503, message: 'CI write temporarily unavailable' } : null;
     },
     internalError: 'Failed to analyze impact',
-    ...(render ? { render } : {}),
+    ...(render !== undefined ? { render } : {}),
   });
 }
 

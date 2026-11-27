@@ -10,6 +10,7 @@
 
 // Direct module imports (not the @cmdb/database barrel), as the other operator
 // scripts do: the barrel also loads queue/cache clients these scripts never use.
+import neo4j from 'neo4j-driver';
 import { Neo4jClient } from '../../../database/src/neo4j/client';
 import { PostgresClient } from '../../../database/src/postgres/client';
 
@@ -46,7 +47,7 @@ throw new Error(`${name} is required`);
 function graphOf(client: Neo4jClient): RotationGraph {
   return {
     read: async (cypher, params) => {
-      const session = client.getSession();
+      const session = client.getSession('neo4j', neo4j.session.READ);
       try {
         return (await session.run(cypher, params)).records.map(record => record.toObject());
       } finally {
@@ -213,27 +214,3 @@ throw new Error('CMDB_ROTATE_POSTGRES_PORT must be a TCP port');
   };
 }
 
-/**
- * The API server's own TLS toggles that `PostgresClient` / `Neo4jClient` read from `process.env`. Every operator tool
- * (rotation, identity window, backfill, seed) defines its connections only through its own `CMDB_*` variables, so it
- * drops all of these before any client exists. A new ambient client variable MUST be added here, once.
- *
- * `NODE_EXTRA_CA_CERTS` is deliberately not in this list: it is a process-level Node setting that only adds trust to
- * the public store, and it is the supported way to trust a private Postgres CA under `verify-full`. Do not add it.
- */
-export const API_SERVER_CLIENT_ENV_NAMES: readonly string[] = [
-  'POSTGRES_SSL_MODE',
-  'POSTGRES_SSL_ENABLED',
-  'POSTGRES_SSL_CA_FILE',
-  'NEO4J_SSL_ENABLED',
-  'NEO4J_ENCRYPTION',
-  'NEO4J_ENCRYPTED',
-  'NEO4J_SSL_TRUST_STRATEGY',
-];
-
-/** Drops the API server's own TLS toggles so only the tool's CMDB_* variables define connections. */
-export function isolateOperatorEnvironment(env: NodeJS.ProcessEnv): void {
-  for (const name of API_SERVER_CLIENT_ENV_NAMES) {
-    delete env[name];
-  }
-}

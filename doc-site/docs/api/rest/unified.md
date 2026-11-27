@@ -329,6 +329,8 @@ Find the best matching credential for a given context using affinity scoring.
 }
 ```
 
+`ip` must be a bare IPv4 address (dotted quad, at most 15 characters; no prefix length, no IPv6) and `hostname` at most 253 characters, otherwise the route answers `400` before any credential is read. The same applies to Rank and to `POST /api/v1/credential-sets/:id/select` (`context.ip`, `context.hostname`). Affinity lists are capped the same way on create and update: at most 50 `networks` of at most 64 characters and 50 `hostname_patterns` of at most 253. The database services enforce these caps too, so a non-REST caller meets the same limits.
+
 **Response** (200 OK): the highest-scoring credential (see [Match Score Calculation](#match-score-calculation)). Secrets are never returned; `credential.credentials` is always `***REDACTED***`. Against the request above, this credential scores 30 (network) + 25 (hostname) + 20 (OS) + 10 (environment) + 10 (priority 5 × 2) = 95.
 ```json
 {

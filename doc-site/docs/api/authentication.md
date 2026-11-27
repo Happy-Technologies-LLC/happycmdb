@@ -755,7 +755,7 @@ Every refusal by a permission, role, organization, JWT-session, platform-adminis
 
 ## Rate Limiting
 
-Only four authentication endpoints carry a rate limiter: `POST /api/v1/auth/login`, `PUT /api/v1/auth/password`, `POST /api/v1/auth/sessions/revoke-others` and `POST /api/v1/auth/refresh`. The other `/api/v1/auth/*` routes (`logout`, `me`, `profile`, `account`, and the API key routes `POST /api/v1/auth/api-key`, `GET /api/v1/auth/api-keys`, `DELETE /api/v1/auth/api-key/:keyId`) have no dedicated limiter. The API key routes are session-only: they need a JWT session (`authenticate` then `requireJwtSession`), and an API key cannot call them. No generic REST limiter is mounted on the other `/api/v1/*` routes.
+Only four authentication endpoints carry a rate limiter: `POST /api/v1/auth/login`, `PUT /api/v1/auth/password`, `POST /api/v1/auth/sessions/revoke-others` and `POST /api/v1/auth/refresh`. The other `/api/v1/auth/*` routes (`logout`, `me`, `profile`, `account`, and the API key routes `POST /api/v1/auth/api-key`, `GET /api/v1/auth/api-keys`, `DELETE /api/v1/auth/api-key/:keyId`) have no dedicated limiter. The API key routes are session-only: they need a JWT session (`authenticate` then `requireJwtSession`), and an API key cannot call them. No generic REST limiter is mounted on the other `/api/v1/*` routes; the one non-auth limiter is `POST /api/v1/agents/heartbeat` (600 per hour per verified user by default, `rateLimit.endpoints.agentHeartbeat`, see [Discovery Agents](/components/discovery-agents#heartbeat-rate-limit)).
 
 ### Rate Limits
 

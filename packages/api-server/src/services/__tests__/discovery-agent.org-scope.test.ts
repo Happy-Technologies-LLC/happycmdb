@@ -80,6 +80,8 @@ const executeQuery = async (sql: string, args: unknown[] = []) => {
 jest.mock('@cmdb/database', () => ({ getPostgresClient: () => ({ query, getClient: async () => ({ query, release: () => undefined }) }) }));
 
 const service = new DiscoveryAgentService();
+// Organization scoping only: owner binding has its own suite (discovery-agent.owner-binding.test.ts).
+const ORG_WIDE = { principalId: 'admin', orgWide: true };
 const registration = (id: string, hostname = 'my.example') => ({ agent_id: id, hostname,
   provider_capabilities: ['nmap' as const], reachable_networks: ['8.8.8.0/24'] });
 
@@ -134,7 +136,7 @@ it('does not log registration URI or DB error text after a database failure', as
   });
   await expect(service.registerAgent({
     ...registration('failure'), api_endpoint: `https://${sensitive}.example/path`,
-  }, A)).rejects.toThrow(sensitive);
+  }, A, ORG_WIDE)).rejects.toThrow(sensitive);
   const app = express();
   app.use(express.json());
   app.use((req: Request, _res, next) => {
@@ -157,17 +159,17 @@ it('does not log registration URI or DB error text after a database failure', as
 
 it('denies ID reuse and foreign/NULL heartbeat and delete without modifying existing data', async () => {
   rows.set('alpha', { ...row('alpha', A), hostname: 'my.example' });
-  expect(await service.registerAgent(registration('alpha', 'hijacked.example'), B)).toBeNull();
-  expect(await service.registerAgent(registration('legacy'), A)).toBeNull();
+  expect(await service.registerAgent(registration('alpha', 'hijacked.example'), B, ORG_WIDE)).toBeNull();
+  expect(await service.registerAgent(registration('legacy'), A, ORG_WIDE)).toBeNull();
   expect(rows.get('alpha')?.hostname).toBe('my.example');
   for (const id of ['alpha', 'legacy', 'missing']) {
-    expect(await service.updateHeartbeat({ agent_id: id, status: 'active', stats: { jobs_completed: 1 } }, B)).toBe(false);
-    expect(await service.deleteAgent(id, B)).toBe(false);
+    expect(await service.updateHeartbeat({ agent_id: id, status: 'active', stats: { jobs_completed: 1 } }, B, ORG_WIDE)).toBe(false);
+    expect(await service.deleteAgent(id, B, ORG_WIDE)).toBe(false);
   }
   expect(rows.get('alpha')?.total_jobs_completed).toBe(0);
   expect(rows.get('legacy')?.total_jobs_completed).toBe(0);
   expect(await service.getAgent('alpha', A)).not.toBeNull();
-  expect(await service.deleteAgent('alpha', A)).toBe(true);
+  expect(await service.deleteAgent('alpha', A, ORG_WIDE)).toBe(true);
 });
 
 it('only marks stale agents in the verified organization and never touches legacy NULL rows', async () => {

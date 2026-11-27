@@ -8,18 +8,8 @@
 
 import React, { useState } from 'react';
 import { useForm, Controller } from 'react-hook-form';
+import { Banner, Button, Checkbox, SectionHeading, Select } from '@happy-technologies/design-system';
 import { apiClient } from '../../services/api';
-import { Button } from '@/components/ui/button';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 
 interface NotificationSettingsData {
   emailOnJobFailure: boolean;
@@ -28,6 +18,19 @@ interface NotificationSettingsData {
   inAppNotifications: boolean;
   emailDigestFrequency: 'never' | 'daily' | 'weekly' | 'monthly';
 }
+
+const EMAIL_TOGGLES = [
+  { name: 'emailOnJobFailure', id: 'email-job-failure', label: 'Email me when a job fails' },
+  { name: 'emailOnJobSuccess', id: 'email-job-success', label: 'Email me when a job succeeds' },
+  { name: 'emailOnDiscoveryCompletion', id: 'email-discovery', label: 'Email me when discovery completes' },
+] as const;
+
+const DIGEST_OPTIONS = [
+  { value: 'never', label: 'Never' },
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'monthly', label: 'Monthly' },
+];
 
 export const NotificationSettings: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
@@ -63,138 +66,72 @@ export const NotificationSettings: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Notification Settings</h2>
-        <p className="text-sm text-muted-foreground mt-1">
+        <SectionHeading className="mb-1">Notification Settings</SectionHeading>
+        <p className="text-sm text-[var(--hh-text-muted)]">
           Configure how you receive notifications
         </p>
       </div>
 
       {successMessage && (
-        <Alert>
-          <AlertDescription>{successMessage}</AlertDescription>
-        </Alert>
+        <Banner tone="success" icon="check-circle" role="status">
+          {successMessage}
+        </Banner>
       )}
 
-      {errorMessage && (
-        <Alert variant="destructive">
-          <AlertDescription>{errorMessage}</AlertDescription>
-        </Alert>
-      )}
+      {errorMessage && <Banner tone="danger" icon="warning-circle">{errorMessage}</Banner>}
 
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-8 max-w-2xl">
+      <form onSubmit={handleSubmit(onSubmit)} className="max-w-2xl space-y-8">
         <div className="space-y-4">
-          <h3 className="text-lg font-medium">Email Notifications</h3>
+          <SectionHeading level={3} className="mb-0">Email Notifications</SectionHeading>
 
           <div className="space-y-3">
-            <Controller
-              name="emailOnJobFailure"
-              control={control}
-              render={({ field }) => (
-                <div className="flex items-center space-x-2">
-                  <Checkbox
-                    id="email-job-failure"
-                    checked={field.value}
-                    onCheckedChange={field.onChange}
-                  />
-                  <Label
-                    htmlFor="email-job-failure"
-                    className="text-sm font-normal cursor-pointer"
-                  >
-                    Email me when a job fails
-                  </Label>
-                </div>
-              )}
-            />
-
-            <Controller
-              name="emailOnJobSuccess"
-              control={control}
-              render={({ field }) => (
-                <div className="flex items-center space-x-2">
-                  <Checkbox
-                    id="email-job-success"
-                    checked={field.value}
-                    onCheckedChange={field.onChange}
-                  />
-                  <Label
-                    htmlFor="email-job-success"
-                    className="text-sm font-normal cursor-pointer"
-                  >
-                    Email me when a job succeeds
-                  </Label>
-                </div>
-              )}
-            />
-
-            <Controller
-              name="emailOnDiscoveryCompletion"
-              control={control}
-              render={({ field }) => (
-                <div className="flex items-center space-x-2">
-                  <Checkbox
-                    id="email-discovery"
-                    checked={field.value}
-                    onCheckedChange={field.onChange}
-                  />
-                  <Label
-                    htmlFor="email-discovery"
-                    className="text-sm font-normal cursor-pointer"
-                  >
-                    Email me when discovery completes
-                  </Label>
-                </div>
-              )}
-            />
+            {EMAIL_TOGGLES.map(({ name, id, label }) => (
+              <Controller
+                key={name}
+                name={name}
+                control={control}
+                render={({ field }) => (
+                  <Checkbox id={id} label={label} checked={field.value} onChange={field.onChange} />
+                )}
+              />
+            ))}
           </div>
         </div>
 
         <div className="space-y-4">
-          <h3 className="text-lg font-medium">In-App Notifications</h3>
+          <SectionHeading level={3} className="mb-0">In-App Notifications</SectionHeading>
 
           <Controller
             name="inAppNotifications"
             control={control}
             render={({ field }) => (
-              <div className="flex items-center space-x-2">
-                <Checkbox
-                  id="in-app-notifications"
-                  checked={field.value}
-                  onCheckedChange={field.onChange}
-                />
-                <Label
-                  htmlFor="in-app-notifications"
-                  className="text-sm font-normal cursor-pointer"
-                >
-                  Enable in-app notifications
-                </Label>
-              </div>
+              <Checkbox
+                id="in-app-notifications"
+                label="Enable in-app notifications"
+                checked={field.value}
+                onChange={field.onChange}
+              />
             )}
           />
         </div>
 
         <div className="space-y-4">
-          <h3 className="text-lg font-medium">Email Digest</h3>
+          <SectionHeading level={3} className="mb-0">Email Digest</SectionHeading>
 
-          <div className="space-y-2">
-            <Label htmlFor="digest-frequency">Digest Frequency</Label>
-            <Controller
-              name="emailDigestFrequency"
-              control={control}
-              render={({ field }) => (
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <SelectTrigger id="digest-frequency" className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="never">Never</SelectItem>
-                    <SelectItem value="daily">Daily</SelectItem>
-                    <SelectItem value="weekly">Weekly</SelectItem>
-                    <SelectItem value="monthly">Monthly</SelectItem>
-                  </SelectContent>
-                </Select>
-              )}
-            />
-          </div>
+          <Controller
+            name="emailDigestFrequency"
+            control={control}
+            render={({ field }) => (
+              <Select
+                id="digest-frequency"
+                size="sm"
+                label="Digest Frequency"
+                value={field.value}
+                onChange={(value) => field.onChange(value as NotificationSettingsData['emailDigestFrequency'])}
+                options={DIGEST_OPTIONS}
+              />
+            )}
+          />
         </div>
 
         <Button type="submit" disabled={isLoading}>

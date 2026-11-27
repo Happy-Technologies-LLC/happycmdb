@@ -12,13 +12,16 @@ import { join } from 'path';
 import neo4j from 'neo4j-driver';
 import { logger } from '@cmdb/common';
 import { PostgresClient } from '../../../../database/src/postgres/client';
-import { assertPlainNeo4jUri, API_SERVER_CLIENT_ENV_NAMES, isolateOperatorEnvironment, openOperatorStores } from '../operator-stores';
+import { assertPlainNeo4jUri, openOperatorStores } from '../operator-stores';
+import { API_SERVER_CLIENT_ENV_NAMES, isolateOperatorEnvironment } from '../operator-tls';
 
 jest.mock('neo4j-driver', () => ({
   __esModule: true,
   default: {
     driver: jest.fn(),
     auth: { basic: () => ({}) },
+    // The driver's own access-mode constants: the test compares against what the real driver defines.
+    session: jest.requireActual('neo4j-driver').session,
   },
 }));
 jest.mock('../../../../database/src/postgres/client', () => ({
@@ -99,7 +102,7 @@ describe('openOperatorStores CMDB_ROTATE_NEO4J_URI', () => {
   });
 
   it.each(['bolt://127.0.0.1:7687', 'neo4j://localhost'])('accepts %s', (uri) => {
-    openOperatorStores(envWith(uri));
+    openOperatorStores(envWith(uri, { CMDB_ROTATE_NEO4J_ENCRYPTED: 'false' }));
 
     expect(postgresMock).toHaveBeenCalledTimes(1);
     expect(driverMock).toHaveBeenCalledTimes(1);
@@ -236,9 +239,27 @@ describe('openOperatorStores TLS settings (CMDB_ROTATE_*)', () => {
     expect(postgresMock.mock.calls[0][0]).toMatchObject({ _host: host, ssl: false });
   });
 
-  it.each(['bolt://localhost', 'bolt://127.0.0.1:7687', 'neo4j://127.1.2.3', 'bolt://[::1]:7687'])('allows an unset CMDB_ROTATE_NEO4J_ENCRYPTED for %s', (uri) => {
+  it.each(['bolt://localhost', 'bolt://127.0.0.1:7687', 'bolt://127.1.2.3', 'bolt://[::1]:7687'])('allows an unset CMDB_ROTATE_NEO4J_ENCRYPTED for %s', (uri) => {
     open(uri, {});
     expect(driverMock.mock.calls[0][2].encrypted).toBe('ENCRYPTION_OFF');
+  });
+
+  // The routing scheme dials the hosts the server's routing table advertises, so a loopback URI (an SSH tunnel) proves nothing.
+  it.each(['neo4j://localhost', 'neo4j://127.0.0.1:7687', 'neo4j://[::1]:7687', 'neo4j://127.1.2.3'])(
+    'refuses an unset CMDB_ROTATE_NEO4J_ENCRYPTED for the loopback routing URI %s, before any client is built', (uri) => {
+      expect(() => open(uri, {})).toThrow(NEO4J_UNSET);
+      expect(postgresMock).not.toHaveBeenCalled();
+      expect(driverMock).not.toHaveBeenCalled();
+    });
+
+  it('lets an explicit setting through for a loopback routing URI, warning when it opts out of TLS', () => {
+    open('neo4j://localhost', { CMDB_ROTATE_NEO4J_ENCRYPTED: 'true' });
+    expect(driverMock.mock.calls[0][2].encrypted).toBe('ENCRYPTION_ON');
+    expect(nonLoopbackWarnings()).toEqual([]);
+
+    open('neo4j://localhost', { CMDB_ROTATE_NEO4J_ENCRYPTED: 'false' });
+    expect(driverMock.mock.calls[1][2].encrypted).toBe('ENCRYPTION_OFF');
+    expect(nonLoopbackWarnings()).toEqual(['CMDB_ROTATE_NEO4J_ENCRYPTED=false: the Neo4j connection to a non-loopback host or via a neo4j:// routing URI is NOT encrypted']);
   });
 
   const nonLoopbackWarnings = (): string[] =>
@@ -255,8 +276,17 @@ describe('openOperatorStores TLS settings (CMDB_ROTATE_*)', () => {
     const warnings = nonLoopbackWarnings();
     expect(warnings).toEqual([
       'CMDB_ROTATE_POSTGRES_SSL=disable: the PostgreSQL connection to a non-loopback host is NOT encrypted',
-      'CMDB_ROTATE_NEO4J_ENCRYPTED=false: the Neo4j connection to a non-loopback host is NOT encrypted',
+      'CMDB_ROTATE_NEO4J_ENCRYPTED=false: the Neo4j connection to a non-loopback host or via a neo4j:// routing URI is NOT encrypted',
     ]);
+  });
+
+  it('warns, naming only the variable, for require to a remote host, and not for require on loopback', () => {
+    open('bolt://127.0.0.1:7687', { CMDB_ROTATE_POSTGRES_SSL: 'require' });
+    expect(nonLoopbackWarnings()).toEqual([]);
+
+    open('bolt://127.0.0.1:7687', { CMDB_ROTATE_POSTGRES_HOST: 'db.example', CMDB_ROTATE_POSTGRES_SSL: 'require', CMDB_ROTATE_POSTGRES_PASSWORD: 'sentinel-pw-value' });
+    expect(postgresMock.mock.calls[1][0]).toMatchObject({ _host: 'db.example', ssl: 'require' });
+    expect(nonLoopbackWarnings()).toEqual(['CMDB_ROTATE_POSTGRES_SSL=require: the PostgreSQL connection to a non-loopback host does NOT verify the server certificate']);
   });
 
   it('does not warn for an explicit opt-out on loopback or for TLS to a remote host', () => {
@@ -313,5 +343,39 @@ describe('openOperatorStores TLS settings (CMDB_ROTATE_*)', () => {
     });
 
     expect(postgresMock.mock.calls[0][0]).toMatchObject({ _host: 'db.example', ssl: 'verify-full', sslCa: pem });
+  });
+});
+
+describe('openOperatorStores graph sessions', () => {
+  // A driver stand-in that records the config of every session the graph store opens.
+  const openGraph = () => {
+    const configs: Array<Record<string, unknown>> = [];
+    const run = jest.fn(async () => ({ records: [{ toObject: () => ({ n: 1 }) }] }));
+    const tx = { run, commit: jest.fn(async () => undefined), isOpen: () => false };
+    const session = { run, beginTransaction: jest.fn(() => tx), close: jest.fn(async () => undefined) };
+    driverMock.mockReturnValue({
+      session: (config: Record<string, unknown>) => {
+        configs.push(config);
+        return session;
+      },
+    });
+    return { graph: openOperatorStores(envWith('bolt://127.0.0.1:7687')).graph, configs };
+  };
+
+  it('opens a READ-mode session for graph.read, so the server refuses a write Cypher through it', async () => {
+    const { graph, configs } = openGraph();
+
+    await expect(graph.read('MATCH (u:User) RETURN count(u) AS n', {})).resolves.toEqual([{ n: 1 }]);
+
+    expect(configs).toEqual([{ database: 'neo4j', defaultAccessMode: neo4j.session.READ }]);
+  });
+
+  it('keeps graph.write on a session that is not READ-mode', async () => {
+    const { graph, configs } = openGraph();
+
+    await graph.write('CREATE (:X)', {});
+
+    expect(configs).toHaveLength(1);
+    expect(configs[0]!['defaultAccessMode']).toBeUndefined();
   });
 });

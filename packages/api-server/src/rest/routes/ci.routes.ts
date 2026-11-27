@@ -4,10 +4,11 @@
 import { Router } from 'express';
 import Joi from 'joi';
 import { CIController } from '../controllers/ci.controller';
+import { SEARCH_QUERY_MAX_LENGTH } from '../controllers/search.controller';
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
-import { ciInputSchema, ciUpdateSchema, queryFiltersSchema } from '@cmdb/common';
+import { ciInputSchema, ciUpdateSchema, queryFiltersSchema, VALID_CI_SORT_FIELDS } from '@cmdb/common';
 import { journalRequestGuard } from '../../journal-http';
 import { orgReadGate } from '../../middleware/org-read-gate';
 import { CI_LIST_UNAVAILABLE_RESPONSE } from '../../read-admission';
@@ -39,14 +40,18 @@ const createCISchema = ciInputSchema.keys({
 });
 
 // FD17-S4: GET /cis?external_id=<exact> narrows the caller's own organization's list; it never looks outside it.
-const listCIQuerySchema = queryFiltersSchema.keys({ external_id: externalIdSchema.optional() });
+// `sort_by` is limited to the sortable CI fields here so a typo is a 400 before the handler, not a 500 from it.
+const listCIQuerySchema = queryFiltersSchema.keys({
+  external_id: externalIdSchema.optional(),
+  sort_by: Joi.string().valid(...VALID_CI_SORT_FIELDS).optional(),
+});
 
 const updateCISchema = ciUpdateSchema.keys({
   organization_id: organizationIdForbidden,
 });
 
 const searchCISchema = Joi.object({
-  query: Joi.string().required().min(1),
+  query: Joi.string().required().min(1).max(SEARCH_QUERY_MAX_LENGTH),
   limit: Joi.number().integer().min(1).max(1000).default(50),
 });
 

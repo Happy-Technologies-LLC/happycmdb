@@ -9,7 +9,7 @@
 import neo4j from 'neo4j-driver';
 import { logger } from '@cmdb/common';
 import { Neo4jClient } from '../../../../database/src/neo4j/client';
-import { isolateOperatorEnvironment } from '../operator-stores';
+import { isolateOperatorEnvironment } from '../operator-tls';
 
 jest.mock('neo4j-driver', () => ({
   __esModule: true,

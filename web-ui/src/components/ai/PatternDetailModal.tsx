@@ -2,13 +2,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Badge,
+  Card,
+  Dialog,
+  FieldList,
+  Icon,
+  JsonBlock,
+  SectionHeading,
+  Stat,
+  TabPanel,
+  Tabs,
+} from '@happy-technologies/design-system';
 import { AIPattern } from '@/services/ai-pattern.service';
-import { Icon } from '@happy-technologies/design-system';
+import { EMPTY_VALUE, isKnown } from '@/lib/dashboardValue';
 
 interface PatternDetailModalProps {
   pattern: AIPattern;
@@ -16,204 +23,187 @@ interface PatternDetailModalProps {
   onClose: () => void;
 }
 
-export const PatternDetailModal: React.FC<PatternDetailModalProps> = ({ pattern, open, onClose }) => {
-  const [activeTab, setActiveTab] = useState('info');
+type TabValue = 'info' | 'detection' | 'discovery' | 'tests';
 
+const TABS_ID = 'pattern-detail-tabs';
+const TAB_OPTIONS: Array<{ value: TabValue; label: string }> = [
+  { value: 'info', label: 'Info' },
+  { value: 'detection', label: 'Detection' },
+  { value: 'discovery', label: 'Discovery' },
+  { value: 'tests', label: 'Tests' },
+];
+
+const CodeBlock: React.FC<{ code: string }> = ({ code }) => (
+  <pre className="hh-mono overflow-x-auto rounded-[var(--hh-radius-md)] bg-[var(--hh-bg-elevated)] p-4 text-xs text-[var(--hh-text-secondary)]">
+    <code>{code}</code>
+  </pre>
+);
+
+export const PatternDetailModal: React.FC<PatternDetailModalProps> = ({ pattern, open, onClose }) => {
+  const [activeTab, setActiveTab] = useState<TabValue>('info');
+
+  // Unknown (a pattern that was never used), not 0%
   const successRate = pattern.usageCount > 0
     ? (pattern.successCount / pattern.usageCount) * 100
-    : 0;
+    : null;
+
+  const panel = (value: TabValue, content: React.ReactNode) => (
+    <TabPanel tabsId={TABS_ID} value={value} selected={activeTab === value} className="mt-4 space-y-4">
+      {activeTab === value && content}
+    </TabPanel>
+  );
 
   return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-3">
+    <Dialog
+      open={open}
+      onClose={onClose}
+      aria-label={`Pattern ${pattern.name}`}
+      className="max-h-[90vh] max-w-4xl overflow-y-auto"
+    >
+      <div className="space-y-4 p-6">
+        <SectionHeading className="mb-0 pr-10">
+          <span className="flex items-center gap-3">
             <span>{pattern.name}</span>
-            <Badge variant="outline">{pattern.category}</Badge>
-          </DialogTitle>
-        </DialogHeader>
+            <Badge variant="neutral">{pattern.category}</Badge>
+          </span>
+        </SectionHeading>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid grid-cols-4 w-full">
-            <TabsTrigger value="info">Info</TabsTrigger>
-            <TabsTrigger value="detection">Detection</TabsTrigger>
-            <TabsTrigger value="discovery">Discovery</TabsTrigger>
-            <TabsTrigger value="tests">Tests</TabsTrigger>
-          </TabsList>
+        <Tabs
+          id={TABS_ID}
+          aria-label="Pattern details"
+          value={activeTab}
+          onChange={setActiveTab}
+          options={TAB_OPTIONS}
+        />
 
-          <TabsContent value="info" className="space-y-4 mt-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm">Pattern Information</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-xs text-muted-foreground">Pattern ID</p>
-                    <p className="font-mono text-sm">{pattern.patternId}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Status</p>
-                    <div className="flex items-center gap-2 mt-1">
-                      {pattern.isActive ? (
-                        <Badge variant="default">Active</Badge>
-                      ) : (
-                        <Badge variant="secondary">{pattern.status}</Badge>
-                      )}
-                    </div>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Confidence Score</p>
-                    <p className="text-lg font-bold text-primary">
-                      {(pattern.confidenceScore * 100).toFixed(0)}%
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Success Rate</p>
-                    <p className="text-lg font-bold">
-                      {successRate.toFixed(0)}%
-                    </p>
-                  </div>
-                </div>
-
-                {pattern.description && (
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">Description</p>
-                    <p className="text-sm">{pattern.description}</p>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <p className="text-xs text-muted-foreground">Usage Count</p>
-                    <p className="text-sm font-semibold">{pattern.usageCount}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Avg Execution Time</p>
-                    <p className="text-sm font-semibold">{pattern.avgExecutionTimeMs ?? 0}ms</p>
-                  </div>
-                </div>
-
-                {pattern.learnedFromSessions && pattern.learnedFromSessions.length > 0 && (
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">Learned From</p>
-                    <p className="text-sm">
-                      {pattern.learnedFromSessions.length} discovery sessions
-                    </p>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-2 gap-4 pt-3 border-t">
-                  <div>
-                    <p className="text-xs text-muted-foreground">Created</p>
-                    <p className="text-sm">
-                      {new Date(pattern.createdAt).toLocaleDateString()}
-                    </p>
-                    <p className="text-xs text-muted-foreground">{pattern.author}</p>
-                  </div>
-                  {pattern.approvedAt && (
-                    <div>
-                      <p className="text-xs text-muted-foreground">Approved</p>
-                      <p className="text-sm">
-                        {new Date(pattern.approvedAt).toLocaleDateString()}
-                      </p>
+        {panel(
+          'info',
+          <Card className="space-y-4">
+            <SectionHeading level={3} className="mb-0">Pattern Information</SectionHeading>
+            <div className="grid grid-cols-2 gap-4">
+              <Stat
+                size="sm"
+                align="left"
+                label="Confidence Score"
+                value={isKnown(pattern.confidenceScore) ? `${(pattern.confidenceScore * 100).toFixed(0)}%` : EMPTY_VALUE}
+              />
+              <Stat
+                size="sm"
+                align="left"
+                label="Success Rate"
+                value={successRate === null ? EMPTY_VALUE : `${successRate.toFixed(0)}%`}
+              />
+            </div>
+            <FieldList
+              fields={[
+                ['Pattern ID', <span className="hh-mono">{pattern.patternId}</span>],
+                [
+                  'Status',
+                  pattern.isActive ? <Badge variant="success">Active</Badge> : <Badge variant="neutral">{pattern.status}</Badge>,
+                ],
+                ['Description', pattern.description],
+                ['Usage Count', pattern.usageCount],
+                [
+                  'Avg Execution Time',
+                  isKnown(pattern.avgExecutionTimeMs) ? `${pattern.avgExecutionTimeMs}ms` : EMPTY_VALUE,
+                ],
+                [
+                  'Learned From',
+                  pattern.learnedFromSessions && pattern.learnedFromSessions.length > 0
+                    ? `${pattern.learnedFromSessions.length} discovery sessions`
+                    : null,
+                ],
+                [
+                  'Created',
+                  <>
+                    {new Date(pattern.createdAt).toLocaleDateString()}
+                    <span className="block text-xs text-[var(--hh-text-muted)]">{pattern.author}</span>
+                  </>,
+                ],
+                [
+                  'Approved',
+                  pattern.approvedAt ? (
+                    <>
+                      {new Date(pattern.approvedAt).toLocaleDateString()}
                       {pattern.approvedBy && (
-                        <p className="text-xs text-muted-foreground">{pattern.approvedBy}</p>
+                        <span className="block text-xs text-[var(--hh-text-muted)]">{pattern.approvedBy}</span>
+                      )}
+                    </>
+                  ) : null,
+                ],
+              ]}
+            />
+          </Card>,
+        )}
+
+        {panel(
+          'detection',
+          <Card className="space-y-4">
+            <SectionHeading level={3} className="mb-0">
+              <span className="flex items-center gap-2">
+                <Icon name="code" size={16} />
+                Detection Function
+              </span>
+            </SectionHeading>
+            <CodeBlock code={pattern.detectionCode} />
+          </Card>,
+        )}
+
+        {panel(
+          'discovery',
+          <Card className="space-y-4">
+            <SectionHeading level={3} className="mb-0">
+              <span className="flex items-center gap-2">
+                <Icon name="file-code" size={16} />
+                Discovery Function
+              </span>
+            </SectionHeading>
+            <CodeBlock code={pattern.discoveryCode} />
+          </Card>,
+        )}
+
+        {panel(
+          'tests',
+          <Card className="space-y-4">
+            <SectionHeading level={3} className="mb-0">
+              <span className="flex items-center gap-2">
+                <Icon name="test-tube" size={16} />
+                Test Cases
+              </span>
+            </SectionHeading>
+            {pattern.testCases && pattern.testCases.length > 0 ? (
+              <div className="space-y-3">
+                {pattern.testCases.map((testCase, index) => (
+                  <Card key={index} inset="none" className="space-y-2 p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-semibold">{testCase.name}</p>
+                      {testCase.expectedMatch ? (
+                        <Badge variant="success">
+                          <Icon name="check-circle" size={12} />
+                          Should Match
+                        </Badge>
+                      ) : (
+                        <Badge variant="neutral">
+                          <Icon name="x-circle" size={12} />
+                          Should Not Match
+                        </Badge>
                       )}
                     </div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="detection" className="mt-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <Icon name="code" size={16} />
-                  Detection Function
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <pre className="bg-muted/50 p-4 rounded-lg overflow-x-auto text-xs">
-                  <code>{pattern.detectionCode}</code>
-                </pre>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="discovery" className="mt-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <Icon name="file-code" size={16} />
-                  Discovery Function
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <pre className="bg-muted/50 p-4 rounded-lg overflow-x-auto text-xs">
-                  <code>{pattern.discoveryCode}</code>
-                </pre>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="tests" className="space-y-4 mt-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm flex items-center gap-2">
-                  <Icon name="test-tube" size={16} />
-                  Test Cases
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {pattern.testCases && pattern.testCases.length > 0 ? (
-                  <div className="space-y-3">
-                    {pattern.testCases.map((testCase, index) => (
-                      <div
-                        key={index}
-                        className="p-3 border rounded-lg space-y-2"
-                      >
-                        <div className="flex items-center justify-between">
-                          <p className="font-semibold text-sm">{testCase.name}</p>
-                          {testCase.expectedMatch ? (
-                            <Badge variant="default" className="text-xs">
-                              <Icon name="check-circle" size={12} className="mr-1" />
-                              Should Match
-                            </Badge>
-                          ) : (
-                            <Badge variant="secondary" className="text-xs">
-                              <Icon name="x-circle" size={12} className="mr-1" />
-                              Should Not Match
-                            </Badge>
-                          )}
-                        </div>
-                        {testCase.expectedConfidence !== undefined && (
-                          <p className="text-xs text-muted-foreground">
-                            Expected confidence: {(testCase.expectedConfidence * 100).toFixed(0)}%
-                          </p>
-                        )}
-                        <pre className="bg-muted/50 p-2 rounded text-xs overflow-x-auto">
-                          <code>{JSON.stringify(testCase.input, null, 2)}</code>
-                        </pre>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">No test cases defined</p>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
-
-        <div className="flex justify-end gap-2 mt-4">
-          <Button variant="outline" onClick={onClose}>
-            Close
-          </Button>
-        </div>
-      </DialogContent>
+                    {testCase.expectedConfidence !== undefined && (
+                      <p className="text-xs text-[var(--hh-text-muted)]">
+                        Expected confidence: {(testCase.expectedConfidence * 100).toFixed(0)}%
+                      </p>
+                    )}
+                    <JsonBlock label="Input" value={testCase.input} />
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-[var(--hh-text-muted)]">No test cases defined</p>
+            )}
+          </Card>,
+        )}
+      </div>
     </Dialog>
   );
 };

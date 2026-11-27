@@ -126,6 +126,8 @@ NEO4J_BOLT_TLS_LEVEL=REQUIRED
 NEO4J_HTTPS_ENABLED=true
 ```
 
+With Docker Compose, the bundled Neo4j server's TLS policy follows `NEO4J_SSL_ENABLED` and `NEO4J_BOLT_TLS_LEVEL` only (certificate in `./ssl/neo4j`): setting only the client toggles `NEO4J_ENCRYPTED` or `NEO4J_ENCRYPTION` to `true` makes the API unable to connect.
+
 #### Docker Compose Configuration
 
 ```yaml

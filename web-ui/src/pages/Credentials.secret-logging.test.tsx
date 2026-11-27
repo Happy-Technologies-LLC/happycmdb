@@ -3,7 +3,6 @@
 // HAP-1210 S2a (P-3): a failed credential create or update never logs the typed secret or the bearer token.
 import { inspect } from 'node:util';
 import type { InternalAxiosRequestConfig } from 'axios';
-import type { ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
@@ -19,7 +18,7 @@ vi.mock('axios', async () => ({ ...(await vi.importActual<object>('axios')), def
   ...request, interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } },
 }) } }));
 vi.mock('@/contexts/ToastContext', () => ({ useToast: () => ({ showToast }) }));
-vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null, Eyebrow: ({ children }: { children?: ReactNode }) => children }));
+vi.mock('@happy-technologies/design-system', async (importOriginal) => ({ ...(await importOriginal<object>()), Icon: () => null, Eyebrow: ({ children }: { children?: ReactNode }) => children }));
 
 import { AxiosError, AxiosHeaders } from 'axios';
 import { Credentials } from './Credentials';

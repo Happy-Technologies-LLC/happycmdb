@@ -24,7 +24,13 @@ class FakeClient extends EventEmitter {
     callback(undefined, this.stream);
   }
 }
-jest.mock('ssh2', () => ({ Client: jest.fn().mockImplementation(() => new FakeClient()) }));
+// A plain constructor, not jest.fn(): the root unit config sets resetMocks, which would wipe a
+// jest.fn() mockImplementation before every test and make `new Client()` return a bare object.
+jest.mock('ssh2', () => ({
+  Client: function MockSshClient() {
+    return new FakeClient();
+  },
+}));
 
 const CHUNK = 64 * 1024;
 const tick = () => new Promise((resolve) => setImmediate(resolve));

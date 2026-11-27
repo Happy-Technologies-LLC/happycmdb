@@ -44,7 +44,7 @@ function declaresHostParameter(tool: DiscoveryTool): boolean {
  * ASCII (an internationalised name is its punycode form).
  */
 function normalizeHost(host: string): string | null {
-  if (!/^[\x00-\x7f]*$/.test(host)) {
+  if (!/^\p{ASCII}*$/u.test(host)) {
     return null;
   }
   let value = host.toLowerCase();

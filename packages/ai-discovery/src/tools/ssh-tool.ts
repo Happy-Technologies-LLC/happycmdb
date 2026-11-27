@@ -17,6 +17,16 @@ import { resolveDiscoveryHost, connectDiscoveryHost } from '@cmdb/common';
  */
 export const SSH_MAX_OUTPUT_BYTES = 1048576;
 
+/** What `ssh_execute` resolves with. */
+interface SshExecuteResult {
+  success: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+}
+
 export const sshExecuteTool: DiscoveryTool = {
   targetScoped: true,
   name: 'ssh_execute',
@@ -87,7 +97,9 @@ export const sshExecuteTool: DiscoveryTool = {
       // The remote host controls the stream: stdout and stderr share one byte budget,
       // and once it is spent the connection is closed and later data is dropped.
       const collect = (chunks: Buffer[], data: Buffer): void => {
-        if (truncated) return;
+        if (truncated) {
+          return;
+        }
         const room = SSH_MAX_OUTPUT_BYTES - collectedBytes;
         if (data.length <= room) {
           chunks.push(data);
@@ -116,7 +128,9 @@ export const sshExecuteTool: DiscoveryTool = {
 
             stream
               .on('close', (code: number, signal: string) => {
-                if (!truncated) finish(code, signal);
+                if (!truncated) {
+                  finish(code, signal);
+                }
               })
               .on('data', (data: Buffer) => collect(stdoutChunks, data))
               .stderr.on('data', (data: Buffer) => collect(stderrChunks, data));
@@ -188,11 +202,11 @@ export const sshReadFileTool: DiscoveryTool = {
     const quotedPath = `'${filePath.replace(/'/g, `'\"'\"'`)}'`;
     const command = `head -n ${maxLines} -- ${quotedPath}`;
 
-    const result = await sshExecuteTool.execute({
+    const result = (await sshExecuteTool.execute({
       ...sshParams,
       host,
       command,
-    });
+    })) as SshExecuteResult;
 
     if (result.truncated) {
       // The output cap cut the command off: return what was collected, flagged.

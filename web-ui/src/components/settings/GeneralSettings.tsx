@@ -8,18 +8,8 @@
 
 import React, { useState } from 'react';
 import { useForm, Controller } from 'react-hook-form';
+import { Banner, Button, SectionHeading, Select } from '@happy-technologies/design-system';
 import { apiClient } from '../../services/api';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 
 interface GeneralSettingsData {
   language: string;
@@ -42,6 +32,27 @@ const timezones = [
   'Asia/Singapore',
   'Australia/Sydney',
   'UTC',
+];
+const timezoneOptions = timezones.map((value) => ({ value, label: value }));
+
+const languageOptions = [
+  { value: 'en', label: 'English' },
+  { value: 'es', label: 'Spanish' },
+  { value: 'fr', label: 'French' },
+  { value: 'de', label: 'German' },
+  { value: 'ja', label: 'Japanese' },
+  { value: 'zh', label: 'Chinese' },
+];
+const dateFormatOptions = ['MM/DD/YYYY', 'DD/MM/YYYY', 'YYYY-MM-DD', 'DD.MM.YYYY'].map((value) => ({
+  value,
+  label: value,
+}));
+const defaultPageOptions = [
+  { value: '/dashboard', label: 'Dashboard' },
+  { value: '/cis', label: 'Configuration Items' },
+  { value: '/?view=graph', label: 'Estate graph' },
+  { value: '/discovery', label: 'Discovery' },
+  { value: '/jobs', label: 'Jobs' },
 ];
 
 export const GeneralSettings: React.FC = () => {
@@ -77,113 +88,81 @@ export const GeneralSettings: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-semibold tracking-tight">General Settings</h2>
-        <p className="text-sm text-muted-foreground mt-1">
+        <SectionHeading className="mb-1">General Settings</SectionHeading>
+        <p className="text-sm text-[var(--hh-text-muted)]">
           Customize your application preferences
         </p>
       </div>
 
       {successMessage && (
-        <Alert>
-          <AlertDescription>{successMessage}</AlertDescription>
-        </Alert>
+        <Banner tone="success" icon="check-circle" role="status">
+          {successMessage}
+        </Banner>
       )}
 
-      {errorMessage && (
-        <Alert variant="destructive">
-          <AlertDescription>{errorMessage}</AlertDescription>
-        </Alert>
-      )}
+      {errorMessage && <Banner tone="danger" icon="warning-circle">{errorMessage}</Banner>}
 
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6 max-w-2xl">
+      <form onSubmit={handleSubmit(onSubmit)} className="max-w-2xl space-y-6">
         <div className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="language">Language</Label>
-            <Controller
-              name="language"
-              control={control}
-              render={({ field }) => (
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <SelectTrigger id="language">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="en">English</SelectItem>
-                    <SelectItem value="es">Spanish</SelectItem>
-                    <SelectItem value="fr">French</SelectItem>
-                    <SelectItem value="de">German</SelectItem>
-                    <SelectItem value="ja">Japanese</SelectItem>
-                    <SelectItem value="zh">Chinese</SelectItem>
-                  </SelectContent>
-                </Select>
-              )}
-            />
-          </div>
+          <Controller
+            name="language"
+            control={control}
+            render={({ field }) => (
+              <Select
+                id="language"
+                size="sm"
+                label="Language"
+                value={field.value}
+                onChange={field.onChange}
+                options={languageOptions}
+              />
+            )}
+          />
 
-          <div className="space-y-2">
-            <Label htmlFor="timezone">Timezone</Label>
-            <Controller
-              name="timezone"
-              control={control}
-              render={({ field }) => (
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <SelectTrigger id="timezone">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {timezones.map((tz) => (
-                      <SelectItem key={tz} value={tz}>
-                        {tz}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            />
-          </div>
+          <Controller
+            name="timezone"
+            control={control}
+            render={({ field }) => (
+              <Select
+                id="timezone"
+                size="sm"
+                label="Timezone"
+                value={field.value}
+                onChange={field.onChange}
+                options={timezoneOptions}
+              />
+            )}
+          />
 
-          <div className="space-y-2">
-            <Label htmlFor="date-format">Date Format</Label>
-            <Controller
-              name="dateFormat"
-              control={control}
-              render={({ field }) => (
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <SelectTrigger id="date-format">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="MM/DD/YYYY">MM/DD/YYYY</SelectItem>
-                    <SelectItem value="DD/MM/YYYY">DD/MM/YYYY</SelectItem>
-                    <SelectItem value="YYYY-MM-DD">YYYY-MM-DD</SelectItem>
-                    <SelectItem value="DD.MM.YYYY">DD.MM.YYYY</SelectItem>
-                  </SelectContent>
-                </Select>
-              )}
-            />
-          </div>
+          <Controller
+            name="dateFormat"
+            control={control}
+            render={({ field }) => (
+              <Select
+                id="date-format"
+                size="sm"
+                label="Date Format"
+                value={field.value}
+                onChange={field.onChange}
+                options={dateFormatOptions}
+              />
+            )}
+          />
 
-          <div className="space-y-2">
-            <Label htmlFor="default-page">Default Page</Label>
-            <Controller
-              name="defaultPage"
-              control={control}
-              render={({ field }) => (
-                <Select value={field.value} onValueChange={field.onChange}>
-                  <SelectTrigger id="default-page">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="/dashboard">Dashboard</SelectItem>
-                    <SelectItem value="/cis">Configuration Items</SelectItem>
-                    <SelectItem value="/?view=graph">Estate graph</SelectItem>
-                    <SelectItem value="/discovery">Discovery</SelectItem>
-                    <SelectItem value="/jobs">Jobs</SelectItem>
-                  </SelectContent>
-                </Select>
-              )}
-            />
-          </div>
+          <Controller
+            name="defaultPage"
+            control={control}
+            render={({ field }) => (
+              <Select
+                id="default-page"
+                size="sm"
+                label="Default Page"
+                value={field.value}
+                onChange={field.onChange}
+                options={defaultPageOptions}
+              />
+            )}
+          />
         </div>
 
         <Button type="submit" disabled={isLoading}>

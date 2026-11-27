@@ -20,7 +20,7 @@ import type { AuditLogEntry } from '@cmdb/common';
 import neo4j from 'neo4j-driver';
 import type {
   AuthRepository, CredentialEventInput, GuardedEpochBump, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite,
-  UserProfileUpdate,
+  UserProfileUpdate, UsersByIds,
 } from './auth.service';
 import { AmbiguousUserIdentityError, UserNotFoundError, type ApiKey, type User } from './types';
 import { LOCK_USER } from './user-lock';
@@ -33,6 +33,11 @@ import { LOCK_USER } from './user-lock';
  * is the same, only slower.
  */
 export const FIND_USER_BY_ID_CYPHER = 'MATCH (u:User) WHERE u._id = $id OR u.id = $id RETURN u';
+/** `FIND_USER_BY_ID_CYPHER` for a list of ids: one row per (requested id, matching node). */
+export const FIND_USERS_BY_IDS_CYPHER = `
+UNWIND $ids AS requested
+MATCH (u:User) WHERE u._id = requested OR u.id = requested
+RETURN requested, u`;
 export const FIND_USER_BY_USERNAME_CYPHER = 'MATCH (u:User) WHERE u._username = $username OR u.username = $username RETURN u';
 /** Resolves exactly one node before writing; reports how many matched. */
 export const UPDATE_LAST_LOGIN_CYPHER = `
@@ -217,6 +222,44 @@ export class Neo4jAuthRepository implements AuthRepository {
         throw error;
       }
       throw new Error(`Failed to find user by ID: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      await session.close();
+    }
+  }
+
+  /**
+   * The users the `ids` resolve to, one batched read (`FIND_USERS_BY_IDS_CYPHER`, the per-id predicate of
+   * findUserById). An id that matches no node, or more than one distinct node (ambiguous identity), is absent from
+   * `users`; the ambiguous ids are listed in `ambiguous`, so the batch never fails for one of them.
+   * `timeoutMs` bounds the transaction server-side.
+   */
+  async findUsersByIds(ids: readonly string[], timeoutMs: number): Promise<UsersByIds> {
+    if (ids.length === 0) {
+      return { users: new Map(), ambiguous: [] };
+    }
+    const session = this.neo4jClient.getSession();
+    try {
+      const result = await session.run(FIND_USERS_BY_IDS_CYPHER, { ids: [...ids] }, { timeout: timeoutMs });
+      const nodesById = new Map<string, Map<unknown, Neo4jUserNode>>();
+      for (const record of result.records) {
+        const requested = record.get('requested') as string;
+        const node = record.get('u') as Neo4jUserNode;
+        const nodes = nodesById.get(requested) ?? new Map<unknown, Neo4jUserNode>();
+        nodes.set(node.elementId ?? node, node);
+        nodesById.set(requested, nodes);
+      }
+      const users = new Map<string, User>();
+      const ambiguous: string[] = [];
+      for (const [requested, nodes] of nodesById) {
+        if (nodes.size === 1) {
+          users.set(requested, this.mapUserNode([...nodes.values()][0]!));
+        } else {
+          ambiguous.push(requested);
+        }
+      }
+      return { users, ambiguous };
+    } catch (error) {
+      throw new Error(`Failed to find users by ID: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       await session.close();
     }

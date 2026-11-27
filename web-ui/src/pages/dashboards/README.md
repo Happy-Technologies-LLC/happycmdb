@@ -111,7 +111,7 @@ All dashboards support:
 - **React Query** for data fetching
 - **Cytoscape** for network diagrams (Business Service Dashboard)
 - **Tailwind CSS** for styling
-- **Radix UI** for components
+- **Happy design system** (`@happy-technologies/design-system`) for the Executive, CIO and ITSM dashboards (header, sections, tables, badges, states, via `dashboardChrome.tsx`); **Radix UI** local primitives for the FinOps and Business Service dashboards until they are ported
 
 ## Usage
 

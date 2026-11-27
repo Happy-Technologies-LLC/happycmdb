@@ -13,11 +13,11 @@
  * page load.
  */
 
-import { boundedStatementTimeoutMs } from '../rest/impact-envelope';
+import { boundedStatementTimeoutMs } from '../rest/statement-timeout';
 
 /** The one pg method a bounded read needs; both the pool and a pooled client satisfy it. */
 export interface Sql {
-  query(text: string, params?: unknown[]): Promise<{ rows: any[] }>;
+  query<R = Record<string, unknown>>(text: string, params?: unknown[]): Promise<{ rows: R[] }>;
 }
 
 /** A client that can run a callback in a transaction (`PostgresClient`). */

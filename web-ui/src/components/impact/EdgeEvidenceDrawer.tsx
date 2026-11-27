@@ -13,7 +13,15 @@ export const EVIDENCE_CLASS_LABEL: Record<EvidenceClass, string> = {
   inferred: 'Inferred',
 };
 
-const classLabel = (c: EvidenceClass) => EVIDENCE_CLASS_LABEL[c] ?? c;
+/**
+ * Own-key lookup: a server value such as `toString` or `constructor` must not resolve to an inherited
+ * member. An unknown string shows as itself; a non-string (malformed body) shows as `Unknown`.
+ */
+const classLabel = (c: EvidenceClass): string => {
+  if (Object.hasOwn(EVIDENCE_CLASS_LABEL, c)) return EVIDENCE_CLASS_LABEL[c];
+  const raw: unknown = c;
+  return typeof raw === 'string' && raw !== '' ? raw : 'Unknown';
+};
 
 /** Fixed copy per refusal: the drawer never prints server text. */
 function errorMessage(error: unknown): string {

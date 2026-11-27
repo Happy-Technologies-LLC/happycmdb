@@ -16,6 +16,10 @@ vi.mock('axios', () => ({ default: { create: () => ({
   ...request, interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } },
 }) } }));
 
+// CI runs this file under vitest.connector-wizard.config.ts, which aliases the design system to an Icon-only stub.
+// This screen renders real design-system controls, so the installed package is loaded by path instead.
+vi.mock('@happy-technologies/design-system', () => import('../../../../node_modules/@happy-technologies/design-system/src/index.ts'));
+
 import { DiscoverySettings } from './DiscoverySettings';
 
 const SECTIONS = ['AWS', 'Azure', 'Google Cloud Platform', 'SSH'];

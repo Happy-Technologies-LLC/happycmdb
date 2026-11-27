@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { getPostgresClient } from '@cmdb/database';
+import { boundedStatementTimeoutMs, MAX_STATEMENT_TIMEOUT_MS } from './statement-timeout';
 
 /**
  * HAP-2071: statement_timeout of the lineage anti-join, in milliseconds. A policy knob: `IMPACT_LINEAGE_TIMEOUT_MS`
@@ -10,17 +11,8 @@ import { getPostgresClient } from '@cmdb/database';
  */
 export const IMPACT_LINEAGE_TIMEOUT_MS = 3000;
 
-/**
- * HAP-2080: PostgreSQL stores statement_timeout as int4 milliseconds and rejects a larger value, which would fail
- * every impact read with a 500. Above this bound the default applies instead.
- */
-export const MAX_IMPACT_LINEAGE_TIMEOUT_MS = 2147483647;
-
-/** The statement_timeout knobs' one validation: a positive integer no greater than the int4 ceiling, else `fallback`. */
-export function boundedStatementTimeoutMs(raw: string | undefined, fallback: number): number {
-  const configured = Number(raw);
-  return Number.isSafeInteger(configured) && configured > 0 && configured <= MAX_IMPACT_LINEAGE_TIMEOUT_MS ? configured : fallback;
-}
+/** The int4 ceiling of the lineage timeout knob (`MAX_STATEMENT_TIMEOUT_MS`, HAP-2080). */
+export const MAX_IMPACT_LINEAGE_TIMEOUT_MS = MAX_STATEMENT_TIMEOUT_MS;
 
 export function impactLineageTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   return boundedStatementTimeoutMs(env['IMPACT_LINEAGE_TIMEOUT_MS'], IMPACT_LINEAGE_TIMEOUT_MS);

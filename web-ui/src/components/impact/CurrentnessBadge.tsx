@@ -11,13 +11,28 @@ const CURRENTNESS: Record<EdgeCurrentness, { label: string; variant: BadgeVarian
   unsupported: { label: 'No evidence', variant: 'neutral' },
 };
 
+type CurrentnessEntry = { label: string; variant: BadgeVariant };
+
+/**
+ * A value outside the four known ones (the server adds one before the UI learns it, or a malformed
+ * body) must not throw during render: it gets a neutral chip carrying the raw value as text.
+ */
+function entryFor(currentness: EdgeCurrentness): CurrentnessEntry {
+  const known: CurrentnessEntry | undefined = Object.hasOwn(CURRENTNESS, currentness)
+    ? CURRENTNESS[currentness]
+    : undefined;
+  if (known) return known;
+  const raw: unknown = currentness;
+  return { label: typeof raw === 'string' && raw !== '' ? raw : 'Unknown', variant: 'neutral' };
+}
+
 export function currentnessLabel(currentness: EdgeCurrentness): string {
-  return CURRENTNESS[currentness].label;
+  return entryFor(currentness).label;
 }
 
 /** The server's per-edge currentness as a chip. The label is always text: colour is never the only signal. */
 export function CurrentnessBadge({ currentness }: { currentness: EdgeCurrentness }) {
-  const { label, variant } = CURRENTNESS[currentness];
+  const { label, variant } = entryFor(currentness);
   return <Badge variant={variant}>{label}</Badge>;
 }
 

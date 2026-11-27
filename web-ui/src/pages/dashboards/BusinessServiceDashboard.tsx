@@ -1,12 +1,21 @@
-import React, { useState, useEffect } from 'react';
-import { Icon } from '@happy-technologies/design-system';
+import React, { useId, useState, useEffect } from 'react';
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Icon,
+  IconWell,
+  NativeSelect,
+  PageHeader,
+  ProgressBar,
+  SectionHeading,
+  TONE_LABEL,
+  type StatusTone,
+} from '@happy-technologies/design-system';
 import { useBusinessServiceDashboard, useExportDashboard } from '@/hooks/useDashboardData';
 import { KPICard } from '@/components/dashboard/KPICard';
-import { LiquidGlass } from '@/components/ui/liquid-glass';
-import { Button } from '@/components/ui/button';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
-import { Eyebrow } from '@/components/ui/eyebrow';
+import { QueryState } from '@/components/estate/SurfaceState';
 import { brand } from '@/lib/brandColors';
 import cytoscape from 'cytoscape';
 import { UnavailableNotice } from '@/components/dashboard/UnavailableNotice';
@@ -22,6 +31,32 @@ import {
 } from '@/lib/dashboardValue';
 
 const COMPLIANCE_FRAMEWORK_COUNT = 4;
+
+/** The tone of a health score: unknown is neutral (never a verdict), then healthy, warning, critical. */
+function healthTone(score: number | null | undefined): StatusTone {
+  if (!isKnown(score)) return 'neutral';
+  if (score >= 80) return 'success';
+  if (score >= 60) return 'warning';
+  return 'danger';
+}
+
+/** A titled dashboard section: a labelled region with a heading and a one-line description. */
+const Section: React.FC<{ title: string; description?: React.ReactNode; children: React.ReactNode }> = ({
+  title,
+  description,
+  children,
+}) => {
+  const headingId = useId();
+  return (
+    <Card as="section" aria-labelledby={headingId}>
+      <SectionHeading id={headingId} className="mb-1">
+        {title}
+      </SectionHeading>
+      {description && <p className="mb-4 text-sm text-[var(--hh-text-muted)]">{description}</p>}
+      {children}
+    </Card>
+  );
+};
 
 export const BusinessServiceDashboard: React.FC = () => {
   const [selectedService, setSelectedService] = useState<string>('');
@@ -88,7 +123,7 @@ export const BusinessServiceDashboard: React.FC = () => {
                 'text-valign': 'center',
                 'text-halign': 'center',
                 'font-size': '10px',
-                color: '#fff',
+                color: brand.warm,
                 'text-wrap': 'wrap',
                 'text-max-width': '50px',
               },
@@ -150,14 +185,62 @@ export const BusinessServiceDashboard: React.FC = () => {
     }
   }, [serviceDependencies.data, serviceDependencies.loading]);
 
+  const refresh = () => {
+    serviceHealth.refetch();
+    if (selectedService) {
+      revenueAtRisk.refetch();
+      customerImpact.refetch();
+      complianceStatus.refetch();
+    }
+  };
+
+  const header = (
+    <PageHeader
+      eyebrow="Dashboards · Business Service"
+      title="Business Service Dashboard"
+      lede="Business value, customer impact, and service health"
+      actions={
+        <>
+          <NativeSelect
+            size="sm"
+            aria-label="Business unit"
+            value={selectedBusinessUnit}
+            onChange={(e) => setSelectedBusinessUnit(e.target.value)}
+          >
+            <option value="">All Business Units</option>
+            <option value="engineering">Engineering</option>
+            <option value="sales">Sales</option>
+            <option value="marketing">Marketing</option>
+            <option value="finance">Finance</option>
+            <option value="operations">Operations</option>
+          </NativeSelect>
+          <Button
+            variant="secondary"
+            icon="download-simple"
+            onClick={() => exportToPDF('business-service', { selectedService, selectedBusinessUnit })}
+          >
+            Export PDF
+          </Button>
+          <Button
+            variant="secondary"
+            icon="download-simple"
+            onClick={() => exportToExcel('business-service', { selectedService, selectedBusinessUnit })}
+          >
+            Export Excel
+          </Button>
+          <Button variant="secondary" onClick={refresh}>
+            Refresh
+          </Button>
+        </>
+      }
+    />
+  );
+
   if (error) {
     return (
-      <div className="p-6">
-        <Alert variant="destructive">
-          <AlertDescription>
-            Failed to load business service dashboard data: {error.message}
-          </AlertDescription>
-        </Alert>
+      <div className="space-y-6 p-6">
+        {header}
+        <QueryState what="business service dashboard" error={error} onRetry={refresh} />
       </div>
     );
   }
@@ -176,122 +259,56 @@ export const BusinessServiceDashboard: React.FC = () => {
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <Eyebrow>Dashboards · Business Service</Eyebrow>
-          <h1 className="mt-3 text-[1.9rem]">Business Service Dashboard</h1>
-          <p className="mt-1.5 text-ink-soft">
-            Business value, customer impact, and service health
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <select
-            className="px-4 py-2 border border-border rounded-md text-sm"
-            value={selectedBusinessUnit}
-            onChange={(e) => setSelectedBusinessUnit(e.target.value)}
-          >
-            <option value="">All Business Units</option>
-            <option value="engineering">Engineering</option>
-            <option value="sales">Sales</option>
-            <option value="marketing">Marketing</option>
-            <option value="finance">Finance</option>
-            <option value="operations">Operations</option>
-          </select>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => exportToPDF('business-service', { selectedService, selectedBusinessUnit })}
-          >
-            <Icon name="download-simple" size={16} className="mr-2" />
-            Export PDF
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => exportToExcel('business-service', { selectedService, selectedBusinessUnit })}
-          >
-            <Icon name="download-simple" size={16} className="mr-2" />
-            Export Excel
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              serviceHealth.refetch();
-              if (selectedService) {
-                revenueAtRisk.refetch();
-                customerImpact.refetch();
-                complianceStatus.refetch();
-              }
-            }}
-          >
-            Refresh
-          </Button>
-        </div>
-      </div>
+      {header}
 
       {/* Service Health Heat Map */}
-      <LiquidGlass variant="default" rounded="xl">
-        <div>
-          <h3 className="text-lg font-semibold mb-1">Service Health by Business Unit</h3>
-          <p className="text-sm text-muted-foreground mb-4">Click a service to view details</p>
-          {loading ? (
-            <div className="flex justify-center py-8">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-            </div>
-          ) : serviceHealth.data && serviceHealth.data.length > 0 ? (
-            <div className="space-y-4">
-              {serviceHealth.data.map((bu: any) => (
-                <div key={bu.businessUnit}>
-                  <h4 className="font-semibold mb-2 capitalize">{bu.businessUnit}</h4>
-                  <div className="grid grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-2">
-                    {bu.businessServices.map((service: any) => {
-                      const healthKnown = isKnown(service.healthScore);
-                      return (
-                        <button
-                          key={service.serviceId}
-                          className={`p-3 rounded-lg text-center cursor-pointer transition-all hover:scale-105 ${
-                            selectedService === service.serviceId
-                              ? 'ring-2 ring-primary'
-                              : ''
-                          } ${healthKnown ? '' : 'bg-warm-alt text-ink-soft'}`}
-                          style={
-                            healthKnown
-                              ? {
-                                  backgroundColor:
-                                    service.healthScore >= 80
-                                      ? brand.success
-                                      : service.healthScore >= 60
-                                      ? brand.warning
-                                      : brand.danger,
-                                  color: '#fff',
-                                }
-                              : undefined
-                          }
-                          onClick={() => setSelectedService(service.serviceId)}
-                          title={`${service.serviceName}: ${healthKnown ? `${service.healthScore}%` : NOT_AVAILABLE}`}
-                        >
-                          <p className="text-xs font-medium truncate">{service.serviceName}</p>
-                          <p className="text-lg font-bold mt-1">
-                            {healthKnown ? `${service.healthScore}%` : EMPTY_VALUE}
-                          </p>
-                        </button>
-                      );
-                    })}
-                  </div>
+      <Section title="Service Health by Business Unit" description="Click a service to view details">
+        {loading ? (
+          <QueryState what="service health" loading />
+        ) : serviceHealth.data && serviceHealth.data.length > 0 ? (
+          <div className="space-y-4">
+            {serviceHealth.data.map((bu: any) => (
+              <div key={bu.businessUnit}>
+                <SectionHeading level={3} className="mb-2 capitalize">
+                  {bu.businessUnit}
+                </SectionHeading>
+                <div className="grid grid-cols-4 gap-2 md:grid-cols-6 lg:grid-cols-8">
+                  {bu.businessServices.map((service: any) => {
+                    const healthKnown = isKnown(service.healthScore);
+                    const tone = healthTone(service.healthScore);
+                    return (
+                      <Button
+                        key={service.serviceId}
+                        variant="secondary"
+                        aria-pressed={selectedService === service.serviceId}
+                        className={`h-auto flex-col !rounded-[var(--hh-radius-md)] ${
+                          selectedService === service.serviceId ? 'ring-2 ring-[var(--hh-accent-text)]' : ''
+                        }`}
+                        onClick={() => setSelectedService(service.serviceId)}
+                        title={`${service.serviceName}: ${healthKnown ? `${service.healthScore}%` : NOT_AVAILABLE}`}
+                      >
+                        <span className="max-w-full truncate text-xs font-medium">{service.serviceName}</span>
+                        <Badge variant={tone}>{healthKnown ? `${service.healthScore}%` : EMPTY_VALUE}</Badge>
+                        <span className="sr-only">{healthKnown ? TONE_LABEL[tone] : 'unknown'}</span>
+                      </Button>
+                    );
+                  })}
                 </div>
-              ))}
-            </div>
-          ) : serviceHealth.data && isUnavailable(unavailable, 'serviceHealth') ? (
-            <UnavailableNotice label="Service health" />
-          ) : (
-            <p className="text-center text-muted-foreground py-8">
-              Select a business unit to view services
-            </p>
-          )}
-        </div>
-      </LiquidGlass>
+              </div>
+            ))}
+          </div>
+        ) : serviceHealth.data && isUnavailable(unavailable, 'serviceHealth') ? (
+          <UnavailableNotice label="Service health" />
+        ) : serviceHealth.data === undefined ? (
+          <EmptyState label="Select a business unit to view services" />
+        ) : (
+          <EmptyState
+            icon="buildings"
+            title="No business services"
+            description="No business services were reported for this organization."
+          />
+        )}
+      </Section>
 
       {/* Service-specific KPIs (only show if service is selected) */}
       {selectedService && (
@@ -369,75 +386,62 @@ export const BusinessServiceDashboard: React.FC = () => {
             <UnavailableNotice label="Revenue at risk details" />
           )}
           {revenueAtRisk.data && revenueAtRisk.data.affectedIncidents.length > 0 && (
-            <LiquidGlass variant="default" rounded="xl">
-              <div>
-          <h3 className="text-lg font-semibold mb-1">Revenue at Risk</h3>
-          <p className="text-sm text-muted-foreground mb-4">
-                  Total annual revenue: {formatCurrency(revenueAtRisk.data.totalAnnualRevenue)}
-                </p>
-                <div className="space-y-2">
-                  {revenueAtRisk.data.affectedIncidents.map((incident: any) => (
-                    <div
-                      key={incident.id}
-                      className="flex items-center justify-between p-3 border border-border rounded-lg"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Icon name="warning" size={16} className="text-danger" />
-                        <span className="text-sm font-medium">Incident {incident.id}</span>
-                        <Badge
-                          variant="outline"
-                          className={
-                            incident.priority === 'P1'
-                              ? 'bg-danger-soft text-danger'
-                              : 'bg-warning-soft text-warning-text'
-                          }
-                        >
-                          {incident.priority}
-                        </Badge>
-                      </div>
-                      <span className="text-sm font-bold text-danger">
-                        {formatCurrency(incident.estimatedImpact)} at risk
-                      </span>
+            <Section
+              title="Revenue at Risk"
+              description={`Total annual revenue: ${formatCurrency(revenueAtRisk.data.totalAnnualRevenue)}`}
+            >
+              <div className="space-y-2">
+                {revenueAtRisk.data.affectedIncidents.map((incident: any) => (
+                  <div
+                    key={incident.id}
+                    className="flex items-center justify-between rounded-lg bg-[var(--hh-bg-elevated)] p-3"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Icon name="warning" size={16} className="text-[var(--hh-error-text)]" />
+                      <span className="text-sm font-medium">Incident {incident.id}</span>
+                      <Badge variant={incident.priority === 'P1' ? 'danger' : 'warning'}>
+                        {incident.priority}
+                      </Badge>
                     </div>
-                  ))}
-                </div>
+                    <span className="text-sm font-bold text-[var(--hh-error-text)]">
+                      {formatCurrency(incident.estimatedImpact)} at risk
+                    </span>
+                  </div>
+                ))}
               </div>
-            </LiquidGlass>
+            </Section>
           )}
 
           {/* Compliance Status */}
           {complianceStatus.data && (
-          <LiquidGlass variant="default" rounded="xl">
-            <div>
-          <h3 className="text-lg font-semibold mb-1">Compliance Status</h3>
-          <p className="text-sm text-muted-foreground mb-4">
-                Last audit: {complianceStatus.data.lastAuditDate
+            <Section
+              title="Compliance Status"
+              description={`Last audit: ${
+                complianceStatus.data.lastAuditDate
                   ? new Date(complianceStatus.data.lastAuditDate).toLocaleDateString()
-                  : NOT_AVAILABLE}
-              </p>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                  : NOT_AVAILABLE
+              }`}
+            >
+              <div className="mb-4 grid grid-cols-2 gap-4 md:grid-cols-4">
                 {[
                   { name: 'PCI', value: complianceStatus.data.pciCompliant },
                   { name: 'HIPAA', value: complianceStatus.data.hipaaCompliant },
                   { name: 'SOX', value: complianceStatus.data.soxCompliant },
                   { name: 'GDPR', value: complianceStatus.data.gdprCompliant },
                 ].map((compliance) => (
-                  <div key={compliance.name} className="p-4 border border-border rounded-lg text-center">
-                    <div className="flex items-center justify-center mb-2">
-                      {compliance.value === true ? (
-                        <Icon name="check-circle" size={32} className="text-success" />
-                      ) : compliance.value === false ? (
-                        <Icon name="x-circle" size={32} className="text-danger" />
-                      ) : (
-                        <Icon name="minus" size={32} className="text-muted-foreground" />
-                      )}
-                    </div>
+                  <div
+                    key={compliance.name}
+                    className="flex flex-col items-center gap-2 rounded-lg bg-[var(--hh-bg-elevated)] p-4 text-center"
+                  >
+                    <IconWell
+                      tone={compliance.value === true ? 'success' : compliance.value === false ? 'danger' : 'neutral'}
+                      icon={compliance.value === true ? 'check-circle' : compliance.value === false ? 'x-circle' : 'minus'}
+                    />
                     <p className="text-sm font-medium">{compliance.name}</p>
                     <Badge
                       variant={
-                        compliance.value === true ? 'success' : compliance.value === false ? 'destructive' : 'outline'
+                        compliance.value === true ? 'success' : compliance.value === false ? 'danger' : 'neutral'
                       }
-                      className="mt-2"
                     >
                       {compliance.value === true
                         ? 'Compliant'
@@ -450,12 +454,14 @@ export const BusinessServiceDashboard: React.FC = () => {
               </div>
               {(complianceStatus.data.nonCompliantItems?.length ?? 0) > 0 && (
                 <div>
-                  <h4 className="font-semibold mb-3">Non-Compliant Items</h4>
+                  <SectionHeading level={3} className="mb-3">
+                    Non-Compliant Items
+                  </SectionHeading>
                   <div className="space-y-2">
                     {complianceStatus.data.nonCompliantItems?.map((item: any, index: number) => (
-                      <div key={index} className="p-3 border border-border rounded-lg bg-danger-soft">
+                      <div key={index} className="rounded-lg bg-[var(--hh-error-bg)] p-3 text-[var(--hh-error-text)]">
                         <p className="text-sm font-medium">{item.requirement}</p>
-                        <p className="text-xs text-muted-foreground mt-1">
+                        <p className="mt-1 text-xs">
                           Status: {item.status} | Remediation: {item.remediation}
                         </p>
                       </div>
@@ -463,134 +469,87 @@ export const BusinessServiceDashboard: React.FC = () => {
                   </div>
                 </div>
               )}
-            </div>
-          </LiquidGlass>
+            </Section>
           )}
 
           {/* Value Stream Health */}
           {valueStreamHealth.data && (
-            <LiquidGlass variant="default" rounded="xl">
-              <div>
-          <h3 className="text-lg font-semibold mb-1">Value Stream Health</h3>
-          <p className="text-sm text-muted-foreground mb-4">
-                  Flow rate: {isKnown(valueStreamHealth.data.flowRate) ? `${formatCount(valueStreamHealth.data.flowRate)} requests/day` : EMPTY_VALUE} | Cycle time: {isKnown(valueStreamHealth.data.cycleTime) ? `${formatDecimal(valueStreamHealth.data.cycleTime)}h` : EMPTY_VALUE}
-                </p>
-                {valueStreamHealth.data.stages.length === 0 && isUnavailable(unavailable, 'valueStreamHealth') && (
-                  <UnavailableNotice label="Value stream stages" />
-                )}
-                <div className="space-y-4">
-                  {valueStreamHealth.data.stages.map((stage: any, index: number) => (
-                    <div key={stage.name}>
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium">{stage.name}</span>
-                          {stage.bottleneck && (
-                            <Badge variant="destructive" className="text-xs">
-                              Bottleneck
-                            </Badge>
-                          )}
-                        </div>
-                        <span className="text-sm">
-                          Health: <span className="font-bold">{formatPercent(stage.healthScore, 0)}</span> | Throughput: {isKnown(stage.throughput) ? `${stage.throughput}/day` : EMPTY_VALUE}
-                        </span>
+            <Section
+              title="Value Stream Health"
+              description={`Flow rate: ${isKnown(valueStreamHealth.data.flowRate) ? `${formatCount(valueStreamHealth.data.flowRate)} requests/day` : EMPTY_VALUE} | Cycle time: ${isKnown(valueStreamHealth.data.cycleTime) ? `${formatDecimal(valueStreamHealth.data.cycleTime)}h` : EMPTY_VALUE}`}
+            >
+              {valueStreamHealth.data.stages.length === 0 && isUnavailable(unavailable, 'valueStreamHealth') && (
+                <UnavailableNotice label="Value stream stages" />
+              )}
+              <div className="space-y-4">
+                {valueStreamHealth.data.stages.map((stage: any, index: number) => (
+                  <div key={stage.name}>
+                    <div className="mb-2 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium">{stage.name}</span>
+                        {stage.bottleneck && <Badge variant="danger">Bottleneck</Badge>}
                       </div>
-                      <div className="relative pt-1">
-                        <div className="flex mb-2 items-center justify-between">
-                          <div className="w-full">
-                            <div className="overflow-hidden h-3 text-xs flex rounded bg-warm-alt">
-                              {isKnown(stage.healthScore) && (
-                                <div
-                                  style={{
-                                    width: `${stage.healthScore}%`,
-                                    backgroundColor:
-                                      stage.healthScore >= 80
-                                        ? brand.success
-                                        : stage.healthScore >= 60
-                                        ? brand.warning
-                                        : brand.danger,
-                                  }}
-                                  className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center"
-                                ></div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      {index < (valueStreamHealth.data?.stages?.length ?? 0) - 1 && (
-                        <div className="text-center text-muted-foreground my-2">↓</div>
-                      )}
+                      <span className="text-sm">
+                        Health: <span className="font-bold">{formatPercent(stage.healthScore, 0)}</span> | Throughput: {isKnown(stage.throughput) ? `${stage.throughput}/day` : EMPTY_VALUE}
+                      </span>
                     </div>
-                  ))}
-                </div>
+                    {isKnown(stage.healthScore) ? (
+                      <ProgressBar
+                        aria-label={`${stage.name} health`}
+                        value={stage.healthScore}
+                        tone={healthTone(stage.healthScore) as 'success' | 'warning' | 'danger'}
+                      />
+                    ) : (
+                      <div aria-hidden="true" className="h-1.5 w-full rounded-full bg-[var(--hh-soft-bg)]" />
+                    )}
+                    {index < (valueStreamHealth.data?.stages?.length ?? 0) - 1 && (
+                      <div className="my-2 text-center text-[var(--hh-text-muted)]">↓</div>
+                    )}
+                  </div>
+                ))}
               </div>
-            </LiquidGlass>
+            </Section>
           )}
 
           {/* Dependency Map */}
-          <LiquidGlass variant="default" rounded="xl">
-            <div>
-          <h3 className="text-lg font-semibold mb-1">Service Dependency Map</h3>
-          <p className="text-sm text-muted-foreground mb-4">
-                Business service dependencies and health propagation
-              </p>
-              {serviceDependencies.loading ? (
-                <div className="flex justify-center py-8">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-                </div>
-              ) : serviceDependencies.data && serviceDependencies.data.nodes.length > 0 ? (
-                <div
-                  id="dependency-graph"
-                  style={{ width: '100%', height: '600px', border: `1px solid ${brand.line}`, borderRadius: '8px' }}
-                ></div>
-              ) : (
-                <p className="text-center text-muted-foreground py-8">
-                  No dependency data available for this service
-                </p>
+          <Section
+            title="Service Dependency Map"
+            description="Business service dependencies and health propagation"
+          >
+            {serviceDependencies.loading ? (
+              <QueryState what="service dependencies" loading />
+            ) : serviceDependencies.data && serviceDependencies.data.nodes.length > 0 ? (
+              <div
+                id="dependency-graph"
+                className="rounded-lg border border-[var(--hh-border)]"
+                style={{ width: '100%', height: '600px' }}
+              ></div>
+            ) : (
+              <EmptyState label="No dependency data available for this service" />
+            )}
+            <div className="mt-4 flex flex-wrap items-center gap-3 text-sm">
+              {anyHealthKnown && (
+                <>
+                  <Badge variant="success" dot>Healthy (&gt;80%)</Badge>
+                  <Badge variant="warning" dot>Warning (60-80%)</Badge>
+                  <Badge variant="danger" dot>Critical (&lt;60%)</Badge>
+                </>
               )}
-              <div className="mt-4 flex items-center gap-4 text-sm">
-                {anyHealthKnown && (
-                  <>
-                    <div className="flex items-center gap-2">
-                      <div className="w-4 h-4 rounded-full bg-success"></div>
-                      <span>Healthy (&gt;80%)</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-4 h-4 rounded-full bg-warning"></div>
-                      <span>Warning (60-80%)</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-4 h-4 rounded-full bg-danger"></div>
-                      <span>Critical (&lt;60%)</span>
-                    </div>
-                  </>
-                )}
-                {anyHealthUnknown && (
-                  <div className="flex items-center gap-2">
-                    <div
-                      className="w-4 h-4 rounded-full"
-                      style={{ backgroundColor: brand.inkSoft }}
-                    ></div>
-                    <span>Health: {NOT_AVAILABLE}</span>
-                  </div>
-                )}
-              </div>
+              {anyHealthUnknown && (
+                <Badge variant="neutral" dot>Health: {NOT_AVAILABLE}</Badge>
+              )}
             </div>
-          </LiquidGlass>
+          </Section>
         </>
       )}
 
       {!selectedService && (
-        <LiquidGlass variant="default" rounded="xl">
-          <div className="py-12">
-            <div className="text-center">
-              <Icon name="pulse" size={64} className="mx-auto text-muted-foreground mb-4" />
-              <h3 className="text-lg font-semibold mb-2">Select a Business Service</h3>
-              <p className="text-muted-foreground">
-                Click on a service in the heat map above to view detailed metrics, compliance status, and dependencies.
-              </p>
-            </div>
-          </div>
-        </LiquidGlass>
+        <Section title="Select a Business Service">
+          <EmptyState
+            icon="pulse"
+            description="Click on a service in the heat map above to view detailed metrics, compliance status, and dependencies."
+          />
+        </Section>
       )}
     </div>
   );

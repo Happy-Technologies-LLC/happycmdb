@@ -248,9 +248,12 @@ export class RateLimitMiddleware {
   }
 
   /**
-   * Create custom rate limiter with specific config
+   * Create custom rate limiter with specific config. With `admittedOnly` the window holds only admitted requests: a
+   * refused one is not recorded, so a caller that keeps retrying is admitted again as soon as its oldest admitted
+   * request leaves the window (the default records every request, so a retrying caller is never admitted again). A
+   * refusal's resetAt is still the end of a full window, an upper bound of the real wait.
    */
-  custom(config: RateLimitConfig, keyPrefix = 'custom') {
+  custom(config: RateLimitConfig, keyPrefix = 'custom', options: { admittedOnly?: boolean } = {}) {
     return async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
       if (!this.config.enabled) {
         return next();
@@ -264,7 +267,7 @@ export class RateLimitMiddleware {
       const key = `rate-limit:${keyPrefix}:${identifier}`;
 
       try {
-        const result = await this.checkRateLimit(key, config);
+        const result = await this.checkRateLimit(key, config, options.admittedOnly === true);
 
         this.setRateLimitHeaders(res, result);
 
@@ -298,7 +301,8 @@ export class RateLimitMiddleware {
    */
   private async checkRateLimit(
     key: string,
-    config: RateLimitConfig
+    config: RateLimitConfig,
+    admittedOnly = false
   ): Promise<RateLimitResult> {
     const now = Date.now();
     const windowStart = now - config._windowMs;
@@ -309,11 +313,15 @@ export class RateLimitMiddleware {
     // Remove old entries outside the window
     pipeline.zremrangebyscore(key, '-inf', windowStart.toString());
 
-    // Count current requests in window
-    pipeline.zcard(key);
-
-    // Add current request with timestamp as score
-    pipeline.zadd(key, now.toString(), `${now}-${Math.random()}`);
+    // The default counts before adding this request; admittedOnly adds first, so the count includes it
+    const member = `${now}-${Math.random()}`;
+    if (admittedOnly) {
+      pipeline.zadd(key, now.toString(), member);
+      pipeline.zcard(key);
+    } else {
+      pipeline.zcard(key);
+      pipeline.zadd(key, now.toString(), member);
+    }
 
     // Set expiration on the key
     pipeline.expire(key, Math.ceil(config._windowMs / 1000));
@@ -330,10 +338,21 @@ export class RateLimitMiddleware {
       throw failed[0];
     }
 
-    // Get count before adding current request (index 1)
-    const count = (results[1]?.[1] as number) || 0;
-
-    const allowed = count < config._max;
+    let allowed: boolean;
+    let count: number;
+    if (admittedOnly) {
+      // The count (index 2) includes this request; a refused one takes itself back out of the window.
+      count = (results[2]?.[1] as number) || 0;
+      allowed = count <= config._max;
+      if (!allowed) {
+        await this.redis.zrem(key, member);
+      }
+      count -= 1;
+    } else {
+      // Get count before adding current request (index 1)
+      count = (results[1]?.[1] as number) || 0;
+      allowed = count < config._max;
+    }
     const remaining = Math.max(0, config._max - count - 1);
 
     // Calculate reset time (end of current window)

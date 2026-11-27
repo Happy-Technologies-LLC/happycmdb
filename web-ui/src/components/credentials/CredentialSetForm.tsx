@@ -1,20 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { useForm, Controller } from 'react-hook-form';
-import { Icon } from '@happy-technologies/design-system';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import { Switch } from '@/components/ui/switch';
 import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  FieldHint,
+  IconButton,
+  Input,
+  Label,
+  ListRow,
   Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { Card } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+  SectionHeading,
+  Switch,
+  Tag,
+  Textarea,
+} from '@happy-technologies/design-system';
 import {
   credentialService,
   type CredentialSetSummary,
@@ -23,6 +24,7 @@ import {
   type CredentialSetStrategy,
   type UnifiedCredentialSummary,
 } from '@/services/credential.service';
+import { QueryState } from '@/components/estate/SurfaceState';
 import { logClientError } from '@/utils/logger';
 
 interface CredentialSetFormProps {
@@ -33,6 +35,12 @@ interface CredentialSetFormProps {
 }
 
 const STRATEGIES: CredentialSetStrategy[] = ['sequential', 'parallel', 'adaptive'];
+
+const STRATEGY_HINTS: Record<CredentialSetStrategy, string> = {
+  sequential: 'Try credentials one at a time in order',
+  parallel: 'Try all credentials simultaneously',
+  adaptive: 'Learn from past successes and adapt order',
+};
 
 export const CredentialSetForm: React.FC<CredentialSetFormProps> = ({
   set,
@@ -60,7 +68,8 @@ export const CredentialSetForm: React.FC<CredentialSetFormProps> = ({
   const [tagInput, setTagInput] = useState('');
   const [availableCredentials, setAvailableCredentials] = useState<UnifiedCredentialSummary[]>([]);
   const [selectedCredentials, setSelectedCredentials] = useState<UnifiedCredentialSummary[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadFailure, setLoadFailure] = useState<{ cause: unknown } | null>(null);
 
   const tags = watch('tags') || [];
   const credentialIds = watch('credential_ids') || [];
@@ -80,6 +89,7 @@ export const CredentialSetForm: React.FC<CredentialSetFormProps> = ({
   const loadAvailableCredentials = async () => {
     try {
       setLoading(true);
+      setLoadFailure(null);
       const response = await credentialService.listCredentials({ limit: 1000 });
       setAvailableCredentials(response.data);
 
@@ -89,6 +99,7 @@ export const CredentialSetForm: React.FC<CredentialSetFormProps> = ({
       }
     } catch (error) {
       logClientError('Failed to load credentials:', error);
+      setLoadFailure({ cause: error });
     } finally {
       setLoading(false);
     }
@@ -149,13 +160,13 @@ export const CredentialSetForm: React.FC<CredentialSetFormProps> = ({
   );
 
   return (
-    <Card className="p-6">
+    <Card>
       <form onSubmit={onFormSubmit} className="space-y-6">
         {/* Basic Information */}
         <div className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="name">
-              Name <span className="text-destructive">*</span>
+            <Label htmlFor="name" required>
+              Name
             </Label>
             <Controller
               name="name"
@@ -166,11 +177,10 @@ export const CredentialSetForm: React.FC<CredentialSetFormProps> = ({
                   {...field}
                   id="name"
                   placeholder="Production SSH Credentials"
-                  className={errors.name ? 'border-destructive' : ''}
+                  error={errors.name?.message}
                 />
               )}
             />
-            {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
           </div>
 
           <div className="space-y-2">
@@ -191,34 +201,23 @@ export const CredentialSetForm: React.FC<CredentialSetFormProps> = ({
 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label htmlFor="strategy">
-                Strategy <span className="text-destructive">*</span>
+              <Label htmlFor="strategy" required>
+                Strategy
               </Label>
               <Controller
                 name="strategy"
                 control={control}
                 rules={{ required: 'Strategy is required' }}
                 render={({ field }) => (
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select strategy" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {STRATEGIES.map((s) => (
-                        <SelectItem key={s} value={s}>
-                          {formatLabel(s)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <Select
+                    id="strategy"
+                    value={field.value ?? ''}
+                    onChange={(value) => field.onChange(value)}
+                    options={STRATEGIES.map((s) => ({ value: s, label: formatLabel(s) }))}
+                    hint={field.value ? STRATEGY_HINTS[field.value] : undefined}
+                  />
                 )}
               />
-              <p className="text-xs text-muted-foreground">
-                {watch('strategy') === 'sequential' &&
-                  'Try credentials one at a time in order'}
-                {watch('strategy') === 'parallel' && 'Try all credentials simultaneously'}
-                {watch('strategy') === 'adaptive' && 'Learn from past successes and adapt order'}
-              </p>
             </div>
 
             <div className="space-y-2">
@@ -230,12 +229,13 @@ export const CredentialSetForm: React.FC<CredentialSetFormProps> = ({
                   render={({ field }) => (
                     <Switch
                       id="stop_on_success"
-                      checked={field.value}
-                      onCheckedChange={field.onChange}
+                      aria-label="Stop on Success"
+                      checked={Boolean(field.value)}
+                      onChange={field.onChange}
                     />
                   )}
                 />
-                <span className="text-sm text-muted-foreground">
+                <span className="text-sm text-[var(--hh-text-muted)]">
                   Stop trying after first success
                 </span>
               </div>
@@ -244,61 +244,58 @@ export const CredentialSetForm: React.FC<CredentialSetFormProps> = ({
         </div>
 
         {/* Credential Selection */}
-        <div className="border-t pt-4">
-          <h3 className="text-lg font-medium mb-4">Credentials</h3>
+        <div className="border-t border-[var(--hh-hairline)] pt-4">
+          <SectionHeading level={3}>Credentials</SectionHeading>
 
           {/* Selected Credentials (Ordered) */}
           {selectedCredentials.length > 0 && (
-            <div className="space-y-2 mb-4">
+            <div className="mb-4 space-y-2">
               <Label>Selected Credentials (in order)</Label>
               <div className="space-y-2">
                 {selectedCredentials.map((cred, index) => (
-                  <div
+                  <ListRow
                     key={cred.id}
-                    className="flex items-center gap-2 p-3 border border-border rounded-lg bg-muted/20"
-                  >
-                    <div className="flex flex-col gap-1">
-                      <button
-                        type="button"
-                        onClick={() => handleMoveCredential(index, 'up')}
-                        disabled={index === 0}
-                        className="p-0.5 hover:bg-muted rounded disabled:opacity-30"
-                      >
-                        <Icon name="dots-six-vertical" size={12} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleMoveCredential(index, 'down')}
-                        disabled={index === selectedCredentials.length - 1}
-                        className="p-0.5 hover:bg-muted rounded disabled:opacity-30"
-                      >
-                        <Icon name="dots-six-vertical" size={12} />
-                      </button>
-                    </div>
-                    <span className="text-xs text-muted-foreground font-mono w-6">
-                      #{index + 1}
-                    </span>
-                    <div className="flex-1">
-                      <div className="text-sm font-medium">{cred.name}</div>
-                      {cred.description && (
-                        <div className="text-xs text-muted-foreground truncate max-w-[300px]">
-                          {cred.description}
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex gap-2">
-                      <Badge variant="outline">{formatLabel(cred.protocol)}</Badge>
-                      <Badge variant="outline">{formatLabel(cred.scope)}</Badge>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveCredential(cred.id)}
-                      className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
-                      title="Remove"
-                    >
-                      <Icon name="trash" size={16} className="text-destructive" />
-                    </button>
-                  </div>
+                    leading={
+                      <span className="hh-mono w-6 text-xs text-[var(--hh-text-muted)]">
+                        #{index + 1}
+                      </span>
+                    }
+                    title={cred.name}
+                    description={cred.description}
+                    actions={
+                      <>
+                        <IconButton
+                          icon="caret-up"
+                          variant="ghost"
+                          size="sm"
+                          shape="rounded"
+                          aria-label="Move up"
+                          onClick={() => handleMoveCredential(index, 'up')}
+                          disabled={index === 0}
+                        />
+                        <IconButton
+                          icon="caret-down"
+                          variant="ghost"
+                          size="sm"
+                          shape="rounded"
+                          aria-label="Move down"
+                          onClick={() => handleMoveCredential(index, 'down')}
+                          disabled={index === selectedCredentials.length - 1}
+                        />
+                        <Badge>{formatLabel(cred.protocol)}</Badge>
+                        <Badge>{formatLabel(cred.scope)}</Badge>
+                        <IconButton
+                          icon="trash"
+                          variant="ghost"
+                          size="sm"
+                          shape="rounded"
+                          aria-label="Remove"
+                          title="Remove"
+                          onClick={() => handleRemoveCredential(cred.id)}
+                        />
+                      </>
+                    }
+                  />
                 ))}
               </div>
             </div>
@@ -307,51 +304,43 @@ export const CredentialSetForm: React.FC<CredentialSetFormProps> = ({
           {/* Available Credentials */}
           <div className="space-y-2">
             <Label>Available Credentials</Label>
-            {loading ? (
-              <div className="flex justify-center py-8">
-                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
-              </div>
+            {loading || loadFailure ? (
+              <QueryState
+                what="available credentials"
+                loading={loading}
+                error={loadFailure?.cause}
+                onRetry={loadAvailableCredentials}
+              />
             ) : unselectedCredentials.length === 0 ? (
-              <div className="p-4 text-center text-sm text-muted-foreground border border-dashed border-border rounded-lg">
-                {credentialIds.length > 0
-                  ? 'All credentials have been added'
-                  : 'No credentials available. Create credentials first.'}
-              </div>
+              <EmptyState
+                label={
+                  credentialIds.length > 0
+                    ? 'All credentials have been added'
+                    : 'No credentials available. Create credentials first.'
+                }
+              />
             ) : (
-              <div className="max-h-64 overflow-y-auto space-y-2 border border-border rounded-lg p-2">
+              <div className="max-h-64 space-y-1 overflow-y-auto rounded-[var(--hh-radius-md)] p-1">
                 {unselectedCredentials.map((cred) => (
-                  <button
+                  <ListRow
                     key={cred.id}
-                    type="button"
+                    title={cred.name}
+                    description={cred.description}
                     onClick={() => handleAddCredential(cred.id)}
-                    className="w-full flex items-center gap-2 p-2 hover:bg-muted rounded transition-colors text-left"
-                  >
-                    <div className="flex-1">
-                      <div className="text-sm font-medium">{cred.name}</div>
-                      {cred.description && (
-                        <div className="text-xs text-muted-foreground truncate">
-                          {cred.description}
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex gap-2">
-                      <Badge variant="outline" className="text-xs">
-                        {formatLabel(cred.protocol)}
-                      </Badge>
-                      <Badge variant="outline" className="text-xs">
-                        {formatLabel(cred.scope)}
-                      </Badge>
-                    </div>
-                  </button>
+                    actions={
+                      <>
+                        <Badge>{formatLabel(cred.protocol)}</Badge>
+                        <Badge>{formatLabel(cred.scope)}</Badge>
+                      </>
+                    }
+                  />
                 ))}
               </div>
             )}
           </div>
 
           {credentialIds.length === 0 && (
-            <p className="text-sm text-destructive mt-2">
-              Please select at least one credential
-            </p>
+            <FieldHint error="Please select at least one credential" className="mt-2" />
           )}
         </div>
 
@@ -367,33 +356,26 @@ export const CredentialSetForm: React.FC<CredentialSetFormProps> = ({
             placeholder="Type a tag and press Enter"
           />
           {tags.length > 0 && (
-            <div className="flex flex-wrap gap-2 mt-2">
+            <div className="mt-2 flex flex-wrap gap-2">
               {tags.map((tag) => (
-                <span
-                  key={tag}
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-secondary text-secondary-foreground text-sm"
-                >
+                <Tag key={tag} onRemove={() => handleDeleteTag(tag)}>
                   {tag}
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteTag(tag)}
-                    className="hover:text-destructive"
-                  >
-                    <Icon name="x" size={12} />
-                  </button>
-                </span>
+                </Tag>
               ))}
             </div>
           )}
         </div>
 
         {/* Action Buttons */}
-        <div className="flex justify-end gap-2 pt-4 border-t">
-          <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting}>
+        <div className="flex justify-end gap-2 border-t border-[var(--hh-hairline)] pt-4">
+          <Button type="button" variant="secondary" onClick={onCancel} disabled={isSubmitting}>
             Cancel
           </Button>
-          <Button type="submit" disabled={isSubmitting || credentialIds.length === 0}>
-            <Icon name="floppy-disk" size={16} className="mr-2" />
+          <Button
+            type="submit"
+            icon="floppy-disk"
+            disabled={isSubmitting || credentialIds.length === 0}
+          >
             {isSubmitting ? 'Saving...' : 'Save Set'}
           </Button>
         </div>

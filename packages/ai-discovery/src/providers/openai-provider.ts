@@ -133,7 +133,7 @@ export class OpenAIProvider extends BaseLLMProvider {
             logger.info('OpenAI requested discovery tool', { toolName: tool.name });
 
             // Execute tool
-            const toolCall = await this.executeTool(tool, functionArgs);
+            const toolCall = await this.executeTool(tool, functionArgs, context);
             toolCall.id = toolId;
             toolCalls.push(toolCall);
 
@@ -141,9 +141,7 @@ export class OpenAIProvider extends BaseLLMProvider {
             messages.push({
               role: 'tool',
               tool_call_id: toolId,
-              content: toolCall.success
-                ? JSON.stringify(toolCall.output)
-                : `Error: ${toolCall.error}`,
+              content: this.formatToolResult(toolCall),
             });
           }
 

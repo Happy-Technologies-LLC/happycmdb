@@ -9,7 +9,10 @@ vi.mock('axios', () => ({ default: { create: () => ({
   ...request, interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } },
 }) } }));
 vi.mock('../contexts/ToastContext', () => ({ useToast: () => ({ showToast: toast }) }));
-vi.mock('@happy-technologies/design-system', () => ({ Icon: () => null }));
+vi.mock('@happy-technologies/design-system', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@happy-technologies/design-system')>()),
+  Icon: () => null,
+}));
 
 import { Jobs } from './Jobs';
 

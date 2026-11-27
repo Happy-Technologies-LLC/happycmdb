@@ -7,9 +7,7 @@
  */
 
 import React, { useState } from 'react';
-import { Icon } from '@happy-technologies/design-system';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Card } from '@/components/ui/card';
+import { PageHeader, TabPanel, Tabs } from '@happy-technologies/design-system';
 import { InventoryStats } from '../components/analytics/InventoryStats';
 import { ChangeTimeline } from '../components/analytics/ChangeTimeline';
 import { HealthMetrics } from '../components/analytics/HealthMetrics';
@@ -18,8 +16,19 @@ import { RelationshipMatrix } from '../components/analytics/RelationshipMatrix';
 import { DiscoveryStats } from '../components/analytics/DiscoveryStats';
 import { DateRangeSelector } from '../components/analytics/DateRangeSelector';
 
+const TABS = [
+  { value: 'inventory', label: 'Inventory', icon: 'chart-bar' },
+  { value: 'changes', label: 'Changes', icon: 'trend-up' },
+  { value: 'health', label: 'Health', icon: 'pulse' },
+  { value: 'connections', label: 'Connections', icon: 'share-network' },
+  { value: 'relationships', label: 'Relationships', icon: 'git-branch' },
+  { value: 'discovery', label: 'Discovery', icon: 'magnifying-glass' },
+] as const;
+
+type TabValue = (typeof TABS)[number]['value'];
+
 export const Analytics: React.FC = () => {
-  const [activeTab, setActiveTab] = useState('inventory');
+  const [activeTab, setActiveTab] = useState<TabValue>('inventory');
   const [dateRange, setDateRange] = useState<{
     startDate?: string;
     endDate?: string;
@@ -31,74 +40,34 @@ export const Analytics: React.FC = () => {
 
   return (
     <div>
-      <div className="mb-6">
-        <div className="flex justify-between items-start mb-4">
-          <div>
-            <h1 className="text-3xl font-bold tracking-tight">
-              Analytics & Reporting
-            </h1>
-            <p className="text-muted-foreground mt-1">
-              Comprehensive insights into your CMDB configuration items
-            </p>
-          </div>
-          <DateRangeSelector onChange={handleDateRangeChange} />
-        </div>
-      </div>
+      <PageHeader
+        className="mb-6"
+        eyebrow="Analytics"
+        title="Analytics & Reporting"
+        lede="Comprehensive insights into your CMDB configuration items"
+        actions={<DateRangeSelector onChange={handleDateRangeChange} />}
+      />
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <Card className="mb-6">
-          <TabsList className="w-full justify-start overflow-x-auto flex-nowrap">
-            <TabsTrigger value="inventory" className="gap-2">
-              <Icon name="chart-bar" size={16} />
-              Inventory
-            </TabsTrigger>
-            <TabsTrigger value="changes" className="gap-2">
-              <Icon name="trend-up" size={16} />
-              Changes
-            </TabsTrigger>
-            <TabsTrigger value="health" className="gap-2">
-              <Icon name="pulse" size={16} />
-              Health
-            </TabsTrigger>
-            <TabsTrigger value="connections" className="gap-2">
-              <Icon name="share-network" size={16} />
-              Connections
-            </TabsTrigger>
-            <TabsTrigger value="relationships" className="gap-2">
-              <Icon name="git-branch" size={16} />
-              Relationships
-            </TabsTrigger>
-            <TabsTrigger value="discovery" className="gap-2">
-              <Icon name="magnifying-glass" size={16} />
-              Discovery
-            </TabsTrigger>
-          </TabsList>
-        </Card>
+      <Tabs
+        id="analytics-tabs"
+        aria-label="Analytics views"
+        className="mb-6"
+        value={activeTab}
+        onChange={setActiveTab}
+        options={[...TABS]}
+        collapseTo="select"
+        collapseLabel="Analytics view"
+      />
 
-        <TabsContent value="inventory" className="mt-0">
-          <InventoryStats />
-        </TabsContent>
-
-        <TabsContent value="changes" className="mt-0">
-          <ChangeTimeline dateRange={dateRange} />
-        </TabsContent>
-
-        <TabsContent value="health" className="mt-0">
-          <HealthMetrics dateRange={dateRange} />
-        </TabsContent>
-
-        <TabsContent value="connections" className="mt-0">
-          <TopConnectedCIs />
-        </TabsContent>
-
-        <TabsContent value="relationships" className="mt-0">
-          <RelationshipMatrix />
-        </TabsContent>
-
-        <TabsContent value="discovery" className="mt-0">
-          <DiscoveryStats dateRange={dateRange} />
-        </TabsContent>
-      </Tabs>
+      {/* Only the selected view is mounted, as before: each view fetches its own data on mount. */}
+      <TabPanel tabsId="analytics-tabs" value={activeTab} selected>
+        {activeTab === 'inventory' && <InventoryStats />}
+        {activeTab === 'changes' && <ChangeTimeline dateRange={dateRange} />}
+        {activeTab === 'health' && <HealthMetrics dateRange={dateRange} />}
+        {activeTab === 'connections' && <TopConnectedCIs />}
+        {activeTab === 'relationships' && <RelationshipMatrix />}
+        {activeTab === 'discovery' && <DiscoveryStats dateRange={dateRange} />}
+      </TabPanel>
     </div>
   );
 };

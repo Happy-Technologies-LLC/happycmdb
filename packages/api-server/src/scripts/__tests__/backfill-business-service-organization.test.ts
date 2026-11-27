@@ -19,6 +19,7 @@ import { fork } from 'child_process';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
+import { MALFORMED_AMBIENT_TLS_ENV, PERMISSIVE_AMBIENT_TLS_ENV, runOperatorCli } from './fixtures/run-operator-cli';
 import {
   backfillBusinessServiceOrganizations, FILL_CYPHER, FILLABLE_CYPHER, INCARNATION_CONSTRAINT_CYPHER, main,
   PREPARE_CYPHER, prepareBusinessServiceIncarnations, type GraphSession, type SqlClient,
@@ -450,6 +451,13 @@ describe('backfill CLI', () => {
     [['--prepare', '--apply'], ENV, 'unexpected argument --prepare'],
     [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE, '--prepare'], ENV, 'unexpected argument --prepare'],
     [['--prepare'], { CMDB_BACKFILL_NEO4J_URI: 'bolt://127.0.0.1:1', CMDB_BACKFILL_NEO4J_USERNAME: 'unused' }, 'CMDB_BACKFILL_NEO4J_PASSWORD is required'],
+    [['--prepare'], { ...ENV, CMDB_BACKFILL_NEO4J_URI: 'bolt://db.example:7687' }, 'CMDB_BACKFILL_NEO4J_ENCRYPTED must be set for a non-loopback host'],
+    [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE], { ...ENV, CMDB_BACKFILL_POSTGRES_HOST: 'db.example' }, 'CMDB_BACKFILL_POSTGRES_SSL must be set for a non-loopback host'],
+    [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE], { ...ENV, CMDB_BACKFILL_POSTGRES_HOST: '127.0.0.1.evil.com' }, 'CMDB_BACKFILL_POSTGRES_SSL must be set for a non-loopback host'],
+    [['--created-before', CUTOVER, '--writer-timezone', WRITER_TIMEZONE], { ...ENV, CMDB_BACKFILL_POSTGRES_SSL: 'verify-full', CMDB_BACKFILL_POSTGRES_SSL_CA_FILE: '/nonexistent/ca.pem' }, 'CMDB_BACKFILL_POSTGRES_SSL_CA_FILE cannot be read'],
+    ...['bolt+ssc://h', 'neo4j+s://h', 'bolt://h\n', 'bolt://h%41', 'bolt://u:p@h', 'bolt://h:abc', 'bolt://h:0', 'bolt://h:65536', 'bolt://[.]'].map(uri =>
+      [['--prepare'], { ...ENV, CMDB_BACKFILL_NEO4J_URI: uri },
+        'CMDB_BACKFILL_NEO4J_URI must be bolt://<host>[:port] or neo4j://<host>[:port] (use CMDB_BACKFILL_NEO4J_ENCRYPTED=true for TLS)'] as [string[], Record<string, string>, string]),
   ] as Array<[string[], Record<string, string>, string]>)('refuses %j before reading any store', async (argv, env, message) => {
     const out: string[] = [];
     const err: string[] = [];
@@ -462,4 +470,34 @@ describe('backfill CLI', () => {
     expect(err[0]).toContain(message);
     expect(err[0]).not.toMatch(/secret-value|ECONNREFUSED/);
   });
+});
+
+/**
+ * The `require.main === module` block as a real process: it must call isolateOperatorEnvironment before any client
+ * exists. `main` takes `env` explicitly, so only a child process can see the ambient API-server toggles.
+ */
+describe('backfill CLI process', () => {
+  const SCRIPT = join(__dirname, '../backfill-business-service-organization.ts');
+  const ENV = {
+    CMDB_BACKFILL_NEO4J_URI: 'bolt://127.0.0.1:1', CMDB_BACKFILL_NEO4J_USERNAME: 'unused', CMDB_BACKFILL_NEO4J_PASSWORD: 'neo4j-secret-value',
+  };
+
+  it('ignores malformed ambient API-server TLS toggles', async () => {
+    const { code, stdout, stderr, driverConfigs } = await runOperatorCli(SCRIPT, ['--prepare'], { ...ENV, ...MALFORMED_AMBIENT_TLS_ENV });
+
+    expect(stderr).not.toContain('must be true or false');
+    expect(stderr).not.toContain('Unsupported PostgreSQL TLS mode');
+    expect(driverConfigs).toHaveLength(1); // the Neo4jClient was constructed
+    expect(code).toBe(1);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('backfill-business-service-organization: stub neo4j driver: no connection');
+  }, 10000);
+
+  it('connects with its own { encrypted: false } whatever the ambient TLS toggles ask for', async () => {
+    const { driverConfigs, stderr } = await runOperatorCli(SCRIPT, ['--prepare'], { ...ENV, ...PERMISSIVE_AMBIENT_TLS_ENV });
+
+    expect(driverConfigs).toHaveLength(1);
+    expect(driverConfigs[0]).toMatchObject({ encrypted: 'ENCRYPTION_OFF', trust: 'TRUST_SYSTEM_CA_SIGNED_CERTIFICATES' });
+    expect(stderr).not.toContain('SSL/TLS encryption enabled');
+  }, 10000);
 });

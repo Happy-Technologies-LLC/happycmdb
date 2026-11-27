@@ -2,74 +2,44 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React from 'react';
-import { Icon } from '@happy-technologies/design-system';
+import { Badge, Icon, type BadgeVariant } from '@happy-technologies/design-system';
 import { CIStatus } from '../../services/ci.service';
-import { cn } from '../../utils/cn';
 
 interface CIStatusBadgeProps {
   status: CIStatus;
+  /** Retained for callers: the design-system Badge has one size, so this no longer changes the geometry. */
   size?: 'small' | 'medium';
+  /** `filled` (default) renders the heavier lifecycle label weight; `outlined` the regular one. */
   variant?: 'filled' | 'outlined';
   className?: string;
 }
 
+/** Lifecycle status. Health is a separate signal (`CI.health`) and never reads from this badge. */
 const statusConfig: Record<
   CIStatus,
-  {
-    label: string;
-    filled: string;
-    outlined: string;
-    icon: React.ReactElement;
-  }
+  { label: string; tone: BadgeVariant; icon: React.ReactElement }
 > = {
-  active: {
-    label: 'Active',
-    filled: 'bg-success text-white border-success',
-    outlined: 'bg-success-soft text-success border-success',
-    icon: <Icon name="check-circle" size={16} />,
-  },
-  inactive: {
-    label: 'Inactive',
-    filled: 'bg-ink-soft text-white border-ink-soft',
-    outlined: 'bg-line-soft text-ink-soft border-line',
-    icon: <Icon name="x" size={16} />,
-  },
-  maintenance: {
-    label: 'Maintenance',
-    filled: 'bg-warning text-white border-warning',
-    outlined: 'bg-warning-soft text-warning-text border-warning',
-    icon: <Icon name="wrench" size={16} />,
-  },
-  decommissioned: {
-    label: 'Decommissioned',
-    filled: 'bg-danger text-white border-danger',
-    outlined: 'bg-danger-soft text-danger border-danger',
-    icon: <Icon name="trash" size={16} />,
-  },
+  active: { label: 'Active', tone: 'success', icon: <Icon name="check-circle" size={13} /> },
+  inactive: { label: 'Inactive', tone: 'neutral', icon: <Icon name="x" size={13} /> },
+  maintenance: { label: 'Maintenance', tone: 'warning', icon: <Icon name="wrench" size={13} /> },
+  decommissioned: { label: 'Decommissioned', tone: 'danger', icon: <Icon name="trash" size={13} /> },
 };
 
 export const CIStatusBadge: React.FC<CIStatusBadgeProps> = ({
   status,
-  size = 'small',
   variant = 'filled',
   className,
 }) => {
   const config = statusConfig[status] || statusConfig.inactive;
-  const colorClasses = variant === 'filled' ? config.filled : config.outlined;
-  const sizeClasses = size === 'small' ? 'px-2 py-0.5 text-xs' : 'px-3 py-1 text-sm';
-
   return (
-    <span
-      className={cn(
-        'inline-flex items-center gap-1.5 rounded-full border font-display font-semibold',
-        colorClasses,
-        sizeClasses,
-        className
-      )}
+    <Badge
+      variant={config.tone}
+      emphasis={variant === 'filled' ? 'bold' : 'medium'}
+      className={className}
     >
       {config.icon}
       {config.label}
-    </span>
+    </Badge>
   );
 };
 

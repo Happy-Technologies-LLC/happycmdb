@@ -18,7 +18,7 @@ import { ConnectorConfigController } from '../controllers/connector-config.contr
 import { validateRequest, validateOptional } from '../middleware/validation.middleware';
 import { auditMiddleware } from '../../middleware/audit.middleware';
 import { getAuthMiddleware } from '../../auth/auth-bootstrap';
-import { requireConnectorScope } from '../../auth/connector-scope';
+import { requireConnectorScope, CONFIG_NOT_FOUND, RUN_NOT_FOUND } from '../../auth/connector-scope';
 
 export const connectorConfigRoutes = Router();
 const controller = new ConnectorConfigController();
@@ -28,13 +28,33 @@ const authMiddleware = getAuthMiddleware();
 connectorConfigRoutes.use(auditMiddleware);
 connectorConfigRoutes.use(requireConnectorScope);
 
+// connector_configurations.id and connector_run_history.id are UUID columns: a
+// malformed id can never match a row, so answer the not-found body before the
+// driver raises 22P02. Param callbacks only run for routes that declare the
+// parameter, so static segments such as /runs/all are unaffected.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+connectorConfigRoutes.param('id', (_req, res, next, id: string) => {
+  if (!UUID_RE.test(id)) {
+    res.status(404).json(CONFIG_NOT_FOUND);
+    return;
+  }
+  next();
+});
+connectorConfigRoutes.param('runId', (_req, res, next, runId: string) => {
+  if (!UUID_RE.test(runId)) {
+    res.status(404).json(RUN_NOT_FOUND);
+    return;
+  }
+  next();
+});
+
 // Validation schemas
 const createConfigSchema = Joi.object({
   name: Joi.string().required().min(1).max(255),
   description: Joi.string().optional().allow(''),
   connector_type: Joi.string().required().min(1).max(100),
   enabled: Joi.boolean().optional().default(true),
-  schedule: Joi.string().optional().allow(''), // Cron expression
+  schedule: Joi.string().max(100).optional().allow(''), // Cron expression
   schedule_enabled: Joi.boolean().optional().default(false),
   connection: Joi.object().required(), // Connector-specific connection config
   options: Joi.object().optional().default({}),
@@ -53,7 +73,7 @@ const updateConfigSchema = Joi.object({
   name: Joi.string().optional().min(1).max(255),
   description: Joi.string().optional().allow(''),
   enabled: Joi.boolean().optional(),
-  schedule: Joi.string().optional().allow(''),
+  schedule: Joi.string().max(100).optional().allow(''),
   schedule_enabled: Joi.boolean().optional(),
   connection: Joi.object().optional(),
   options: Joi.object().optional(),
@@ -80,7 +100,7 @@ const listConfigsSchema = Joi.object({
 });
 
 const runConfigSchema = Joi.object({
-  resource_id: Joi.string().optional(), // Run specific resource only
+  resource_id: Joi.string().max(100).optional(), // Run specific resource only
   triggered_by: Joi.any().forbidden(),
 });
 

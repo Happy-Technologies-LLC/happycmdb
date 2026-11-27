@@ -120,3 +120,7 @@ export {
   VALID_RELATIONSHIP_TYPES,
   VALID_CI_PROPERTIES,
 } from './security/cypher-validators';
+export {
+  MAX_HOSTNAME_LENGTH, MAX_NETWORK_LENGTH, MAX_AFFINITY_ITEMS, MAX_IPV4_LENGTH,
+  CredentialInputBoundsError, assertAffinityBounds, assertMatchContextBounds,
+} from './security/credential-affinity-limits';

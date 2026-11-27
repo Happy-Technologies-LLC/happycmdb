@@ -8,11 +8,9 @@
 
 import React, { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Icon } from '@happy-technologies/design-system';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Card } from '@/components/ui/card';
-import { Eyebrow } from '@/components/ui/eyebrow';
+import { Card, EmptyState, PageHeader, TabPanel, Tabs } from '@happy-technologies/design-system';
 import { useAuth } from '../contexts/AuthContext';
+import { usePermission } from '@/hooks/usePermission';
 import { GeneralSettings } from '../components/settings/GeneralSettings';
 import { DiscoverySettings } from '../components/settings/DiscoverySettings';
 import { NotificationSettings } from '../components/settings/NotificationSettings';
@@ -20,8 +18,22 @@ import { UserProfile } from '../components/settings/UserProfile';
 import { ApiKeysManager } from '../components/settings/ApiKeysManager';
 import { DatabaseSettings } from '../components/settings/DatabaseSettings';
 
+const TABS_ID = 'settings-tabs';
+
+/** What a role without `write` sees in place of a settings form: no field, no save control. */
+function NotPermitted({ what }: { what: string }) {
+  return (
+    <EmptyState
+      icon="lock-key"
+      title="Not permitted"
+      description={`Changing ${what} needs the write permission, which your role does not hold.`}
+    />
+  );
+}
+
 export const Settings: React.FC = () => {
   const { hasRole } = useAuth();
+  const canWrite = usePermission('write');
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get('tab') || 'general';
 
@@ -33,76 +45,62 @@ export const Settings: React.FC = () => {
     setSearchParams({ tab: newValue });
   };
 
+  const tabs = [
+    { value: 'general', label: 'General', icon: 'gear-six' },
+    { value: 'discovery', label: 'Discovery', icon: 'cloud' },
+    { value: 'notifications', label: 'Notifications', icon: 'bell' },
+    { value: 'profile', label: 'Profile', icon: 'user-circle' },
+    { value: 'api-keys', label: 'API Keys', icon: 'key' },
+    ...(isAdmin ? [{ value: 'database', label: 'Database', icon: 'database' }] : []),
+  ];
+
+  // Panels stay mounted (the DS TabPanel keeps aria-controls valid) but only the active one renders its content,
+  // so a tab's reads are not issued until it is opened.
+  const panel = (value: string, content: React.ReactNode) => (
+    <TabPanel tabsId={TABS_ID} value={value} selected={activeTab === value}>
+      {activeTab === value ? content : null}
+    </TabPanel>
+  );
+
   return (
     <div>
-      <div className="mb-6">
-        <Eyebrow>Platform · Settings</Eyebrow>
-        <h1 className="mt-3 text-[1.9rem]">Settings</h1>
-        <p className="mt-1.5 text-ink-soft">
-          Manage your application preferences and configurations
-        </p>
-      </div>
+      <PageHeader
+        className="mb-6"
+        eyebrow="Platform · Settings"
+        title="Settings"
+        lede="Manage your application preferences and configurations"
+      />
 
-      <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
-        <Card>
-          <TabsList className="w-full justify-start overflow-x-auto flex-nowrap">
-            <TabsTrigger value="general" className="gap-2">
-              <Icon name="gear-six" size={16} />
-              General
-            </TabsTrigger>
-            <TabsTrigger value="discovery" className="gap-2">
-              <Icon name="cloud" size={16} />
-              Discovery
-            </TabsTrigger>
-            <TabsTrigger value="notifications" className="gap-2">
-              <Icon name="bell" size={16} />
-              Notifications
-            </TabsTrigger>
-            <TabsTrigger value="profile" className="gap-2">
-              <Icon name="user-circle" size={16} />
-              Profile
-            </TabsTrigger>
-            <TabsTrigger value="api-keys" className="gap-2">
-              <Icon name="key" size={16} />
-              API Keys
-            </TabsTrigger>
-            {isAdmin && (
-              <TabsTrigger value="database" className="gap-2">
-                <Icon name="database" size={16} />
-                Database
-              </TabsTrigger>
-            )}
-          </TabsList>
+      <Card inset="none">
+        <div className="overflow-x-auto p-3">
+          <Tabs
+            id={TABS_ID}
+            aria-label="Settings sections"
+            value={activeTab}
+            onChange={handleTabChange}
+            options={tabs}
+            className="flex-nowrap"
+          />
+        </div>
 
-          <div className="p-6">
-            <TabsContent value="general" className="mt-0">
-              <GeneralSettings />
-            </TabsContent>
-
-            <TabsContent value="discovery" className="mt-0">
-              <DiscoverySettings />
-            </TabsContent>
-
-            <TabsContent value="notifications" className="mt-0">
-              <NotificationSettings />
-            </TabsContent>
-
-            <TabsContent value="profile" className="mt-0">
-              <UserProfile />
-            </TabsContent>
-
-            <TabsContent value="api-keys" className="mt-0">
-              <ApiKeysManager />
-            </TabsContent>
-
-            {isAdmin && (
-              <TabsContent value="database" className="mt-0">
-                <DatabaseSettings />
-              </TabsContent>
-            )}
-          </div>
-        </Card>
-      </Tabs>
+        <div className="p-6">
+          {panel(
+            'general',
+            canWrite ? <GeneralSettings /> : <NotPermitted what="general settings" />
+          )}
+          {panel(
+            'discovery',
+            canWrite ? <DiscoverySettings /> : <NotPermitted what="discovery settings" />
+          )}
+          {panel(
+            'notifications',
+            canWrite ? <NotificationSettings /> : <NotPermitted what="notification settings" />
+          )}
+          {panel('profile', <UserProfile />)}
+          {panel('api-keys', <ApiKeysManager />)}
+          {isAdmin && panel('database', <DatabaseSettings />)}
+        </div>
+      </Card>
     </div>
   );
 };

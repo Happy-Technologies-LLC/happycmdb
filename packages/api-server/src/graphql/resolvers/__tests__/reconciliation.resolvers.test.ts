@@ -141,6 +141,44 @@ describe('mergeCI', () => {
   });
 });
 
+describe('listConflicts page arguments', () => {
+  const { listConflicts } = reconciliationResolvers.ReconciliationQuery;
+  const _neo4jClient = { assertJournalReady: async () => undefined } as unknown as GraphQLContext['_neo4jClient'];
+  const context = () => ({ ...contextWith(operatorUser), _neo4jClient });
+  const pagingOf = () => (mockQuery.mock.calls[0]![1] as unknown[]).slice(1, 3);
+
+  beforeEach(() => {
+    mockQuery.mockResolvedValue({ rows: [{ total: 0, rows: [] }] });
+  });
+
+  it.each([{ _limit: -1 }, { _limit: -1000 }, { _offset: -1 }, { _offset: -50 }])(
+    'refuses %p as BAD_USER_INPUT without querying', async args => {
+      await expectGraphQLErrorCode(listConflicts(null, args, context()), 'BAD_USER_INPUT');
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+  it('names the offending argument', async () => {
+    await expect(listConflicts(null, { _limit: -1 }, context())).rejects.toThrow('_limit must be an integer of at least 1');
+    await expect(listConflicts(null, { _offset: -1 }, context())).rejects.toThrow('_offset must be an integer of at least 0');
+  });
+
+  it('authorizes first: an anonymous caller with a bad argument gets UNAUTHENTICATED', async () => {
+    await expectGraphQLErrorCode(listConflicts(null, { _limit: -1, _offset: -1 }, contextWith(undefined)), 'UNAUTHENTICATED');
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it.each([{}, { _limit: null, _offset: null }, { _limit: 0, _offset: 0 }])('keeps the defaults for %p', async args => {
+    await listConflicts(null, args, context());
+    expect(pagingOf()).toEqual([100, 0]);
+  });
+
+  it('passes valid values through and clamps limit above 1000 and offset above 1000000', async () => {
+    await listConflicts(null, { _limit: 25, _offset: 50 }, context());
+    await listConflicts(null, { _limit: 5000, _offset: 5000000 }, context());
+    expect(mockQuery.mock.calls.map(call => (call[1] as unknown[]).slice(1, 3))).toEqual([[25, 50], [1000, 1000000]]);
+  });
+});
+
 describe('resolveConflict', () => {
   const args = { _id: 'conflict-1', _resolution: 'accept_source', _expectedRevision: 'a'.repeat(64) };
 

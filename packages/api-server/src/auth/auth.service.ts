@@ -89,9 +89,17 @@ export interface CredentialEventInput {
   actor: string;
 }
 
+/** The answer of a batched user lookup: the users found, and the ids that matched more than one node. */
+export interface UsersByIds<U = User> {
+  users: Map<string, U>;
+  ambiguous: string[];
+}
+
 export interface AuthRepository {
   findUserByUsername(username: string): Promise<User | null>;
   findUserById(id: string): Promise<User | null>;
+  /** Users by id in one batched read: an id with no node, or with more than one (ambiguous), is absent from `users`; an ambiguous id is also listed in `ambiguous`. */
+  findUsersByIds(ids: readonly string[], timeoutMs: number): Promise<UsersByIds>;
   updateUserLastLogin(userId: string): Promise<void>;
   /** Applies a partial profile update (name/avatar) and returns the updated user. */
   updateUser(id: string, updates: UserProfileUpdate): Promise<User>;
@@ -141,6 +149,14 @@ export class PasswordNotAllowedError extends Error {
   constructor() {
     super('Password not allowed');
     this.name = 'PasswordNotAllowedError';
+  }
+}
+
+/** API key creation while `auth.apiKeys.enabled` is false (→ 403). */
+export class ApiKeysDisabledError extends Error {
+  constructor() {
+    super('API keys are disabled');
+    this.name = 'ApiKeysDisabledError';
   }
 }
 
@@ -237,12 +253,15 @@ export class ApiKeyNotFoundError extends Error {
  * Logged reason of an authentication failure; never part of a response.
  * `default_credential_refused` (v16 §15 N-21) is a default-equivalent login
  * password refused outside development; `ambiguous_identity` is an
- * identifier matching more than one :User node. Callers send both the same
- * response as any other failure.
+ * identifier matching more than one :User node. `api_keys_disabled` is an API
+ * key header with no Bearer token while `auth.apiKeys.enabled` is false (logged
+ * with credentialType `api-key`, never the key; also the reason the
+ * `verifyApiKey` guard throws). Callers send all of these the same response as any other
+ * failure.
  */
 export type AuthFailureReason =
   | 'invalid' | 'expired' | 'wrong_type' | 'disabled' | 'revoked' | 'store_error' | 'default_credential_refused'
-  | 'ambiguous_identity';
+  | 'ambiguous_identity' | 'api_keys_disabled';
 
 export class AuthFailureError extends Error {
   override readonly cause: unknown;
@@ -279,6 +298,8 @@ export class AuthService {
   private passwordService: PasswordService;
   private repository: AuthRepository;
   private dummyHash: Promise<string> | undefined;
+  /** Same semantics as the middleware: only an explicit `false` disables API keys. */
+  private readonly apiKeysEnabled: boolean;
 
   constructor(
     _config: ConfigSchema['auth'],
@@ -287,6 +308,7 @@ export class AuthService {
     this.jwtService = new JWTService(_config.jwt);
     this.passwordService = new PasswordService(_config.bcrypt);
     this.repository = _repository;
+    this.apiKeysEnabled = _config.apiKeys?.enabled !== false;
   }
 
   /**
@@ -486,12 +508,26 @@ export class AuthService {
   }
 
   /**
+   * The enabled users among `ids` (one batched identity-store read bounded by `timeoutMs`), by id. A missing,
+   * disabled or ambiguous (two nodes) id is absent from `users`; the ambiguous ids are reported in `ambiguous` so the
+   * caller can raise the integrity alarm findEnabledUser's AmbiguousUserIdentityError is. Same per-id result as
+   * findEnabledUser, without a read per id.
+   */
+  async findEnabledUsers(ids: readonly string[], timeoutMs: number): Promise<UsersByIds> {
+    const { users, ambiguous } = await this.repository.findUsersByIds(ids, timeoutMs);
+    return { users: new Map([...users].filter(([, user]) => user._enabled)), ambiguous };
+  }
+
+  /**
    * Generate an API key for a user. The key records the credential
    * generation of the credential that authorized this request
    * (`authorizingEpoch`, req.user._cep), never a fresh read: a key created
    * in flight by a pre-rotation credential is born dead.
    */
   async generateApiKey(userId: string, request: ApiKeyRequest, authorizingEpoch: number): Promise<ApiKeyResponse> {
+    if (!this.apiKeysEnabled) {
+      throw new ApiKeysDisabledError();
+    }
     const { name: _name, expiresInDays } = request;
     if (!Number.isSafeInteger(authorizingEpoch)) {
       throw new CredentialsChangedError();
@@ -534,9 +570,13 @@ export class AuthService {
   }
 
   /**
-   * Verify API key and return associated user info
+   * Verify API key and return associated user info. Refused with AuthFailureError('api_keys_disabled') before any hash or
+   * repository read while auth.apiKeys.enabled is false, so the kill switch holds for every caller, not only the middleware.
    */
   async verifyApiKey(apiKey: string): Promise<TokenPayload> {
+    if (!this.apiKeysEnabled) {
+      throw new AuthFailureError('api_keys_disabled');
+    }
     try {
       const keyHash = this.hashKey(apiKey);
       const apiKeyRecord = await this.repository.findApiKeyByKey(keyHash);

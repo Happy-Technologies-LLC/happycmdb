@@ -51,9 +51,9 @@ export interface AffectedCI {
   /**
    * HAP-1927 (BW12): which side of the source CI this one is on. `downstream` = it depends on the source (affected when the
    * source changes or fails); `upstream` = the source depends on it. The prediction walks dependents only, so every record
-   * it produces is `downstream`. Records persisted before this field carry no `direction`.
+   * it produces is `downstream`. Records persisted before this field omit it, so it is optional.
    */
-  direction: ImpactDirection;
+  direction?: ImpactDirection;
 }
 
 export type ImpactDirection = 'upstream' | 'downstream';

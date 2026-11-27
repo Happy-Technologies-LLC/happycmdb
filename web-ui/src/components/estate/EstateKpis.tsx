@@ -27,9 +27,10 @@ function NotAvailable({ label, missing }: { label: string; missing: ReactNode })
 
 /**
  * ME9 to ME13, the KPI stack. CIs managed is real (`total_cis` of GET /analytics/dashboard). Drift and coverage have
- * no source yet. Health shows the dashboard's `health_score` only when it is a number; the server sends null until a
- * CI health state exists (BW1), and that renders as "Not available yet", never as 0%. Deltas and sparklines need a KPI
- * history (BW7) and are not drawn.
+ * no source yet. Health shows the dashboard's `health_score` only when it is a number; the server sends null when the
+ * signal is unavailable (incident tables absent, too many CIs with an open incident, no CIs, or the incident read
+ * failed or timed out; see services/ci-health.ts and `unavailable`), and that renders as "Not available yet", never
+ * as 0%. Deltas and sparklines need a KPI history (BW7) and are not drawn.
  */
 export function EstateKpis({
   stats,

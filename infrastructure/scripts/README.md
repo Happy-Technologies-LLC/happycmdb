@@ -485,6 +485,8 @@ export NEO4J_PASSWORD=cmdb_password_dev
 npx ts-node infrastructure/scripts/seed-data.ts
 ```
 
+The script honors the same Neo4j TLS variables as the API: `NEO4J_ENCRYPTED`, `NEO4J_SSL_ENABLED` and `NEO4J_ENCRYPTION` accept only `true` or `false`, `NEO4J_SSL_TRUST_STRATEGY` accepts `TRUST_SYSTEM_CA_SIGNED_CERTIFICATES` or `TRUST_ALL_CERTIFICATES`, and a `bolt+s`, `bolt+ssc`, `neo4j+s` or `neo4j+ssc` URI sets encryption itself.
+
 **Features**:
 - Idempotent (uses MERGE for CI creation)
 - Transaction-safe

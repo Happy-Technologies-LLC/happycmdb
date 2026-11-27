@@ -312,6 +312,7 @@ beforeAll(async () => {
     await db.exec(definition[0]);
   }
   await db.exec(readFileSync(join(MIGRATIONS, '019_discovery_agents_organization_scope.sql'), 'utf8'));
+  await db.exec(readFileSync(join(MIGRATIONS, '057_discovery_agents_owner.sql'), 'utf8'));
   ciBackfilled = await db.rows('SELECT ci_name, organization_id, org_backfilled FROM cmdb.dim_ci ORDER BY ci_key');
   // HAP-1423: the stored C1 record (043) and the hash-chained audit_log its writes append to (001, 003, 028's column).
   await db.exec([...schema.match(/CREATE TYPE audit_\w+ AS ENUM \([^;]*\);/g)!,

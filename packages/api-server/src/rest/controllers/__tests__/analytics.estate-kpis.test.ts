@@ -481,4 +481,33 @@ describe('getDashboardStats: KPI history (BW7)', () => {
     expect(historyRelease).toHaveBeenCalledTimes(2); // the snapshot write and the series read
     expect(historyLog.filter(statement => statement === 'COMMIT')).toHaveLength(2);
   });
+
+  it('sets the organization GUC transaction-locally: it is gone from the same session once the transaction ends', async () => {
+    clockAt(DAY1);
+    const org = randomUUID();
+    const calls: Array<{ text: string; params: unknown[] }> = [];
+    const recording = {
+      query: (text: string, params: unknown[] = []) => { calls.push({ text, params }); return historyClient.query(text, params); },
+      release: historyRelease,
+    };
+    const pg = { getClient: async () => recording } as unknown as Parameters<typeof readEstateKpiHistory>[0];
+    const setConfigs = () => calls.filter(call => call.text.includes('set_config'));
+    // PGlite is one session, as a pooled connection is: this read sees what the released connection left behind.
+    const leftover = async () => (await sql(`SELECT current_setting('cmdb.organization_id', true) AS org`))[0]!['org'];
+    const kpis = { health_score: null, ci_health: null, open_drift_count: 0, configuration_coverage: null, unavailable: [] };
+
+    await recordEstateKpiSnapshot(pg, org, kpis, 1);
+    expect(setConfigs()).toHaveLength(1);
+    expect(setConfigs()[0]!.text).toMatch(/set_config\('cmdb\.organization_id',\s*\$1,\s*true\)/);
+    expect(setConfigs()[0]!.params).toEqual([org]);
+    expect(await leftover() ?? '').toBe('');
+
+    calls.length = 0;
+    await readEstateKpiHistory(pg, org);
+    expect(setConfigs()).toHaveLength(1);
+    expect(setConfigs()[0]!.text).toMatch(/set_config\('cmdb\.organization_id',\s*\$1,\s*true\)/);
+    expect(setConfigs()[0]!.params).toEqual([org]);
+    expect(await leftover() ?? '').toBe('');
+    expect(historyRelease).toHaveBeenCalledTimes(2);
+  });
 });

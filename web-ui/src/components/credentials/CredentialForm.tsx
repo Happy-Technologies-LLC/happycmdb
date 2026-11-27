@@ -66,6 +66,22 @@ const WINRM_TRANSPORTS = [
 const PROTOCOL_OPTIONS = AUTH_PROTOCOLS.map((p) => ({ value: p, label: formatProtocol(p) }));
 const SCOPE_OPTIONS = CREDENTIAL_SCOPES.map((s) => ({ value: s, label: formatScope(s) }));
 
+/**
+ * The design-system Select closes its listbox on Escape but only preventDefaults the key, and the design-system Dialog dismisses on any document Escape.
+ * Stopping the key here while the listbox is open keeps Escape from also closing the dialog and discarding what was typed.
+ */
+const FormSelect: React.FC<React.ComponentProps<typeof Select>> = (props) => (
+  <div
+    onKeyDown={(e) => {
+      if (e.key === 'Escape' && (e.target as HTMLElement).getAttribute('aria-expanded') === 'true') {
+        e.stopPropagation();
+      }
+    }}
+  >
+    <Select {...props} />
+  </div>
+);
+
 const Field: React.FC<{ id: string; label: string; required?: boolean; children: React.ReactNode }> = ({
   id,
   label,
@@ -251,7 +267,7 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
     required: boolean = false
   ) => (
     <Field id={id} label={label} required={required}>
-      <Select
+      <FormSelect
         id={id}
         size="sm"
         value={credentialsData[id] || fallback}
@@ -521,7 +537,7 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
               control={control}
               rules={{ required: 'Protocol is required' }}
               render={({ field }) => (
-                <Select
+                <FormSelect
                   id="protocol"
                   size="sm"
                   value={field.value}
@@ -539,7 +555,7 @@ export const CredentialForm: React.FC<CredentialFormProps> = ({
               control={control}
               rules={{ required: 'Scope is required' }}
               render={({ field }) => (
-                <Select
+                <FormSelect
                   id="scope"
                   size="sm"
                   value={field.value}

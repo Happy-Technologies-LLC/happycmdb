@@ -3,33 +3,41 @@
 
 import React, { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { LiquidGlass } from '@/components/ui/liquid-glass';
-import { Button } from '@/components/ui/button';
-import { Eyebrow } from '@/components/ui/eyebrow';
-import { Icon } from '@happy-technologies/design-system';
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from '@/components/ui/dialog';
+  ConfirmDialog,
+  IconButton,
+  PageHeader,
+  TabPanel,
+  Tabs,
+} from '@happy-technologies/design-system';
 import DiscoveryDashboard from '../components/discovery/DiscoveryDashboard';
 import DiscoveryJobList from '../components/discovery/DiscoveryJobList';
 import DiscoveryJobTrigger from '../components/discovery/DiscoveryJobTrigger';
 import DiscoveryDefinitionList from '../components/discovery/DiscoveryDefinitionList';
 import { useDiscoveryDefinitions } from '../hooks/useDiscoveryDefinitions';
+import { isReadMethod, onForbidden } from '@/lib/forbidden';
+
+type DiscoveryTab = 'dashboard' | 'definitions' | 'adhoc' | 'jobs';
+
+const TABS: Array<{ value: DiscoveryTab; label: string }> = [
+  { value: 'dashboard', label: 'Dashboard' },
+  { value: 'definitions', label: 'Definitions' },
+  { value: 'adhoc', label: 'Ad Hoc' },
+  { value: 'jobs', label: 'Jobs' },
+];
+
+const TABS_ID = 'discovery-tabs';
 
 export const Discovery: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [tabValue, setTabValue] = useState('dashboard');
+  const [tabValue, setTabValue] = useState<DiscoveryTab>('dashboard');
   const [showHelpDialog, setShowHelpDialog] = useState(false);
   const navigate = useNavigate();
 
   const {
     definitions,
     loading,
+    error,
     loadDefinitions,
     createDefinition,
     updateDefinition,
@@ -39,14 +47,37 @@ export const Discovery: React.FC = () => {
     disableSchedule,
   } = useDiscoveryDefinitions();
 
+  // The hook loads in an effect, so `loading` is false on the first render and again after each load. Until one
+  // load has finished the list must read "loading", not "no definitions".
+  const [loadStarted, setLoadStarted] = useState(false);
+  const [loadSettled, setLoadSettled] = useState(false);
+  useEffect(() => {
+    if (loading) setLoadStarted(true);
+    else if (loadStarted) setLoadSettled(true);
+  }, [loading, loadStarted]);
+
+  // The hook reports a failed read as a message only. A primary read the server refused (403) also reaches the
+  // global ForbiddenHost; remember its reason so a refused read shows "not permitted", not a generic failure.
+  const [refusal, setRefusal] = useState<string | null>(null);
+  useEffect(
+    () =>
+      onForbidden((event) => {
+        if (isReadMethod(event.method) && !event.sideRead) setRefusal(event.reason);
+      }),
+    [],
+  );
+  useEffect(() => {
+    if (loading) setRefusal(null);
+  }, [loading]);
+
   useEffect(() => {
     const tab = searchParams.get('tab');
-    if (tab && ['dashboard', 'definitions', 'adhoc', 'jobs'].includes(tab)) {
-      setTabValue(tab);
+    if (tab && TABS.some((t) => t.value === tab)) {
+      setTabValue(tab as DiscoveryTab);
     }
   }, [searchParams]);
 
-  const handleTabChange = (newValue: string) => {
+  const handleTabChange = (newValue: DiscoveryTab) => {
     setTabValue(newValue);
     setSearchParams({ tab: newValue });
 
@@ -70,88 +101,84 @@ export const Discovery: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      {/* Page Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <Eyebrow>Infrastructure · Discovery</Eyebrow>
-          <h1 className="mt-3 text-[1.9rem]">Discovery</h1>
-          <p className="mt-1.5 text-ink-soft">
-            Discover and catalog CIs from cloud providers, servers, and network devices
-          </p>
-        </div>
-        <button
-          onClick={() => setShowHelpDialog(true)}
-          className="p-2 hover:bg-muted rounded-lg transition-colors"
-          title="Help"
-        >
-          <Icon name="question" size={24} className="text-muted-foreground" />
-        </button>
-      </div>
-
-      {/* Help Dialog */}
-      <Dialog open={showHelpDialog} onOpenChange={setShowHelpDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Need to integrate with ITSM or monitoring platforms?</DialogTitle>
-            <DialogDescription className="space-y-3 pt-2">
-              <p>
-                For bi-directional sync with ServiceNow, Jira, Datadog, or other external systems, use the
-                <strong> Connector Marketplace </strong> instead.
-              </p>
-              <p>
-                Discovery is for one-way infrastructure scanning from cloud providers, servers, and network devices.
-              </p>
-              <Button
-                onClick={() => {
-                  setShowHelpDialog(false);
-                  navigate('/connectors');
-                }}
-                size="sm"
-                className="mt-4"
-              >
-                Go to Connectors
-                <Icon name="arrow-right" size={16} className="ml-2" />
-              </Button>
-            </DialogDescription>
-          </DialogHeader>
-        </DialogContent>
-      </Dialog>
-
-      <Tabs value={tabValue} onValueChange={handleTabChange} className="w-full">
-        <LiquidGlass size="sm" rounded="xl" className="mb-6 overflow-hidden">
-          <TabsList className="w-full grid grid-cols-4 bg-transparent">
-            <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
-            <TabsTrigger value="definitions">Definitions</TabsTrigger>
-            <TabsTrigger value="adhoc">Ad Hoc</TabsTrigger>
-            <TabsTrigger value="jobs">Jobs</TabsTrigger>
-          </TabsList>
-        </LiquidGlass>
-
-        <TabsContent value="dashboard" className="mt-0">
-          <DiscoveryDashboard key={`dashboard-${tabValue}`} />
-        </TabsContent>
-
-        <TabsContent value="definitions" className="mt-0">
-          <DiscoveryDefinitionList
-            key={`definitions-${tabValue}`}
-            definitions={definitions}
-            loading={loading}
-            onCreateDefinition={createDefinition}
-            onUpdateDefinition={updateDefinition}
-            onDeleteDefinition={deleteDefinition}
-            onRunDefinition={handleRunDefinition}
-            onToggleSchedule={handleToggleSchedule}
+      <PageHeader
+        eyebrow="Infrastructure · Discovery"
+        title="Discovery"
+        lede="Discover and catalog CIs from cloud providers, servers, and network devices"
+        actions={
+          <IconButton
+            icon="question"
+            variant="ghost"
+            shape="rounded"
+            aria-label="Help"
+            onClick={() => setShowHelpDialog(true)}
           />
-        </TabsContent>
+        }
+      />
 
-        <TabsContent value="adhoc" className="mt-0">
-          <DiscoveryJobTrigger key={`adhoc-${tabValue}`} />
-        </TabsContent>
+      <ConfirmDialog
+        open={showHelpDialog}
+        title="Need to integrate with ITSM or monitoring platforms?"
+        body={
+          <div className="space-y-3">
+            <p>
+              For bi-directional sync with ServiceNow, Jira, Datadog, or other external systems, use the
+              <strong> Connector Marketplace </strong> instead.
+            </p>
+            <p>
+              Discovery is for one-way infrastructure scanning from cloud providers, servers, and network devices.
+            </p>
+          </div>
+        }
+        confirmLabel="Go to Connectors"
+        cancelLabel="Close"
+        onConfirm={() => {
+          setShowHelpDialog(false);
+          navigate('/connectors');
+        }}
+        onCancel={() => setShowHelpDialog(false)}
+      />
 
-        <TabsContent value="jobs" className="mt-0">
-          <DiscoveryJobList key={`jobs-${tabValue}`} />
-        </TabsContent>
-      </Tabs>
+      <div className="space-y-6">
+        <Tabs id={TABS_ID} value={tabValue} onChange={handleTabChange} options={TABS} aria-label="Discovery sections" />
+
+        {/* Only the selected panel is mounted: each tab loads its own data when it opens. */}
+        {tabValue === 'dashboard' && (
+          <TabPanel tabsId={TABS_ID} value="dashboard" selected>
+            <DiscoveryDashboard key={`dashboard-${tabValue}`} />
+          </TabPanel>
+        )}
+
+        {tabValue === 'definitions' && (
+          <TabPanel tabsId={TABS_ID} value="definitions" selected>
+            <DiscoveryDefinitionList
+              key={`definitions-${tabValue}`}
+              definitions={definitions}
+              loading={loading || !loadSettled}
+              error={error}
+              forbiddenReason={refusal}
+              onRetry={loadDefinitions}
+              onCreateDefinition={createDefinition}
+              onUpdateDefinition={updateDefinition}
+              onDeleteDefinition={deleteDefinition}
+              onRunDefinition={handleRunDefinition}
+              onToggleSchedule={handleToggleSchedule}
+            />
+          </TabPanel>
+        )}
+
+        {tabValue === 'adhoc' && (
+          <TabPanel tabsId={TABS_ID} value="adhoc" selected>
+            <DiscoveryJobTrigger key={`adhoc-${tabValue}`} />
+          </TabPanel>
+        )}
+
+        {tabValue === 'jobs' && (
+          <TabPanel tabsId={TABS_ID} value="jobs" selected>
+            <DiscoveryJobList key={`jobs-${tabValue}`} />
+          </TabPanel>
+        )}
+      </div>
     </div>
   );
 };

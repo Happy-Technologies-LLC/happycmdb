@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // HAP-1213: the new-SSH-credential secret lives in the input's value property only, never in the DOM tree,
 // and is dropped when the user leaves "Create a new SSH credential".
-import type { ReactElement, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { domLeaks, secretMarker } from '@/tests/utils/secretDom';
@@ -15,23 +14,9 @@ vi.mock('axios', () => ({ default: { create: () => ({
 vi.mock('../../hooks/useCredentials', () => ({
   useCredentials: () => ({ credentials: saved, loading: false, error: null, loadCredentials: vi.fn() }),
 }));
-// Radix Select does not open in jsdom; each item becomes a button that sets its Select's value.
-vi.mock('../ui/select', async () => {
-  const React = await import('react');
-  const Ctx = React.createContext<(value: string) => void>(() => undefined);
-  const Pass = ({ children }: { children?: ReactNode }): ReactElement => React.createElement(React.Fragment, null, children);
-  return {
-    Select: ({ onValueChange, children }: { onValueChange?: (value: string) => void; children?: ReactNode }) =>
-      React.createElement(Ctx.Provider, { value: onValueChange ?? (() => undefined) }, children),
-    SelectTrigger: Pass, SelectContent: Pass, SelectValue: () => null,
-    SelectItem: ({ value, children }: { value: string; children?: ReactNode }) => {
-      const choose = React.useContext(Ctx);
-      return React.createElement('button', { type: 'button', onClick: () => choose(value) }, children);
-    },
-  };
-});
 
 import DiscoveryDefinitionForm from './DiscoveryDefinitionForm';
+import DiscoveryDefinitionList from './DiscoveryDefinitionList';
 import type { DiscoveryDefinitionInput } from '../../services/discovery.service';
 // These screens gate their write controls on the signed-in role (HAP-1252 S1); this test is about the writes, so the user may write.
 vi.mock('@/hooks/usePermission', () => ({ usePermission: () => true }));
@@ -45,7 +30,16 @@ afterEach(cleanup);
 
 const type = (label: RegExp, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
 const secret = () => screen.getByLabelText(/^(password|private key)/i) as HTMLInputElement | HTMLTextAreaElement;
-const choose = (name: string | RegExp) => fireEvent.click(screen.getByRole('button', { name }));
+// The DS Select is a combobox whose listbox renders while open: open each until one offers the option, then pick it.
+const choose = (name: string | RegExp): void => {
+  for (const box of screen.getAllByRole('combobox')) {
+    fireEvent.click(box);
+    const option = screen.queryByRole('option', { name });
+    if (option) return void fireEvent.click(option);
+    fireEvent.click(box);
+  }
+  throw new Error(`no select offers ${String(name)}`);
+};
 
 function renderSsh(): void {
   render(<DiscoveryDefinitionForm onSubmit={onSubmit} onCancel={vi.fn()} />);
@@ -120,5 +114,41 @@ describe('DiscoveryDefinitionForm new SSH credential secret (HAP-1213)', () => {
     choose('NMAP');
     choose('SSH');
     expect(secret().value).toBe('');
+  });
+});
+
+describe('definition dialog with an open design-system portal (HAP-1922)', () => {
+  it('keeps every secret field out of the whole document while the dialog and a Select listbox are open', () => {
+    const noop = vi.fn().mockResolvedValue(undefined);
+    render(
+      <DiscoveryDefinitionList
+        definitions={[]}
+        loading={false}
+        onCreateDefinition={noop}
+        onUpdateDefinition={noop}
+        onDeleteDefinition={noop}
+        onRunDefinition={noop}
+        onToggleSchedule={noop}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /create definition/i }));
+    // The dialog is portalled out of the render container: the leak scan runs on document.body.
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    choose('SSH');
+
+    const password = secretMarker('dialog-pw');
+    type(/^password/i, password);
+    expect(domLeaks(password)).toEqual([]);
+
+    choose(/private key \(pem\)/i);
+    const pem = secretMarker('dialog-pem');
+    type(/private key \(pem text\)/i, `-----BEGIN OPENSSH PRIVATE KEY-----\n${pem}\n-----END OPENSSH PRIVATE KEY-----`);
+
+    // Leave a listbox open over the secret fields, then scan everything on the page.
+    fireEvent.click(screen.getByRole('combobox', { name: /^provider/i }));
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    expect(domLeaks(password)).toEqual([]);
+    expect(domLeaks(pem)).toEqual([]);
+    expect(secret().value).toContain(pem);
   });
 });

@@ -86,4 +86,17 @@ describe('DiscoverySessionsView figures', () => {
     expect(within(rowOf('web.internal')).getByText('$0.0000')).toBeInTheDocument();
     expect(within(rowOf('web.internal')).queryByText('Not available yet')).toBeNull();
   });
+
+  it('reads a session that reports no discovered CIs as a dash, never 0, and an empty list as 0', () => {
+    state({ sessions: [session({ discoveredCIs: undefined })] });
+    render(<DiscoverySessionsView />);
+    const cell = (host: string) => within(rowOf(host)).getAllByRole('cell')[headerIndex('CIs Found')];
+    const headerIndex = (name: string) => screen.getAllByRole('columnheader').findIndex((h) => h.textContent === name);
+    expect(cell('web.internal')).toHaveTextContent(/^—$/);
+
+    cleanup();
+    state({ sessions: [session({ discoveredCIs: [] })] });
+    render(<DiscoverySessionsView />);
+    expect(cell('web.internal')).toHaveTextContent(/^0$/);
+  });
 });

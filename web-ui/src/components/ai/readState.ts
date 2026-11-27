@@ -9,6 +9,10 @@ import { isReadMethod, onForbidden } from '@/lib/forbidden';
  * status. The 403 itself is reported by lib/session.ts to lib/forbidden.ts (and shown by ForbiddenHost), so a view
  * learns "the server refused my read" from the same event ForbiddenHost uses, and shows its own plain
  * not-permitted state instead of a blank or a spinner. A refused side read or write is not a refusal of the view.
+ *
+ * The refusal is page-wide and sticky: any refused primary read on this page marks every AI view that is mounted. That
+ * attribution is right only while every AI read shares one gate (ai-pattern.routes.ts `requireOrganization`); a future
+ * per-route gate must match the event to the view's own path before reusing this.
  */
 export function useReadRefusal(): string | null {
   const [refusal, setRefusal] = useState<string | null>(null);

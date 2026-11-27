@@ -103,4 +103,18 @@ describe('CostAnalyticsDashboard figures', () => {
     const label = screen.getByText('Total Saved');
     expect(label.previousElementSibling).toHaveTextContent(/^\$5\.50$/);
   });
+
+  it('reads pattern hits and AI discoveries that are null as unavailable, never 0, and a real 0 as 0', () => {
+    state(analytics({ savingsFromPatterns: { totalSaved: 5.5, percentSaved: 31, patternHits: null, aiDiscoveries: null } }));
+    render(<CostAnalyticsDashboard />);
+    const hitsOf = (label: string) => screen.getByText(label).nextElementSibling?.textContent;
+    expect(hitsOf('Pattern hits')).toBe('—');
+    expect(hitsOf('AI discoveries')).toBe('—');
+
+    cleanup();
+    state(analytics({ savingsFromPatterns: { totalSaved: 5.5, percentSaved: 31, patternHits: 0, aiDiscoveries: 0 } }));
+    render(<CostAnalyticsDashboard />);
+    expect(hitsOf('Pattern hits')).toBe('0');
+    expect(hitsOf('AI discoveries')).toBe('0');
+  });
 });

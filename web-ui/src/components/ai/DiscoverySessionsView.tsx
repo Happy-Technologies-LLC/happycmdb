@@ -16,7 +16,7 @@ import {
 import { useDiscoverySessions } from '@/hooks/useDiscoverySessions';
 import { AIDiscoverySession } from '@/services/ai-pattern.service';
 import { QueryState } from '@/components/estate/SurfaceState';
-import { NOT_AVAILABLE, isKnown } from '@/lib/dashboardValue';
+import { EMPTY_VALUE, NOT_AVAILABLE, isKnown } from '@/lib/dashboardValue';
 import { SessionDetailModal } from './SessionDetailModal';
 import { readFailure, useReadRefusal } from './readState';
 
@@ -123,7 +123,8 @@ export const DiscoverySessionsView: React.FC = () => {
     {
       header: 'CIs Found',
       className: 'text-right',
-      render: (session) => session.discoveredCIs?.length || 0,
+      // Not reported is not 0 CIs (the detail modal shows the same dash)
+      render: (session) => (session.discoveredCIs ? session.discoveredCIs.length : EMPTY_VALUE),
     },
     {
       header: 'Cost',

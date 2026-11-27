@@ -5,7 +5,7 @@
 // spinner, not an empty table, not zeros.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AxiosError, type InternalAxiosRequestConfig } from 'axios';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('@contexts/AuthContext', () => ({ useAuth: () => ({ user: { role: 'viewer' } }) }));
@@ -22,6 +22,8 @@ axios.defaults.adapter = async (config: InternalAxiosRequestConfig) => {
     if (status < 400) return response;
     throw new AxiosError(`Request failed with status code ${status}`, 'ERR_BAD_REQUEST', config, {}, response);
   };
+  // A request issued on another page whose refusal lands after the user has come back to this one.
+  if (url === '/ai/elsewhere') window.history.pushState({}, '', '/');
   if (refused.some((prefix) => url.startsWith(prefix))) {
     return reply(403, { _error: 'Forbidden', _message: "Permission 'read' required" });
   }
@@ -33,6 +35,9 @@ const { CostAnalyticsDashboard } = await import('./CostAnalyticsDashboard');
 const { PatternLearningOverview } = await import('./PatternLearningOverview');
 const { ForbiddenHost } = await import('@/components/layout/ForbiddenHost');
 const { ToastProvider } = await import('@/contexts/ToastContext');
+const { apiClient } = await import('@/lib/api-client');
+const { aiPatternService } = await import('@/services/ai-pattern.service');
+const { onForbidden } = await import('@/lib/forbidden');
 
 const mount = (view: React.ReactElement) =>
   render(
@@ -47,7 +52,10 @@ const mount = (view: React.ReactElement) =>
 beforeEach(() => {
   refused = [];
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  window.history.pushState({}, '', '/');
+});
 
 describe('AI pattern views when the server refuses the read', () => {
   it('PatternLibrary says it is not permitted, with the server reason, and shows no table or retry', async () => {
@@ -78,5 +86,64 @@ describe('AI pattern views when the server refuses the read', () => {
     mount(<PatternLearningOverview />);
     expect(await screen.findByText('No access to pattern learning overview')).toBeInTheDocument();
     expect(screen.queryByText('Total Patterns')).toBeNull();
+  });
+});
+
+// A 403 only blocks the view when it refuses the view's own read. The server answers 403 to every pattern write
+// (denyGlobalPatternWrite), so a refused click must leave the library on screen.
+describe('AI pattern views when the server refuses something that is not the view\'s own read', () => {
+  const refusals = () => {
+    const seen: Array<{ method: string; sideRead: boolean; pathname: string }> = [];
+    const off = onForbidden(({ method, sideRead, pathname }) => seen.push({ method, sideRead, pathname }));
+    return { seen, off };
+  };
+
+  const libraryStaysUp = async () => {
+    expect(await screen.findByText('No patterns found')).toBeInTheDocument();
+    expect(screen.queryByText('No access to patterns')).toBeNull();
+  };
+
+  it('a refused write (delete) does not replace the library with "No access"', async () => {
+    refused = ['/ai/patterns/pattern-1'];
+    const { seen, off } = refusals();
+    mount(<PatternLibrary />);
+    await libraryStaysUp();
+
+    await act(async () => {
+      await expect(aiPatternService.deletePattern('pattern-1')).rejects.toBeDefined();
+    });
+    off();
+    expect(seen).toEqual([{ method: 'DELETE', sideRead: false, pathname: '/' }]);
+    await libraryStaysUp();
+  });
+
+  it('a refused side read does not replace the library with "No access"', async () => {
+    refused = ['/ai/side'];
+    const { seen, off } = refusals();
+    mount(<PatternLibrary />);
+    await libraryStaysUp();
+
+    await act(async () => {
+      await expect(apiClient.get('/ai/side', { sideRead: true })).rejects.toBeDefined();
+    });
+    off();
+    expect(seen).toEqual([{ method: 'GET', sideRead: true, pathname: '/' }]);
+    await libraryStaysUp();
+  });
+
+  it('a read refused for a request issued on another page does not replace the library with "No access"', async () => {
+    refused = ['/ai/elsewhere'];
+    const { seen, off } = refusals();
+    mount(<PatternLibrary />);
+    await libraryStaysUp();
+
+    window.history.pushState({}, '', '/elsewhere');
+    await act(async () => {
+      await expect(apiClient.get('/ai/elsewhere')).rejects.toBeDefined();
+    });
+    off();
+    expect(seen).toEqual([{ method: 'GET', sideRead: false, pathname: '/elsewhere' }]);
+    expect(window.location.pathname).toBe('/');
+    await libraryStaysUp();
   });
 });

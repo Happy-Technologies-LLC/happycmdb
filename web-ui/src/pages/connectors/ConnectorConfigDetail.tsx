@@ -3,29 +3,23 @@
 
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Icon } from '@happy-technologies/design-system';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Card } from '@/components/ui/card';
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import DataTable from '@/components/common/DataTable';
-import LoadingSpinner from '@/components/common/LoadingSpinner';
+  Badge,
+  Button,
+  CHART_COLORS,
+  Card,
+  ConfirmDialog,
+  DataTable,
+  EmptyState,
+  Icon,
+  IconButton,
+  Menu,
+  PageHeader,
+  SectionHeading,
+  TabPanel,
+  Tabs,
+} from '@happy-technologies/design-system';
+import { QueryState } from '@/components/estate/SurfaceState';
 import { RequirePermission } from '@/components/common/RequirePermission';
 import {
   connectorService,
@@ -33,9 +27,42 @@ import {
   ConnectorRun,
 } from '@/services/connector.service';
 import { useToast } from '@/contexts/ToastContext';
+import { forbiddenReason } from '@/lib/forbidden';
 import { formatDistanceToNow, format } from 'date-fns';
-import type { DataTableColumn } from '@/types';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+
+type TabValue = 'overview' | 'resources' | 'runs' | 'metrics';
+
+const TABS_ID = 'connector-config-tabs';
+
+const TAB_OPTIONS: Array<{ value: TabValue; label: string }> = [
+  { value: 'overview', label: 'Overview' },
+  { value: 'resources', label: 'Resources' },
+  { value: 'runs', label: 'Run History' },
+  { value: 'metrics', label: 'Metrics' },
+];
+
+/**
+ * The server's reason when `error` is a refused (403) read, else null. The configuration is read through Apollo, so a
+ * refusal arrives as an ApolloError (networkError status 403, or a FORBIDDEN GraphQL error); the axios shape is
+ * accepted too.
+ */
+function refusalReason(error: unknown): string | null {
+  const e = error as {
+    response?: { status?: number; data?: unknown };
+    networkError?: { statusCode?: number; response?: { status?: number }; result?: unknown } | null;
+    graphQLErrors?: Array<{ message?: string; extensions?: { code?: unknown } }>;
+  } | null;
+  if (!e || typeof e !== 'object') return null;
+  if (e.response?.status === 403) return forbiddenReason(e.response.data);
+  const net = e.networkError;
+  if (net && (net.statusCode === 403 || net.response?.status === 403)) return forbiddenReason(net.result);
+  const refused = e.graphQLErrors?.find((g) => g?.extensions?.code === 'FORBIDDEN');
+  if (refused) return forbiddenReason({ message: refused.message });
+  return null;
+}
+
+const MUTED = 'text-[var(--hh-text-muted)]';
 
 export default function ConnectorConfigDetail() {
   const { id } = useParams<{ id: string }>();
@@ -43,10 +70,12 @@ export default function ConnectorConfigDetail() {
   const { showToast } = useToast();
 
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<unknown>(null);
   const [running, setRunning] = useState(false);
   const [config, setConfig] = useState<ConnectorConfiguration | null>(null);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [tab, setTab] = useState<TabValue>('overview');
 
   useEffect(() => {
     if (id) {
@@ -54,19 +83,33 @@ export default function ConnectorConfigDetail() {
     }
   }, [id]);
 
-  const loadConfig = async () => {
+  // `keepOnFailure`: a reload after a successful action must not replace the page already on screen with an
+  // error (the action itself worked); the stale data stays and a toast says the refresh failed.
+  const readConfig = async (keepOnFailure: boolean) => {
     if (!id) return;
 
     try {
       setLoading(true);
+      setError(null);
       const data = await connectorService.getConnectorConfiguration(id);
       setConfig(data);
-    } catch {
-      showToast('Failed to load connector configuration', 'error');
+    } catch (err) {
+      if (keepOnFailure) {
+        showToast('Failed to refresh connector configuration', 'error');
+      } else {
+        setConfig(null);
+        setError(err ?? new Error('Request failed'));
+        if (refusalReason(err) === null) {
+          showToast('Failed to load connector configuration', 'error');
+        }
+      }
     } finally {
       setLoading(false);
     }
   };
+
+  const loadConfig = () => readConfig(false);
+  const refreshConfig = () => readConfig(true);
 
   const handleRunNow = async () => {
     if (!id) return;
@@ -75,7 +118,7 @@ export default function ConnectorConfigDetail() {
       setRunning(true);
       await connectorService.runConnector(id);
       showToast(`${config?.name} is now running`, 'success');
-      await loadConfig();
+      await refreshConfig();
     } catch {
       showToast('Failed to run connector', 'error');
     } finally {
@@ -94,14 +137,14 @@ export default function ConnectorConfigDetail() {
         await connectorService.enableConnectorConfiguration(id);
         showToast(`${config.name} has been enabled`, 'success');
       }
-      await loadConfig();
+      await refreshConfig();
     } catch {
       showToast('Failed to update configuration', 'error');
     }
   };
 
   const handleDelete = async () => {
-    if (!id) return;
+    if (!id || deleting) return;
 
     try {
       setDeleting(true);
@@ -121,85 +164,98 @@ export default function ConnectorConfigDetail() {
   };
 
   const getStatusBadge = (status: ConnectorRun['status']) => {
-    const variants: Record<ConnectorRun['status'], { variant: any; icon: any }> = {
+    const variants: Record<ConnectorRun['status'], { variant: 'success' | 'danger' | 'info' | 'neutral'; icon: string }> = {
       COMPLETED: { variant: 'success', icon: 'check-circle' },
-      FAILED: { variant: 'destructive', icon: 'x-circle' },
-      RUNNING: { variant: 'default', icon: 'clock' },
-      QUEUED: { variant: 'outline', icon: 'clock' },
-      CANCELLED: { variant: 'outline', icon: 'x-circle' },
+      FAILED: { variant: 'danger', icon: 'x-circle' },
+      RUNNING: { variant: 'info', icon: 'clock' },
+      QUEUED: { variant: 'neutral', icon: 'clock' },
+      CANCELLED: { variant: 'neutral', icon: 'x-circle' },
     };
 
     const { variant, icon: iconName } = variants[status] || variants.QUEUED;
 
     return (
-      <Badge variant={variant} className="flex items-center gap-1">
+      <Badge variant={variant}>
         <Icon name={iconName} size={12} />
         {status}
       </Badge>
     );
   };
 
-  const runColumns: DataTableColumn<ConnectorRun>[] = [
+  const runColumns = [
     {
-      field: 'startedAt',
-      headerName: 'Started',
-      flex: 1,
-      renderCell: (value: unknown) => (
+      key: 'startedAt',
+      header: 'Started',
+      render: (row: ConnectorRun) => (
         <div>
-          <div className="text-sm">{format(new Date(value as string | number | Date), 'MMM d, HH:mm')}</div>
-          <div className="text-xs text-muted-foreground">
-            {formatDistanceToNow(new Date(value as string | number | Date), { addSuffix: true })}
+          <div className="text-sm">{format(new Date(row.startedAt as string | number | Date), 'MMM d, HH:mm')}</div>
+          <div className={`text-xs ${MUTED}`}>
+            {formatDistanceToNow(new Date(row.startedAt as string | number | Date), { addSuffix: true })}
           </div>
         </div>
       ),
     },
     {
-      field: 'status',
-      headerName: 'Status',
-      flex: 1,
-      renderCell: (value) => getStatusBadge(value as ConnectorRun['status']),
+      key: 'status',
+      header: 'Status',
+      render: (row: ConnectorRun) => getStatusBadge(row.status),
     },
     {
-      field: 'resourceId',
-      headerName: 'Resource',
-      flex: 1,
-      renderCell: (value: unknown) => (value as React.ReactNode) || <span className="text-muted-foreground">All</span>,
+      key: 'resourceId',
+      header: 'Resource',
+      render: (row: ConnectorRun) => (row.resourceId as React.ReactNode) || <span className={MUTED}>All</span>,
     },
     {
-      field: 'recordsExtracted',
-      headerName: 'Records',
-      flex: 1,
-      renderCell: (value: unknown, row: ConnectorRun) => (
+      key: 'recordsExtracted',
+      header: 'Records',
+      render: (row: ConnectorRun) => (
         <div className="text-sm">
-          <div>{value as React.ReactNode} extracted</div>
-          <div className="text-xs text-muted-foreground">{row.recordsLoaded} loaded</div>
+          <div>{row.recordsExtracted as React.ReactNode} extracted</div>
+          <div className={`text-xs ${MUTED}`}>{row.recordsLoaded} loaded</div>
         </div>
       ),
     },
     {
-      field: 'durationMs',
-      headerName: 'Duration',
-      flex: 1,
-      renderCell: (value: unknown) =>
-        value ? `${((value as number) / 1000).toFixed(1)}s` : <span className="text-muted-foreground">-</span>,
+      key: 'durationMs',
+      header: 'Duration',
+      render: (row: ConnectorRun) =>
+        row.durationMs ? `${((row.durationMs as number) / 1000).toFixed(1)}s` : <span className={MUTED}>-</span>,
     },
     {
-      field: 'triggeredBy',
-      headerName: 'Triggered By',
-      flex: 1,
-      renderCell: (value: unknown) => <div className="capitalize">{value as React.ReactNode}</div>,
+      key: 'triggeredBy',
+      header: 'Triggered By',
+      render: (row: ConnectorRun) => <div className="capitalize">{row.triggeredBy as React.ReactNode}</div>,
     },
   ];
 
-  if (loading || !config) {
+  if (loading) {
+    return <QueryState what="connector configuration" loading />;
+  }
+
+  if (error !== null) {
+    const reason = refusalReason(error);
+    if (reason !== null) {
+      return <EmptyState tone="danger" icon="lock-key" title="Not permitted" description={reason} />;
+    }
+    return <QueryState what="connector configuration" error={error} onRetry={loadConfig} />;
+  }
+
+  if (!config) {
     return (
-      <div className="flex justify-center items-center min-h-screen">
-        <LoadingSpinner />
-      </div>
+      <EmptyState
+        icon="plugs"
+        title="Connector configuration not found"
+        action={
+          <Button variant="secondary" onClick={() => navigate(-1)}>
+            Back
+          </Button>
+        }
+      />
     );
   }
 
-  const successRate = config.metrics?.successRate || 0;
+  const metrics = config.metrics;
+  const successRate = metrics?.successRate || 0;
   const chartData = config.runs
     ?.slice(0, 10)
     .reverse()
@@ -209,93 +265,103 @@ export default function ConnectorConfigDetail() {
       duration: run.durationMs ? (run.durationMs as number) / 1000 : 0,
     }));
 
+  const labelClass = `text-sm ${MUTED} mb-1`;
+
   return (
     <div className="container mx-auto py-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-4 mb-6">
-        <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>
-          <Icon name="arrow-left" size={20} />
-        </Button>
-        <div className="flex-1">
-          <h1 className="text-3xl font-bold">{config.name}</h1>
-          {config.description && (
-            <p className="text-muted-foreground">{config.description}</p>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          {/* Connector config run/edit/enable/delete: requirePermission('write') (GraphQL + REST) */}
-          <RequirePermission permission="write">
-            <Button onClick={handleRunNow} disabled={running || !config.enabled}>
-              <Icon name="play-circle" size={16} className="mr-2" />
-              {running ? 'Running...' : 'Run Now'}
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="icon">
-                  <Icon name="dots-three-vertical" size={16} />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => navigate(`/connectors/configs/${id}/edit`)}>
-                  <Icon name="pencil-simple" size={16} className="mr-2" />
-                  Edit Configuration
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleToggleEnabled}>
-                  {config.enabled ? 'Disable' : 'Enable'}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => setShowDeleteDialog(true)}
-                  className="text-destructive"
-                >
-                  <Icon name="trash" size={16} className="mr-2" />
-                  Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </RequirePermission>
-        </div>
+      <div className="flex items-start gap-4">
+        <IconButton icon="arrow-left" aria-label="Back" variant="ghost" onClick={() => navigate(-1)} />
+        <PageHeader
+          className="flex-1"
+          eyebrow="Connector configuration"
+          title={config.name}
+          lede={config.description || undefined}
+          actions={
+            /* Connector config run/edit/enable/delete: requirePermission('write') (GraphQL + REST) */
+            <RequirePermission permission="write">
+              <Button
+                icon="play-circle"
+                onClick={handleRunNow}
+                disabled={running || !config.enabled}
+              >
+                {running ? 'Running...' : 'Run Now'}
+              </Button>
+              <Menu
+                align="end"
+                trigger={
+                  <>
+                    <Icon name="dots-three-vertical" size={16} />
+                    <span className="sr-only">More actions</span>
+                  </>
+                }
+                items={[
+                  {
+                    label: 'Edit Configuration',
+                    icon: 'pencil-simple',
+                    onClick: () => navigate(`/connectors/configs/${id}/edit`),
+                  },
+                  {
+                    label: config.enabled ? 'Disable' : 'Enable',
+                    onClick: handleToggleEnabled,
+                  },
+                  {
+                    label: 'Delete',
+                    icon: 'trash',
+                    danger: true,
+                    onClick: () => setShowDeleteDialog(true),
+                  },
+                ]}
+              />
+            </RequirePermission>
+          }
+        />
       </div>
 
       {/* Status Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Card className="p-4">
+        <Card>
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-sm text-muted-foreground mb-1">Status</div>
-              <Badge variant={config.enabled ? 'success' : 'outline'}>
+              <div className={labelClass}>Status</div>
+              <Badge variant={config.enabled ? 'success' : 'neutral'}>
                 {config.enabled ? 'Enabled' : 'Disabled'}
               </Badge>
             </div>
           </div>
         </Card>
 
-        <Card className="p-4">
-          <div className="text-sm text-muted-foreground mb-1">Schedule</div>
+        <Card>
+          <div className={labelClass}>Schedule</div>
           <div className="text-sm">
             {config.scheduleEnabled && config.schedule ? (
               <div>
                 <div className="font-medium">{config.schedule}</div>
-                <div className="text-xs text-muted-foreground">Active</div>
+                <div className={`text-xs ${MUTED}`}>Active</div>
               </div>
             ) : (
-              <span className="text-muted-foreground">Manual only</span>
+              <span className={MUTED}>Manual only</span>
             )}
           </div>
         </Card>
 
-        <Card className="p-4">
-          <div className="text-sm text-muted-foreground mb-1">Success Rate</div>
+        <Card>
+          <div className={labelClass}>Success Rate</div>
           <div className="flex items-baseline gap-2">
-            <div className="text-2xl font-bold">{successRate.toFixed(0)}%</div>
-            {successRate >= 90 && <Icon name="trend-up" size={16} className="text-green-500" />}
+            <div className="text-2xl font-bold">{metrics ? `${successRate.toFixed(0)}%` : '-'}</div>
+            {metrics && successRate >= 90 && (
+              <Icon name="trend-up" size={16} className="text-[var(--hh-success-text)]" />
+            )}
           </div>
-          <div className="text-xs text-muted-foreground mt-1">
-            {config.metrics?.successfulRuns || 0} of {config.metrics?.totalRuns || 0} runs
-          </div>
+          {metrics && (
+            <div className={`text-xs ${MUTED} mt-1`}>
+              {metrics.successfulRuns || 0} of {metrics.totalRuns || 0} runs
+            </div>
+          )}
         </Card>
 
-        <Card className="p-4">
-          <div className="text-sm text-muted-foreground mb-1">Last Run</div>
+        <Card>
+          <div className={labelClass}>Last Run</div>
           <div className="text-sm">
             {config.runs?.[0] ? (
               <div>
@@ -307,52 +373,47 @@ export default function ConnectorConfigDetail() {
                 {getStatusBadge(config.runs[0].status)}
               </div>
             ) : (
-              <span className="text-muted-foreground">Never</span>
+              <span className={MUTED}>Never</span>
             )}
           </div>
         </Card>
       </div>
 
       {/* Tabs */}
-      <Tabs defaultValue="overview" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="resources">Resources</TabsTrigger>
-          <TabsTrigger value="runs">Run History</TabsTrigger>
-          <TabsTrigger value="metrics">Metrics</TabsTrigger>
-        </TabsList>
+      <div className="space-y-4">
+        <Tabs id={TABS_ID} value={tab} onChange={setTab} options={TAB_OPTIONS} />
 
         {/* Overview Tab */}
-        <TabsContent value="overview" className="space-y-4">
-          <Card className="p-6">
-            <h3 className="text-lg font-semibold mb-4">Configuration Details</h3>
+        <TabPanel tabsId={TABS_ID} value="overview" selected={tab === 'overview'} className="space-y-4">
+          <Card>
+            <SectionHeading level={3}>Configuration Details</SectionHeading>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <div className="text-sm text-muted-foreground mb-1">Connector Type</div>
+                <div className={labelClass}>Connector Type</div>
                 <div className="text-sm font-medium">{config.connector.name}</div>
               </div>
               <div>
-                <div className="text-sm text-muted-foreground mb-1">Version</div>
+                <div className={labelClass}>Version</div>
                 <div className="text-sm font-medium">
                   v{config.connector.installedVersion}
                 </div>
               </div>
               <div>
-                <div className="text-sm text-muted-foreground mb-1">Max Retries</div>
+                <div className={labelClass}>Max Retries</div>
                 <div className="text-sm font-medium">{config.maxRetries}</div>
               </div>
               <div>
-                <div className="text-sm text-muted-foreground mb-1">Retry Delay</div>
+                <div className={labelClass}>Retry Delay</div>
                 <div className="text-sm font-medium">{config.retryDelaySeconds}s</div>
               </div>
               <div>
-                <div className="text-sm text-muted-foreground mb-1">Created</div>
+                <div className={labelClass}>Created</div>
                 <div className="text-sm font-medium">
                   {format(new Date(config.createdAt as string | number | Date), 'MMM d, yyyy')}
                 </div>
               </div>
               <div>
-                <div className="text-sm text-muted-foreground mb-1">Updated</div>
+                <div className={labelClass}>Updated</div>
                 <div className="text-sm font-medium">
                   {format(new Date(config.updatedAt as string | number | Date), 'MMM d, yyyy')}
                 </div>
@@ -360,29 +421,29 @@ export default function ConnectorConfigDetail() {
             </div>
           </Card>
 
-          <Card className="p-6">
-            <h3 className="text-lg font-semibold mb-4">Notifications</h3>
+          <Card>
+            <SectionHeading level={3}>Notifications</SectionHeading>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <span className="text-sm">On Success</span>
-                <Badge variant={config.notificationOnSuccess ? 'success' : 'outline'}>
+                <Badge variant={config.notificationOnSuccess ? 'success' : 'neutral'}>
                   {config.notificationOnSuccess ? 'Enabled' : 'Disabled'}
                 </Badge>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm">On Failure</span>
-                <Badge variant={config.notificationOnFailure ? 'success' : 'outline'}>
+                <Badge variant={config.notificationOnFailure ? 'success' : 'neutral'}>
                   {config.notificationOnFailure ? 'Enabled' : 'Disabled'}
                 </Badge>
               </div>
             </div>
           </Card>
-        </TabsContent>
+        </TabPanel>
 
         {/* Resources Tab */}
-        <TabsContent value="resources">
-          <Card className="p-6">
-            <h3 className="text-lg font-semibold mb-4">Enabled Resources</h3>
+        <TabPanel tabsId={TABS_ID} value="resources" selected={tab === 'resources'}>
+          <Card>
+            <SectionHeading level={3}>Enabled Resources</SectionHeading>
             {config.enabledResources && config.enabledResources.length > 0 ? (
               <div className="space-y-3">
                 {config.enabledResources.map((resourceId) => {
@@ -390,24 +451,24 @@ export default function ConnectorConfigDetail() {
                   if (!resource) return null;
 
                   return (
-                    <div key={resourceId} className="p-4 rounded-md border">
+                    <div key={resourceId} className="p-4 rounded-md border border-[var(--hh-border)]">
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
                           <div className="flex items-center gap-2 mb-1">
                             <span className="font-medium">{resource.name}</span>
                             {resource.ciType && (
-                              <Badge variant="secondary">{resource.ciType}</Badge>
+                              <Badge variant="neutral">{resource.ciType}</Badge>
                             )}
                           </div>
                           {resource.description && (
-                            <p className="text-sm text-muted-foreground mb-2">
+                            <p className={`text-sm ${MUTED} mb-2`}>
                               {resource.description}
                             </p>
                           )}
                           {resource.operations.length > 0 && (
                             <div className="flex gap-1 flex-wrap">
                               {resource.operations.map((op) => (
-                                <Badge key={op} variant="outline" className="text-xs">
+                                <Badge key={op} variant="neutral">
                                   {op}
                                 </Badge>
                               ))}
@@ -420,31 +481,32 @@ export default function ConnectorConfigDetail() {
                 })}
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground">
+              <p className={`text-sm ${MUTED}`}>
                 No resources enabled. Using connector defaults.
               </p>
             )}
           </Card>
-        </TabsContent>
+        </TabPanel>
 
         {/* Run History Tab */}
-        <TabsContent value="runs">
+        <TabPanel tabsId={TABS_ID} value="runs" selected={tab === 'runs'}>
           <DataTable
+            caption="Run history"
             columns={runColumns}
-            data={config.runs || []}
-            emptyMessage="No runs yet"
-            rowIdField="id"
+            rows={config.runs || []}
+            rowKey={(r) => r.id}
+            emptyLabel="No runs yet"
           />
-        </TabsContent>
+        </TabPanel>
 
         {/* Metrics Tab */}
-        <TabsContent value="metrics" className="space-y-4">
-          {chartData && chartData.length > 0 && (
-            <Card className="p-6">
-              <h3 className="text-lg font-semibold mb-4">Performance Trends</h3>
+        <TabPanel tabsId={TABS_ID} value="metrics" selected={tab === 'metrics'} className="space-y-4">
+          {tab === 'metrics' && chartData && chartData.length > 0 && (
+            <Card>
+              <SectionHeading level={3}>Performance Trends</SectionHeading>
               <ResponsiveContainer width="100%" height={300}>
                 <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--hh-border)" />
                   <XAxis dataKey="name" />
                   <YAxis yAxisId="left" />
                   <YAxis yAxisId="right" orientation="right" />
@@ -454,14 +516,14 @@ export default function ConnectorConfigDetail() {
                     yAxisId="left"
                     type="monotone"
                     dataKey="records"
-                    stroke="#8884d8"
+                    stroke={CHART_COLORS[0]}
                     name="Records Loaded"
                   />
                   <Line
                     yAxisId="right"
                     type="monotone"
                     dataKey="duration"
-                    stroke="#82ca9d"
+                    stroke={CHART_COLORS[1]}
                     name="Duration (s)"
                   />
                 </LineChart>
@@ -469,26 +531,26 @@ export default function ConnectorConfigDetail() {
             </Card>
           )}
 
-          {config.metrics?.resourceMetrics && config.metrics.resourceMetrics.length > 0 && (
-            <Card className="p-6">
-              <h3 className="text-lg font-semibold mb-4">Resource Metrics</h3>
+          {metrics?.resourceMetrics && metrics.resourceMetrics.length > 0 && (
+            <Card>
+              <SectionHeading level={3}>Resource Metrics</SectionHeading>
               <div className="space-y-4">
-                {config.metrics.resourceMetrics.map((metric) => (
-                  <div key={metric.resourceId} className="p-4 rounded-md border">
-                    <h4 className="font-medium mb-3">{metric.resourceId}</h4>
+                {metrics.resourceMetrics.map((metric) => (
+                  <div key={metric.resourceId} className="p-4 rounded-md border border-[var(--hh-border)]">
+                    <SectionHeading level={4}>{metric.resourceId}</SectionHeading>
                     <div className="grid grid-cols-3 gap-4">
                       <div>
-                        <div className="text-sm text-muted-foreground">Records Extracted</div>
+                        <div className={`text-sm ${MUTED}`}>Records Extracted</div>
                         <div className="text-xl font-bold">
                           {metric.totalRecordsExtracted.toLocaleString()}
                         </div>
                       </div>
                       <div>
-                        <div className="text-sm text-muted-foreground">Success Rate</div>
+                        <div className={`text-sm ${MUTED}`}>Success Rate</div>
                         <div className="text-xl font-bold">{metric.successRate.toFixed(1)}%</div>
                       </div>
                       <div>
-                        <div className="text-sm text-muted-foreground">Avg Duration</div>
+                        <div className={`text-sm ${MUTED}`}>Avg Duration</div>
                         <div className="text-xl font-bold">
                           {(
                             (metric.avgExtractionTimeMs + metric.avgTransformationTimeMs + metric.avgLoadTimeMs) /
@@ -503,31 +565,22 @@ export default function ConnectorConfigDetail() {
               </div>
             </Card>
           )}
-        </TabsContent>
-      </Tabs>
+        </TabPanel>
+      </div>
 
       {/* Delete Dialog */}
-      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Configuration</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete this connector configuration? This action cannot
-              be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              disabled={deleting}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {deleting ? 'Deleting...' : 'Delete'}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={showDeleteDialog}
+        title="Delete Configuration"
+        body="Are you sure you want to delete this connector configuration? This action cannot be undone."
+        tone="danger"
+        confirmLabel={deleting ? 'Deleting...' : 'Delete'}
+        cancelLabel="Cancel"
+        onConfirm={handleDelete}
+        onCancel={() => {
+          if (!deleting) setShowDeleteDialog(false);
+        }}
+      />
     </div>
   );
 }

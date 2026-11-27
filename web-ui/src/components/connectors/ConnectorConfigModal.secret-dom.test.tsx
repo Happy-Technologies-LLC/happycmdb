@@ -79,3 +79,40 @@ describe('ConnectorConfigModal secret fields (HAP-1893)', () => {
     expect(host.getAttribute('value')).toBe('connector.example.com');
   });
 });
+
+// HAP-1922: the wizard sits in a DS Dialog (portalled to document.body) and a DS Select; a typed secret must stay
+// out of everything under document.body while that portal and the select's listbox are open.
+describe('ConnectorConfigModal secrets inside the DS dialog and select (HAP-1922)', () => {
+  const PORTAL_TEMPLATE = {
+    ...TEMPLATE,
+    config_schema: {
+      ...TEMPLATE.config_schema,
+      region: { type: 'select', required: false, label: 'Region', options: ['us-east', 'eu-west'] },
+      private_key: { type: 'string', format: 'textarea', sensitive: true, required: false, label: 'Private Key' },
+    },
+  };
+
+  it('leaves no secret in document.body with the dialog portal and the select listbox open', async () => {
+    apiClient.get.mockResolvedValue({ data: { metadata: { resources: [] } } });
+    render(<ConnectorConfigModal template={PORTAL_TEMPLATE} onClose={vi.fn()} onDeploy={vi.fn()} />);
+    await waitFor(() => expect(apiClient.get).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText('Connector Name *'), { target: { value: 'Instance' } });
+    fireEvent.click(screen.getByRole('button', { name: /Next/i }));
+
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('combobox', { name: 'Region' }));
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+
+    const typed = ['API Token *', 'Client Secret', 'Private Key'].map((label) => {
+      const marker = secretMarker('portal');
+      const field = screen.getByLabelText(label) as HTMLInputElement | HTMLTextAreaElement;
+      fireEvent.change(field, { target: { value: marker } });
+      return { marker, field };
+    });
+
+    for (const { marker, field } of typed) {
+      expect(field.value).toBe(marker);
+      expect(domLeaks(marker, document.body)).toEqual([]);
+    }
+  });
+});

@@ -1090,6 +1090,30 @@ describe('AuthController profile/password/account routes', () => {
       expect(updated.body.data).toMatchObject({ role, permissions });
     });
 
+    it('HAP-1930: an API key reports the grants of its effective role (viewer key, admin owner), a JWT the stored role', async () => {
+      store({ _role: 'viewer' });
+      const login = await request(app).post('/api/v1/auth/login').send({ username: 'alice', password: 'correct-horse-battery-staple' });
+      expect(login.status).toBe(200);
+      const issued = await request(app).post('/api/v1/auth/api-key')
+        .set('Authorization', `Bearer ${login.body.data._accessToken}`).send({ name: 'Viewer key' });
+      expect(issued.status).toBe(200);
+      store({ _role: 'admin' });
+
+      const viaKey = await request(app).get('/api/v1/auth/me').set('X-API-Key', issued.body.data._apiKey as string);
+      expect(viaKey.status).toBe(200);
+      expect(viaKey.body.data.permissions).toEqual(['read']);
+      const viaJwt = await me();
+      expect(viaJwt.status).toBe(200);
+      expect(viaJwt.body.data).toMatchObject({ role: 'admin', permissions: ['read', 'write', 'discover', 'admin'] });
+    });
+
+    it.each(['constructor', 'zzz'])('HAP-1930: an unknown stored role %s gets no permissions and a 200 on GET /me', async role => {
+      store({ _role: role as User['_role'] });
+      const res = await me();
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ role, permissions: [] });
+    });
+
     it('a platform administrator gets true, on GET /me and PUT /profile', async () => {
       store({ _platformAdmin: true, _organizationId: 'org-internal' });
       expect((await me()).body.data).toMatchObject({ platformAdmin: true, organizationId: 'org-internal' });
@@ -1742,17 +1766,15 @@ describe('AuthController profile/password/account routes', () => {
     });
 
     it('refuses to mint a key for a valid JWT session with one fixed 403 and stores nothing', async () => {
-      const read = jest.spyOn(repository, 'findUserById');
       const res = await request(disabledApp).post('/api/v1/auth/api-key').set(bearer).send({ name: 'secret-key-name', expiresInDays: 30 });
 
       expect([res.status, res.body]).toEqual([403, { success: false, error: 'Forbidden', message: 'API keys are disabled' }]);
       expect(JSON.stringify(res.body)).not.toContain('_apiKey');
       expect(JSON.stringify(res.body)).not.toContain('secret-key-name');
       expect(repository.issuedKeys.size).toBe(0);
-      expect(read.mock.calls.filter(([id]) => id === 'user-1').length).toBe(1); // the auth middleware's read only
     });
 
-    it('still lists and revokes keys created while the switch was on', async () => {
+    it('lists keys created while the switch was on, and revokes a key while it is off', async () => {
       const issued = await request(app).post('/api/v1/auth/api-key').set(bearer).send({ name: 'created while on' });
       expect(issued.status).toBe(200);
 

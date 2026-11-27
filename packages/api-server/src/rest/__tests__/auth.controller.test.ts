@@ -15,7 +15,7 @@ import express from 'express';
 import request from 'supertest';
 import { AuthController } from '../auth.controller';
 import { AuthService, AuthRepository, UserProfileUpdate } from '../../auth/auth.service';
-import type { GuardedEpochBump, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite } from '../../auth/auth.service';
+import type { GuardedEpochBump, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite, UsersByIds } from '../../auth/auth.service';
 import { ValidationMiddleware } from '../middleware/validation.middleware';
 import { AuthMiddleware } from '../../middleware/auth.middleware';
 import { RateLimitMiddleware } from '../../middleware/rate-limit.middleware';
@@ -58,6 +58,10 @@ class InMemoryAuthRepository implements AuthRepository {
 
   async findUserById(id: string): Promise<User | null> {
     return this.users.get(id) || null;
+  }
+
+  async findUsersByIds(ids: readonly string[]): Promise<UsersByIds> {
+    return { ambiguous: [], users: new Map(ids.flatMap(id => (this.users.has(id) ? [[id, this.users.get(id)!] as [string, User]] : []))) };
   }
 
   async updateUserLastLogin(): Promise<void> {}

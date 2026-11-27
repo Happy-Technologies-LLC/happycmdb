@@ -20,7 +20,8 @@
  *   no_owner             a live or retiring service without owner_principal_id
  *
  * Read-only by construction: the PostgreSQL statement runs in a READ ONLY transaction (the server refuses a write),
- * and the graph statement is one MATCH ... RETURN on a read session; the report depends on neither store's writer.
+ * and the graph statement is one MATCH ... RETURN on a session opened with defaultAccessMode READ (operator-stores.ts
+ * graphOf().read: the server refuses a write Cypher); the report depends on neither store's writer.
  * If either store cannot be read, nothing is printed and the exit status is 1: a partial report would read as "the
  * rest is fine".
  *
@@ -28,12 +29,16 @@
  * Build with `npm run build:tenant-fixture --workspace=packages/api-server`, then:
  *   node dist/tenant-fixture/api-server/src/scripts/unresolved-business-service-owners.js
  * Prints one JSON object: { checked, unresolved, organizations: [{ organization_id, services: [...] }] }.
+ *
+ * OPERATOR-CONFIDENTIAL OUTPUT: stdout holds every organization's service names and owner principal ids. Never attach
+ * it to a ticket or a pull request.
  */
 
 import { lifecycleNeedsOwner, ownerInOrganization, type C1Lifecycle } from '../services/business-service-reference';
 
 import { redactSecrets } from './identity-window';
-import { isolateOperatorEnvironment, openOperatorStores, type OperatorStores } from './operator-stores';
+import { openOperatorStores, type OperatorStores } from './operator-stores';
+import { isolateOperatorEnvironment } from './operator-tls';
 import type { RotationGraph, RotationSql } from './rotate-user-password';
 
 export const OWNED_SERVICES_SQL =

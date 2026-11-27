@@ -13,7 +13,7 @@
  * page load.
  */
 
-import { boundedStatementTimeoutMs } from '../rest/impact-envelope';
+import { boundedStatementTimeoutMs } from '../rest/statement-timeout';
 
 /** The one pg method a bounded read needs; both the pool and a pooled client satisfy it. */
 export interface Sql {

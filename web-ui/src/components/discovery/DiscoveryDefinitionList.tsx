@@ -7,32 +7,33 @@ import {
   DiscoveryDefinition,
   DiscoveryDefinitionInput,
 } from '../../services/discovery.service';
-import { Button } from '../ui/button';
-import { LiquidGlass } from '../ui/liquid-glass';
-import { Icon } from '@happy-technologies/design-system';
-import { RequirePermission } from '@/components/common/RequirePermission';
-import DiscoveryDefinitionForm from './DiscoveryDefinitionForm';
 import {
+  Badge,
+  Banner,
+  Button,
+  ConfirmDialog,
+  DataTable,
   Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '../ui/dialog';
-import {
-  FormDialog,
-  FormDialogContent,
-  FormDialogHeader,
-  FormDialogBody,
-  FormDialogTitle,
-} from '../ui/form-dialog';
-import { Badge } from '../ui/badge';
-import { Switch } from '../ui/switch';
+  EmptyState,
+  IconButton,
+  Input,
+  SectionHeading,
+  Select,
+  Switch,
+  type Column,
+} from '@happy-technologies/design-system';
+import { RequirePermission } from '@/components/common/RequirePermission';
+import { usePermission } from '@/hooks/usePermission';
+import DiscoveryDefinitionForm from './DiscoveryDefinitionForm';
 
 interface DiscoveryDefinitionListProps {
   definitions: DiscoveryDefinition[];
   loading: boolean;
+  /** The read failed; shown instead of an empty list (never read as "no definitions"). */
+  error?: string | null;
+  /** The failed read was a 403: the server's reason, shown as a plain "not permitted" state. */
+  forbiddenReason?: string | null;
+  onRetry?: () => void;
   onCreateDefinition: (data: DiscoveryDefinitionInput) => Promise<void>;
   onUpdateDefinition: (id: string, data: Partial<DiscoveryDefinitionInput>) => Promise<void>;
   onDeleteDefinition: (id: string) => Promise<void>;
@@ -47,15 +48,95 @@ const PROVIDERS: DiscoveryProvider[] = [
   'snmp',
 ];
 
+const PROVIDER_FILTER_OPTIONS = [
+  { value: 'all', label: 'All Providers' },
+  ...PROVIDERS.map((provider) => ({ value: provider, label: provider.toUpperCase() })),
+];
+
+const STATUS_FILTER_OPTIONS = [
+  { value: 'all', label: 'All Status' },
+  { value: 'active', label: 'Active' },
+  { value: 'inactive', label: 'Inactive' },
+];
+
+const formatDate = (dateString?: string) => {
+  if (!dateString) return 'Never';
+  const date = new Date(dateString);
+  return date.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+const getCronDescription = (cronExpression?: string): string => {
+  if (!cronExpression) return 'Not scheduled';
+
+  const parts = cronExpression.split(' ');
+  if (parts.length !== 5) return cronExpression;
+
+  const [min, hour, day, month, weekday] = parts;
+  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+  if (min === '*' && hour === '*') return 'Every minute';
+  if (hour === '*' && day === '*' && weekday === '*') return `Every hour at ${min} minutes past`;
+  if (day === '*' && weekday === '*') {
+    const timeStr = `${hour.padStart(2, '0')}:${min.padStart(2, '0')}`;
+    return `Daily at ${timeStr}`;
+  }
+  if (day === '*' && weekday !== '*') {
+    const timeStr = `${hour.padStart(2, '0')}:${min.padStart(2, '0')}`;
+    const dayName = days[parseInt(weekday)] || weekday;
+    return `Weekly on ${dayName} at ${timeStr}`;
+  }
+  if (day !== '*') {
+    const timeStr = `${hour.padStart(2, '0')}:${min.padStart(2, '0')}`;
+    return `Monthly on day ${day} at ${timeStr}`;
+  }
+
+  return cronExpression;
+};
+
+/** A modal for the create/edit form; the body scrolls so a tall form never leaves the viewport. */
+const FormModal: React.FC<{
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}> = ({ open, title, onClose, children }) => (
+  <Dialog open={open} onClose={onClose} aria-label={title} className="max-w-3xl">
+    <div
+      className="max-h-[85vh] overflow-y-auto p-6"
+      // The DS Dialog closes on any Escape that bubbles to document, and the DS Select (a listbox that preventDefaults
+      // its own Escape) does not stop it, so one Escape would close the dropdown and discard the form. Keep an Escape
+      // a child already handled from reaching the Dialog. Root fix belongs in the design system.
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && e.defaultPrevented) e.stopPropagation();
+      }}
+    >
+      <SectionHeading level={2} className="pr-10">
+        {title}
+      </SectionHeading>
+      {children}
+    </div>
+  </Dialog>
+);
+
 export const DiscoveryDefinitionList: React.FC<DiscoveryDefinitionListProps> = ({
   definitions,
   loading,
+  error,
+  forbiddenReason,
+  onRetry,
   onCreateDefinition,
   onUpdateDefinition,
   onDeleteDefinition,
   onRunDefinition,
   onToggleSchedule,
 }) => {
+  const canWrite = usePermission('write');
   const [search, setSearch] = useState('');
   const [filterProvider, setFilterProvider] = useState<DiscoveryProvider | 'all'>('all');
   const [filterActive, setFilterActive] = useState<'all' | 'active' | 'inactive'>('all');
@@ -102,303 +183,256 @@ export const DiscoveryDefinitionList: React.FC<DiscoveryDefinitionListProps> = (
     }
   };
 
-  const formatLabel = (value: string) => {
-    return value
-      .split('-')
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-  };
-
-  const formatDate = (dateString?: string) => {
-    if (!dateString) return 'Never';
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
+  const columns: Array<Column<DiscoveryDefinition>> = [
+    {
+      header: 'Name',
+      render: (definition) => (
+        <div>
+          <span className="text-sm font-medium">{definition.name}</span>
+          {definition.description && (
+            <p className="mt-0.5 max-w-[300px] truncate text-xs text-[var(--hh-text-muted)]">
+              {definition.description}
+            </p>
+          )}
+        </div>
+      ),
+    },
+    {
+      header: 'Provider',
+      render: (definition) => <Badge variant="neutral">{definition.provider.toUpperCase()}</Badge>,
+    },
+    {
+      header: 'Status',
+      render: (definition) => (
+        <Badge variant={definition.active ? 'success' : 'neutral'}>
+          {definition.active ? 'Active' : 'Inactive'}
+        </Badge>
+      ),
+    },
+    {
+      header: 'Schedule',
+      render: (definition) => (
+        <div className="flex items-center gap-2">
+          {/* POST .../schedule/enable|disable need 'write' (discovery-definition.routes.ts); a viewer sees the state, not a toggle. */}
+          {canWrite ? (
+            <Switch
+              aria-label={`Schedule for ${definition.name}`}
+              checked={definition.schedule?.enabled || false}
+              onChange={(checked) => onToggleSchedule(definition.id, checked)}
+            />
+          ) : (
+            <Badge variant={definition.schedule?.enabled ? 'success' : 'neutral'}>
+              {definition.schedule?.enabled ? 'Scheduled' : 'Not running'}
+            </Badge>
+          )}
+          <span className="text-sm">{getCronDescription(definition.schedule?.cronExpression)}</span>
+        </div>
+      ),
+    },
+    {
+      header: 'Last Run',
+      render: (definition) => (
+        <div>
+          <span className="text-sm text-[var(--hh-text-muted)]">{formatDate(definition.lastRunAt)}</span>
+          {definition.lastRunStatus && (
+            <Badge
+              variant={definition.lastRunStatus === 'completed' ? 'neutral' : 'danger'}
+              className="ml-2"
+            >
+              {definition.lastRunStatus}
+            </Badge>
+          )}
+        </div>
+      ),
+    },
+  ];
+  if (canWrite) {
+    columns.push({
+      header: 'Actions',
+      className: 'text-right',
+      render: (definition) => (
+        <div className="flex justify-end gap-1">
+          <IconButton
+            icon="play"
+            variant="ghost"
+            size="sm"
+            aria-label={`Run ${definition.name}`}
+            onClick={() => onRunDefinition(definition.id)}
+          />
+          <IconButton
+            icon="pencil-simple"
+            variant="ghost"
+            size="sm"
+            aria-label={`Edit ${definition.name}`}
+            onClick={() => handleEdit(definition)}
+          />
+          <IconButton
+            icon="trash"
+            variant="ghost"
+            size="sm"
+            aria-label={`Delete ${definition.name}`}
+            onClick={() => setDeletingDefinition(definition)}
+          />
+        </div>
+      ),
     });
-  };
+  }
 
-  const getCronDescription = (cronExpression?: string): string => {
-    if (!cronExpression) return 'Not scheduled';
+  const createButton = (
+    <Button icon="plus" size="md" onClick={() => setShowCreateDialog(true)}>
+      Create Definition
+    </Button>
+  );
 
-    const parts = cronExpression.split(' ');
-    if (parts.length !== 5) return cronExpression;
-
-    const [min, hour, day, month, weekday] = parts;
-    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
-    if (min === '*' && hour === '*') return 'Every minute';
-    if (hour === '*' && day === '*' && weekday === '*') return `Every hour at ${min} minutes past`;
-    if (day === '*' && weekday === '*') {
-      const timeStr = `${hour.padStart(2, '0')}:${min.padStart(2, '0')}`;
-      return `Daily at ${timeStr}`;
+  const renderBody = () => {
+    if (error && forbiddenReason) {
+      return (
+        <EmptyState
+          tone="danger"
+          icon="lock-key"
+          title="Not permitted"
+          description={forbiddenReason}
+        />
+      );
     }
-    if (day === '*' && weekday !== '*') {
-      const timeStr = `${hour.padStart(2, '0')}:${min.padStart(2, '0')}`;
-      const dayName = days[parseInt(weekday)] || weekday;
-      return `Weekly on ${dayName} at ${timeStr}`;
+    if (error && definitions.length === 0) {
+      return (
+        <EmptyState
+          tone="danger"
+          icon="warning-circle"
+          title="Could not load discovery definitions"
+          description={error}
+          action={
+            onRetry ? (
+              <Button size="sm" variant="secondary" onClick={onRetry}>
+                Try again
+              </Button>
+            ) : undefined
+          }
+        />
+      );
     }
-    if (day !== '*') {
-      const timeStr = `${hour.padStart(2, '0')}:${min.padStart(2, '0')}`;
-      return `Monthly on day ${day} at ${timeStr}`;
+    if (!loading && !error && definitions.length === 0) {
+      return (
+        <EmptyState
+          icon="magnifying-glass"
+          title="No discovery definitions"
+          description={
+            canWrite
+              ? 'No discovery definitions found. Create your first definition to get started.'
+              : 'No discovery definitions found.'
+          }
+        />
+      );
     }
-
-    return cronExpression;
+    return (
+      <>
+        {error && (
+          <Banner tone="danger" icon="warning-circle">
+            {error}
+            {onRetry && (
+              <Button size="sm" variant="secondary" className="ml-3" onClick={onRetry}>
+                Try again
+              </Button>
+            )}
+          </Banner>
+        )}
+        <div className="flex flex-wrap items-end gap-3">
+          <Input
+            aria-label="Search definitions"
+            icon="magnifying-glass"
+            type="text"
+            placeholder="Search definitions..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            containerClassName="min-w-[250px] flex-1"
+          />
+          <Select
+            aria-label="Filter by provider"
+            value={filterProvider}
+            onChange={(value) => setFilterProvider(value as DiscoveryProvider | 'all')}
+            options={PROVIDER_FILTER_OPTIONS}
+            containerClassName="min-w-[170px]"
+          />
+          <Select
+            aria-label="Filter by status"
+            value={filterActive}
+            onChange={(value) => setFilterActive(value as 'all' | 'active' | 'inactive')}
+            options={STATUS_FILTER_OPTIONS}
+            containerClassName="min-w-[150px]"
+          />
+        </div>
+        <DataTable
+          caption="Discovery definitions"
+          rows={filteredDefinitions}
+          columns={columns}
+          rowKey={(definition) => definition.id}
+          loading={loading}
+          emptyLabel="No definitions match the current filters."
+          // No count until there is something to count: a pending first load is not "0 of 0".
+          footer={
+            loading && definitions.length === 0 ? undefined : (
+              <span className="text-sm">
+                {filteredDefinitions.length} of {definitions.length} definitions
+              </span>
+            )
+          }
+        />
+      </>
+    );
   };
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold">Discovery Definitions</h2>
-          <p className="text-sm text-muted-foreground">
-            Manage reusable discovery configurations
-          </p>
-        </div>
-        <RequirePermission permission="write">
-          <Button onClick={() => setShowCreateDialog(true)}>
-            <Icon name="plus" size={16} className="mr-2" />
-            Create Definition
-          </Button>
-        </RequirePermission>
-      </div>
-
-      <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
-        {/* Filters */}
-        <div className="p-4 flex flex-wrap gap-3 items-center border-b border-border/50">
-          <div className="relative flex-1 min-w-[250px]">
-            <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="text"
-              placeholder="Search definitions..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-10 pr-3 py-2 border border-input rounded-md text-sm bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
-
-          <div className="relative min-w-[150px]">
-            <Icon name="funnel" size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <select
-              value={filterProvider}
-              onChange={(e) => setFilterProvider(e.target.value as DiscoveryProvider | 'all')}
-              className="w-full pl-10 pr-8 py-2 border border-input rounded-md text-sm appearance-none bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-            >
-              <option value="all">All Providers</option>
-              {PROVIDERS.map((provider) => (
-                <option key={provider} value={provider}>
-                  {provider.toUpperCase()}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <select
-            value={filterActive}
-            onChange={(e) => setFilterActive(e.target.value as 'all' | 'active' | 'inactive')}
-            className="min-w-[150px] px-3 py-2 border border-input rounded-md text-sm appearance-none bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            <option value="all">All Status</option>
-            <option value="active">Active</option>
-            <option value="inactive">Inactive</option>
-          </select>
-        </div>
-
-        {/* Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-muted/30 border-b border-border/50">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Name
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Provider
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Status
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Schedule
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Last Run
-                </th>
-                <th className="px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/30">
-              {loading ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center">
-                    <div className="flex justify-center">
-                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-                    </div>
-                  </td>
-                </tr>
-              ) : filteredDefinitions.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                    {definitions.length === 0
-                      ? 'No discovery definitions found. Create your first definition to get started.'
-                      : 'No definitions match the current filters.'}
-                  </td>
-                </tr>
-              ) : (
-                filteredDefinitions.map((definition) => (
-                  <tr
-                    key={definition.id}
-                    className="hover:bg-muted/50 transition-colors"
-                  >
-                    <td className="px-4 py-3">
-                      <div>
-                        <span className="text-sm font-medium text-foreground">{definition.name}</span>
-                        {definition.description && (
-                          <p className="text-xs text-muted-foreground mt-0.5 max-w-[300px] truncate">
-                            {definition.description}
-                          </p>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge variant="outline">{definition.provider.toUpperCase()}</Badge>
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge variant={definition.active ? 'default' : 'secondary'}>
-                        {definition.active ? 'Active' : 'Inactive'}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <Switch
-                          checked={definition.schedule?.enabled || false}
-                          onCheckedChange={(checked) => onToggleSchedule(definition.id, checked)}
-                          className="scale-75"
-                        />
-                        <span className="text-sm text-foreground">
-                          {getCronDescription(definition.schedule?.cronExpression)}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div>
-                        <span className="text-sm text-muted-foreground">
-                          {formatDate(definition.lastRunAt)}
-                        </span>
-                        {definition.lastRunStatus && (
-                          <Badge
-                            variant={definition.lastRunStatus === 'completed' ? 'secondary' : 'destructive'}
-                            className="ml-2 text-xs"
-                          >
-                            {definition.lastRunStatus}
-                          </Badge>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex justify-end gap-1">
-                        <RequirePermission permission="write">
-                          <button
-                            onClick={() => onRunDefinition(definition.id)}
-                            className="p-1.5 hover:bg-primary/10 rounded transition-colors"
-                            title="Run Now"
-                          >
-                            <Icon name="play" size={16} className="text-primary" />
-                          </button>
-                          <button
-                            onClick={() => handleEdit(definition)}
-                            className="p-1.5 hover:bg-primary/10 rounded transition-colors"
-                            title="Edit"
-                          >
-                            <Icon name="pencil-simple" size={16} className="text-primary" />
-                          </button>
-                          <button
-                            onClick={() => setDeletingDefinition(definition)}
-                            className="p-1.5 hover:bg-destructive/10 rounded transition-colors"
-                            title="Delete"
-                          >
-                            <Icon name="trash" size={16} className="text-destructive" />
-                          </button>
-                        </RequirePermission>
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pagination */}
-        <div className="px-4 py-3 flex items-center justify-between border-t border-border/50">
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-foreground">
-              {filteredDefinitions.length} of {definitions.length} definitions
-            </span>
-          </div>
-        </div>
-      </LiquidGlass>
-
-      {/* Create Dialog */}
-      <FormDialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-        <FormDialogContent>
-          <FormDialogHeader>
-            <FormDialogTitle>Create Discovery Definition</FormDialogTitle>
-          </FormDialogHeader>
-          <FormDialogBody>
-            <DiscoveryDefinitionForm
-              onSubmit={handleCreate}
-              onCancel={() => setShowCreateDialog(false)}
-            />
-          </FormDialogBody>
-        </FormDialogContent>
-      </FormDialog>
-
-      {/* Edit Dialog */}
-      <FormDialog
-        open={!!editingDefinition}
-        onOpenChange={(open) => !open && setEditingDefinition(null)}
+      <SectionHeading
+        right={
+          <RequirePermission permission="write">
+            {createButton}
+          </RequirePermission>
+        }
       >
-        <FormDialogContent>
-          <FormDialogHeader>
-            <FormDialogTitle>Edit Discovery Definition</FormDialogTitle>
-          </FormDialogHeader>
-          <FormDialogBody>
-            {editingDefinition && (
-              <DiscoveryDefinitionForm
-                definition={editingDefinition}
-                onSubmit={handleUpdate}
-                onCancel={() => setEditingDefinition(null)}
-              />
-            )}
-          </FormDialogBody>
-        </FormDialogContent>
-      </FormDialog>
+        Discovery Definitions
+      </SectionHeading>
+      <p className="-mt-4 text-sm text-[var(--hh-text-muted)]">
+        Manage reusable discovery configurations
+      </p>
 
-      {/* Delete Confirmation Dialog */}
-      <Dialog open={!!deletingDefinition} onOpenChange={(open) => !open && setDeletingDefinition(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete Definition</DialogTitle>
-            <DialogDescription>
-              Are you sure you want to delete "{deletingDefinition?.name}"? This action cannot be undone.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDeletingDefinition(null)}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={handleDelete}>
-              Delete
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {renderBody()}
+
+      <FormModal
+        open={showCreateDialog}
+        title="Create Discovery Definition"
+        onClose={() => setShowCreateDialog(false)}
+      >
+        <DiscoveryDefinitionForm
+          onSubmit={handleCreate}
+          onCancel={() => setShowCreateDialog(false)}
+        />
+      </FormModal>
+
+      <FormModal
+        open={!!editingDefinition}
+        title="Edit Discovery Definition"
+        onClose={() => setEditingDefinition(null)}
+      >
+        {editingDefinition && (
+          <DiscoveryDefinitionForm
+            definition={editingDefinition}
+            onSubmit={handleUpdate}
+            onCancel={() => setEditingDefinition(null)}
+          />
+        )}
+      </FormModal>
+
+      <ConfirmDialog
+        open={!!deletingDefinition}
+        tone="danger"
+        title="Delete Definition"
+        body={`Are you sure you want to delete "${deletingDefinition?.name}"? This action cannot be undone.`}
+        confirmLabel="Delete"
+        onConfirm={handleDelete}
+        onCancel={() => setDeletingDefinition(null)}
+      />
     </div>
   );
 };

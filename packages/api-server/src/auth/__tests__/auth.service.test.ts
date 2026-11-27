@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach, jest } from '@jest/globals';
 import { logger } from '@cmdb/common';
 import { ApiKeyNotFoundError, ApiKeysDisabledError, AUTH_TIME_TOLERANCE_SECONDS, AuthFailureError, AuthService, AuthRepository, OrganizationRequiredError, SESSION_ABSOLUTE_CAP_SECONDS, UserProfileUpdate } from '../auth.service';
-import type { GuardedEpochBump, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite } from '../auth.service';
+import type { GuardedEpochBump, GuardedPasswordRehash, GuardedPasswordWrite, GuardedUserWrite, UsersByIds } from '../auth.service';
 import { AmbiguousUserIdentityError, User, ApiKey, UserNotFoundError } from '../types';
 import { PasswordService } from '../password.service';
 import { JWTService } from '../jwt.service';
@@ -45,6 +45,16 @@ class InMemoryAuthRepository implements AuthRepository {
 
   async findUserById(id: string): Promise<User | null> {
     return this.users.get(id) || null;
+  }
+
+  /** Ids in `ambiguousIds` have two user nodes. */
+  ambiguousIds = new Set<string>();
+
+  async findUsersByIds(ids: readonly string[]): Promise<UsersByIds> {
+    return {
+      users: new Map(ids.flatMap(id => (this.users.has(id) && !this.ambiguousIds.has(id) ? [[id, this.users.get(id)!] as [string, User]] : []))),
+      ambiguous: ids.filter(id => this.ambiguousIds.has(id)),
+    };
   }
 
   async updateUserLastLogin(): Promise<void> {}
@@ -157,6 +167,29 @@ describe('AuthService profile/password/account lifecycle', () => {
       _createdAt: new Date('2024-01-01'),
       _updatedAt: new Date('2024-01-01'),
     } as User);
+  });
+
+  describe('findEnabledUsers', () => {
+    it('keeps only the enabled users among the ids, the same answer findEnabledUser gives one by one', async () => {
+      repository.users.set('user-off', { ...repository.users.get('user-1')!, _id: 'user-off', _enabled: false } as User);
+      const ids = ['user-1', 'user-off', 'ghost'];
+
+      const batch = await service.findEnabledUsers(ids, 1000);
+
+      expect([...batch.users.keys()]).toEqual(['user-1']);
+      for (const id of ids) {
+        expect((await service.findEnabledUser(id))?._id).toBe(batch.users.get(id)?._id);
+      }
+    });
+
+    it('reports an ambiguous id instead of failing the batch', async () => {
+      repository.ambiguousIds.add('user-1');
+      repository.users.set('user-2', { ...repository.users.get('user-1')!, _id: 'user-2' } as User);
+
+      const batch = await service.findEnabledUsers(['user-1', 'user-2'], 1000);
+
+      expect([[...batch.users.keys()], batch.ambiguous]).toEqual([['user-2'], ['user-1']]);
+    });
   });
 
   describe('getUserProfile', () => {

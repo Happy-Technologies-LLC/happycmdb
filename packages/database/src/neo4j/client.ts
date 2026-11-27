@@ -3,7 +3,7 @@
 
 // packages/database/src/neo4j/client.ts
 
-import neo4j, { AuthToken, Config, Driver, Session, Node, Relationship, Path, PathSegment } from 'neo4j-driver';
+import neo4j, { AuthToken, Config, Driver, Session, SessionMode, Node, Relationship, Path, PathSegment } from 'neo4j-driver';
 import { randomUUID } from 'crypto';
 import {
   logger, CI, CIInput, ciIncarnationId, CIAnalyticsLimitError, MAX_CI_ANALYTICS_NODES, sanitizeCITypeForLabel, validateRelationshipType,
@@ -375,8 +375,9 @@ export class Neo4jClient {
     }
   }
 
-  getSession(database = 'neo4j'): Session {
-    return this.driver.session({ database });
+  /** `accessMode` is the driver's `defaultAccessMode` (`neo4j.session.READ`); omitted, the driver's default (WRITE). */
+  getSession(database = 'neo4j', accessMode?: SessionMode): Session {
+    return this.driver.session(accessMode === undefined ? { database } : { database, defaultAccessMode: accessMode });
   }
 
   async close(): Promise<void> {

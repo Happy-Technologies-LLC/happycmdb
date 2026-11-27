@@ -443,7 +443,7 @@ export class AuthController {
       avatar: user._avatar,
       role: user._role,
       // HAP-1930 (BW16): what the server's role table grants this role, so a client need not mirror the table.
-      permissions: Object.prototype.hasOwnProperty.call(ROLE_PERMISSIONS, permissionsRole)
+      permissions: Object.hasOwn(ROLE_PERMISSIONS, permissionsRole)
         ? [...ROLE_PERMISSIONS[permissionsRole as UserRole]]
         : [],
       createdAt: user._createdAt,

@@ -2,23 +2,57 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState } from 'react';
-import { LiquidGlass } from '@/components/ui/liquid-glass';
-import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from '@/components/ui/table';
-import { Badge, type BadgeProps } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Icon } from '@happy-technologies/design-system';
+import {
+  Badge,
+  Button,
+  Card,
+  DataTable,
+  Icon,
+  IconButton,
+  Input,
+  Select,
+  type BadgeVariant,
+  type Column,
+} from '@happy-technologies/design-system';
 import { useAIPatterns } from '@/hooks/useAIPatterns';
 import { AIPattern } from '@/services/ai-pattern.service';
-import LoadingSpinner from '@/components/common/LoadingSpinner';
+import { QueryState } from '@/components/estate/SurfaceState';
 import { RequirePermission } from '@/components/common/RequirePermission';
+import { EMPTY_VALUE, isKnown } from '@/lib/dashboardValue';
 import { PatternDetailModal } from './PatternDetailModal';
+import { readFailure, useReadRefusal } from './readState';
+
+const STATUS_OPTIONS = [
+  { value: 'all', label: 'All Statuses' },
+  { value: 'active', label: 'Active' },
+  { value: 'approved', label: 'Approved' },
+  { value: 'review', label: 'In Review' },
+  { value: 'draft', label: 'Draft' },
+];
+
+const PAGE_SIZE_OPTIONS = [
+  { value: '10', label: '10 / page' },
+  { value: '25', label: '25 / page' },
+  { value: '50', label: '50 / page' },
+  { value: '100', label: '100 / page' },
+];
+
+const STATUS_BADGES: Record<string, { variant: BadgeVariant; label: string; icon: string }> = {
+  active: { variant: 'success', label: 'Active', icon: 'check-circle' },
+  approved: { variant: 'info', label: 'Approved', icon: 'check-circle' },
+  review: { variant: 'warning', label: 'In Review', icon: 'clock' },
+  draft: { variant: 'neutral', label: 'Draft', icon: 'pencil-simple' },
+  deprecated: { variant: 'danger', label: 'Deprecated', icon: 'x-circle' },
+};
+
+/** Successful share of uses, in percent; unknown (not 0) while the pattern has never been used. */
+const successRateOf = (pattern: AIPattern): number | null =>
+  pattern.usageCount > 0 ? (pattern.successCount / pattern.usageCount) * 100 : null;
 
 export const PatternLibrary: React.FC = () => {
-  const { patterns, loading, activatePattern, deactivatePattern, approvePattern, deletePattern } = useAIPatterns();
+  const { patterns, loading, error, loadPatterns, activatePattern, deactivatePattern, approvePattern, deletePattern } =
+    useAIPatterns();
+  const refusal = useReadRefusal();
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
@@ -33,11 +67,22 @@ export const PatternLibrary: React.FC = () => {
   }, [searchTerm, statusFilter, categoryFilter]);
 
   if (loading) {
-    return <LoadingSpinner />;
+    return <QueryState what="patterns" loading />;
+  }
+
+  if (error || refusal !== null) {
+    return (
+      <QueryState
+        what="patterns"
+        error={readFailure(error, refusal)}
+        onRetry={() => void loadPatterns()}
+      />
+    );
   }
 
   // Get unique categories
   const categories = Array.from(new Set(patterns.map(p => p.category)));
+  const categoryOptions = [{ value: 'all', label: 'All Categories' }, ...categories.map(cat => ({ value: cat, label: cat }))];
 
   // Filter patterns
   const filteredPatterns = patterns.filter(pattern => {
@@ -59,19 +104,11 @@ export const PatternLibrary: React.FC = () => {
   const paginatedPatterns = filteredPatterns.slice(startIndex, endIndex);
 
   const getStatusBadge = (status: string) => {
-    const variants: Record<string, { variant: BadgeProps['variant']; label: string; icon: React.ReactNode }> = {
-      active: { variant: 'default', label: 'Active', icon: <Icon name="check-circle" size={12} /> },
-      approved: { variant: 'secondary', label: 'Approved', icon: <Icon name="check-circle" size={12} /> },
-      review: { variant: 'outline', label: 'In Review', icon: <Icon name="clock" size={12} /> },
-      draft: { variant: 'outline', label: 'Draft', icon: <Icon name="pencil-simple" size={12} /> },
-      deprecated: { variant: 'destructive', label: 'Deprecated', icon: <Icon name="x-circle" size={12} /> },
-    };
-
-    const config = variants[status] || variants.draft;
+    const config = STATUS_BADGES[status] || STATUS_BADGES.draft;
 
     return (
-      <Badge variant={config.variant} className="flex items-center gap-1">
-        {config.icon}
+      <Badge variant={config.variant}>
+        <Icon name={config.icon} size={12} />
         {config.label}
       </Badge>
     );
@@ -106,243 +143,169 @@ export const PatternLibrary: React.FC = () => {
     setDetailModalOpen(true);
   };
 
+  // Icon-only row action: the title and the accessible name are the same label.
+  const rowAction = (icon: string, label: string, onClick: () => void) => (
+    <IconButton icon={icon} variant="ghost" size="sm" onClick={onClick} title={label} aria-label={label} />
+  );
+
+  const columns: Array<Column<AIPattern>> = [
+    {
+      header: 'Name',
+      className: 'font-medium',
+      render: (pattern) => (
+        <div className="flex items-center gap-2">
+          {pattern.isActive && <Icon name="sparkle" size={16} className="text-[var(--hh-warning-text)]" />}
+          {pattern.name}
+        </div>
+      ),
+    },
+    { header: 'Category', render: (pattern) => <Badge variant="neutral">{pattern.category}</Badge> },
+    { header: 'Status', render: (pattern) => getStatusBadge(pattern.status) },
+    {
+      header: 'Confidence',
+      className: 'text-right',
+      render: (pattern) =>
+        isKnown(pattern.confidenceScore) ? (
+          <Badge variant={pattern.confidenceScore >= 0.9 ? 'success' : 'default'}>
+            {(pattern.confidenceScore * 100).toFixed(0)}%
+          </Badge>
+        ) : (
+          EMPTY_VALUE
+        ),
+    },
+    { header: 'Usage', className: 'text-right', render: (pattern) => pattern.usageCount },
+    {
+      header: 'Success Rate',
+      className: 'text-right',
+      render: (pattern) => {
+        const successRate = successRateOf(pattern);
+        if (successRate === null) return EMPTY_VALUE;
+        return (
+          <span className={successRate >= 80 ? 'text-[var(--hh-success-text)]' : 'text-[var(--hh-warning-text)]'}>
+            {successRate.toFixed(0)}%
+          </span>
+        );
+      },
+    },
+    {
+      header: 'Avg Time',
+      className: 'text-right',
+      render: (pattern) => (isKnown(pattern.avgExecutionTimeMs) ? `${pattern.avgExecutionTimeMs}ms` : EMPTY_VALUE),
+    },
+    {
+      header: 'Actions',
+      className: 'text-right',
+      render: (pattern) => (
+        <div className="flex justify-end gap-1">
+          {pattern.status === 'review' && (
+            <RequirePermission permission="admin">
+              {rowAction('check-circle', 'Approve', () => handleApprove(pattern))}
+            </RequirePermission>
+          )}
+          {pattern.status === 'approved' && !pattern.isActive && (
+            <RequirePermission permission="admin">
+              {rowAction('play', 'Activate', () => handleActivate(pattern))}
+            </RequirePermission>
+          )}
+          {pattern.isActive && (
+            <RequirePermission permission="write">
+              {rowAction('pause', 'Deactivate', () => handleDeactivate(pattern))}
+            </RequirePermission>
+          )}
+          {rowAction('eye', 'View Details', () => handleViewDetails(pattern))}
+          {pattern.status === 'draft' && (
+            <RequirePermission permission="write">
+              {rowAction('trash', 'Delete', () => handleDelete(pattern))}
+            </RequirePermission>
+          )}
+        </div>
+      ),
+    },
+  ];
+
   return (
     <div className="space-y-6">
       {/* Filters */}
-      <LiquidGlass size="sm" rounded="xl">
-        <div className="p-4 flex flex-col md:flex-row gap-4">
-          <div className="flex-1 relative">
-            <Icon name="magnifying-glass" size={16} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder="Search patterns..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-10"
-            />
-          </div>
+      <Card inset="none" className="flex flex-col gap-4 p-4 md:flex-row">
+        <Input
+          icon="magnifying-glass"
+          size="sm"
+          aria-label="Search patterns"
+          placeholder="Search patterns..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          containerClassName="flex-1"
+        />
+        <Select
+          size="sm"
+          aria-label="Filter by status"
+          value={statusFilter}
+          onChange={setStatusFilter}
+          options={STATUS_OPTIONS}
+          containerClassName="w-full md:w-[180px]"
+        />
+        <Select
+          size="sm"
+          aria-label="Filter by category"
+          value={categoryFilter}
+          onChange={setCategoryFilter}
+          options={categoryOptions}
+          containerClassName="w-full md:w-[200px]"
+        />
+      </Card>
 
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-full md:w-[180px]">
-              <SelectValue placeholder="Filter by status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Statuses</SelectItem>
-              <SelectItem value="active">Active</SelectItem>
-              <SelectItem value="approved">Approved</SelectItem>
-              <SelectItem value="review">In Review</SelectItem>
-              <SelectItem value="draft">Draft</SelectItem>
-            </SelectContent>
-          </Select>
+      {/* Patterns Table, with the pagination controls in its footer */}
+      <DataTable
+        caption="Patterns"
+        rows={paginatedPatterns}
+        columns={columns}
+        rowKey={(pattern) => pattern.patternId}
+        onRowClick={handleViewDetails}
+        emptyLabel="No patterns found"
+        footer={
+          filteredPatterns.length > 0 ? (
+            <div className="flex flex-col items-center justify-between gap-4 py-1 md:flex-row">
+              <div className="text-sm text-[var(--hh-text-muted)]">
+                Showing {startIndex + 1}-{Math.min(endIndex, filteredPatterns.length)} of {filteredPatterns.length} patterns
+              </div>
 
-          <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-            <SelectTrigger className="w-full md:w-[200px]">
-              <SelectValue placeholder="Filter by category" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Categories</SelectItem>
-              {categories.map(cat => (
-                <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </LiquidGlass>
-
-      {/* Patterns Table */}
-      <LiquidGlass size="sm" rounded="xl" className="overflow-hidden">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Category</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead className="text-right">Confidence</TableHead>
-              <TableHead className="text-right">Usage</TableHead>
-              <TableHead className="text-right">Success Rate</TableHead>
-              <TableHead className="text-right">Avg Time</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filteredPatterns.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
-                  No patterns found
-                </TableCell>
-              </TableRow>
-            ) : (
-              paginatedPatterns.map((pattern) => {
-                const successRate = pattern.usageCount > 0
-                  ? (pattern.successCount / pattern.usageCount) * 100
-                  : 0;
-
-                return (
-                  <TableRow
-                    key={pattern.patternId}
-                    className="cursor-pointer hover:bg-muted/50"
-                    onClick={() => handleViewDetails(pattern)}
-                  >
-                    <TableCell className="font-medium">
-                      <div className="flex items-center gap-2">
-                        {pattern.isActive && (
-                          <Icon name="sparkle" size={16} className="text-warning" />
-                        )}
-                        {pattern.name}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{pattern.category}</Badge>
-                    </TableCell>
-                    <TableCell>{getStatusBadge(pattern.status)}</TableCell>
-                    <TableCell className="text-right">
-                      <Badge variant={pattern.confidenceScore >= 0.9 ? "default" : "secondary"}>
-                        {(pattern.confidenceScore * 100).toFixed(0)}%
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right">{pattern.usageCount}</TableCell>
-                    <TableCell className="text-right">
-                      <span className={successRate >= 80 ? 'text-success' : 'text-warning'}>
-                        {successRate.toFixed(0)}%
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      {pattern.avgExecutionTimeMs ?? 0}ms
-                    </TableCell>
-                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex justify-end gap-1">
-                        {pattern.status === 'review' && (
-                          <RequirePermission permission="admin">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleApprove(pattern)}
-                              title="Approve"
-                            >
-                              <Icon name="check-circle" size={16} className="text-success" />
-                            </Button>
-                          </RequirePermission>
-                        )}
-                        {pattern.status === 'approved' && !pattern.isActive && (
-                          <RequirePermission permission="admin">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleActivate(pattern)}
-                              title="Activate"
-                            >
-                              <Icon name="play" size={16} className="text-sky-text" />
-                            </Button>
-                          </RequirePermission>
-                        )}
-                        {pattern.isActive && (
-                          <RequirePermission permission="write">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleDeactivate(pattern)}
-                              title="Deactivate"
-                            >
-                              <Icon name="pause" size={16} className="text-warning" />
-                            </Button>
-                          </RequirePermission>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleViewDetails(pattern)}
-                          title="View Details"
-                        >
-                          <Icon name="eye" size={16} />
-                        </Button>
-                        {pattern.status === 'draft' && (
-                          <RequirePermission permission="write">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleDelete(pattern)}
-                              title="Delete"
-                            >
-                              <Icon name="trash" size={16} className="text-destructive" />
-                            </Button>
-                          </RequirePermission>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })
-            )}
-          </TableBody>
-        </Table>
-      </LiquidGlass>
-
-      {/* Pagination Controls */}
-      {filteredPatterns.length > 0 && (
-        <LiquidGlass size="sm" rounded="xl">
-          <div className="p-4 flex flex-col md:flex-row items-center justify-between gap-4">
-            <div className="text-sm text-muted-foreground">
-              Showing {startIndex + 1}-{Math.min(endIndex, filteredPatterns.length)} of {filteredPatterns.length} patterns
-            </div>
-
-            <div className="flex items-center gap-2">
-              <Select value={String(pageSize)} onValueChange={(val) => {
-                setPageSize(Number(val));
-                setCurrentPage(1);
-              }}>
-                <SelectTrigger className="w-[100px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="10">10 / page</SelectItem>
-                  <SelectItem value="25">25 / page</SelectItem>
-                  <SelectItem value="50">50 / page</SelectItem>
-                  <SelectItem value="100">100 / page</SelectItem>
-                </SelectContent>
-              </Select>
-
-              <div className="flex gap-1">
-                <Button
-                  variant="outline"
+              <div className="flex items-center gap-2">
+                <Select
                   size="sm"
-                  onClick={() => setCurrentPage(1)}
-                  disabled={currentPage === 1}
-                >
-                  First
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
-                  disabled={currentPage === 1}
-                >
-                  Previous
-                </Button>
+                  aria-label="Patterns per page"
+                  value={String(pageSize)}
+                  onChange={(val) => {
+                    setPageSize(Number(val));
+                    setCurrentPage(1);
+                  }}
+                  options={PAGE_SIZE_OPTIONS}
+                  containerClassName="w-[120px]"
+                />
 
-                <div className="flex items-center px-3 text-sm">
-                  Page {currentPage} of {totalPages}
+                <div className="flex items-center gap-1">
+                  <Button variant="secondary" size="sm" onClick={() => setCurrentPage(1)} disabled={currentPage === 1}>
+                    First
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))} disabled={currentPage === 1}>
+                    Previous
+                  </Button>
+
+                  <div className="px-3 text-sm">
+                    Page {currentPage} of {totalPages}
+                  </div>
+
+                  <Button variant="secondary" size="sm" onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))} disabled={currentPage === totalPages}>
+                    Next
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => setCurrentPage(totalPages)} disabled={currentPage === totalPages}>
+                    Last
+                  </Button>
                 </div>
-
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
-                  disabled={currentPage === totalPages}
-                >
-                  Next
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setCurrentPage(totalPages)}
-                  disabled={currentPage === totalPages}
-                >
-                  Last
-                </Button>
               </div>
             </div>
-          </div>
-        </LiquidGlass>
-      )}
+          ) : undefined
+        }
+      />
 
       {/* Pattern Detail Modal */}
       {selectedPattern && (

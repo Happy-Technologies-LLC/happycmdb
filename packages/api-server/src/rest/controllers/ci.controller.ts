@@ -154,7 +154,17 @@ export class CIController {
 
         // Count and page share the same journal snapshot inside readCIList;
         // never collect the complete graph inventory just to return one page.
-        const sortField = validateCISortField((sort_by as string) || 'name');
+        let sortField: string;
+        try {
+          sortField = validateCISortField((sort_by as string) || 'name');
+        } catch (error) {
+          // The route's Joi schema normally rejects this first; this keeps a caller that bypasses it a 400, not a 500.
+          if (!(error instanceof Error) || !error.message.startsWith('Invalid sort field:')) {
+            throw error;
+          }
+          res.status(400).json({ success: false, error: 'Bad Request', message: error.message });
+          return;
+        }
         const sortDirection = validateSortDirection((sort_order as string) || 'asc');
         query += ' AND NOT ci.id IN $pending';
         const { total, cis } = await readCIList(organizationId, async (pending, timeout) => {

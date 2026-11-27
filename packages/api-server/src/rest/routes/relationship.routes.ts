@@ -24,6 +24,12 @@ const listRelationshipsQuerySchema = Joi.object({
   offset: Joi.number().integer().min(0).default(0),
 });
 
+// GET /relationships/type/:type takes paging only; the list schema's type/from_id/to_id/ci_id mean something else.
+const relationshipsByTypeQuerySchema = Joi.object({
+  limit: Joi.number().integer().min(1).max(1000).default(100),
+  offset: Joi.number().integer().min(0).default(0),
+});
+
 // HAP-2029: one edge's evidence receipts. Registered before any parameterized GET.
 const evidenceQuerySchema = Joi.object({
   from_id: Joi.string().min(1).max(255).required(),
@@ -64,5 +70,6 @@ relationshipRoutes.delete(
 // GET /relationships/type/:type - Get relationships by type
 relationshipRoutes.get(
   '/type/:type',
+  validateOptional(relationshipsByTypeQuerySchema, 'query'),
   controller.getRelationshipsByType.bind(controller)
 );

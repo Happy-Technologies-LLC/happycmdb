@@ -7,15 +7,14 @@
  */
 
 import React, { useMemo } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Icon } from '@happy-technologies/design-system';
+import { SectionHeading } from '@happy-technologies/design-system';
 import { useRelationshipMatrix } from '../../hooks/useAnalytics';
 import { ExportButton } from './ExportButton';
+import { AnalyticsPanel } from './MetricCard';
 import { brand } from '@/lib/brandColors';
 
 export const RelationshipMatrix: React.FC = () => {
-  const { data, loading, error } = useRelationshipMatrix();
+  const { data, loading, error, refetch } = useRelationshipMatrix();
 
   const matrixData = useMemo(() => {
     if (!data || data.length === 0) return null;
@@ -55,152 +54,107 @@ export const RelationshipMatrix: React.FC = () => {
     return brand.skyLight;
   };
 
-  if (loading) {
-    return (
-      <Card className="mb-4">
-        <CardHeader>
-          <CardTitle>Relationship Matrix</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex justify-center items-center h-[300px]">
-            <Icon name="spinner-gap" size={32} className="animate-spin text-primary" />
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (error) {
-    return (
-      <Card className="mb-4">
-        <CardHeader>
-          <CardTitle>Relationship Matrix</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Alert variant="destructive">
-            <AlertDescription>Failed to load data</AlertDescription>
-          </Alert>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (!data || data.length === 0 || !matrixData) {
-    return (
-      <Card className="mb-4">
-        <CardHeader>
-          <CardTitle>Relationship Matrix</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Alert>
-            <AlertDescription>No data available</AlertDescription>
-          </Alert>
-        </CardContent>
-      </Card>
-    );
-  }
-
   return (
-    <Card className="mb-4">
-      <CardHeader>
-        <div className="flex justify-between items-center">
-          <CardTitle>Relationship Type Matrix</CardTitle>
-          <ExportButton data={data} filename="relationship_matrix" />
-        </div>
-      </CardHeader>
+    <AnalyticsPanel
+      title="Relationship Type Matrix"
+      loading={loading}
+      error={error}
+      onRetry={refetch}
+      empty={!data || data.length === 0 || !matrixData}
+      actions={data && <ExportButton data={data} filename="relationship_matrix" />}
+    >
+      {() => matrixData && (
+        <>
+          <p className="text-sm text-muted-foreground mb-5">
+            Heatmap showing relationship counts between CI types
+          </p>
 
-      <CardContent>
-        <p className="text-sm text-muted-foreground mb-5">
-          Heatmap showing relationship counts between CI types
-        </p>
+          <div className="overflow-x-auto">
+            {matrixData.relationshipTypes.map((relType) => (
+              <div key={relType} className="mb-6">
+                <SectionHeading level={3}>{relType}</SectionHeading>
 
-        <div className="overflow-x-auto">
-          {matrixData.relationshipTypes.map((relType) => (
-            <div key={relType} className="mb-6">
-              <h3 className="text-base font-semibold mb-3">
-                {relType}
-              </h3>
-
-              <div className="border rounded-lg overflow-hidden">
-                {/* Header row */}
-                <div className="flex bg-muted">
-                  <div className="w-32 p-2 border-r border-b border-border">
-                    <span className="text-xs font-semibold">
-                      Source \ Target
-                    </span>
-                  </div>
-                  {matrixData.targetTypes.map((targetType) => (
-                    <div
-                      key={targetType}
-                      className="w-24 p-2 border-r border-b border-border text-center"
-                    >
+                <div className="border rounded-lg overflow-hidden">
+                  {/* Header row */}
+                  <div className="flex bg-muted">
+                    <div className="w-32 p-2 border-r border-b border-border">
                       <span className="text-xs font-semibold">
-                        {targetType}
+                        Source \ Target
                       </span>
+                    </div>
+                    {matrixData.targetTypes.map((targetType) => (
+                      <div
+                        key={targetType}
+                        className="w-24 p-2 border-r border-b border-border text-center"
+                      >
+                        <span className="text-xs font-semibold">
+                          {targetType}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Data rows */}
+                  {matrixData.sourceTypes.map((sourceType) => (
+                    <div key={sourceType} className="flex">
+                      <div className="w-32 p-2 border-r border-b border-border bg-muted/50">
+                        <span className="text-xs font-medium">
+                          {sourceType}
+                        </span>
+                      </div>
+                      {matrixData.targetTypes.map((targetType) => {
+                        const key = `${sourceType}|${targetType}|${relType}`;
+                        const count = matrixData.matrix.get(key) || 0;
+                        const color = getColorForCount(count, matrixData.maxCount);
+
+                        return (
+                          <div
+                            key={targetType}
+                            className="w-24 p-2 border-r border-b border-border text-center"
+                            style={{ backgroundColor: color }}
+                          >
+                            <span
+                              className={`text-xs ${
+                                count > 0 ? 'font-semibold' : 'text-muted-foreground'
+                              }`}
+                            >
+                              {count > 0 ? count : '-'}
+                            </span>
+                          </div>
+                        );
+                      })}
                     </div>
                   ))}
                 </div>
-
-                {/* Data rows */}
-                {matrixData.sourceTypes.map((sourceType) => (
-                  <div key={sourceType} className="flex">
-                    <div className="w-32 p-2 border-r border-b border-border bg-muted/50">
-                      <span className="text-xs font-medium">
-                        {sourceType}
-                      </span>
-                    </div>
-                    {matrixData.targetTypes.map((targetType) => {
-                      const key = `${sourceType}|${targetType}|${relType}`;
-                      const count = matrixData.matrix.get(key) || 0;
-                      const color = getColorForCount(count, matrixData.maxCount);
-
-                      return (
-                        <div
-                          key={targetType}
-                          className="w-24 p-2 border-r border-b border-border text-center"
-                          style={{ backgroundColor: color }}
-                        >
-                          <span
-                            className={`text-xs ${
-                              count > 0 ? 'font-semibold' : 'text-muted-foreground'
-                            }`}
-                          >
-                            {count > 0 ? count : '-'}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
               </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Legend */}
-        <div className="mt-5 pt-5 border-t border-border">
-          <p className="text-sm font-semibold mb-2">
-            Intensity
-          </p>
-          <div className="flex h-6 mb-1">
-            {[brand.warmAlt, brand.skyLight, brand.sky, brand.skyText, brand.navy].map((color, idx) => (
-              <div
-                key={idx}
-                className="flex-1 border border-border"
-                style={{ backgroundColor: color }}
-              />
             ))}
           </div>
-          <div className="flex justify-between">
-            <span className="text-xs text-muted-foreground">
-              0
-            </span>
-            <span className="text-xs text-muted-foreground">
-              Max: {matrixData.maxCount}
-            </span>
+
+          {/* Legend */}
+          <div className="mt-5 pt-5 border-t border-border">
+            <p className="text-sm font-semibold mb-2">
+              Intensity
+            </p>
+            <div className="flex h-6 mb-1">
+              {[brand.warmAlt, brand.skyLight, brand.sky, brand.skyText, brand.navy].map((color, idx) => (
+                <div
+                  key={idx}
+                  className="flex-1 border border-border"
+                  style={{ backgroundColor: color }}
+                />
+              ))}
+            </div>
+            <div className="flex justify-between">
+              <span className="text-xs text-muted-foreground">
+                0
+              </span>
+              <span className="text-xs text-muted-foreground">
+                Max: {matrixData.maxCount}
+              </span>
+            </div>
           </div>
-        </div>
-      </CardContent>
-    </Card>
+        </>
+      )}
+    </AnalyticsPanel>
   );
 };

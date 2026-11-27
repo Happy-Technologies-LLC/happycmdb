@@ -16,6 +16,8 @@ const client = new Client({
   await client.connect();
   try {
     await client.query('BEGIN READ ONLY');
+    // Pin the lookups to the catalog (pg_temp last) so a search_path set on the role cannot shadow pg_roles.
+    await client.query('SET LOCAL search_path = pg_catalog, pg_temp');
     const { rows } = await client.query(
       'SELECT current_user::text AS current_user, rolsuper FROM pg_roles WHERE rolname = current_user');
     await client.query('ROLLBACK');

@@ -12,10 +12,10 @@ const ORG = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
 const host = fork(join(__dirname, '../../rest/routes/__tests__/fixtures/pglite-host.cjs'), [], { serialization: 'advanced' });
 let serial = 0;
 const pending = new Map<number, PromiseWithResolvers<{ rows: Record<string, unknown>[] }>>();
-host.on('message', ({ id, rows, error }: { id: number; rows: Record<string, unknown>[]; error?: string }) => {
+host.on('message', ({ id, rows, error, code }: { id: number; rows: Record<string, unknown>[]; error?: string; code?: string }) => {
   const call = pending.get(id)!;
   pending.delete(id);
-  if (error) call.reject(new Error(error));
+  if (error) call.reject(Object.assign(new Error(error), { code }));
   else call.resolve({ rows });
 });
 const mockSql = (text: string, params: unknown[] = [], op: 'query' | 'exec' = 'query') => {
@@ -91,8 +91,23 @@ describe('openapi.yaml /relationships/evidence (HAP-2029)', () => {
     const parameter = (name: string) => operation.parameters.find(candidate => candidate.name === name)!;
     expect(operation.parameters.filter(candidate => candidate.required).map(candidate => candidate.name).sort()).toEqual(['from_id', 'to_id', 'type']);
     expect([parameter('limit').schema.maximum, parameter('limit').schema.default, parameter('offset').schema.default]).toEqual([200, 50, 0]);
-    expect(Object.keys(operation.responses).sort()).toEqual(['200', '400', '401', '404']);
+    expect(Object.keys(operation.responses).sort()).toEqual(['200', '400', '401', '404', '503']);
     const routeTypes = (schemas.relationshipType.describe() as { allow: string[] }).allow;
     expect([...parameter('type').schema.enum!].sort()).toEqual([...routeTypes].sort());
+  });
+
+  it('declares the 503 the controller sends while the receipt table is missing, with exactly the body it sends', async () => {
+    const away = 'ALTER TABLE relationship_evidence_receipts RENAME TO relationship_evidence_receipts_away';
+    await mockSql(away, [], 'exec');
+    let sent: { status?: number; body?: unknown } = {};
+    const res = { status: (status: number) => { sent = { status }; return res; }, json: (body: unknown) => { sent.body = body; } } as unknown as Response;
+    try {
+      await new RelationshipController().listEvidence({ query: { from_id: 'a', to_id: 'b', type: 'USES', limit: 50, offset: 0 } } as unknown as Request, res);
+    } finally {
+      await mockSql('ALTER TABLE relationship_evidence_receipts_away RENAME TO relationship_evidence_receipts', [], 'exec');
+    }
+    const declared = spec.paths['/relationships/evidence']!.get.responses['503'] as { content: { 'application/json': { example: unknown } } };
+    expect(sent.status).toBe(503);
+    expect(sent.body).toEqual(declared.content['application/json'].example);
   });
 });

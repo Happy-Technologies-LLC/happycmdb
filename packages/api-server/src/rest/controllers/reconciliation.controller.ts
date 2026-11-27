@@ -195,6 +195,11 @@ export class ReconciliationController {
   async resolveConflict(req: Request, res: Response): Promise<void> {
     try {
       const { resolution, expected_revision, merged_data } = req.body;
+      // A non-UUID id cannot name a row (the column is uuid, so SQL would 22P02 into a 500): 404 before the journal gate, leaking no journal state.
+      if (!UUID.test(req.params['id']!)) {
+        res.status(404).json({ success: false, error: 'Not Found', message: 'Conflict not found' });
+        return;
+      }
       // v16 §7.4: missing/foreign conflict or CI share one 404; a stale or wrong revision is 409.
       const resolved = await this.reconciliationEngine.resolveConflict(requestOrganizationId(req), requestActor(req),
         req.params['id']!, resolution, expected_revision, merged_data);

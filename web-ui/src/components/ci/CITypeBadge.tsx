@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React from 'react';
-import { Icon } from '@happy-technologies/design-system';
+import { Badge, Icon } from '@happy-technologies/design-system';
 import { CIType } from '../../services/ci.service';
-import { cn } from '../../utils/cn';
 
 interface CITypeBadgeProps {
   type: CIType;
+  /** Retained for callers: the design-system Badge has one size, so this no longer changes the geometry. */
   size?: 'small' | 'medium';
+  /** `filled` renders the heavier label weight; `outlined` (default) the regular one. */
   variant?: 'filled' | 'outlined';
   showIcon?: boolean;
   className?: string;
@@ -27,45 +28,31 @@ export const typeIcons: Record<CIType, React.ReactElement> = {
   'cloud-resource': <Icon name="cloud-check" size={16} />,
 };
 
-const typeConfig: Record<CIType, { label: string; icon: React.ReactElement }> = {
-  server: { label: 'Server', icon: typeIcons.server },
-  'virtual-machine': { label: 'Virtual Machine', icon: typeIcons['virtual-machine'] },
-  container: { label: 'Container', icon: typeIcons.container },
-  application: { label: 'Application', icon: typeIcons.application },
-  service: { label: 'Service', icon: typeIcons.service },
-  database: { label: 'Database', icon: typeIcons.database },
-  'network-device': { label: 'Network Device', icon: typeIcons['network-device'] },
-  storage: { label: 'Storage', icon: typeIcons.storage },
-  'load-balancer': { label: 'Load Balancer', icon: typeIcons['load-balancer'] },
-  'cloud-resource': { label: 'Cloud Resource', icon: typeIcons['cloud-resource'] },
+export const typeLabels: Record<CIType, string> = {
+  server: 'Server',
+  'virtual-machine': 'Virtual Machine',
+  container: 'Container',
+  application: 'Application',
+  service: 'Service',
+  database: 'Database',
+  'network-device': 'Network Device',
+  storage: 'Storage',
+  'load-balancer': 'Load Balancer',
+  'cloud-resource': 'Cloud Resource',
 };
 
 export const CITypeBadge: React.FC<CITypeBadgeProps> = ({
   type,
-  size = 'small',
   variant = 'outlined',
   showIcon = true,
   className,
 }) => {
-  const config = typeConfig[type] || typeConfig.server;
-  const colorClasses =
-    variant === 'filled'
-      ? 'bg-sky text-white border-sky'
-      : 'bg-sky-soft text-sky-text border-sky';
-  const sizeClasses = size === 'small' ? 'px-2 py-0.5 text-xs' : 'px-3 py-1 text-sm';
-
+  const resolved: CIType = typeLabels[type] ? type : 'server';
   return (
-    <span
-      className={cn(
-        'inline-flex items-center gap-1.5 rounded-full border font-display font-semibold',
-        colorClasses,
-        sizeClasses,
-        className
-      )}
-    >
-      {showIcon && config.icon}
-      {config.label}
-    </span>
+    <Badge variant="info" emphasis={variant === 'filled' ? 'bold' : 'medium'} className={className}>
+      {showIcon && typeIcons[resolved]}
+      {typeLabels[resolved]}
+    </Badge>
   );
 };
 

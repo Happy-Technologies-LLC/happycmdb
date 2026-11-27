@@ -2,26 +2,33 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState } from 'react';
-import { Icon } from '@happy-technologies/design-system';
+import {
+  Banner,
+  Button,
+  ConfirmDialog,
+  Dialog,
+  EmptyState,
+  PageHeader,
+  SegmentedControl,
+} from '@happy-technologies/design-system';
 import { useNavigate } from 'react-router-dom';
 import { useToast } from '@/contexts/ToastContext';
-import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-} from '@/components/ui/dialog';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import CIList from '../components/ci/CIList';
 import CICard from '../components/ci/CICard';
+import CIDrawer from '../components/ci/CIDrawer';
 import CIForm from '../components/ci/CIForm';
+import { QueryState } from '../components/estate/SurfaceState';
 import { useCIs, useCIActions } from '../hooks/useCIs';
 import { usePermission } from '@/hooks/usePermission';
 import { RequirePermission } from '@/components/common/RequirePermission';
 import { CI, CreateCIRequest, UpdateCIRequest } from '../services/ci.service';
+
+/**
+ * The create and edit form is wider than the dialog default (max-w-md) and scrolls inside the viewport. Inline,
+ * because the DS joins class names without merging, so a max-w class here would race the default one in the
+ * stylesheet.
+ */
+const FORM_DIALOG: React.CSSProperties = { maxWidth: '42rem', maxHeight: '90vh', overflowY: 'auto' };
 
 type ViewMode = 'list' | 'grid';
 
@@ -33,8 +40,9 @@ export const Inventory: React.FC = () => {
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [selectedCI, setSelectedCI] = useState<CI | null>(null);
+  const [peekCI, setPeekCI] = useState<CI | null>(null);
 
-  const { data: cisData, isLoading } = useCIs({ limit: 100 });
+  const { data: cisData, isLoading, error, refetch } = useCIs({ limit: 100 });
   const { createCI, updateCI, deleteCI, isCreating, isUpdating, isDeleting } = useCIActions();
   // POST /api/v1/cis, PUT /api/v1/cis/:id, DELETE /api/v1/cis/:id all require 'write' (ci.routes.ts)
   const canWrite = usePermission('write');
@@ -94,43 +102,30 @@ export const Inventory: React.FC = () => {
   };
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">
-            Configuration Items
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Manage and view all configuration items in your CMDB
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <div className="flex border rounded-md">
-            <Button
-              variant={viewMode === 'list' ? 'default' : 'ghost'}
-              size="icon"
-              onClick={() => setViewMode('list')}
-              className="rounded-r-none"
-            >
-              <Icon name="rows" size={16} />
-            </Button>
-            <Button
-              variant={viewMode === 'grid' ? 'default' : 'ghost'}
-              size="icon"
-              onClick={() => setViewMode('grid')}
-              className="rounded-l-none"
-            >
-              <Icon name="squares-four" size={16} />
-            </Button>
-          </div>
-          <RequirePermission permission="write">
-            <Button onClick={handleCreateClick}>
-              <Icon name="plus" size={16} className="mr-2" />
-              Add CI
-            </Button>
-          </RequirePermission>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="CMDB · Inventory"
+        title="Configuration Items"
+        lede="Manage and view all configuration items in your CMDB"
+        actions={
+          <>
+            <SegmentedControl<ViewMode>
+              aria-label="View mode"
+              value={viewMode}
+              onChange={setViewMode}
+              options={[
+                { value: 'list', label: 'List', icon: 'rows' },
+                { value: 'grid', label: 'Grid', icon: 'squares-four' },
+              ]}
+            />
+            <RequirePermission permission="write">
+              <Button icon="plus" onClick={handleCreateClick}>
+                Add CI
+              </Button>
+            </RequirePermission>
+          </>
+        }
+      />
 
       {viewMode === 'list' ? (
         <CIList
@@ -139,98 +134,98 @@ export const Inventory: React.FC = () => {
           onView={handleViewClick}
           showActions={true}
         />
+      ) : isLoading || error ? (
+        <QueryState
+          what="configuration items"
+          loading={isLoading}
+          error={error}
+          onRetry={() => void refetch()}
+        />
+      ) : cisData?.data.length === 0 ? (
+        <EmptyState label="No configuration items found" />
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          {isLoading ? (
-            <div className="col-span-full text-center text-muted-foreground py-8">
-              Loading...
-            </div>
-          ) : cisData?.data.length === 0 ? (
-            <div className="col-span-full text-center text-muted-foreground py-8">
-              No configuration items found
-            </div>
-          ) : (
-            cisData?.data.map((ci) => (
-              <CICard
-                key={ci.id}
-                ci={ci}
-                onEdit={canWrite ? handleEditClick : undefined}
-                onDelete={canWrite ? handleDeleteClick : undefined}
-                onView={handleViewClick}
-                showActions={true}
-              />
-            ))
-          )}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+          {cisData?.data.map((ci) => (
+            <CICard
+              key={ci.id}
+              ci={ci}
+              onEdit={canWrite ? handleEditClick : undefined}
+              onDelete={canWrite ? handleDeleteClick : undefined}
+              onView={handleViewClick}
+              onPeek={setPeekCI}
+              showActions={true}
+            />
+          ))}
         </div>
       )}
 
+      {peekCI && (
+        <CIDrawer
+          ciId={peekCI.id}
+          open
+          onClose={() => setPeekCI(null)}
+          onOpenFull={() => {
+            const ci = peekCI;
+            setPeekCI(null);
+            handleViewClick(ci);
+          }}
+        />
+      )}
+
       {/* Create Dialog */}
-      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Create Configuration Item</DialogTitle>
-          </DialogHeader>
-          <CIForm
-            onSubmit={handleCreateSubmit}
-            onCancel={() => setCreateDialogOpen(false)}
-            isSubmitting={isCreating}
-          />
-        </DialogContent>
+      <Dialog
+        open={canWrite && createDialogOpen}
+        onClose={() => setCreateDialogOpen(false)}
+        aria-label="Create Configuration Item"
+        style={FORM_DIALOG}
+      >
+        <CIForm
+          onSubmit={handleCreateSubmit}
+          onCancel={() => setCreateDialogOpen(false)}
+          isSubmitting={isCreating}
+        />
       </Dialog>
 
       {/* Edit Dialog */}
-      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Edit Configuration Item</DialogTitle>
-          </DialogHeader>
-          {selectedCI && (
-            <CIForm
-              ci={selectedCI}
-              onSubmit={handleEditSubmit}
-              onCancel={() => setEditDialogOpen(false)}
-              isSubmitting={isUpdating}
-            />
-          )}
-        </DialogContent>
+      <Dialog
+        open={canWrite && editDialogOpen}
+        onClose={() => setEditDialogOpen(false)}
+        aria-label="Edit Configuration Item"
+        style={FORM_DIALOG}
+      >
+        {selectedCI && (
+          <CIForm
+            ci={selectedCI}
+            onSubmit={handleEditSubmit}
+            onCancel={() => setEditDialogOpen(false)}
+            isSubmitting={isUpdating}
+          />
+        )}
       </Dialog>
 
       {/* Delete Confirmation Dialog */}
-      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Delete Configuration Item</DialogTitle>
-            <DialogDescription>
-              This action cannot be undone. Are you sure?
-            </DialogDescription>
-          </DialogHeader>
-          <Alert variant="warning" className="my-4">
-            <Icon name="warning" size={16} />
-            <AlertDescription>
+      <ConfirmDialog
+        open={canWrite && deleteDialogOpen}
+        title="Delete Configuration Item"
+        tone="danger"
+        confirmLabel={isDeleting ? 'Deleting...' : 'Delete'}
+        onConfirm={() => {
+          if (!isDeleting) void handleDeleteConfirm();
+        }}
+        onCancel={() => {
+          if (!isDeleting) setDeleteDialogOpen(false);
+        }}
+        body={
+          <div className="space-y-3">
+            <Banner tone="warning" icon="warning">
               This action cannot be undone. All relationships and data associated with this CI will be lost.
-            </AlertDescription>
-          </Alert>
-          <p className="text-sm">
-            Are you sure you want to delete <strong>{selectedCI?.name}</strong>?
-          </p>
-          <DialogFooter className="mt-4">
-            <Button
-              variant="outline"
-              onClick={() => setDeleteDialogOpen(false)}
-              disabled={isDeleting}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={handleDeleteConfirm}
-              disabled={isDeleting}
-            >
-              {isDeleting ? 'Deleting...' : 'Delete'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </Banner>
+            <p>
+              Are you sure you want to delete <strong>{selectedCI?.name}</strong>?
+            </p>
+          </div>
+        }
+      />
     </div>
   );
 };

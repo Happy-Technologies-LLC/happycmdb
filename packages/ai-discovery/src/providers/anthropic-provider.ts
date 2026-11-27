@@ -125,7 +125,7 @@ export class AnthropicProvider extends BaseLLMProvider {
             logger.info('Claude requested discovery tool', { toolName: tool.name });
 
             // Execute tool
-            const toolCall = await this.executeTool(tool, toolInput);
+            const toolCall = await this.executeTool(tool, toolInput, context);
             toolCall.id = toolId;
             toolCalls.push(toolCall);
 
@@ -141,9 +141,7 @@ export class AnthropicProvider extends BaseLLMProvider {
                 {
                   type: 'tool_result',
                   tool_use_id: toolId,
-                  content: toolCall.success
-                    ? JSON.stringify(toolCall.output)
-                    : `Error: ${toolCall.error}`,
+                  content: this.formatToolResult(toolCall),
                 },
               ],
             });

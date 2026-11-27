@@ -274,3 +274,63 @@ describe('connectorRegistry: version releasedAt mapping', () => {
     expect(result.versions[1].releasedAt).toBe('2025-06-01T00:00:00.000Z');
   });
 });
+
+describe('connector registry reads: stored homepage and repository are re-sanitised', () => {
+  const CASES: Array<[string, string | null, string | null]> = [
+    ['javascript:alert(1)', 'javascript:alert(1)', ''],
+    ['userinfo', 'https://user:pw@evil.test/', ''],
+    ['backslashes', 'https:\\\\evil.test', 'https://evil.test/'],
+    ['valid', 'https://example.test/x', 'https://example.test/x'],
+    ['null', null, null],
+    ['empty', '', ''],
+  ];
+
+  function registryRow(homepage: string | null, repository: string | null) {
+    return {
+      connector_type: 'acme-crm',
+      category: 'connector',
+      name: 'Acme CRM',
+      description: 'd',
+      verified: true,
+      latest_version: '2.0.0',
+      versions: [],
+      author: 'a',
+      homepage,
+      repository,
+      license: 'MIT',
+      downloads: 7,
+      rating: '4.5',
+      tags: ['crm'],
+    };
+  }
+
+  it.each(CASES)('connectorRegistry list: %s', async (_label, stored, expected) => {
+    // Opposite fields carry different values so a swapped mapping cannot pass.
+    mockQuery.mockResolvedValueOnce({ rows: [registryRow(stored, 'https://user:pw@evil.test/r')] });
+
+    const [result] = await connectorResolvers.Query.connectorRegistry(null, {});
+
+    expect(result.homepage).toBe(expected);
+    expect(result.repository).toBe('');
+    expect(result).toMatchObject({
+      connectorType: 'acme-crm', category: 'CONNECTOR', name: 'Acme CRM', description: 'd', verified: true,
+      latestVersion: '2.0.0', versions: [], author: 'a', license: 'MIT', downloads: 7, rating: 4.5,
+      tags: ['crm'], metadata: {},
+    });
+  });
+
+  it.each(CASES)('connectorRegistryDetails: %s', async (_label, stored, expected) => {
+    mockQuery.mockResolvedValueOnce({ rows: [registryRow('https://user:pw@evil.test/h', stored)] });
+
+    const result = await connectorResolvers.Query.connectorRegistryDetails(null, { connectorType: 'acme-crm' });
+
+    expect(result.homepage).toBe('');
+    expect(result.repository).toBe(expected);
+    expect(result).toMatchObject({
+      connectorType: 'acme-crm', category: 'CONNECTOR', name: 'Acme CRM', description: 'd', verified: true,
+      latestVersion: '2.0.0', versions: [], author: 'a', license: 'MIT', downloads: 7, rating: 4.5,
+      tags: ['crm'], metadata: {},
+    });
+  });
+});
+

@@ -115,7 +115,7 @@ docker exec cmdb-redis redis-cli set "rate_limit:blocked:$ABUSIVE_IP" "1" EX 360
 
 ### Step 2: Adjust Internal Rate Limits
 
-Only the `rateLimit.endpoints` budgets that a route mounts have an effect: `auth` (login and password change, per client address), `authAccount` (login: per account + client address; password change: per verified user across all clients) and `authAccountGlobal` (login only: per account across all clients; `max: 0` turns it off), and `rest` (`POST /api/v1/auth/refresh` only). `endpoints.graphql`, `endpoints.health`, `endpoints.discovery` and `endpoints.admin` are not mounted by any route.
+Only the `rateLimit.endpoints` budgets that a route mounts have an effect: `auth` (login and password change, per client address), `authAccount` (login: per account + client address; password change: per verified user across all clients) and `authAccountGlobal` (login only: per account across all clients; `max: 0` turns it off), `rest` (`POST /api/v1/auth/refresh` only) and `agentHeartbeat` (`POST /api/v1/agents/heartbeat` only: per verified user across all clients, counting only admitted heartbeats so a retrying client is admitted again once its oldest admitted heartbeat leaves the window; `max: 0` turns it off). `endpoints.graphql`, `endpoints.health`, `endpoints.discovery` and `endpoints.admin` are not mounted by any route.
 
 `infrastructure/docker/docker-compose.yml` forwards every `RATE_LIMIT_*` variable that `config.schema.ts` (`rateLimit`) defines to the `api-server` service through its `environment:` block, as `RATE_LIMIT_X=${RATE_LIMIT_X:-<schema default>}`. That is the only place the Docker deployment reads them: the image contains no `.env` (`.dockerignore` excludes `**/.env*`, so `dotenv.config` in `config.loader.ts` finds nothing), so editing a `.env` file inside the image or container has no effect. Set the value in the repository-root `.env` on the host, the file `./deploy.sh` loads (`set -a; source .env`). For example:
 
@@ -132,6 +132,10 @@ RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS=900000
 # Login only: per account across all clients (defaults: 20 per 900000 ms; 0 = bucket off)
 RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_MAX=20
 RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_WINDOW_MS=900000
+
+# POST /api/v1/agents/heartbeat only: per verified user, admitted heartbeats only (defaults: 600 per 3600000 ms; 0 = no limiter)
+RATE_LIMIT_AGENT_HEARTBEAT_MAX=600
+RATE_LIMIT_AGENT_HEARTBEAT_WINDOW_MS=3600000
 
 # POST /api/v1/auth/refresh only (defaults: 1000 per 3600000 ms; 0 = no limiter)
 RATE_LIMIT_REST_MAX=1000

@@ -55,10 +55,15 @@ const identities: Record<string, { _id: string; _username: string; _role: 'opera
   viewer: { _id: 'viewer', _username: 'vicky', _role: 'viewer', _enabled: true, _organizationId: A },
   admin: { _id: 'admin', _username: 'ada', _role: 'admin', _enabled: true, _organizationId: A },
   agent: { _id: 'agent', _username: 'worker', _role: 'agent', _enabled: true, _organizationId: A },
+  // Gate-order fixtures: an org-less agent, and identities whose verified subject is the empty string. The repository
+  // is this file's existing boundary fixture; the token, middleware and router are real.
+  agentNoOrg: { _id: 'agentNoOrg', _username: 'orphan-worker', _role: 'agent', _enabled: true },
+  '': { _id: '', _username: 'ownerless', _role: 'operator', _enabled: true, _organizationId: A },
 };
 jest.mock('../../../auth/neo4j-auth.repository', () => ({
   Neo4jAuthRepository: jest.fn(() => ({ findUserById: async (id: string) => identities[id] ?? null })),
 }));
+import { declaredResponse, violations } from '../../../openapi/__tests__/spec-schema';
 import { loadConfig } from '@cmdb/common';
 import { logger, EncryptionService, getEncryptionService } from '@cmdb/common';
 import { JWTService } from '../../../auth/jwt.service';
@@ -76,6 +81,11 @@ const jwt = new JWTService(loadConfig().auth.jwt);
 const as = (id: string) => ({ Authorization: `Bearer ${jwt.generateAccessToken(id, identities[id]._username, identities[id]._role, identities[id]._organizationId, 0, Math.floor(Date.now() / 1000))}` });
 const credential = (name: string) => ({ name, protocol: 'api_key', scope: 'api', credentials: { key: `only-${name}` } });
 const missing = '99999999-9999-4999-8999-999999999999';
+// Exactly what the router-level gates send today. The agent and owner refusals are bare (no `code`, no `_error` family):
+// a later ForbiddenCode for them must change these `toEqual`s on purpose.
+const orgRequired = { success: false, error: 'Forbidden', message: 'Organization claim required', _error: 'Forbidden', _message: 'Organization claim required', code: 'ORGANIZATION_REQUIRED' };
+const agentRefused = { success: false, error: 'Forbidden', message: 'Credential management requires a human user' };
+const ownerRefused = { success: false, error: 'Forbidden', message: 'Verified credential owner required' };
 const legacyId = '88888888-8888-4888-8888-888888888888';
 let bId: string;
 let aId: string;
@@ -207,7 +217,8 @@ it('list counts and the 409 count same-organization references only; a foreign r
 });
 
 it('rejects org-less identities before SQL and prevents match/rank/validate enumeration', async () => {
-  expect((await request(app).get('/api/v1/credentials').set(as('none'))).status).toBe(403);
+  const orgLess = await request(app).get('/api/v1/credentials').set(as('none'));
+  expect([orgLess.status, orgLess.body]).toEqual([403, orgRequired]);
   expect((await request(app).post('/api/v1/credentials/rank').set(as('none')).send({})).status).toBe(403);
   expect((await request(app).post('/api/v1/credentials/match').set(as('none')).send({})).status).toBe(403);
   expect((await request(app).post(`/api/v1/credentials/${aId}/validate`).set(as('none')).send({})).status).toBe(403);
@@ -235,11 +246,41 @@ it('rejects org-less identities before SQL and prevents match/rank/validate enum
 
 it('requires authentication, an organization and write permission before credential mutation', async () => {
   expect((await request(app).get('/api/v1/credentials')).status).toBe(401);
-  expect((await request(app).post('/api/v1/credentials').set(as('none')).send(credential('forbidden'))).status).toBe(403);
+  const orgLessCreate = await request(app).post('/api/v1/credentials').set(as('none')).send(credential('forbidden'));
+  expect([orgLessCreate.status, orgLessCreate.body]).toEqual([403, orgRequired]);
   expect((await request(app).put(`/api/v1/credentials/${aId}`).set(as('viewer')).send({ name: 'forbidden' })).status).toBe(403);
-  expect((await request(app).post('/api/v1/credentials').set(as('agent')).send(credential('agent-forbidden'))).status).toBe(403);
-  expect((await request(app).get('/api/v1/credentials').set(as('agent'))).status).toBe(403);
+  const agentCreate = await request(app).post('/api/v1/credentials').set(as('agent')).send(credential('agent-forbidden'));
+  expect([agentCreate.status, agentCreate.body]).toEqual([403, agentRefused]);
+  const agentList = await request(app).get('/api/v1/credentials').set(as('agent'));
+  expect([agentList.status, agentList.body]).toEqual([403, agentRefused]);
   expect((await sql('SELECT name FROM credentials WHERE id = $1', [aId]))[0].name).toBe('A-private');
+});
+
+it('router gates refuse an agent, an org-less agent and an ownerless subject with their own bodies, in order, before any SQL', async () => {
+  const beforeSql = serial;
+  // Both mount points, a different path under each: the inline agent gate covers /credentials and /credential-sets.
+  const agentMatch = await request(app).post('/api/v1/credentials/match').set(as('agent')).send({});
+  expect([agentMatch.status, agentMatch.body]).toEqual([403, agentRefused]);
+  const agentSets = await request(app).get('/api/v1/credential-sets').set(as('agent'));
+  expect([agentSets.status, agentSets.body]).toEqual([403, agentRefused]);
+  // Order: requireOrganization() runs before the inline gate, so an org-less agent gets the organization body.
+  for (const [verb, path] of [['get', '/credentials'], ['post', '/credentials/match'], ['get', '/credential-sets']] as const) {
+    const response = await request(app)[verb](`/api/v1${path}`).set(as('agentNoOrg')).send({});
+    expect([path, response.status, response.body]).toEqual([path, 403, orgRequired]);
+  }
+  // The owner check runs before the agent check: an empty verified subject is refused as ownerless, even as an agent.
+  const ownerless = await request(app).get('/api/v1/credentials').set(as(''));
+  expect([ownerless.status, ownerless.body]).toEqual([403, ownerRefused]);
+  const ownerlessSets = await request(app).get('/api/v1/credential-sets').set(as(''));
+  expect([ownerlessSets.status, ownerlessSets.body]).toEqual([403, ownerRefused]);
+  identities[''] = { ...identities[''], _role: 'agent' };
+  try {
+    const ownerlessAgent = await request(app).get('/api/v1/credentials').set(as(''));
+    expect([ownerlessAgent.status, ownerlessAgent.body]).toEqual([403, ownerRefused]);
+  } finally {
+    identities[''] = { ...identities[''], _role: 'operator' };
+  }
+  expect(serial).toBe(beforeSql);
 });
 
 it('HAP-514: a viewer owner cannot validate a credential or select a set before any SQL; with write permission the owner can', async () => {
@@ -349,9 +390,11 @@ it('scopes credential sets and their member IDs to the verified owner/org', asyn
   expect(owned.status).toBe(201);
   const setId: string = owned.body.data.id;
   expect((await request(app).get('/api/v1/credential-sets').set(as('d'))).body.data).toEqual([]);
-  expect((await request(app).get('/api/v1/credential-sets').set(as('none'))).status).toBe(403);
-  expect((await request(app).post('/api/v1/credential-sets').set(as('none'))
-    .send({ name: 'orgless', credential_ids: [aId] })).status).toBe(403);
+  const orgLessSets = await request(app).get('/api/v1/credential-sets').set(as('none'));
+  expect([orgLessSets.status, orgLessSets.body]).toEqual([403, orgRequired]);
+  const orgLessSetCreate = await request(app).post('/api/v1/credential-sets').set(as('none'))
+    .send({ name: 'orgless', credential_ids: [aId] });
+  expect([orgLessSetCreate.status, orgLessSetCreate.body]).toEqual([403, orgRequired]);
   expect((await request(app).get('/api/v1/credential-sets').set(as('b'))).body.data).toEqual([]);
   const foreign = await request(app).get(`/api/v1/credential-sets/${setId}`).set(as('b'));
   const absent = await request(app).get(`/api/v1/credential-sets/${missing}`).set(as('b'));
@@ -546,4 +589,58 @@ it('HAP-1613: an org admin manages the happylab-c4 credential and the C4 sync re
   expect(await c4(A)).toEqual({ token: 'tok-rotated' });
   expect((await request(app).delete(`/api/v1/credentials/${id}`).set(as('admin'))).status).toBe(204);
   expect(await c4(A)).toEqual({ code: 'c4_no_credential' });
+});
+
+// Runtime counterpart of openapi/__tests__/forbidden-spec.test.ts: the real 403 bodies of every credential refusal (router, permission and
+// the HAP-1613 C4 rule) must satisfy the 403 response the spec declares for that very operation. The OAuth routes are not in the spec.
+describe('real 403 bodies against the openapi.yaml 403 of the same operation', () => {
+  const noUserId = express();
+  noUserId.use(express.json());
+  noUserId.use('/api/v1', (req, _res, next) => {
+    (req as unknown as { user: unknown }).user = { _id: '', _userId: '', _username: 'no-id', _role: 'operator', _enabled: true, _organizationId: A };
+    next();
+  });
+  noUserId.use('/api/v1', unifiedCredentialRoutes);
+
+  const specRows = routeTable.filter(row => row.kind !== 'oauth');
+  const send = (target: express.Express, row: (typeof routeTable)[number], headers: Record<string, string>) =>
+    request(target)[row.verb](`/api/v1${row.path.replace(':id', aId)}`).set(headers).send({});
+  const specPath = (row: (typeof routeTable)[number]) => row.path.replace(':id', '{id}');
+  const check = (row: (typeof routeTable)[number], body: unknown) =>
+    violations(declaredResponse(specPath(row), row.verb, '403').schema!, body);
+
+  it('router, permission and agent refusals on every credential and credential-set route', async () => {
+    const seen = new Set<string>();
+    for (const row of specRows) {
+      const label = `${row.verb.toUpperCase()} ${row.path}`;
+      const callers: Array<[string, express.Express, Record<string, string>]> = [
+        ['no organization', app, as('none')],
+        ['agent', app, as('agent')],
+        ['no verified user id', noUserId, {}],
+        ...(row.kind === 'write' ? [['viewer', app, as('viewer')] as [string, express.Express, Record<string, string>]] : []),
+      ];
+      for (const [caller, target, headers] of callers) {
+        const response = await send(target, row, headers);
+        expect({ label, caller, status: response.status, violations: check(row, response.body) }).toEqual({ label, caller, status: 403, violations: [] });
+        seen.add(String(response.body.code ?? response.body.message));
+      }
+    }
+    expect([...seen].sort()).toEqual(['Credential management requires a human user', 'ORGANIZATION_REQUIRED', 'PERMISSION_REQUIRED', 'Verified credential owner required']);
+  });
+
+  it('the happylab-c4 refusal on create, update and delete', async () => {
+    const id = '55555555-5555-4555-8555-555555555556';
+    await sql(`INSERT INTO credentials (id, name, protocol, scope, credentials, tags, created_by, organization_id) VALUES ($1, 'A-spec-c4', 'bearer', 'api', $2, $3, 'd', $4)`,
+      [id, JSON.stringify(getEncryptionService().encrypt('{"token":"spec-c4-token"}')), [C4], A]);
+    const own = await request(app).post('/api/v1/credentials').set(as('a')).send(bearer('A-spec-own', ['ops']));
+    const refusals = [
+      ['POST /credentials', { path: '/credentials', verb: 'post' }, await request(app).post('/api/v1/credentials').set(as('a')).send(bearer('A-spec-plant', [C4]))],
+      ['PUT /credentials/{id}', { path: '/credentials/{id}', verb: 'put' }, await request(app).put(`/api/v1/credentials/${own.body.data.id}`).set(as('a')).send({ tags: [C4] })],
+      ['DELETE /credentials/{id}', { path: '/credentials/{id}', verb: 'delete' }, await request(app).delete(`/api/v1/credentials/${id}`).set(as('d'))],
+    ] as const;
+    for (const [label, operation, response] of refusals) {
+      expect({ label, status: response.status, body: response.body, violations: violations(declaredResponse(operation.path, operation.verb, '403').schema!, response.body) })
+        .toEqual({ label, status: 403, body: c4Refusal, violations: [] });
+    }
+  });
 });

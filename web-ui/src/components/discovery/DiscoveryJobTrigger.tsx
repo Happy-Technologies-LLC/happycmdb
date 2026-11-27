@@ -2,14 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import React, { useState } from 'react';
-import { Icon } from '@happy-technologies/design-system';
+import { Banner, Card, SectionHeading } from '@happy-technologies/design-system';
 import { useNavigate } from 'react-router-dom';
 import { DiscoveryProvider, DiscoveryDefinitionInput } from '../../services/discovery.service';
 import { useDiscovery } from '../../hooks/useDiscovery';
 import { useDiscoveryDefinitions } from '../../hooks/useDiscoveryDefinitions';
-import { Button } from '../ui/button';
-import { LiquidGlass } from '../ui/liquid-glass';
-import { Alert, AlertDescription } from '../ui/alert';
 import DiscoveryDefinitionForm from './DiscoveryDefinitionForm';
 import { logClientError } from '../../utils/logger';
 
@@ -43,20 +40,17 @@ export const DiscoveryJobTrigger: React.FC = () => {
   };
 
   return (
-    <LiquidGlass size="sm" rounded="xl" className="p-6">
+    <Card>
       <div className="mb-6">
-        <h2 className="text-2xl font-semibold">Ad Hoc Discovery</h2>
-        <p className="text-sm text-muted-foreground">
+        <SectionHeading className="mb-1">Ad Hoc Discovery</SectionHeading>
+        <p className="text-sm text-[var(--hh-text-muted)]">
           Run a one-time discovery job. Optionally save the configuration as a reusable definition.
         </p>
       </div>
 
-      <Alert className="mb-6">
-        <Icon name="info" size={16} />
-        <AlertDescription>
-          Configure your discovery settings below. Click <strong>Run Once</strong> for a one-time job, or <strong>Save & Run</strong> to create a reusable definition.
-        </AlertDescription>
-      </Alert>
+      <Banner tone="info" icon="info" className="mb-6">
+        Configure your discovery settings below. Click <strong>Run Once</strong> for a one-time job, or <strong>Save & Run</strong> to create a reusable definition.
+      </Banner>
 
       <DiscoveryDefinitionForm
         showAdHocAction={true}
@@ -64,7 +58,7 @@ export const DiscoveryJobTrigger: React.FC = () => {
         onSubmit={handleSaveAndRun}
         onCancel={() => navigate('/discovery?tab=dashboard')}
       />
-    </LiquidGlass>
+    </Card>
   );
 };
 

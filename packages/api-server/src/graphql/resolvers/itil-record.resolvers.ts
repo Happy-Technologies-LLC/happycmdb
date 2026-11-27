@@ -51,8 +51,14 @@ async function recordCall(context: GraphQLContext, kind: RecordKind, handler: Ha
     const message = status === 404 && 'message' in failure && typeof failure.message === 'string'
       ? failure.message : status === 404 ? `${kind === 'incident' ? 'Incident' : 'Change'} not found`
         : 'Invalid ITIL record request';
-    throw new GraphQLError(message,
-      { extensions: { code: status === 404 ? 'NOT_FOUND' : 'BAD_USER_INPUT' } });
+    // The controller's machine code (e.g. the retryable CHANGE_APPROVAL_CHANGED) rides alongside the stable
+    // `code`, so clients can tell it apart from bad input without a changed `code` contract.
+    const controllerCode = 'code' in failure && typeof failure.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(failure.code)
+      ? failure.code : undefined;
+    throw new GraphQLError(message, { extensions: {
+      code: status === 404 ? 'NOT_FOUND' : 'BAD_USER_INPUT',
+      ...(status !== 404 && controllerCode ? { controllerCode } : {}),
+    } });
   }
   return body;
 }
@@ -103,9 +109,36 @@ function mappedPage(result: unknown, map: (row: Record<string, unknown>) => Reco
   return { items: result.data.map(row => map(row as Record<string, unknown>)),
     total: Number(total), page: Number(page), limit: Number(limit), pages: Number(pages) };
 }
+// GraphQL calls the controllers directly and never sees the REST Joi schemas, so mirror their
+// bounds here (`incidentFiltersSchema`, `changeFiltersSchema`, `updateIncidentSchema` in
+// itil.routes.ts): an out-of-range value is a client error, not a pg error reported as SERVICE_UNAVAILABLE.
+function refuseUnlessInteger(name: string, value: unknown, min: number, max: number): void {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max) {
+    return;
+  }
+  throw new GraphQLError(`${name} must be an integer between ${min} and ${max}`,
+    { extensions: { code: 'BAD_USER_INPUT' } });
+}
+function pageArgs(args: Record<string, unknown>): void {
+  if (args.page !== undefined) {
+    refuseUnlessInteger('page', args.page, 1, 2147483647);
+  }
+  if (args.limit !== undefined) {
+    refuseUnlessInteger('limit', args.limit, 1, 1000);
+  }
+}
+// A null priority is "no filter" / "no change": the controller ignores it, as it does an omitted one.
+function priorityArg(value: unknown): void {
+  if (value !== undefined && value !== null) {
+    refuseUnlessInteger('priority', value, 1, 5);
+  }
+}
 export const itilRecordQueries = {
-  incidents: async (_: unknown, args: Record<string, unknown>, ctx: GraphQLContext) =>
-    mappedPage(await recordCall(ctx, 'incident', controller.getIncidents, args), incident),
+  incidents: async (_: unknown, args: Record<string, unknown>, ctx: GraphQLContext) => {
+    pageArgs(args);
+    priorityArg(args.priority);
+    return mappedPage(await recordCall(ctx, 'incident', controller.getIncidents, args), incident);
+  },
   incident: async (_: unknown, args: { id: string }, ctx: GraphQLContext) =>
     mappedData(await recordCall(ctx, 'incident', controller.getIncident, args), incident),
   incidentMetrics: async (_: unknown, _args: unknown, ctx: GraphQLContext) => {
@@ -130,8 +163,10 @@ export const itilRecordQueries = {
       byPriority: [...priorities].map(([priority, count]) => ({ priority, count })),
       mttr: metric(mttr, 'mttr'), mtbf: metric(mtbf, 'mtbf') };
   },
-  changes: async (_: unknown, args: Record<string, unknown>, ctx: GraphQLContext) =>
-    mappedPage(await recordCall(ctx, 'change', controller.getChanges, args), change),
+  changes: async (_: unknown, args: Record<string, unknown>, ctx: GraphQLContext) => {
+    pageArgs(args);
+    return mappedPage(await recordCall(ctx, 'change', controller.getChanges, args), change);
+  },
   change: async (_: unknown, args: { id: string }, ctx: GraphQLContext) =>
     mappedData(await recordCall(ctx, 'change', controller.getChange, args), change),
   changeMetrics: async (_: unknown, _args: unknown, ctx: GraphQLContext) => {
@@ -164,8 +199,10 @@ export const itilRecordMutations = {
       priorityCalculation: { ...priority, impact: String(priority.impact).toUpperCase(),
         urgency: String(priority.urgency).toUpperCase(), affectedBusinessServices: [] } };
   },
-  updateIncident: async (_: unknown, args: { id: string; input: Record<string, unknown> }, ctx: GraphQLContext) =>
-    mappedData(await recordCall(ctx, 'incident', controller.updateIncident, args, true), incident),
+  updateIncident: async (_: unknown, args: { id: string; input: Record<string, unknown> }, ctx: GraphQLContext) => {
+    priorityArg(args.input?.priority);
+    return mappedData(await recordCall(ctx, 'incident', controller.updateIncident, args, true), incident);
+  },
   resolveIncident: async (_: unknown, args: { id: string; resolution: string; resolvedBy: string }, ctx: GraphQLContext) =>
     mappedData(await recordCall(ctx, 'incident', controller.resolveIncident, args, true), incident),
   createChange: async (_: unknown, args: { input: Record<string, unknown> }, ctx: GraphQLContext) =>
@@ -183,7 +220,7 @@ export const itilRecordMutations = {
 export const itilNestedRecords = {
   incidents: async (ciId: string, args: { status?: string; limit?: number }, ctx: GraphQLContext) => {
     const page = mappedPage(await recordCall(ctx, 'incident', controller.getIncidents,
-      { affectedCIId: ciId, status: args.status, limit: Math.min(100, args.limit ?? 50) }), incident);
+      { affectedCIId: ciId, status: args.status, limit: Math.min(100, Math.max(1, args.limit ?? 50)) }), incident);
     return page.items;
   },
   changes: async (ciId: string, args: { status?: string; limit?: number }, ctx: GraphQLContext) => {

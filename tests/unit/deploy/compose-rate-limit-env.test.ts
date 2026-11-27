@@ -133,6 +133,8 @@ const KNOBS: Record<string, [string, string, unknown]> = {
   RATE_LIMIT_AUTH_ACCOUNT_WINDOW_MS: ['endpoints.authAccount.windowMs', '900001', 900001],
   RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_MAX: ['endpoints.authAccountGlobal.max', '0', 0],
   RATE_LIMIT_AUTH_ACCOUNT_GLOBAL_WINDOW_MS: ['endpoints.authAccountGlobal.windowMs', '900002', 900002],
+  RATE_LIMIT_AGENT_HEARTBEAT_MAX: ['endpoints.agentHeartbeat.max', '601', 601],
+  RATE_LIMIT_AGENT_HEARTBEAT_WINDOW_MS: ['endpoints.agentHeartbeat.windowMs', '3600006', 3600006],
   RATE_LIMIT_DISCOVERY_MAX: ['endpoints.discovery.max', '101', 101],
   RATE_LIMIT_DISCOVERY_WINDOW_MS: ['endpoints.discovery.windowMs', '3600004', 3600004],
   RATE_LIMIT_ADMIN_MAX: ['endpoints.admin.max', '201', 201],

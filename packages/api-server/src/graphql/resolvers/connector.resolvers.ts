@@ -13,6 +13,7 @@ import { publicInstalledConnectorGraphQL } from '../../services/public-installed
 import { ConnectorJsonPatchBudget, ConnectorJsonPatchError, connectorJsonMerge, isConnectorJsonResultLimit, CONNECTOR_JSON_LIMIT_MESSAGE } from '../../services/connector-json-merge';
 import { connectorScope, connectorPredicate, scopeValues, PUBLIC_CONFIG, PUBLIC_RUN } from '../../auth/connector-scope';
 import { GRAPHQL_PAGE_DEFAULTS } from '../pagination';
+import { sanitizeRegistryRowUrls } from '../../utils/safe-manifest-url';
 
 function scopedUser(context: GraphQLContext) {
   const scope = connectorScope(context.user);
@@ -137,7 +138,7 @@ const ConnectorQueryResolvers = {
 
       const result = await pgClient.query(query, params);
 
-      return result.rows.map(row => ({
+      return result.rows.map(sanitizeRegistryRowUrls).map(row => ({
         connectorType: row.connector_type,
         category: row.category.toUpperCase(),
         name: row.name,
@@ -195,7 +196,7 @@ const ConnectorQueryResolvers = {
         return null;
       }
 
-      const row = result.rows[0];
+      const row = sanitizeRegistryRowUrls(result.rows[0]);
 
       return {
         connectorType: row.connector_type,

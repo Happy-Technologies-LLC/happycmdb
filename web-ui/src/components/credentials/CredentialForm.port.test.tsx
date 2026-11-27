@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 const { request, showToast } = vi.hoisted(() => ({ request: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() }, showToast: vi.fn() }));
 vi.mock('axios', async () => ({ ...(await vi.importActual<object>('axios')), default: { create: () => ({ ...request, interceptors: { request: { use: vi.fn() }, response: { use: vi.fn() } } }) } }));
 vi.mock('@/contexts/ToastContext', () => ({ useToast: () => ({ showToast }) }));
-vi.mock('@happy-technologies/design-system', async (importActual) => ({ ...(await importActual<object>()), Icon: () => null }));
+vi.mock('@happy-technologies/design-system', async (importOriginal) => ({ ...(await importOriginal<object>()), Icon: () => null, Eyebrow: () => null }));
 import { CredentialForm } from './CredentialForm';
 import { Credentials } from '@/pages/Credentials';
 import { PROTOCOL_DISPLAY_NAMES } from '@/lib/credential-display';

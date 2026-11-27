@@ -32,6 +32,8 @@ const TOKEN_ROLES: Record<string, UserRole> = {
   'Bearer no-org-token': 'admin',
 };
 const ORG = '11111111-1111-4111-8111-111111111111';
+const CFG_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const RUN_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 
 const mockAuthenticate = jest.fn(() => (req: Request, res: Response, next: () => void) => {
   const role = TOKEN_ROLES[req.get('authorization') ?? ''];
@@ -109,25 +111,25 @@ type RouteCase = [string, string, Record<string, unknown> | undefined];
 
 const readRoutes: RouteCase[] = [
   ['GET', '/connector-configs', undefined],
-  ['GET', '/connector-configs/cfg-1', undefined],
-  ['GET', '/connector-configs/cfg-1/resources', undefined],
-  ['GET', '/connector-configs/cfg-1/resources/res-1', undefined],
-  ['GET', '/connector-configs/cfg-1/runs', undefined],
-  ['GET', '/connector-configs/cfg-1/metrics', undefined],
-  ['GET', '/connector-configs/cfg-1/resources/res-1/metrics', undefined],
+  ['GET', `/connector-configs/${CFG_ID}`, undefined],
+  ['GET', `/connector-configs/${CFG_ID}/resources`, undefined],
+  ['GET', `/connector-configs/${CFG_ID}/resources/res-1`, undefined],
+  ['GET', `/connector-configs/${CFG_ID}/runs`, undefined],
+  ['GET', `/connector-configs/${CFG_ID}/metrics`, undefined],
+  ['GET', `/connector-configs/${CFG_ID}/resources/res-1/metrics`, undefined],
   ['GET', '/connector-configs/runs/all', undefined],
-  ['GET', '/connector-configs/runs/run-1', undefined],
+  ['GET', `/connector-configs/runs/${RUN_ID}`, undefined],
 ];
 
 const writeRoutes: RouteCase[] = [
   ['POST', '/connector-configs', { name: 'cfg-1', connector_type: 'aws', connection: {} }],
-  ['PUT', '/connector-configs/cfg-1', { name: 'cfg-1-renamed' }],
-  ['DELETE', '/connector-configs/cfg-1', undefined],
-  ['POST', '/connector-configs/cfg-1/run', undefined],
-  ['POST', '/connector-configs/cfg-1/enable', undefined],
-  ['POST', '/connector-configs/cfg-1/disable', undefined],
-  ['PUT', '/connector-configs/cfg-1/resources', { enabled_resources: ['res-1'] }],
-  ['POST', '/connector-configs/runs/run-1/cancel', undefined],
+  ['PUT', `/connector-configs/${CFG_ID}`, { name: 'cfg-1-renamed' }],
+  ['DELETE', `/connector-configs/${CFG_ID}`, undefined],
+  ['POST', `/connector-configs/${CFG_ID}/run`, undefined],
+  ['POST', `/connector-configs/${CFG_ID}/enable`, undefined],
+  ['POST', `/connector-configs/${CFG_ID}/disable`, undefined],
+  ['PUT', `/connector-configs/${CFG_ID}/resources`, { enabled_resources: ['res-1'] }],
+  ['POST', `/connector-configs/runs/${RUN_ID}/cancel`, undefined],
 ];
 
 async function invoke(app: express.Express, method: string, path: string, body: unknown, token?: string) {

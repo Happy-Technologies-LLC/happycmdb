@@ -1,12 +1,17 @@
 // Copyright 2026 Happy Technologies LLC
 // SPDX-License-Identifier: Apache-2.0
 
+import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { Banner, Button, Card, EmptyState, PageHeader } from '@happy-technologies/design-system';
 import { apiClient } from '@/services/api';
 import dashboardService from '@/services/dashboard.service';
 import { useOrganizationId } from '@/contexts/OrganizationContext';
 import { orgScopedKey } from '@/lib/queryKeys';
 import { UnavailableNotice } from '@/components/dashboard/UnavailableNotice';
+import { QueryState } from '@/components/estate/SurfaceState';
+import { classifyError } from '@/lib/estate';
+import { DashboardSection } from './dashboardChrome';
 import { formatCount, isKnown, isUnavailable } from '@/lib/dashboardValue';
 
 type RecordCount = { success: boolean; pagination: { total: number } };
@@ -18,11 +23,23 @@ const incidentTone = (count: number | null): string => {
   return count >= 5 ? 'text-warning' : 'text-success';
 };
 
+/** A refused read gets the shared "no access" state with the server's reason; any other failure a retryable banner. */
+const ReadFailure = ({ what, error, onRetry, children }: {
+  what: string; error: unknown; onRetry: () => void; children: ReactNode;
+}) => classifyError(error).kind === 'forbidden'
+  ? <QueryState what={what} error={error} />
+  : (
+    <Banner tone="danger" icon="warning-circle">
+      {children}
+      <Button size="sm" variant="secondary" className="ml-3" onClick={onRetry}>Try again</Button>
+    </Banner>
+  );
+
 export const ITSMDashboard = () => {
   const organizationId = useOrganizationId();
   // Incident and change totals come from the record routes guarded by HP1-S2
   // ownership predicates; the KPI aggregate below is a separate request.
-  const { data, isPending, isError } = useQuery({
+  const { data, isPending, isError, error, refetch } = useQuery({
     queryKey: orgScopedKey('itil-record-counts', organizationId),
     queryFn: async () => {
       const [incidents, changes] = await Promise.all([
@@ -45,37 +62,40 @@ export const ITSMDashboard = () => {
 
   return (
     <div className="p-6 space-y-6">
-      <p className="text-sm text-muted-foreground">Dashboards · ITSM</p>
-      <h1 className="text-[1.9rem]">ITSM Dashboard</h1>
-      {isPending && <p role="status">Loading ITIL records…</p>}
-      {isError && <p role="alert" className="rounded-lg border border-danger p-4 text-danger">
-        ITIL records unavailable. No incident or change totals can be shown.
-      </p>}
-      {kpis.isError && <p role="alert" className="rounded-lg border border-danger p-4 text-danger">
-        ITSM KPIs unavailable.
-      </p>}
+      <PageHeader eyebrow="Dashboards · ITSM" title="ITSM Dashboard" />
+      {isPending && <EmptyState loading label="Loading ITIL records…" />}
+      {isError && (
+        <ReadFailure what="ITIL records" error={error} onRetry={() => refetch()}>
+          ITIL records unavailable. No incident or change totals can be shown.
+        </ReadFailure>
+      )}
+      {kpis.isError && (
+        <ReadFailure what="ITSM KPIs" error={kpis.error} onRetry={() => kpis.refetch()}>
+          ITSM KPIs unavailable.
+        </ReadFailure>
+      )}
       {kpi && <section aria-label="ITSM KPIs" className="grid gap-4 md:grid-cols-3">
-        <div>
+        <Card>
           <p data-testid="kpi-open-incidents" className={`text-2xl font-bold ${incidentTone(kpi.openIncidentCount)}`}>
             {formatCount(kpi.openIncidentCount)}
           </p>
           <p className="text-xs text-muted-foreground">Open incidents</p>
-        </div>
-        <div>
+        </Card>
+        <Card>
           <p data-testid="kpi-changes-in-progress" className="text-2xl font-bold">
             {formatCount(kpi.changesInProgressCount)}
           </p>
           <p className="text-xs text-muted-foreground">Changes in progress</p>
-        </div>
-        <div>
+        </Card>
+        <Card>
           <p data-testid="kpi-active-cis" className="text-2xl font-bold">{formatCount(activeCIs)}</p>
           <p className="text-xs text-muted-foreground">Active CIs</p>
-        </div>
+        </Card>
       </section>}
       {kpi && isUnavailable(kpi.unavailable, 'slaCompliance') && <UnavailableNotice label="SLA compliance" />}
       {data && !isError && <div className="grid gap-4 md:grid-cols-2">
-        <section><h2>Incidents</h2><p>{data.incidents}</p></section>
-        <section><h2>Changes</h2><p>{data.changes}</p></section>
+        <DashboardSection title="Incidents"><p className="text-2xl font-bold">{formatCount(data.incidents)}</p></DashboardSection>
+        <DashboardSection title="Changes"><p className="text-2xl font-bold">{formatCount(data.changes)}</p></DashboardSection>
       </div>}
     </div>
   );

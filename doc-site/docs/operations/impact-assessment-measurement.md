@@ -47,6 +47,8 @@ How the operator's verdict is captured so that each event can be counted (a verd
 
 How an operator in either arm is given the information needed to name a beyond-graph CI is open: neither view lists those CIs, so the briefing that accompanies the fixture decides what is knowable. That briefing is to be settled by the founder before the first run.
 
+How the pinned view and the per-edge receipts are presented to the operator is open. Procedure step 5 makes a run invalid if the operator sees live reads instead of the fixture's pinned values, and the fixture has aggregate rows only, no receipt rows, so an operator cannot follow `evidence.receipts_href` as the "Edges opened" measure assumes. One suggestion, not a decision: a facilitator renders both arms from the fixture and supplies receipt detail on request. Another way is equally possible. The choice is to be settled by the founder before the first run.
+
 ## Review effort
 
 Three measures per assessment:
@@ -70,7 +72,7 @@ Three measures per assessment:
 A report states, for each arm:
 
 * The count of each error (a) to (d).
-* The median of each effort measure: edges opened (arm B only), time to verdict, and verdict confidence.
+* The median of each effort measure: edges opened (arm B only), time to verdict, and verdict confidence. Confidence is ordinal, so with an even number of operators and two middle categories, report the lower of the two (the conservative reading). This is a rule of this protocol, not a statistical claim.
 
 and, once for the run:
 

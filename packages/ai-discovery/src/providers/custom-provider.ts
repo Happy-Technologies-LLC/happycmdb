@@ -151,7 +151,7 @@ export class CustomProvider extends BaseLLMProvider {
             logger.info('Custom LLM requested discovery tool', { toolName: tool.name });
 
             // Execute tool
-            const toolCall = await this.executeTool(tool, functionArgs);
+            const toolCall = await this.executeTool(tool, functionArgs, context);
             toolCall.id = toolId;
             toolCalls.push(toolCall);
 
@@ -159,9 +159,7 @@ export class CustomProvider extends BaseLLMProvider {
             messages.push({
               role: 'tool',
               tool_call_id: toolId,
-              content: toolCall.success
-                ? JSON.stringify(toolCall.output)
-                : `Error: ${toolCall.error}`,
+              content: this.formatToolResult(toolCall),
             });
           }
 

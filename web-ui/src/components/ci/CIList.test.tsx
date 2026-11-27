@@ -62,9 +62,10 @@ describe('CIList Component', () => {
 
     renderWithQueryClient(<CIList />);
 
-    // Should show loading spinner
-    const spinner = screen.getByRole('table').querySelector('.animate-spin');
-    expect(spinner).toBeInTheDocument();
+    // Busy table, no rows yet (the DS DataTable marks its wrapper aria-busy instead of a spinner class)
+    const table = screen.getByRole('table');
+    expect(table.closest('[aria-busy="true"]')).toBeInTheDocument();
+    expect(within(table).queryByText('web-server-01')).not.toBeInTheDocument();
   });
 
   it('displays error state', () => {

@@ -15,13 +15,14 @@ import {
 } from '@cmdb/database';
 import { logger } from '@cmdb/common';
 import { requestOrganizationId } from '../../middleware/auth.middleware';
+import { getAuthService } from '../../auth/auth-bootstrap';
 import { errorLogFields } from '../../utils/log-error';
 import { assertNoCIGap, CIGapError, CI_GAP_RESPONSE, filterOwnedDimensionRows, writeReferencedCIs } from '../../read-admission';
 import {
   boundedPgRead, estateFeedTimeoutMs, ESTATE_FEED_LIMIT_RESPONSE, isStatementTimeout,
 } from '../../services/bounded-pg-read';
 import {
-  C1Lifecycle, lifecycleMoveAllowed, lifecycleNeedsOwner, serviceReference, StoredDependencyRow,
+  C1Lifecycle, lifecycleMoveAllowed, lifecycleNeedsOwner, ownerInOrganization, readOwnerValidity, serviceReference, StoredDependencyRow,
 } from '../../services/business-service-reference';
 import { decodeListCursor, encodeListCursor } from '../../services/c1-list-cursor';
 import { parseAvailabilityOptions, readServiceAvailability } from '../../services/service-availability.service';
@@ -78,6 +79,30 @@ const OWNER_REQUIRED = {
   success: false, error: 'Unprocessable Entity', message: 'owner_principal_id is required for a live or retiring service',
 };
 
+/**
+ * One fixed 422 for an owner_principal_id that does not resolve to an enabled user of the caller's organization:
+ * another organization's user, a missing or disabled one, or a stored node without an organization. Nothing from the
+ * request is echoed and every cause is the same bytes, so the response cannot tell which ids exist in other tenants.
+ */
+const OWNER_NOT_IN_ORGANIZATION = {
+  success: false, error: 'Unprocessable Entity', message: 'owner_principal_id must be an enabled user of your organization',
+};
+
+/**
+ * The refusal for `principal`, or null when it is an enabled user whose organization is the caller's (the identity
+ * store's user record, the same one token verification reads). An identity-store failure, an ambiguous user node
+ * included, is logged and refused as the write-unavailable 503: it never accepts an owner it could not verify.
+ */
+async function ownerPrincipalRefusal(organizationId: string, principal: string): Promise<WriteRefusal | null> {
+  try {
+    const user = await getAuthService().findEnabledUser(principal);
+    return ownerInOrganization(user, organizationId) ? null : { status: 422, body: OWNER_NOT_IN_ORGANIZATION };
+  } catch (error) {
+    logger.error('Business service owner lookup failed', { error: errorLogFields(error) });
+    return { status: 503, body: WRITE_UNAVAILABLE };
+  }
+}
+
 /*
  * The C1 service read of one dim_business_services row `s` (GET /:service_id and each item of the list): the child
  * counts, dependencies[] and offerings[] (HAP-1424) are read in the same statement, so in the same snapshot, as the
@@ -101,9 +126,31 @@ const C1_SERVICE_COLUMNS = `s.*,
     ORDER BY o.created_at, o.offering_id
   ) x), '[]'::json) AS c1_offerings`;
 
-function c1ServiceRead({ c1_dependencies: dependencies, c1_offerings: offerings, ...row }: Record<string, unknown>): Record<string, unknown> {
+/**
+ * Owner validity (the C1 `owner_valid`) of the services in `rows`, all of `organizationId`: the same enabled-user and
+ * organization comparison an owner write applies, from one batched identity-store lookup bounded by
+ * OWNER_VALIDITY_TIMEOUT_MS. An identity-store failure or timeout reads as not valid (the read still succeeds) and is
+ * logged once per read, as error fields only (never an id or a value). An owner id the store holds two user nodes for
+ * (AmbiguousUserIdentityError elsewhere) also reads as not valid and is logged once per read, as the ids only.
+ */
+async function ownerValidityOf(organizationId: string, rows: Array<Record<string, unknown>>): Promise<ReadonlyMap<string, boolean>> {
+  const { valid, failures, ambiguous } = await readOwnerValidity(organizationId, rows.map(row => row['owner_principal_id'] as string | null),
+    (ids, timeoutMs) => getAuthService().findEnabledUsers(ids, timeoutMs));
+  if (failures.length > 0) {
+    logger.error('Business service owner validity lookup failed', { error: errorLogFields(failures[0]) });
+  }
+  if (ambiguous.length > 0) {
+    logger.error('Business service owner identity is ambiguous', { user_ids: ambiguous });
+  }
+  return valid;
+}
+
+function c1ServiceRead(
+  { c1_dependencies: dependencies, c1_offerings: offerings, ...row }: Record<string, unknown>, ownerValidity: ReadonlyMap<string, boolean>
+): Record<string, unknown> {
   const service = row as unknown as Parameters<typeof serviceReference>[0];
-  return { ...row, ...serviceReference(service, dependencies as StoredDependencyRow[]), offerings };
+  const ownerValid = service.owner_principal_id !== null && ownerValidity.get(service.owner_principal_id) === true;
+  return { ...row, ...serviceReference(service, dependencies as StoredDependencyRow[], ownerValid), offerings };
 }
 
 /*
@@ -196,9 +243,10 @@ export class BusinessServiceController {
       );
       const rows = result.rows.slice(0, limit);
       const last = rows.at(-1);
+      const ownerValidity = await ownerValidityOf(organizationId, rows);
       res.json({
         success: true,
-        items: rows.map(({ c1_sort_key: _key, ...row }) => c1ServiceRead(row)),
+        items: rows.map(({ c1_sort_key: _key, ...row }) => c1ServiceRead(row, ownerValidity)),
         next_cursor: result.rows.length > limit ? encodeListCursor(organizationId, { ts: last.c1_sort_key, id: last.service_id }) : null,
         as_of: asOf,
       });
@@ -218,10 +266,11 @@ export class BusinessServiceController {
   async getBusinessService(req: Request, res: Response): Promise<void> {
     try {
       const { service_id } = req.params;
+      const organizationId = requestOrganizationId(req);
 
       const result = await this.pgClient.query(
         `SELECT ${C1_SERVICE_COLUMNS} FROM dim_business_services s WHERE s.service_id = $1 AND s.organization_id = $2`,
-        [service_id, requestOrganizationId(req)]
+        [service_id, organizationId]
       );
 
       if (result.rows.length === 0) {
@@ -236,7 +285,7 @@ export class BusinessServiceController {
       // offerings[] (HAP-1424) and the child counts, which change without bumping this record's version, so
       // "<version>" would validate a stale 304. Express's default body-hash ETag stays; the body's `version` is the
       // If-Match value.
-      res.json({ success: true, data: c1ServiceRead(result.rows[0]) });
+      res.json({ success: true, data: c1ServiceRead(result.rows[0], await ownerValidityOf(organizationId, result.rows)) });
     } catch (error) {
       logger.error('Error getting business service', { error: errorLogFields(error), service_id: req.params.service_id });
       res.status(500).json({
@@ -283,10 +332,17 @@ export class BusinessServiceController {
         res.status(503).json(WRITE_UNAVAILABLE);
         return;
       }
-      const service_id = `bs-${randomUUID()}`;
-      // organization_id always comes from the token (the route's Joi schema
-      // rejects it in the body).
+      // organization_id always comes from the token (the route's Joi schema rejects it in the body).
       const organizationId = requestOrganizationId(req);
+      if (typeof owner_principal_id === 'string') {
+        // After the route's admin-only gate: a non-admin never reaches this lookup.
+        const refusal = await ownerPrincipalRefusal(organizationId, owner_principal_id);
+        if (refusal !== null) {
+          res.status(refusal.status).json(refusal.body);
+          return;
+        }
+      }
+      const service_id = `bs-${randomUUID()}`;
       const created = await this.pgClient.transaction(async client => {
         const result = await client.query(
           `INSERT INTO dim_business_services (
@@ -325,7 +381,8 @@ export class BusinessServiceController {
   /**
    * PATCH /api/v1/business-services/:service_id
    * Update an existing business service (HAP-1423): optional If-Match "<version>" (409 when stale); lifecycle moves
-   * only forward and `retired` is terminal (409); a move to live/retiring needs owner_principal_id (422). An accepted
+   * only forward and `retired` is terminal (409); a move to live/retiring needs owner_principal_id (422), named or stored (the
+   * stored one gets the same owner check as a named one; if it changed under the row lock: 409). An accepted
    * update bumps version by one and appends one UPDATE audit row in the same transaction.
    */
   async updateBusinessService(req: Request, res: Response): Promise<void> {
@@ -351,8 +408,37 @@ export class BusinessServiceController {
         res.status(503).json(WRITE_UNAVAILABLE);
         return;
       }
-
       const organizationId = requestOrganizationId(req);
+      const owner: unknown = updates.owner_principal_id;
+      if (typeof owner === 'string') {
+        // After the route's admin-only gate, before the transaction: no PostgreSQL connection is held on the identity store.
+        const refusal = await ownerPrincipalRefusal(organizationId, owner);
+        if (refusal !== null) {
+          res.status(refusal.status).json(refusal.body);
+          return;
+        }
+      }
+      // A move into live/retiring that does not name the owner makes the STORED owner the D15 approver, so it gets the
+      // same check as a named one. The owner is read here, before the transaction (no connection is held on the
+      // identity store), and compared again under the row lock: an owner changed in between is a 409, never an
+      // approver nobody checked.
+      let checkedStoredOwner: string | null = null;
+      if (!('owner_principal_id' in updates) && typeof updates.lifecycle === 'string' && lifecycleNeedsOwner(updates.lifecycle)) {
+        const stored: Pick<ServiceRow, 'lifecycle' | 'owner_principal_id'> | undefined = (await this.pgClient.query(
+          'SELECT lifecycle, owner_principal_id FROM dim_business_services WHERE service_id = $1 AND organization_id = $2',
+          [service_id, organizationId]
+        )).rows[0];
+        // A missing row, a refused move and a missing owner are answered under the lock (404, 409, 422 OWNER_REQUIRED).
+        if (stored?.owner_principal_id && stored.lifecycle !== updates.lifecycle && lifecycleMoveAllowed(stored.lifecycle, updates.lifecycle)) {
+          const refusal = await ownerPrincipalRefusal(organizationId, stored.owner_principal_id);
+          if (refusal !== null) {
+            res.status(refusal.status).json(refusal.body);
+            return;
+          }
+          checkedStoredOwner = stored.owner_principal_id;
+        }
+      }
+
       const setClause = fields.map((field, index) => `${field} = $${index + 3}`).join(', ');
       const values = [service_id, organizationId, ...fields.map(field => {
         // Stringify JSON fields
@@ -383,6 +469,12 @@ export class BusinessServiceController {
         // principal of such a row, needs one.
         if (lifecycleNeedsOwner(lifecycle) && !principal && (lifecycle !== current.lifecycle || 'owner_principal_id' in updates)) {
           return { status: 422, body: OWNER_REQUIRED };
+        }
+        // The same predicate as the pre-check above, on the locked row: a move into live/retiring that names no owner
+        // approves with the stored one, which must be the owner that was checked.
+        if (!('owner_principal_id' in updates) && lifecycleNeedsOwner(lifecycle) && lifecycle !== current.lifecycle
+          && current.owner_principal_id !== checkedStoredOwner) {
+          return { status: 409, body: { success: false, error: 'Conflict', message: 'Business service changed; retry' } };
         }
         // HAP-1424: an offering is live only under a live service, so the service leaves live only once none is. A
         // concurrent offering write holds FOR SHARE on this row, so it commits before this check or sees the move.

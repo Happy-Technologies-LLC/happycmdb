@@ -622,7 +622,7 @@ describe('HAP-2030: re-observation of unchanged edges', () => {
     expect(await sync(t.org)).toMatchObject({ success: true }); // the loser
     expect(outside.size).toBe(t.edges.length); // every edge went to the slot and was decided there
     expect(await Promise.all(t.edges.map(async e => (await receiptsOf(e)).filter(r => r['rationale_code'] === 'reobserved').length)))
-      .toEqual([1, 1, 1]);
+      .toEqual(t.edges.map(() => 1));
     expect(await receiptCount(t.org)).toBe(base + t.edges.length);
     expect(await rows(`SELECT state, last_error, count(*)::int AS n FROM ci_reconciliation_operations WHERE organization_id = $1
       AND state <> 'committed' GROUP BY state, last_error`, [t.org])).toEqual([{ state: 'aborted', last_error: 'throttled', n: 2 * t.edges.length }]);

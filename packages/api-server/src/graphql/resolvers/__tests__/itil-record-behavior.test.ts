@@ -23,7 +23,17 @@ function sql(text: string, params: unknown[] = [], mode: 'query' | 'exec' = 'que
   host.send({ id, op: mode, sql: text, params });
   return promise;
 }
-const query = (text: string, params?: unknown[]) => sql(text, params).then(rows => ({ rows }));
+/** Runs once after the next re-pend read of a change (before its conditional write): the race window. */
+let afterRependRead: (() => Promise<unknown>) | undefined;
+const query = async (text: string, params?: unknown[]) => {
+  const result = { rows: await sql(text, params) };
+  if (afterRependRead && /SELECT status, approved_by/.test(text)) {
+    const hook = afterRependRead;
+    afterRependRead = undefined;
+    await hook();
+  }
+  return result;
+};
 const A = '11111111-1111-4111-8111-111111111111';
 const B = '22222222-2222-4222-8222-222222222222';
 const ciNodes = new Map<string, string>();
@@ -42,14 +52,15 @@ jest.mock('@cmdb/integration-framework', () => ({}));
 jest.mock('../../../auth/auth-bootstrap', () => ({
   getAuthMiddleware: () => ({
     authenticate: () => (req: Request & { user?: object }, _res: Response, next: NextFunction) => {
-      req.user = { _role: 'operator', _organizationId: req.headers.authorization === 'Bearer B' ? B : A };
+      req.user = { _userId: 'gql-user', _role: 'operator', _organizationId: req.headers.authorization === 'Bearer B' ? B : A };
       next();
     },
   }),
 }));
 
 import { createGraphQLServer } from '../../server';
-import { itilNestedRecords } from '../itil-record.resolvers';
+import { ITILController } from '../../../rest/controllers/itil.controller';
+import { itilNestedRecords, itilRecordQueries } from '../itil-record.resolvers';
 import type { GraphQLContext } from '../index';
 
 const migrationDir = join(__dirname, '../../../../../database/src/postgres/migrations');
@@ -203,4 +214,161 @@ it('HAP-922: updateChange persists implementedBy and actualDuration; change and 
   }
   expect(rejected).toEqual(['BAD_USER_INPUT', 'BAD_USER_INPUT', 'BAD_USER_INPUT']);
   expect(await sql('SELECT * FROM itil_changes ORDER BY id')).toEqual(rows);
+});
+
+it.each([[255, 'closed'], [256, 'implemented']])(
+  'closeChange accepts a closedBy of 255 characters and refuses longer, like REST Joi: %i chars leaves status %s', async (length, status) => {
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await seedChange(id, 'implemented');
+    const response = await graphql(`mutation { closeChange(id: "${id}", result: SUCCESS, closedBy: "${'x'.repeat(length)}") { id status } }`);
+    if (length === 255) expect(response.body).toEqual({ data: { closeChange: { id, status: 'CLOSED' } } });
+    else {
+      expect(response.body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
+      expect(response.body.data).toBeNull();
+    }
+    expect(await sql('SELECT status FROM itil_changes WHERE id = $1', [id])).toEqual([{ status }]);
+  });
+
+it('updateChange status APPROVED records the verified principal and refuses a non-pre-approval change', async () => {
+  const pending = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const closed = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  await seedChange(pending, 'pending_approval');
+  await seedChange(closed, 'closed');
+  const approve = (id: string) => graphql(`mutation { updateChange(id: "${id}", input: { status: APPROVED }) { id status } }`);
+  const refusedBefore = await sql('SELECT * FROM itil_changes WHERE id = $1', [closed]);
+  const refused = await approve(closed);
+  expect(refused.body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
+  expect(await sql('SELECT * FROM itil_changes WHERE id = $1', [closed])).toEqual(refusedBefore);
+  const approved = await approve(pending);
+  expect(approved.body).toEqual({ data: { updateChange: { id: pending, status: 'APPROVED' } } });
+  expect(await sql('SELECT status, approved_by, approved_at IS NOT NULL AS stamped FROM itil_changes WHERE id = $1', [pending]))
+    .toEqual([{ status: 'approved', approved_by: 'gql-user', stamped: true }]);
+  const back = await graphql(`mutation { updateChange(id: "${pending}", input: { status: REQUESTED }) { status } }`);
+  expect(back.body.data).toEqual({ updateChange: { status: 'REQUESTED' } });
+  expect(await sql('SELECT approval_status, approved_by, approved_at FROM itil_changes WHERE id = $1', [pending]))
+    .toEqual([{ approval_status: 'pending', approved_by: null, approved_at: null }]);
+});
+
+it('updateChange passes the controller code in extensions, keeping code BAD_USER_INPUT, so a retryable 409 is distinguishable', async () => {
+  const closed = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const raced = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+  await seedChange(closed, 'closed');
+  await seedChange(raced, 'pending_approval');
+  const mutate = (id: string, status: string) =>
+    graphql(`mutation { updateChange(id: "${id}", input: { status: ${status} }) { status } }`);
+
+  const refused = await mutate(closed, 'APPROVED');
+  expect(refused.body.errors?.[0]?.extensions).toMatchObject({ code: 'BAD_USER_INPUT', controllerCode: 'CHANGE_NOT_APPROVABLE' });
+
+  afterRependRead = () => sql(`UPDATE itil_changes SET status = 'approved', approval_status = 'approved',
+    approved_by = 'someone-else', approved_at = now() WHERE id = $1`, [raced]);
+  const lost = await mutate(raced, 'REQUESTED');
+  expect(afterRependRead).toBeUndefined();
+  expect(lost.body.errors?.[0]?.extensions).toMatchObject({ code: 'BAD_USER_INPUT', controllerCode: 'CHANGE_APPROVAL_CHANGED' });
+  expect(await sql('SELECT status, approved_by FROM itil_changes WHERE id = $1', [raced]))
+    .toEqual([{ status: 'approved', approved_by: 'someone-else' }]);
+});
+
+it.each([
+  ['a lowercase code', 'change_not_approvable'],
+  ['a code over 64 characters', `C${'A'.repeat(64)}`],
+  ['a code with a space', 'CHANGE NOT APPROVABLE'],
+])('updateChange drops %s from extensions: no controllerCode, code stays BAD_USER_INPUT', async (_label, code) => {
+  const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  await seedChange(id, 'draft');
+  const handler = jest.spyOn(ITILController.prototype, 'updateChange').mockImplementation(async (_req, res) => {
+    res.status(409).json({ success: false, error: 'Conflict', code, message: 'refused' });
+  });
+  try {
+    const response = await graphql(`mutation { updateChange(id: "${id}", input: { status: SCHEDULED }) { status } }`);
+    const extensions = response.body.errors?.[0]?.extensions;
+    expect(extensions?.code).toBe('BAD_USER_INPUT');
+    expect(extensions).not.toHaveProperty('controllerCode');
+    expect(JSON.stringify(response.body)).not.toContain(code);
+  } finally {
+    handler.mockRestore();
+  }
+});
+
+const seedIncident = (id: string, number: string, priority = 3, ci = 'ci-a', org = A) => sql(
+  `INSERT INTO itil_incidents(id, incident_number, title, impact, urgency, priority,
+    affected_ci_id, reported_by, organization_id) VALUES ($1, $2, 'paged incident',
+      'medium', 'medium', $3, $4, 'alice', $5)`, [id, number, priority, ci, org]);
+const INC = ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  'cccccccc-cccc-4ccc-8ccc-cccccccccccc'];
+const ctxA = { user: { _organizationId: A } } as GraphQLContext;
+
+describe('GraphQL paging and priority arguments are bounded like the REST Joi schemas', () => {
+  const badPages = ['page: 0', 'page: -3', 'limit: 0', 'limit: -1'];
+  const expectRefusal = (body: { data: unknown; errors?: { extensions?: { code?: string } }[] }) => {
+    expect(body.errors).toHaveLength(1);
+    expect(body.errors?.[0]?.extensions?.code).toBe('BAD_USER_INPUT');
+    expect(body.data).toBeNull();
+  };
+
+  it.each([...badPages, 'priority: 0', 'priority: 6'])('incidents(%s) is BAD_USER_INPUT', async (arg) => {
+    await seedIncident(INC[0], 'INC-1');
+    expectRefusal((await graphql(`{ incidents(${arg}) { total pages } }`)).body);
+  });
+
+  it.each(badPages)('changes(%s) is BAD_USER_INPUT', async (arg) => {
+    await seedChange(INC[0], 'draft');
+    expectRefusal((await graphql(`{ changes(${arg}) { total pages } }`)).body);
+  });
+
+  // The request-admission layer already answers HTTP limit > 100 (GRAPHQL_REQUEST_LIMIT_EXCEEDED), so the
+  // REST-mirrored 1..1000 bound is only reachable, and only asserted, at the resolver.
+  it.each(['incidents', 'changes'] as const)('%s resolver refuses limit 1001 and accepts limit 1000', async (name) => {
+    await seedIncident(INC[0], 'INC-1');
+    await seedChange(INC[0], 'draft');
+    await expect(itilRecordQueries[name](null, { limit: 1001 }, ctxA)).rejects
+      .toMatchObject({ extensions: { code: 'BAD_USER_INPUT' } });
+    const page = await itilRecordQueries[name](null, { page: 1, limit: 1000 }, ctxA);
+    expect(page).toMatchObject({ total: 1, page: 1, limit: 1000, pages: 1 });
+    expect(page.items).toHaveLength(1);
+  });
+
+  it('keeps valid paging, defaults and the priority filter working', async () => {
+    await seedIncident(INC[0], 'INC-1', 3);
+    await seedIncident(INC[1], 'INC-2', 1);
+    await seedIncident(INC[2], 'INC-B', 3, 'ci-b', B);
+    await seedChange(INC[0], 'draft');
+    await seedChange(INC[1], 'draft');
+    const page = (await graphql('{ incidents(page: 1, limit: 100) { total page limit pages items { id } } }')).body;
+    expect(page.errors).toBeUndefined();
+    expect(page.data.incidents).toMatchObject({ total: 2, page: 1, limit: 100, pages: 1 });
+    expect(page.data.incidents.items.map((row: { id: string }) => row.id).sort()).toEqual([INC[0], INC[1]]);
+    const defaults = (await graphql('{ incidents { total page limit pages } changes { total page limit pages } }')).body;
+    expect(defaults.data).toEqual({ incidents: { total: 2, page: 1, limit: 50, pages: 1 },
+      changes: { total: 2, page: 1, limit: 50, pages: 1 } });
+    const second = (await graphql('{ changes(page: 2, limit: 1) { total page limit pages items { id } } }')).body;
+    expect(second.errors).toBeUndefined();
+    expect(second.data.changes).toMatchObject({ total: 2, page: 2, limit: 1, pages: 2 });
+    expect(second.data.changes.items).toHaveLength(1);
+    expect(Number.isInteger(second.data.changes.pages)).toBe(true);
+    const filtered = (await graphql('{ incidents(priority: 3) { total items { id priority } } }')).body;
+    expect(filtered.data.incidents).toEqual({ total: 1, items: [{ id: INC[0], priority: 3 }] });
+    const orgB = (await graphql('{ incidents(page: 1, limit: 10) { total items { id } } }', 'B')).body;
+    expect(orgB.data.incidents).toEqual({ total: 1, items: [{ id: INC[2] }] });
+  });
+
+  it('nested CI incidents clamp the limit to 1..100 like nested changes', async () => {
+    await seedIncident(INC[0], 'INC-1');
+    await seedIncident(INC[1], 'INC-2');
+    expect(await itilNestedRecords.incidents('ci-a', { limit: -5 }, ctxA)).toHaveLength(1);
+    expect(await itilNestedRecords.incidents('ci-a', { limit: 500 }, ctxA)).toHaveLength(2);
+  });
+
+  it('updateIncident refuses priority outside 1..5 and leaves the row unchanged', async () => {
+    await seedIncident(INC[0], 'INC-1', 3);
+    const update = (priority: number) => graphql(`mutation { updateIncident(id: "${INC[0]}",
+      input: { priority: ${priority} }) { id priority } }`);
+    const before = await sql('SELECT * FROM itil_incidents ORDER BY id');
+    for (const bad of [9, 0, 6, -1]) expectRefusal((await update(bad)).body);
+    expect(await sql('SELECT * FROM itil_incidents ORDER BY id')).toEqual(before);
+    const ok = (await update(2)).body;
+    expect(ok.errors).toBeUndefined();
+    expect(ok.data.updateIncident).toEqual({ id: INC[0], priority: 2 });
+    expect(await sql('SELECT priority FROM itil_incidents WHERE id = $1', [INC[0]])).toEqual([{ priority: 2 }]);
+  });
 });
